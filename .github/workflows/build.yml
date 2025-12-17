@@ -114,13 +114,13 @@ jobs:
         shell: pwsh
         run: |
           cd qubes-gui/src-tauri
-          pyinstaller --onefile --name qubes-backend --distpath dist ../gui_bridge.py
+          pyinstaller --onefile --name qubes-backend --distpath dist ../../gui_bridge.py
 
       - name: Build Python backend (Unix)
         if: matrix.platform != 'windows-latest'
         run: |
           cd qubes-gui/src-tauri
-          pyinstaller --onefile --name qubes-backend --distpath dist ../gui_bridge.py
+          pyinstaller --onefile --name qubes-backend --distpath dist ../../gui_bridge.py
 
       # ========== Install Frontend Dependencies ==========
       - name: Install frontend dependencies
