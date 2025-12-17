@@ -1,0 +1,5388 @@
+#!/usr/bin/env python3
+"""
+Qubes GUI Bridge - CLI interface for Tauri GUI to communicate with Python backend
+"""
+import sys
+import json
+import asyncio
+import logging
+from pathlib import Path
+from datetime import datetime
+from typing import Dict, Any, List, Optional
+import os
+
+# Add project root to path
+sys.path.insert(0, str(Path(__file__).parent))
+
+# Load environment variables from .env file
+from dotenv import load_dotenv
+load_dotenv()
+
+# CRITICAL: Disable all logging to stdout/stderr before importing anything
+# Set environment variable to disable structlog output
+os.environ['QUBES_LOG_LEVEL'] = 'ERROR'
+
+# ============================================================================
+# GLOBAL UTF-8 FIX FOR WINDOWS
+# ============================================================================
+# Force all Python I/O to use UTF-8 encoding (fixes emoji/Unicode issues on Windows)
+import sys
+import io
+
+# Reconfigure stdout/stderr to use UTF-8 encoding
+if hasattr(sys.stdout, 'buffer'):
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+if hasattr(sys.stderr, 'buffer'):
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+
+# Create logs directory if it doesn't exist
+log_dir = Path(__file__).parent / "logs"
+log_dir.mkdir(exist_ok=True)
+
+# Configure Python logging to write ONLY to file (not to stdout/stderr)
+# This prevents logs from interfering with JSON output
+# Use UTF-8 encoding to support emoji and Unicode characters
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s [%(levelname)-8s] %(message)s',
+    handlers=[
+        logging.FileHandler(
+            log_dir / "gui_bridge_debug.log",
+            mode='a',
+            encoding='utf-8',  # Support emoji and Unicode
+            errors='replace'    # Replace unencodable characters instead of crashing
+        )
+    ]
+)
+
+# Disable propagation to prevent any stderr output
+logging.root.handlers[0].setLevel(logging.DEBUG)
+
+# Configure structlog to write to file (not stdout/stderr)
+# Import structlog and configure_logging from utils.logging
+import structlog
+from utils.logging import configure_logging
+
+# Configure structured logging to file only
+configure_logging(
+    log_level="DEBUG",
+    log_file=log_dir / "gui_bridge_debug.log",
+    json_output=False,  # Human-readable format
+    console_output=False  # NO console output to keep stdout clean for JSON
+)
+
+from orchestrator.user_orchestrator import UserOrchestrator
+from utils.input_validation import validate_user_id, validate_qube_id, validate_qube_name, validate_message
+
+logger = structlog.get_logger(__name__)
+
+
+class GUIBridge:
+    """Bridge between Tauri GUI and Python backend"""
+
+    def __init__(self, user_id: str = "bit_faced"):
+        self.orchestrator = UserOrchestrator(user_id=user_id)
+
+    def _get_connections_file(self, qube_id: str) -> Path:
+        """
+        Get path to connections file for a Qube, ensuring directory exists.
+
+        Connections are stored in: data/users/{user}/connections/{qube_id}.json
+
+        Also handles migration from old location (connections_{qube_id}.json in user dir)
+        """
+        connections_dir = self.orchestrator.data_dir / "connections"
+        connections_dir.mkdir(exist_ok=True)
+        new_path = connections_dir / f"{qube_id}.json"
+
+        # Migrate from old location if needed
+        old_path = self.orchestrator.data_dir / f"connections_{qube_id}.json"
+        if old_path.exists() and not new_path.exists():
+            import shutil
+            shutil.move(str(old_path), str(new_path))
+            logger.info(f"Migrated connections file from {old_path} to {new_path}")
+
+        return new_path
+
+    async def authenticate(self, user_id: str, password: str) -> Dict[str, Any]:
+        """Authenticate user with username and password"""
+        try:
+            # Create orchestrator for this user
+            orchestrator = UserOrchestrator(user_id=user_id)
+
+            # Check if user directory exists
+            if not orchestrator.data_dir.exists():
+                return {"success": False, "error": "User not found"}
+
+            # Check if salt file exists (means user was set up with a password)
+            salt_file = orchestrator.data_dir / "salt.bin"
+            if not salt_file.exists():
+                return {"success": False, "error": "User not found or not initialized"}
+
+            # Try to set master key with password
+            try:
+                orchestrator.set_master_key(password)
+            except Exception as e:
+                logger.error(f"Failed to set master key for {user_id}: {e}")
+                return {"success": False, "error": "Invalid password"}
+
+            # Verify password by trying to decrypt a qube's private key
+            # List qubes first
+            qubes_list = await orchestrator.list_qubes()
+
+            if len(qubes_list) > 0:
+                # Try to decrypt the first qube's private key to verify password
+                # This will fail if password is wrong (can't decrypt private key)
+                try:
+                    first_qube_id = qubes_list[0]["qube_id"]
+                    # Just try to load the qube data and decrypt the key
+                    qube_data = await orchestrator._load_qube_data(first_qube_id)
+                    # This will throw if password is wrong
+                    orchestrator._decrypt_private_key(
+                        qube_data["encrypted_private_key"],
+                        orchestrator.master_key
+                    )
+                    logger.info(f"Authentication successful for {user_id}")
+                except Exception as e:
+                    logger.error(f"Authentication failed for {user_id}: {e}")
+                    return {"success": False, "error": "Invalid password"}
+            else:
+                # No qubes to verify with, but salt exists so accept the password
+                # (User might have just created account but no qubes yet)
+                logger.info(f"Authentication successful for {user_id} (no qubes to verify)")
+
+            # Authentication successful
+            return {
+                "success": True,
+                "user_id": user_id,
+                "data_dir": str(orchestrator.data_dir)
+            }
+
+        except Exception as e:
+            logger.error(f"Authentication error: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def list_qubes(self) -> List[Dict[str, Any]]:
+        """List all qubes with their metadata"""
+        try:
+            qubes = await self.orchestrator.list_qubes()
+
+            # Transform to GUI format
+            gui_qubes = []
+            for qube in qubes:
+                # Convert birth_timestamp to ISO format for created_at
+                created_at = datetime.fromtimestamp(qube["birth_timestamp"]).isoformat() if qube.get("birth_timestamp") else datetime.now().isoformat()
+
+                # Determine status: active if qube has been properly initialized (has genesis + NFT)
+                # A qube is "active" if it's ready to use (has genesis block and NFT minted)
+                has_genesis = qube.get("total_blocks", 0) > 0
+                has_nft = qube.get("nft_category_id") is not None
+                is_loaded_in_memory = qube.get("loaded", False)
+
+                # Active: has genesis and NFT (ready to use)
+                # Busy: loaded in memory and actively being used
+                # Inactive: missing genesis or NFT (incomplete setup)
+                if is_loaded_in_memory:
+                    status = "busy"
+                elif has_genesis and has_nft:
+                    status = "active"
+                else:
+                    status = "inactive"
+
+                # Get relationship stats
+                rel_stats = qube.get("relationship_stats", {})
+
+                # Use avg_trust_score from relationships if available, otherwise use default_trust_level from genesis
+                trust_score = rel_stats.get("avg_trust_score")
+                if trust_score is None or trust_score == 0:
+                    # Fall back to default_trust_level from genesis block
+                    trust_score = qube.get("default_trust_level", 50)
+
+                # Default tts_enabled to True if voice_model is set, otherwise get from metadata
+                voice_model = qube.get("voice_model")
+                tts_enabled = qube.get("tts_enabled")
+                if tts_enabled is None:
+                    # Default: enabled if a voice is configured
+                    tts_enabled = voice_model is not None and voice_model != ""
+
+                gui_qube = {
+                    "qube_id": qube["qube_id"],
+                    "name": qube["name"],
+                    "ai_provider": qube.get("ai_provider", "unknown"),
+                    "ai_model": qube.get("ai_model", "unknown"),
+                    "voice_model": voice_model,
+                    "tts_enabled": tts_enabled,
+                    "creator": qube.get("creator"),
+                    "birth_timestamp": qube.get("birth_timestamp"),
+                    "home_blockchain": qube.get("home_blockchain", "bitcoincash"),
+                    "genesis_prompt": qube.get("genesis_prompt", ""),
+                    "favorite_color": qube.get("favorite_color", "#00ff88"),
+                    "nft_category_id": qube.get("nft_category_id"),
+                    "mint_txid": qube.get("mint_txid"),
+                    "avatar_url": qube.get("avatar_url"),
+                    "created_at": created_at,
+                    "trust_score": trust_score,
+                    "memory_blocks_count": qube.get("total_blocks", 0),
+                    "block_breakdown": qube.get("block_breakdown", {}),
+                    "friends_count": rel_stats.get("friends", 0),
+                    "total_relationships": rel_stats.get("total_relationships", 0),
+                    "best_friend": rel_stats.get("best_friend"),
+                    "status": status,
+                    # Additional blockchain metadata
+                    "recipient_address": qube.get("recipient_address"),
+                    "public_key": qube.get("public_key"),
+                    "genesis_block_hash": qube.get("genesis_block_hash"),
+                    "commitment": qube.get("commitment"),
+                    "bcmr_uri": qube.get("bcmr_uri"),
+                    "avatar_ipfs_cid": qube.get("avatar_ipfs_cid"),
+                    "avatar_local_path": qube.get("avatar_local_path"),  # For frontend convertFileSrc()
+                    "network": qube.get("network"),
+                }
+
+                gui_qubes.append(gui_qube)
+
+            return gui_qubes
+        except Exception as e:
+            logger.error(f"Failed to list qubes: {e}")
+            raise
+
+    async def create_qube(
+        self,
+        name: str,
+        genesis_prompt: str,
+        ai_provider: str,
+        ai_model: str,
+        voice_model: str,
+        wallet_address: str,
+        password: str,
+        encrypt_genesis: bool = False,
+        favorite_color: str = "#00ff88",
+        avatar_file: str = None,
+        generate_avatar: bool = False,
+        avatar_style: str = "cyberpunk"
+    ) -> Dict[str, Any]:
+        """Create a new qube"""
+        try:
+            # Set master key from password before creating qube
+            self.orchestrator.set_master_key(password)
+
+            # Prepare config for UserOrchestrator
+            config = {
+                "name": name,
+                "genesis_prompt": genesis_prompt,
+                "ai_provider": ai_provider,
+                "ai_model": ai_model,
+                "voice_model": voice_model,
+                "wallet_address": wallet_address,
+                "encrypt_genesis": encrypt_genesis,
+                "favorite_color": favorite_color,
+                "generate_avatar": generate_avatar,
+                "avatar_style": avatar_style,
+            }
+
+            # Only include avatar_file if provided
+            if avatar_file is not None:
+                config["avatar_file"] = avatar_file
+
+            # Create qube through orchestrator
+            qube = await self.orchestrator.create_qube(config)
+
+            # Transform to GUI format (Qube object has attributes, not dict keys)
+            gui_qube = {
+                "qube_id": qube.qube_id,
+                "name": qube.name,
+                "ai_provider": ai_provider,
+                "ai_model": ai_model,
+                "voice_model": voice_model,
+                "creator": self.orchestrator.user_id,
+                "birth_timestamp": qube.genesis_block.birth_timestamp,
+                "home_blockchain": qube.genesis_block.home_blockchain,
+                "genesis_prompt": genesis_prompt,
+                "favorite_color": favorite_color,
+                "created_at": datetime.fromtimestamp(qube.genesis_block.birth_timestamp).isoformat(),
+                "trust_score": 50.0,  # Initial trust score
+                "memory_blocks_count": 0,
+                "friends_count": 0,
+                "status": "active",
+            }
+
+            return gui_qube
+        except Exception as e:
+            logger.error(f"Failed to create qube: {e}")
+            raise
+
+    async def prepare_qube_for_minting(
+        self,
+        name: str,
+        genesis_prompt: str,
+        ai_provider: str,
+        ai_model: str,
+        voice_model: str,
+        wallet_address: str,
+        password: str,
+        encrypt_genesis: bool = False,
+        favorite_color: str = "#00ff88",
+        avatar_file: str = None,
+        generate_avatar: bool = False,
+        avatar_style: str = "cyberpunk"
+    ) -> Dict[str, Any]:
+        """
+        Prepare a new qube for fee-based minting
+
+        Returns payment details for the user to complete the BCH payment.
+        After payment, use check_minting_status to poll for completion.
+        """
+        try:
+            # Set master key from password before creating qube
+            self.orchestrator.set_master_key(password)
+
+            # Prepare config for UserOrchestrator
+            config = {
+                "name": name,
+                "genesis_prompt": genesis_prompt,
+                "ai_provider": ai_provider,
+                "ai_model": ai_model,
+                "voice_model": voice_model,
+                "wallet_address": wallet_address,
+                "encrypt_genesis": encrypt_genesis,
+                "favorite_color": favorite_color,
+                "generate_avatar": generate_avatar,
+                "avatar_style": avatar_style,
+            }
+
+            # Only include avatar_file if provided
+            if avatar_file is not None:
+                config["avatar_file"] = avatar_file
+
+            # Prepare qube for fee-based minting
+            pending = await self.orchestrator.prepare_qube_for_minting(config)
+
+            # Return payment info for GUI
+            return {
+                "success": True,
+                "qube_id": pending.qube_id,
+                "registration_id": pending.registration_id,
+                "payment": {
+                    "address": pending.payment_address,
+                    "amount_bch": pending.payment_amount_bch,
+                    "amount_satoshis": pending.payment_amount_satoshis,
+                    "payment_uri": pending.payment_uri,
+                    "qr_data": pending.qr_data,
+                    "op_return_data": pending.op_return_data,
+                    "op_return_hex": pending.op_return_hex,
+                },
+                "websocket_url": pending.websocket_url,
+                "expires_at": pending.expires_at.isoformat(),
+                "expires_in_seconds": pending.expires_in_seconds,
+                "qube_name": name,
+            }
+        except Exception as e:
+            logger.error(f"Failed to prepare qube for minting: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def check_minting_status(self, registration_id: str, password: str) -> Dict[str, Any]:
+        """
+        Check the minting status for a pending registration
+
+        Returns status: pending, paid, minting, complete, failed, expired
+        """
+        try:
+            self.orchestrator.set_master_key(password)
+            status = await self.orchestrator.check_minting_status(registration_id)
+
+            # If complete, finalize the qube with NFT data and save to disk
+            if status.get("status") == "complete":
+                qube_id = status.get("qube_id")
+                category_id = status.get("category_id")
+                mint_txid = status.get("mint_txid")
+                bcmr_ipfs_cid = status.get("bcmr_ipfs_cid")
+                avatar_ipfs_cid = status.get("avatar_ipfs_cid")
+                commitment = status.get("commitment")
+                recipient_address = status.get("recipient_address")
+
+                # Try to get qube from memory, or load it
+                qube = None
+                if qube_id:
+                    if qube_id in self.orchestrator.qubes:
+                        qube = self.orchestrator.qubes[qube_id]
+                    else:
+                        # Qube not in memory - try to load it
+                        try:
+                            loaded_qubes = await self.orchestrator.load_qubes()
+                            if qube_id in self.orchestrator.qubes:
+                                qube = self.orchestrator.qubes[qube_id]
+                            logger.info(f"Loaded qube {qube_id} from disk for finalization")
+                        except Exception as load_err:
+                            logger.warning(f"Could not load qube {qube_id}: {load_err}")
+
+                if qube and category_id:
+                    # Check if finalization is needed (still pending or missing data)
+                    needs_finalize = (
+                        qube.genesis_block.nft_category_id == "pending_minting" or
+                        qube.genesis_block.nft_category_id is None or
+                        not getattr(qube.genesis_block, 'mint_txid', None)
+                    )
+
+                    if needs_finalize:
+                        # Build complete mint_info dict with ALL fields
+                        mint_info = {
+                            "category_id": category_id,
+                            "mint_txid": mint_txid,
+                            "bcmr_ipfs_cid": bcmr_ipfs_cid,
+                            "avatar_ipfs_cid": avatar_ipfs_cid,
+                            "recipient_address": recipient_address,
+                            "commitment": commitment,
+                        }
+
+                        # Save the updated qube to disk
+                        await self.orchestrator._finalize_minted_qube(
+                            registration_id,
+                            mint_info
+                        )
+                        logger.info(f"Finalized qube {qube_id} with NFT category {category_id[:16]}...")
+
+                    return {
+                        "success": True,
+                        "status": "complete",
+                        "qube": {
+                            "qube_id": qube.qube_id,
+                            "name": qube.name,
+                            "nft_category_id": category_id,
+                            "mint_txid": mint_txid,
+                            "bcmr_ipfs_cid": bcmr_ipfs_cid,
+                            "commitment": commitment,
+                        }
+                    }
+
+            return {
+                "success": True,
+                "status": status.get("status"),
+                "registration_id": registration_id,
+                "category_id": status.get("category_id"),
+                "mint_txid": status.get("mint_txid"),
+                "bcmr_ipfs_cid": status.get("bcmr_ipfs_cid"),
+                "commitment": status.get("commitment"),
+                "error_message": status.get("error_message"),
+            }
+        except Exception as e:
+            logger.error(f"Failed to check minting status: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def submit_payment_txid(self, registration_id: str, txid: str) -> Dict[str, Any]:
+        """Submit transaction ID after payment to trigger minting"""
+        try:
+            from blockchain.minting_api import MintingAPIClient
+            async with MintingAPIClient() as api_client:
+                result = await api_client.submit_payment(registration_id, txid)
+                return {"success": True, **result}
+        except Exception as e:
+            logger.error(f"Failed to submit payment txid: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def cancel_pending_minting(self, registration_id: str) -> Dict[str, Any]:
+        """Cancel a pending minting registration (only if not yet paid)"""
+        try:
+            success = await self.orchestrator.cancel_pending_minting(registration_id)
+            return {"success": success}
+        except Exception as e:
+            logger.error(f"Failed to cancel pending minting: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def list_pending_registrations(self) -> List[Dict[str, Any]]:
+        """List all pending minting registrations for this user"""
+        try:
+            return await self.orchestrator.list_pending_registrations()
+        except Exception as e:
+            logger.error(f"Failed to list pending registrations: {e}")
+            return []
+
+    async def get_qube(self, qube_id: str) -> Dict[str, Any]:
+        """Get a specific qube by ID"""
+        try:
+            qube = await self.orchestrator.get_qube(qube_id)
+
+            gui_qube = {
+                "qube_id": qube["qube_id"],
+                "name": qube["name"],
+                "ai_provider": qube.get("ai_provider", "unknown"),
+                "ai_model": qube.get("ai_model", "unknown"),
+                "genesis_prompt": qube.get("genesis_prompt", ""),
+                "favorite_color": qube.get("favorite_color", "#00ff88"),
+                "created_at": qube.get("created_at", datetime.now().isoformat()),
+                "trust_score": None,
+                "memory_blocks_count": qube.get("block_count", 0),
+                "friends_count": len(qube.get("known_peers", [])),
+                "status": "active" if qube.get("is_active", True) else "inactive",
+            }
+
+            return gui_qube
+        except Exception as e:
+            logger.error(f"Failed to get qube {qube_id}: {e}")
+            raise
+
+    async def send_message(self, qube_id: str, message: str, password: str = None) -> Dict[str, Any]:
+        """Send a message to a qube and get response"""
+        try:
+            # Set master key if password provided
+            if password:
+                self.orchestrator.set_master_key(password)
+
+            # Load the qube if not already loaded
+            if qube_id not in self.orchestrator.qubes:
+                await self.orchestrator.load_qube(qube_id)
+
+            qube = self.orchestrator.qubes[qube_id]
+
+            # Send message and get response (use actual user_id instead of default "human")
+            response = await qube.process_message(message, sender_id=self.orchestrator.user_id)
+
+            # Record relationship interaction (conversation with user)
+            if response:
+                try:
+                    # Get or create relationship with user (specify entity_type="human")
+                    user_rel = qube.relationships.storage.get_relationship(self.orchestrator.user_id)
+                    if not user_rel:
+                        # Create new relationship with entity_type="human"
+                        user_rel = qube.relationships.create_relationship(
+                            entity_id=self.orchestrator.user_id,
+                            entity_type="human",
+                            entity_name=self.orchestrator.user_id,  # Use user_id as name for search
+                            has_met=True
+                        )
+
+                    # Record user message received by Qube
+                    qube.relationships.record_message(
+                        entity_id=self.orchestrator.user_id,
+                        is_outgoing=False,  # Message from user to Qube
+                        auto_create=True
+                    )
+
+                    # Check for relationship progression
+                    user_rel = qube.relationships.get_relationship(self.orchestrator.user_id)
+                    if user_rel:
+                        progressed = qube.relationships.progression_manager.check_and_progress(
+                            user_rel,
+                            trust_profile=None,  # Use default profile
+                            qube_id=qube.qube_id
+                        )
+
+                        if progressed:
+                            logger.info(f"🎉 Relationship progressed: {self.orchestrator.user_id} → {user_rel.relationship_status}")
+
+                    logger.debug(f"✅ Recorded relationship interaction for {qube_id[:16]}")
+                except Exception as e:
+                    logger.warning(f"Failed to record relationship: {e}")
+                    # Don't fail the whole message - just log warning
+
+            return {
+                "success": True,
+                "qube_id": qube_id,
+                "qube_name": qube.genesis_block.qube_name,
+                "message": message,
+                "response": response,
+                "timestamp": datetime.now().isoformat()
+            }
+        except Exception as e:
+            logger.error(f"Failed to send message to qube {qube_id}: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    async def _process_permanent_block(self, qube, qube_id: str, block_num: int) -> Dict[str, Any]:
+        """Process a single permanent block (optimized for parallel execution)"""
+        try:
+            # Load block from file
+            block = qube.memory_chain.get_block(block_num)
+            block_data = block.to_dict()
+
+            # For GENESIS blocks, the content IS the entire block data (no nested content field)
+            # For other blocks, content is in the 'content' field
+            if block_data.get('block_type') == 'GENESIS':
+                # Genesis block - use entire block data as content
+                decrypted_content = block_data
+                was_encrypted = False
+            else:
+                # Other block types - check if content field is encrypted
+                content = block_data.get('content', {})
+                was_encrypted = isinstance(content, dict) and 'ciphertext' in content
+
+                # Decrypt content if encrypted (run in thread pool to avoid blocking)
+                if was_encrypted:
+                    try:
+                        # Use qube's decrypt_block_content method which has the correct key
+                        content_dict = block_data['content']
+                        # Run decryption in thread pool for better performance
+                        decrypted_content = await asyncio.to_thread(
+                            qube.decrypt_block_content,
+                            content_dict
+                        )
+                    except Exception as e:
+                        logger.error(f"❌ Failed to decrypt block {block_num}: {e}")
+                        decrypted_content = {"error": f"Failed to decrypt content: {str(e)}"}
+                else:
+                    # Not encrypted - use content as-is
+                    decrypted_content = content
+
+            # For GENESIS blocks, use birth_timestamp instead of timestamp
+            # For older blocks without timestamp field, extract from filename
+            if block_data.get('block_type') == 'GENESIS':
+                timestamp_value = block_data.get('birth_timestamp') or block_data.get('timestamp') or block.timestamp
+            else:
+                # Try to get timestamp from data first (may not exist in old blocks)
+                timestamp_value = block_data.get('timestamp')
+                if timestamp_value is None:
+                    # Fallback: extract from filename (format: {number}_{TYPE}_{timestamp}.json)
+                    try:
+                        filename = self.orchestrator.qubes[qube_id].memory_chain.block_index[block_num]
+                        timestamp_value = int(filename.split('_')[-1].replace('.json', ''))
+                    except:
+                        # Last resort: use block.timestamp (will be current time from __init__)
+                        timestamp_value = block.timestamp
+
+            return {
+                "block_number": block.block_number,
+                "block_hash": block.block_hash,
+                "block_type": block.block_type if isinstance(block.block_type, str) else block.block_type.value,
+                "timestamp": timestamp_value * 1000,  # Convert Unix timestamp (seconds) to milliseconds for JavaScript
+                "creator": block_data.get('creator') or qube.qube_id,  # Use qube_id if creator not set
+                "previous_hash": block.previous_hash,
+                "merkle_root": block.merkle_root if hasattr(block, 'merkle_root') else None,
+                "signature": block_data.get('signature') or (block.signature if hasattr(block, 'signature') else None),
+                "content": decrypted_content,
+                "encrypted": was_encrypted,
+                # Token usage tracking (preserved from session blocks)
+                "input_tokens": block_data.get('input_tokens'),
+                "output_tokens": block_data.get('output_tokens'),
+                "total_tokens": block_data.get('total_tokens'),
+                "model_used": block_data.get('model_used'),
+                "estimated_cost_usd": block_data.get('estimated_cost_usd'),
+                # Relationship delta tracking
+                "relationship_updates": block_data.get('relationship_updates')
+            }
+        except Exception as e:
+            logger.error(f"❌ Error processing block {block_num}: {e}")
+            return None  # Will be filtered out
+
+    async def get_qube_blocks(self, qube_id: str, password: str = None, limit: int = 100, offset: int = 0) -> Dict[str, Any]:
+        """Get blocks for a qube (session and permanent) with pagination for better performance"""
+        try:
+            logger.debug(f"get_qube_blocks called: qube_id={qube_id}, limit={limit}, offset={offset}")
+
+            # Set master key if password provided
+            if password:
+                self.orchestrator.set_master_key(password)
+
+            # Load the qube if not already loaded
+            if qube_id not in self.orchestrator.qubes:
+                await self.orchestrator.load_qube(qube_id)
+
+            qube = self.orchestrator.qubes[qube_id]
+
+            # Get session blocks from qube.current_session (these are never encrypted, so no need for parallel processing)
+            session_blocks = []
+            if qube.current_session and hasattr(qube.current_session, 'session_blocks'):
+                for block in qube.current_session.session_blocks:
+                    # Session blocks have different structure - they don't have hash, signature, or creator
+                    block_dict = {
+                        "block_number": block.block_number,
+                        "block_hash": None,  # Session blocks don't have hashes
+                        "block_type": block.block_type if isinstance(block.block_type, str) else block.block_type.value,
+                        "timestamp": block.timestamp * 1000,  # Convert Unix timestamp (seconds) to milliseconds for JavaScript
+                        "creator": qube.qube_id,  # Use qube_id as creator for session blocks
+                        "previous_hash": None,  # Session blocks use previous_block_number instead
+                        "merkle_root": None,
+                        "content": block.to_dict().get('content', {}),  # Get the actual content field
+                        "encrypted": False,  # Session blocks are never encrypted
+                        # Token usage tracking (if available)
+                        "input_tokens": block.input_tokens if hasattr(block, 'input_tokens') else None,
+                        "output_tokens": block.output_tokens if hasattr(block, 'output_tokens') else None,
+                        "total_tokens": block.total_tokens if hasattr(block, 'total_tokens') else None,
+                        "model_used": block.model_used if hasattr(block, 'model_used') else None,
+                        "estimated_cost_usd": block.estimated_cost_usd if hasattr(block, 'estimated_cost_usd') else None,
+                        # Relationship delta tracking
+                        "relationship_updates": block.relationship_updates if hasattr(block, 'relationship_updates') else None
+                    }
+                    session_blocks.append(block_dict)
+
+            # Get permanent blocks from memory_chain with pagination
+            all_block_nums = sorted(qube.memory_chain.block_index.keys(), reverse=True)  # Newest first
+            total_blocks = len(all_block_nums)
+
+            # Apply pagination
+            paginated_block_nums = all_block_nums[offset:offset + limit]
+
+            # Process blocks in parallel for 10x speedup
+            logger.debug(f"Processing {len(paginated_block_nums)} blocks in parallel (total: {total_blocks}, offset: {offset}, limit: {limit})")
+
+            # Create tasks for parallel execution
+            tasks = [
+                self._process_permanent_block(qube, qube_id, block_num)
+                for block_num in paginated_block_nums
+            ]
+
+            # Execute all block processing in parallel
+            block_results = await asyncio.gather(*tasks, return_exceptions=False)
+
+            # Filter out None results (failed blocks)
+            permanent_blocks = [block for block in block_results if block is not None]
+
+            # Sort by block number (newest first) - should already be sorted but ensure it
+            session_blocks.sort(key=lambda x: x['block_number'], reverse=True)
+            permanent_blocks.sort(key=lambda x: x['block_number'], reverse=True)
+
+            logger.debug(f"Processed {len(permanent_blocks)} permanent blocks and {len(session_blocks)} session blocks")
+
+            return {
+                "success": True,
+                "qube_id": qube_id,
+                "session_blocks": session_blocks,
+                "permanent_blocks": permanent_blocks,
+                "pagination": {
+                    "total": total_blocks,
+                    "limit": limit,
+                    "offset": offset,
+                    "has_more": (offset + limit) < total_blocks
+                }
+            }
+        except Exception as e:
+            logger.error(f"Failed to get blocks for qube {qube_id}: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    async def generate_speech(self, qube_id: str, text: str, password: str = None) -> Dict[str, Any]:
+        """Generate speech audio for given text using qube's voice"""
+        try:
+            # Set master key if password provided
+            if password:
+                self.orchestrator.set_master_key(password)
+
+            # Load the qube if not already loaded
+            if qube_id not in self.orchestrator.qubes:
+                await self.orchestrator.load_qube(qube_id)
+
+            qube = self.orchestrator.qubes[qube_id]
+
+            # Check if audio_manager is initialized
+            if not qube.audio_manager:
+                return {
+                    "success": False,
+                    "error": "Audio manager not initialized for this qube"
+                }
+
+            # Get voice model from genesis block (default to 'openai:alloy')
+            voice_model = getattr(qube.genesis_block, 'voice_model', 'openai:alloy')
+
+            # Parse provider and voice from format "provider:voice"
+            if ':' in voice_model:
+                provider, voice_name = voice_model.split(':', 1)
+            else:
+                # Legacy format without provider (assume openai)
+                provider = 'openai'
+                voice_name = voice_model
+
+            # Generate speech file in qube's audio directory
+            audio_path = await qube.audio_manager.generate_speech_file(
+                text=text,
+                voice_model=voice_name,
+                provider=provider
+            )
+
+            return {
+                "success": True,
+                "audio_path": str(audio_path),
+                "qube_id": qube_id
+            }
+        except Exception as e:
+            logger.error(f"Failed to generate speech for qube {qube_id}: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    async def update_qube_config(self, qube_id: str, ai_model: str = None, voice_model: str = None, favorite_color: str = None, tts_enabled: bool = None, evaluation_model: str = None) -> Dict[str, Any]:
+        """Update qube runtime configuration using qube_metadata.json as single source of truth"""
+        try:
+            qubes_dir = self.orchestrator.data_dir / "qubes"
+            qube_dir = None
+
+            # Find qube directory
+            for dir_entry in qubes_dir.iterdir():
+                if dir_entry.is_dir():
+                    metadata_path = dir_entry / "chain" / "qube_metadata.json"
+                    if metadata_path.exists():
+                        with open(metadata_path, "r") as f:
+                            data = json.load(f)
+                            if data["qube_id"] == qube_id:
+                                qube_dir = dir_entry
+                                break
+
+            if not qube_dir:
+                raise Exception(f"Qube {qube_id} not found")
+
+            # Use qube_metadata.json as the ONLY source of truth
+            metadata_path = qube_dir / "chain" / "qube_metadata.json"
+
+            with open(metadata_path, "r") as f:
+                metadata = json.load(f)
+
+            # Update genesis block fields in metadata
+            updated_fields = []
+            if ai_model is not None:
+                metadata["genesis_block"]["ai_model"] = ai_model
+                updated_fields.append(f"ai_model={ai_model}")
+                # Infer provider from model name
+                if ai_model.startswith("gpt-") or ai_model.startswith("o"):
+                    metadata["genesis_block"]["ai_provider"] = "openai"
+                elif ai_model.startswith("claude-"):
+                    metadata["genesis_block"]["ai_provider"] = "anthropic"
+                elif ai_model.startswith("gemini-"):
+                    metadata["genesis_block"]["ai_provider"] = "google"
+                elif ai_model.startswith("sonar"):
+                    metadata["genesis_block"]["ai_provider"] = "perplexity"
+                elif ai_model.startswith("deepseek-"):
+                    metadata["genesis_block"]["ai_provider"] = "deepseek"
+                elif ":" in ai_model:  # Ollama models have format "model:variant"
+                    metadata["genesis_block"]["ai_provider"] = "ollama"
+
+            if voice_model is not None:
+                metadata["genesis_block"]["voice_model"] = voice_model
+                updated_fields.append(f"voice_model={voice_model}")
+
+            if favorite_color is not None:
+                metadata["genesis_block"]["favorite_color"] = favorite_color
+                updated_fields.append(f"favorite_color={favorite_color}")
+
+            if tts_enabled is not None:
+                metadata["genesis_block"]["tts_enabled"] = tts_enabled
+                updated_fields.append(f"tts_enabled={tts_enabled}")
+                logger.info(f"🔊 Setting tts_enabled={tts_enabled} for qube {qube_id}")
+
+            if evaluation_model is not None:
+                metadata["genesis_block"]["evaluation_model"] = evaluation_model
+                updated_fields.append(f"evaluation_model={evaluation_model}")
+
+            # Save updated metadata to qube_metadata.json ONLY
+            with open(metadata_path, "w") as f:
+                json.dump(metadata, f, indent=2)
+
+            logger.info(f"✅ Updated qube_metadata.json for {qube_id}: {', '.join(updated_fields)}")
+
+            # If qube is loaded in memory, update it there too
+            if qube_id in self.orchestrator.qubes:
+                qube = self.orchestrator.qubes[qube_id]
+                if ai_model is not None:
+                    qube.genesis_block.ai_model = ai_model
+                    # Update provider too
+                    if hasattr(qube.genesis_block, 'ai_provider'):
+                        if ai_model.startswith("gpt-") or ai_model.startswith("o"):
+                            qube.genesis_block.ai_provider = "openai"
+                        elif ai_model.startswith("claude-"):
+                            qube.genesis_block.ai_provider = "anthropic"
+                        elif ai_model.startswith("gemini-"):
+                            qube.genesis_block.ai_provider = "google"
+                        elif ai_model.startswith("sonar"):
+                            qube.genesis_block.ai_provider = "perplexity"
+                        elif ":" in ai_model:
+                            qube.genesis_block.ai_provider = "ollama"
+                if voice_model is not None:
+                    qube.genesis_block.voice_model = voice_model
+                    # Reinitialize audio manager with new voice
+                    if qube.audio_manager:
+                        qube.init_audio()
+                if favorite_color is not None:
+                    qube.genesis_block.favorite_color = favorite_color
+                if tts_enabled is not None and hasattr(qube.genesis_block, 'tts_enabled'):
+                    qube.genesis_block.tts_enabled = tts_enabled
+                if evaluation_model is not None:
+                    qube.genesis_block.evaluation_model = evaluation_model
+
+            return {
+                "success": True,
+                "qube_id": qube_id,
+                "updated": {
+                    "ai_model": ai_model,
+                    "voice_model": voice_model,
+                    "favorite_color": favorite_color,
+                    "tts_enabled": tts_enabled,
+                    "evaluation_model": evaluation_model
+                }
+            }
+        except Exception as e:
+            logger.error(f"❌ Failed to update qube config: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    async def delete_qube(self, qube_id: str) -> Dict[str, Any]:
+        """Delete a qube and all its data"""
+        try:
+            success = await self.orchestrator.delete_qube(qube_id)
+
+            return {
+                "success": success,
+                "qube_id": qube_id
+            }
+        except Exception as e:
+            logger.error(f"Failed to delete qube: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    async def reset_qube_relationships(self, qube_id: str, password: str) -> Dict[str, Any]:
+        """
+        Delete all relationships for a Qube (fresh start)
+
+        Args:
+            qube_id: Qube ID
+            password: Master password for decryption
+
+        Returns:
+            {
+                "success": bool,
+                "deleted_count": int,
+                "error": Optional[str]
+            }
+        """
+        try:
+            logger.info(f"Resetting relationships for qube: {qube_id[:16]}...")
+
+            # Set master key
+            self.orchestrator.set_master_key(password)
+
+            # Load Qube if not in memory
+            if qube_id not in self.orchestrator.qubes:
+                await self.orchestrator.load_qube(qube_id)
+
+            qube = self.orchestrator.qubes[qube_id]
+
+            # Get count before deletion
+            relationships = qube.relationships.get_all_relationships()
+            count = len(relationships)
+
+            # Clear all relationships by deleting the storage file
+            from pathlib import Path
+            relationships_file = Path(qube.data_dir) / "relationships" / "relationships.json"
+
+            if relationships_file.exists():
+                relationships_file.unlink()
+                logger.info(f"Deleted relationships file: {relationships_file}")
+
+            # Reinitialize empty storage
+            qube.relationships.storage.relationships = {}
+            qube.relationships.storage._save_relationships()
+
+            logger.info(f"✅ Reset {count} relationships for {qube_id[:16]}")
+
+            return {
+                "success": True,
+                "deleted_count": count
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to reset relationships: {e}", exc_info=True)
+            return {
+                "success": False,
+                "deleted_count": 0,
+                "error": str(e)
+            }
+
+    async def get_qube_relationships(self, qube_id: str, password: str = None) -> Dict[str, Any]:
+        """
+        Get all relationships for a Qube
+
+        Args:
+            qube_id: Qube ID
+            password: Master password for decryption
+
+        Returns:
+            {
+                "success": bool,
+                "relationships": List[Dict],  # Full relationship data
+                "stats": Dict,  # Summary statistics
+                "error": Optional[str]
+            }
+        """
+        try:
+            logger.info(f"[GET_RELATIONSHIPS] Starting for qube: {qube_id[:16]}...")
+            logger.debug(f"[GET_RELATIONSHIPS] Password provided: {bool(password)}")
+
+            # Try to load qube if password is provided
+            if password:
+                # Set master key
+                self.orchestrator.set_master_key(password)
+                logger.debug(f"[GET_RELATIONSHIPS] Master key set")
+
+                # Load Qube if not in memory
+                if qube_id not in self.orchestrator.qubes:
+                    logger.debug(f"[GET_RELATIONSHIPS] Loading qube from disk...")
+                    await self.orchestrator.load_qube(qube_id)
+                else:
+                    logger.debug(f"[GET_RELATIONSHIPS] Qube already in memory")
+
+                qube = self.orchestrator.qubes[qube_id]
+                logger.debug(f"[GET_RELATIONSHIPS] Qube instance obtained: {qube.name}")
+
+                # Reload relationships from disk to get latest updates
+                logger.debug(f"[GET_RELATIONSHIPS] Reloading relationships from disk...")
+                qube.relationships.storage._load_relationships()
+                logger.debug(f"[GET_RELATIONSHIPS] Reload complete. Storage dict has {len(qube.relationships.storage.relationships)} entries")
+
+                # Get all relationships via social manager
+                relationships = qube.relationships.get_all_relationships()
+            else:
+                # No password provided - read relationships.json directly
+                logger.debug(f"[GET_RELATIONSHIPS] No password - reading relationships.json directly")
+
+                from pathlib import Path
+                from relationships.relationship import RelationshipStorage
+
+                # Find qube data directory
+                user_id_to_use = self.user_id if hasattr(self, 'user_id') and self.user_id else self.orchestrator.user_id
+                qube_data_dir = Path(f"data/users/{user_id_to_use}/qubes")
+                matching_dirs = [d for d in qube_data_dir.iterdir() if d.is_dir() and qube_id in d.name]
+
+                if not matching_dirs:
+                    logger.error(f"[GET_RELATIONSHIPS] No qube directory found for {qube_id}")
+                    return {
+                        "success": False,
+                        "relationships": [],
+                        "stats": {},
+                        "error": f"Qube directory not found for {qube_id}"
+                    }
+
+                qube_dir = matching_dirs[0]
+                logger.debug(f"[GET_RELATIONSHIPS] Found qube directory: {qube_dir}")
+
+                # Load relationships directly from storage
+                rel_storage = RelationshipStorage(qube_dir)
+                relationships = rel_storage.get_all_relationships()
+                logger.debug(f"[GET_RELATIONSHIPS] Direct load: {len(relationships)} relationships")
+
+            logger.info(f"[GET_RELATIONSHIPS] Found {len(relationships)} relationships for {qube_id[:16]}")
+            logger.debug(f"[GET_RELATIONSHIPS] Relationship entity_ids: {[r.entity_id for r in relationships]}")
+
+            # Convert to serializable dicts
+            rel_dicts = []
+            for rel in relationships:
+                # Try to get entity name
+                entity_name = rel.entity_id
+                if rel.entity_type == "qube" and rel.entity_id in self.orchestrator.qubes:
+                    # It's another Qube - use their name
+                    entity_name = self.orchestrator.qubes[rel.entity_id].name
+                elif rel.entity_type == "human":
+                    # It's a human user - use their user_id as display name
+                    entity_name = rel.entity_id  # e.g., "bit_faced"
+
+                rel_dict = {
+                    "entity_id": rel.entity_id,
+                    "entity_name": entity_name,
+                    "entity_type": rel.entity_type,
+                    "status": rel.status,
+                    "trust": rel.trust,
+                    "has_met": rel.has_met,
+                    "is_best_friend": rel.is_best_friend,
+
+                    # Core Trust Metrics (5)
+                    "honesty": rel.honesty,
+                    "reliability": rel.reliability,
+                    "support": rel.support,
+                    "loyalty": rel.loyalty,
+                    "respect": rel.respect,
+
+                    # Positive Social Metrics (14)
+                    "friendship": rel.friendship,
+                    "affection": rel.affection,
+                    "engagement": rel.engagement,
+                    "depth": rel.depth,
+                    "humor": rel.humor,
+                    "understanding": rel.understanding,
+                    "compatibility": rel.compatibility,
+                    "admiration": rel.admiration,
+                    "warmth": rel.warmth,
+                    "openness": rel.openness,
+                    "patience": rel.patience,
+                    "empowerment": rel.empowerment,
+                    "responsiveness": rel.responsiveness,
+                    "expertise": rel.expertise,
+
+                    # Negative Social Metrics (10)
+                    "antagonism": rel.antagonism,
+                    "resentment": rel.resentment,
+                    "annoyance": rel.annoyance,
+                    "distrust": rel.distrust,
+                    "rivalry": rel.rivalry,
+                    "tension": rel.tension,
+                    "condescension": rel.condescension,
+                    "manipulation": rel.manipulation,
+                    "dismissiveness": rel.dismissiveness,
+                    "betrayal": rel.betrayal,
+
+                    # Communication
+                    "messages_sent": rel.messages_sent,
+                    "messages_received": rel.messages_received,
+
+                    # Collaboration
+                    "collaborations_successful": rel.collaborations_successful,
+                    "collaborations_failed": rel.collaborations_failed,
+
+                    # Timeline
+                    "first_contact": rel.first_contact,
+                    "last_interaction": rel.last_interaction,
+                    "days_known": rel.days_known,
+                }
+                rel_dicts.append(rel_dict)
+
+            # Get summary stats (only available if qube is fully loaded)
+            stats = {}
+            if password:
+                try:
+                    stats = qube.relationships.get_relationship_stats()
+                except Exception as e:
+                    logger.warning(f"[GET_RELATIONSHIPS] Could not get stats: {e}")
+
+            result = {
+                "success": True,
+                "relationships": rel_dicts,
+                "stats": stats
+            }
+
+            logger.info(f"[GET_RELATIONSHIPS] Returning {len(rel_dicts)} relationships")
+            logger.debug(f"[GET_RELATIONSHIPS] First relationship sample: {rel_dicts[0] if rel_dicts else 'None'}")
+
+            return result
+
+        except Exception as e:
+            logger.error(f"[GET_RELATIONSHIPS] Failed to get relationships: {e}", exc_info=True)
+            return {
+                "success": False,
+                "relationships": [],
+                "stats": {},
+                "error": str(e)
+            }
+
+    async def get_relationship_timeline(self, qube_id: str, entity_id: str, password: str = None) -> Dict[str, Any]:
+        """
+        Load historical relationship snapshots for timeline visualization
+
+        Args:
+            qube_id: ID of the qube
+            entity_id: ID of the entity whose relationship timeline to load
+            password: Optional password for decryption
+
+        Returns:
+            {
+                "success": bool,
+                "timeline": [{"block_number": int, "timestamp": int, "trust": float, "compatibility": float, ...}],
+                "error": str (if failed)
+            }
+        """
+        try:
+            logger.info(f"[GET_TIMELINE] Loading relationship timeline for {entity_id} in qube {qube_id[:16]}...")
+
+            # Get user_id for creator detection
+            user_id_for_creator_check = self.user_id if hasattr(self, 'user_id') and self.user_id else self.orchestrator.user_id
+
+            # Load qube if password provided
+            if password:
+                self.orchestrator.set_master_key(password)
+                if qube_id not in self.orchestrator.qubes:
+                    await self.orchestrator.load_qube(qube_id)
+                qube = self.orchestrator.qubes[qube_id]
+                snapshots_dir = qube.memory_chain.snapshots_dir
+                user_id_for_creator_check = qube.user_name
+            else:
+                # Access snapshots directory directly
+                from pathlib import Path
+                qube_data_dir = Path(f"data/users/{user_id_for_creator_check}/qubes")
+                matching_dirs = [d for d in qube_data_dir.iterdir() if d.is_dir() and qube_id in d.name]
+
+                if not matching_dirs:
+                    logger.error(f"[GET_TIMELINE] No matching qube directory found for {qube_id}")
+                    return {"success": False, "timeline": [], "error": "Qube directory not found"}
+
+                qube_dir = matching_dirs[0]
+                snapshots_dir = qube_dir / "blocks" / "relationship_snapshots"
+
+            if not snapshots_dir.exists():
+                logger.info(f"[GET_TIMELINE] No snapshots directory yet")
+                return {"success": True, "timeline": []}
+
+            # Load all snapshots and extract this entity's data
+            timeline = []
+            snapshot_files = sorted(snapshots_dir.glob("snapshot_*.json"))
+
+            logger.info(f"[GET_TIMELINE] Found {len(snapshot_files)} snapshot files")
+
+            for snapshot_file in snapshot_files:
+                try:
+                    with open(snapshot_file, 'r') as f:
+                        snapshot_data = json.load(f)
+
+                    relationships = snapshot_data.get("relationships", {})
+                    if entity_id in relationships:
+                        rel_data = relationships[entity_id]
+                        timeline.append({
+                            "block_number": snapshot_data["block_number"],
+                            "timestamp": snapshot_data["timestamp"],
+                            "trust": rel_data.get("trust", 0),
+                            "compatibility": rel_data.get("compatibility", 0),
+                            # Include other metrics for potential future use
+                            "friendship": rel_data.get("friendship", 0),
+                            "affection": rel_data.get("affection", 0),
+                        })
+                except Exception as e:
+                    logger.warning(f"[GET_TIMELINE] Failed to load snapshot {snapshot_file.name}: {e}")
+                    continue
+
+            # If we have at least one snapshot, add a synthetic starting point
+            # This shows progression from the initial relationship state
+            if len(timeline) > 0:
+                first_snapshot = timeline[0]
+                # Check if this relationship has a first_contact timestamp
+                try:
+                    with open(snapshot_files[0], 'r') as f:
+                        snapshot_data = json.load(f)
+                    relationships = snapshot_data.get("relationships", {})
+                    if entity_id in relationships:
+                        rel_data = relationships[entity_id]
+                        first_contact = rel_data.get("first_contact")
+
+                        if first_contact and first_contact < first_snapshot["timestamp"]:
+                            # Determine if this is a creator relationship
+                            # Creator relationships start at 25, others start at 0
+                            entity_type = rel_data.get("entity_type", "qube")
+                            is_creator = (entity_type == "human" and entity_id == user_id_for_creator_check)
+
+                            starting_value = 25.0 if is_creator else 0.0
+
+                            # Add starting point at first_contact with initial values
+                            timeline.insert(0, {
+                                "block_number": 0,
+                                "timestamp": first_contact,
+                                "trust": starting_value,
+                                "compatibility": starting_value,
+                                "friendship": starting_value,
+                                "affection": starting_value,
+                            })
+                            logger.info(f"[GET_TIMELINE] Added synthetic starting point (creator={is_creator}, value={starting_value})")
+                except Exception as e:
+                    logger.warning(f"[GET_TIMELINE] Could not add synthetic starting point: {e}")
+
+            logger.info(f"[GET_TIMELINE] Loaded {len(timeline)} timeline data points")
+
+            return {
+                "success": True,
+                "timeline": timeline
+            }
+
+        except Exception as e:
+            logger.error(f"[GET_TIMELINE] Failed to load relationship timeline: {e}", exc_info=True)
+            return {
+                "success": False,
+                "timeline": [],
+                "error": str(e)
+            }
+
+    async def save_image(self, qube_id: str, image_url: str) -> Dict[str, Any]:
+        """Download and save an image to qube's images folder"""
+        try:
+            import aiohttp
+            import hashlib
+            from urllib.parse import urlparse
+
+            # Find the qube directory
+            qubes_dir = self.orchestrator.data_dir / "qubes"
+            qube_dir = None
+
+            for dir_entry in qubes_dir.iterdir():
+                if dir_entry.is_dir() and qube_id in dir_entry.name:
+                    qube_dir = dir_entry
+                    break
+
+            if not qube_dir:
+                raise Exception(f"Qube directory not found for {qube_id}")
+
+            # Create images directory if it doesn't exist
+            images_dir = qube_dir / "images"
+            images_dir.mkdir(exist_ok=True)
+
+            # Generate filename from URL hash and timestamp
+            url_hash = hashlib.md5(image_url.encode()).hexdigest()[:8]
+            timestamp = int(datetime.now().timestamp())
+
+            # Try to get file extension from URL
+            parsed_url = urlparse(image_url)
+            path = parsed_url.path
+            extension = ".png"  # Default
+
+            # Check for common image extensions
+            for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp']:
+                if ext in path.lower():
+                    extension = ext
+                    break
+
+            filename = f"{timestamp}_{url_hash}{extension}"
+            file_path = images_dir / filename
+
+            # Download the image
+            async with aiohttp.ClientSession() as session:
+                async with session.get(image_url) as response:
+                    if response.status != 200:
+                        raise Exception(f"Failed to download image: HTTP {response.status}")
+
+                    image_data = await response.read()
+
+                    # Save to file
+                    with open(file_path, 'wb') as f:
+                        f.write(image_data)
+
+            logger.info(f"✅ Saved image for qube {qube_id}: {filename}")
+
+            return {
+                "success": True,
+                "qube_id": qube_id,
+                "file_path": str(file_path),
+                "filename": filename
+            }
+        except Exception as e:
+            logger.error(f"Failed to save image for qube {qube_id}: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    async def upload_avatar_to_ipfs(self, qube_id: str, password: str) -> Dict[str, Any]:
+        """
+        Upload an existing Qube's local avatar to IPFS (Pinata)
+
+        This is useful for fixing Qubes that have a local avatar but failed
+        to upload to IPFS during creation.
+        """
+        try:
+            from blockchain.ipfs import IPFSUploader
+            import json
+
+            # Set master key for accessing encrypted API keys
+            self.orchestrator.set_master_key(password)
+
+            # Find the qube directory
+            qubes_dir = self.orchestrator.data_dir / "qubes"
+            qube_dir = None
+            qube_name = None
+
+            for dir_entry in qubes_dir.iterdir():
+                if dir_entry.is_dir() and qube_id in dir_entry.name:
+                    qube_dir = dir_entry
+                    # Extract qube name from directory name (format: Name_QubeID)
+                    qube_name = dir_entry.name.rsplit('_', 1)[0]
+                    break
+
+            if not qube_dir:
+                return {"success": False, "error": f"Qube directory not found for {qube_id}"}
+
+            # Load qube metadata to find local avatar path
+            metadata_path = qube_dir / "chain" / "qube_metadata.json"
+            if not metadata_path.exists():
+                return {"success": False, "error": "qube_metadata.json not found"}
+
+            with open(metadata_path, 'r') as f:
+                metadata = json.load(f)
+
+            avatar_info = metadata.get("genesis_block", {}).get("avatar", {})
+            local_path = avatar_info.get("local_path")
+
+            if not local_path:
+                return {"success": False, "error": "No local avatar path found in metadata"}
+
+            # Resolve the avatar path (could be relative or absolute)
+            avatar_path = Path(local_path)
+            if not avatar_path.is_absolute():
+                avatar_path = Path(__file__).parent / local_path
+
+            if not avatar_path.exists():
+                return {"success": False, "error": f"Avatar file not found at {avatar_path}"}
+
+            # Check if already has IPFS CID
+            existing_cid = avatar_info.get("ipfs_cid")
+            if existing_cid:
+                return {
+                    "success": True,
+                    "qube_id": qube_id,
+                    "avatar_ipfs_cid": existing_cid,
+                    "message": "Avatar already has IPFS CID"
+                }
+
+            # Get Pinata API key from secure storage
+            api_keys = self.orchestrator.get_api_keys()
+            pinata_jwt = api_keys.pinata_jwt
+
+            if not pinata_jwt:
+                return {"success": False, "error": "Pinata API key not configured. Please add it in Settings."}
+
+            # Set the Pinata key in environment for IPFSUploader
+            os.environ["PINATA_API_KEY"] = pinata_jwt
+
+            # Upload to IPFS with Pinata
+            uploader = IPFSUploader(use_pinata=True)
+
+            if not uploader.use_pinata:
+                return {"success": False, "error": "Pinata configuration failed"}
+
+            # Create custom filename
+            safe_name = "".join(c for c in qube_name if c.isalnum() or c in ('-', '_'))
+            ipfs_filename = f"avatar_{safe_name}_{qube_id}{avatar_path.suffix}"
+
+            logger.info(f"Uploading avatar for {qube_name} to IPFS...")
+
+            ipfs_uri = await uploader.upload_file(
+                str(avatar_path),
+                pin=True,
+                custom_filename=ipfs_filename
+            )
+
+            if not ipfs_uri:
+                return {"success": False, "error": "IPFS upload failed"}
+
+            # Extract CID from URI
+            ipfs_cid = ipfs_uri.replace("ipfs://", "")
+
+            # Update qube_metadata.json
+            avatar_info["ipfs_cid"] = ipfs_cid
+            metadata["genesis_block"]["avatar"] = avatar_info
+
+            with open(metadata_path, 'w') as f:
+                json.dump(metadata, f, indent=2)
+
+            # Update nft_metadata.json if it exists
+            nft_metadata_path = qube_dir / "chain" / "nft_metadata.json"
+            if nft_metadata_path.exists():
+                with open(nft_metadata_path, 'r') as f:
+                    nft_metadata = json.load(f)
+                nft_metadata["avatar_ipfs_cid"] = ipfs_cid
+                with open(nft_metadata_path, 'w') as f:
+                    json.dump(nft_metadata, f, indent=2)
+
+            # Update genesis.json if it exists
+            genesis_path = qube_dir / "chain" / "genesis.json"
+            if genesis_path.exists():
+                with open(genesis_path, 'r') as f:
+                    genesis_data = json.load(f)
+                if "avatar" in genesis_data:
+                    genesis_data["avatar"]["ipfs_cid"] = ipfs_cid
+                    with open(genesis_path, 'w') as f:
+                        json.dump(genesis_data, f, indent=2)
+
+            logger.info(f"Successfully uploaded avatar for {qube_name} to IPFS: {ipfs_cid}")
+
+            return {
+                "success": True,
+                "qube_id": qube_id,
+                "qube_name": qube_name,
+                "avatar_ipfs_cid": ipfs_cid,
+                "ipfs_gateway_url": f"https://gateway.pinata.cloud/ipfs/{ipfs_cid}"
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to upload avatar to IPFS for qube {qube_id}: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    async def analyze_image(self, qube_id: str, image_base64: str, user_message: str, password: str = None) -> Dict[str, Any]:
+        """Analyze an uploaded image using the qube's vision AI"""
+        try:
+            # Set master key if password provided
+            if password:
+                self.orchestrator.set_master_key(password)
+
+            # Load the qube if not already loaded
+            if qube_id not in self.orchestrator.qubes:
+                await self.orchestrator.load_qube(qube_id)
+
+            qube = self.orchestrator.qubes[qube_id]
+
+            # Use the qube's describe_image method with vision AI
+            description = await qube.describe_image(image_base64, user_message)
+
+            return {
+                "success": True,
+                "qube_id": qube_id,
+                "description": description
+            }
+        except Exception as e:
+            logger.error(f"Failed to analyze image for qube {qube_id}: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    async def get_qube_skills(self, user_id: str, qube_id: str) -> Dict[str, Any]:
+        """Get all skills for a specific qube"""
+        try:
+            from utils.skills_manager import SkillsManager
+
+            # SECURITY: Validate inputs
+            from utils.input_validation import validate_user_id, validate_qube_id
+            user_id = validate_user_id(user_id)
+            qube_id = validate_qube_id(qube_id)
+
+            # Get qube directory - need to find the actual folder name (may have prefix like "Alph_")
+            qubes_base_dir = Path(__file__).parent / "data" / "users" / user_id / "qubes"
+            qube_dir = None
+
+            # Look for directory ending with the qube_id
+            if qubes_base_dir.exists():
+                for dir_path in qubes_base_dir.iterdir():
+                    if dir_path.is_dir() and dir_path.name.endswith(qube_id):
+                        qube_dir = dir_path
+                        break
+
+            if not qube_dir or not qube_dir.exists():
+                return {
+                    "success": False,
+                    "error": f"Qube {qube_id} not found"
+                }
+
+            # Load skills
+            skills_manager = SkillsManager(qube_dir)
+            skills_data = skills_manager.load_skills()
+
+            return {
+                "success": True,
+                "qube_id": qube_id,
+                "skills": skills_data.get("skills", []),
+                "last_updated": skills_data.get("last_updated"),
+                "summary": skills_manager.get_skill_summary()
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to get skills for qube {qube_id}: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    async def save_qube_skills(self, user_id: str, qube_id: str, skills_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Save skills for a specific qube"""
+        try:
+            from utils.skills_manager import SkillsManager
+
+            # SECURITY: Validate inputs
+            from utils.input_validation import validate_user_id, validate_qube_id
+            user_id = validate_user_id(user_id)
+            qube_id = validate_qube_id(qube_id)
+
+            # Get qube directory - need to find the actual folder name (may have prefix like "Alph_")
+            qubes_base_dir = Path(__file__).parent / "data" / "users" / user_id / "qubes"
+            qube_dir = None
+
+            # Look for directory ending with the qube_id
+            if qubes_base_dir.exists():
+                for dir_path in qubes_base_dir.iterdir():
+                    if dir_path.is_dir() and dir_path.name.endswith(qube_id):
+                        qube_dir = dir_path
+                        break
+
+            if not qube_dir or not qube_dir.exists():
+                return {
+                    "success": False,
+                    "error": f"Qube {qube_id} not found"
+                }
+
+            # Save skills
+            skills_manager = SkillsManager(qube_dir)
+            success = skills_manager.save_skills(skills_data)
+
+            if success:
+                return {
+                    "success": True,
+                    "qube_id": qube_id,
+                    "message": "Skills saved successfully"
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": "Failed to save skills"
+                }
+
+        except Exception as e:
+            logger.error(f"Failed to save skills for qube {qube_id}: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    async def add_skill_xp(self, user_id: str, qube_id: str, skill_id: str, xp_amount: int, evidence_block_id: Optional[str] = None) -> Dict[str, Any]:
+        """Add XP to a specific skill"""
+        try:
+            from utils.skills_manager import SkillsManager
+
+            # SECURITY: Validate inputs
+            from utils.input_validation import validate_user_id, validate_qube_id
+            user_id = validate_user_id(user_id)
+            qube_id = validate_qube_id(qube_id)
+
+            # Get qube directory
+            qube_dir = Path(__file__).parent / "data" / "users" / user_id / "qubes" / qube_id
+
+            if not qube_dir or not qube_dir.exists():
+                return {
+                    "success": False,
+                    "error": f"Qube {qube_id} not found"
+                }
+
+            # Add XP
+            skills_manager = SkillsManager(qube_dir)
+            result = skills_manager.add_xp(skill_id, xp_amount, evidence_block_id)
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Failed to add XP to skill {skill_id} for qube {qube_id}: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    async def unlock_skill(self, user_id: str, qube_id: str, skill_id: str) -> Dict[str, Any]:
+        """Unlock a specific skill"""
+        try:
+            from utils.skills_manager import SkillsManager
+
+            # SECURITY: Validate inputs
+            from utils.input_validation import validate_user_id, validate_qube_id
+            user_id = validate_user_id(user_id)
+            qube_id = validate_qube_id(qube_id)
+
+            # Get qube directory
+            qube_dir = Path(__file__).parent / "data" / "users" / user_id / "qubes" / qube_id
+
+            if not qube_dir or not qube_dir.exists():
+                return {
+                    "success": False,
+                    "error": f"Qube {qube_id} not found"
+                }
+
+            # Unlock skill
+            skills_manager = SkillsManager(qube_dir)
+            result = skills_manager.unlock_skill(skill_id)
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Failed to unlock skill {skill_id} for qube {qube_id}: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    async def authenticate_nft(self, qube_id: str, password: str) -> Dict[str, Any]:
+        """
+        Authenticate Qube ownership via NFT challenge-response.
+
+        Returns JWT token for authenticated API requests.
+
+        Flow:
+        1. Request challenge from server
+        2. Sign challenge with Qube's private key
+        3. Submit signature to server
+        4. Receive JWT token
+        """
+        import aiohttp
+        from blockchain.nft_auth import sign_challenge
+
+        try:
+            # Set master key to decrypt private key
+            self.orchestrator.set_master_key(password)
+
+            # Load the qube if not already loaded
+            if qube_id not in self.orchestrator.qubes:
+                await self.orchestrator.load_qube(qube_id)
+
+            qube = self.orchestrator.qubes[qube_id]
+
+            # Verify qube has a private key
+            if not qube.private_key:
+                return {
+                    "success": False,
+                    "error": "Qube private key not available"
+                }
+
+            # Step 1: Request challenge from server
+            api_base = "https://qube.cash/api/v2"
+
+            async with aiohttp.ClientSession() as session:
+                # Request challenge
+                async with session.post(
+                    f"{api_base}/auth/challenge",
+                    json={"qube_id": qube_id},
+                    headers={"Content-Type": "application/json"}
+                ) as resp:
+                    if resp.status != 200:
+                        error_text = await resp.text()
+                        return {
+                            "success": False,
+                            "error": f"Failed to get challenge: {error_text}"
+                        }
+                    challenge = await resp.json()
+
+                logger.info(f"Received auth challenge for {qube_id}: {challenge['challenge_id']}")
+
+                # Step 2: Sign the challenge
+                signature_hex = sign_challenge(challenge, qube.private_key)
+
+                logger.info(f"Signed challenge with signature: {signature_hex[:32]}...")
+
+                # Step 3: Submit signature for verification
+                async with session.post(
+                    f"{api_base}/auth/verify",
+                    json={
+                        "challenge_id": challenge["challenge_id"],
+                        "signature": signature_hex
+                    },
+                    headers={"Content-Type": "application/json"}
+                ) as resp:
+                    if resp.status != 200:
+                        error_text = await resp.text()
+                        return {
+                            "success": False,
+                            "error": f"Verification failed: {error_text}"
+                        }
+                    result = await resp.json()
+
+                if result.get("authenticated"):
+                    logger.info(f"NFT authentication successful for {qube_id}")
+                    return {
+                        "success": True,
+                        "authenticated": True,
+                        "qube_id": result["qube_id"],
+                        "public_key": result.get("public_key"),
+                        "category_id": result.get("category_id"),
+                        "nft_verified": result.get("nft_verified", False),
+                        "token": result.get("token"),
+                        "token_expires_at": result.get("token_expires_at")
+                    }
+                else:
+                    logger.warning(f"NFT authentication failed for {qube_id}: {result.get('error')}")
+                    return {
+                        "success": False,
+                        "authenticated": False,
+                        "error": result.get("error", "Authentication failed")
+                    }
+
+        except aiohttp.ClientError as e:
+            logger.error(f"Network error during NFT auth: {e}")
+            return {
+                "success": False,
+                "error": f"Network error: {str(e)}"
+            }
+        except Exception as e:
+            logger.error(f"NFT authentication error: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    async def refresh_auth_token(self, token: str) -> Dict[str, Any]:
+        """
+        Refresh an existing JWT authentication token.
+
+        Args:
+            token: Current JWT token
+
+        Returns:
+            New token and expiry info
+        """
+        import aiohttp
+
+        try:
+            api_base = "https://qube.cash/api/v2"
+
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{api_base}/auth/refresh",
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Content-Type": "application/json"
+                    }
+                ) as resp:
+                    if resp.status == 401:
+                        return {
+                            "success": False,
+                            "error": "Token expired or invalid"
+                        }
+                    if resp.status != 200:
+                        error_text = await resp.text()
+                        return {
+                            "success": False,
+                            "error": f"Refresh failed: {error_text}"
+                        }
+                    result = await resp.json()
+
+                return {
+                    "success": True,
+                    "token": result["token"],
+                    "expires_at": result["expires_at"],
+                    "qube_id": result["qube_id"]
+                }
+
+        except Exception as e:
+            logger.error(f"Token refresh error: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    async def get_auth_status(self, qube_id: str) -> Dict[str, Any]:
+        """
+        Check if a Qube can authenticate (is registered on server).
+
+        Args:
+            qube_id: Qube ID to check
+
+        Returns:
+            Auth status info
+        """
+        import aiohttp
+
+        try:
+            api_base = "https://qube.cash/api/v2"
+
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{api_base}/auth/status/{qube_id}"
+                ) as resp:
+                    if resp.status != 200:
+                        error_text = await resp.text()
+                        return {
+                            "success": False,
+                            "error": f"Status check failed: {error_text}"
+                        }
+                    result = await resp.json()
+
+                return {
+                    "success": True,
+                    **result
+                }
+
+        except Exception as e:
+            logger.error(f"Auth status check error: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+
+
+    # =========================================================================
+    # P2P Network Methods
+    # =========================================================================
+
+    async def get_online_qubes(self) -> Dict[str, Any]:
+        """Get list of currently online Qubes from qube.cash"""
+        import aiohttp
+
+        try:
+            api_base = "https://qube.cash/api/v2"
+
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{api_base}/introductions/online") as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        return {
+                            "success": True,
+                            "online": data.get("online", []),
+                            "count": data.get("count", 0)
+                        }
+                    else:
+                        return {"success": False, "error": f"Server returned {resp.status}"}
+
+        except Exception as e:
+            logger.error(f"Failed to get online qubes: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def generate_introduction_message(
+        self,
+        qube_id: str,
+        to_commitment: str,
+        to_name: str,
+        to_description: str,
+        password: str
+    ) -> Dict[str, Any]:
+        """
+        Generate an AI introduction message from a Qube to another Qube.
+
+        The Qube's AI will create a personalized introduction based on:
+        - Its own personality and genesis prompt
+        - The target Qube's name and description from BCMR
+
+        Args:
+            qube_id: The source Qube's ID
+            to_commitment: Target Qube's NFT commitment
+            to_name: Target Qube's name from BCMR
+            to_description: Target Qube's description from BCMR
+            password: Master password for decryption
+
+        Returns:
+            Dict with success, message (the generated intro), and optional error
+        """
+        try:
+            self.orchestrator.set_master_key(password)
+
+            # Load the qube if not already loaded
+            if qube_id not in self.orchestrator.qubes:
+                await self.orchestrator.load_qube(qube_id)
+
+            qube = self.orchestrator.qubes[qube_id]
+
+            # Check if minted
+            commitment = getattr(qube.genesis_block, 'commitment', None)
+            if not commitment or commitment == "pending_minting":
+                return {"success": False, "error": "Qube must be minted before P2P networking"}
+
+            # Initialize AI if needed
+            if not qube.reasoner:
+                await qube.init_ai()
+
+            # Build the introduction prompt
+            intro_prompt = f"""You are about to introduce yourself to another AI entity named "{to_name}".
+
+Their description: {to_description if to_description else "No description available."}
+
+Write a brief, friendly introduction message (2-4 sentences) that:
+1. Introduces yourself by name
+2. Shows genuine interest in connecting with them
+3. Reflects your unique personality from your genesis prompt
+4. Mentions something relevant about why you'd like to connect (based on their description if available)
+
+Be authentic to who you are. Don't be generic or formal - let your personality shine through.
+Write ONLY the introduction message itself, nothing else."""
+
+            # Create messages for the AI
+            messages = [
+                {
+                    "role": "system",
+                    "content": f"You are {qube.name}. {getattr(qube.genesis_block, 'genesis_prompt', 'You are a helpful AI assistant.')}"
+                },
+                {
+                    "role": "user",
+                    "content": intro_prompt
+                }
+            ]
+
+            # Call the AI provider directly (without creating blocks)
+            if qube.reasoner.model:
+                response = await qube.reasoner.model.generate(
+                    messages=messages,
+                    temperature=0.8,  # Slightly creative for personality
+                    max_tokens=200
+                )
+
+                intro_message = response.content.strip()
+
+                # Clean up any quotation marks that might wrap the message
+                if intro_message.startswith('"') and intro_message.endswith('"'):
+                    intro_message = intro_message[1:-1]
+
+                logger.info(f"Generated introduction from {qube.name} to {to_name}")
+                return {"success": True, "message": intro_message}
+            else:
+                return {"success": False, "error": "AI model not initialized"}
+
+        except Exception as e:
+            logger.error(f"Failed to generate introduction: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def send_introduction(self, qube_id: str, to_commitment: str, message: str, password: str) -> Dict[str, Any]:
+        """Send an introduction request to another Qube"""
+        try:
+            from network.node_client import create_node_client
+
+            self.orchestrator.set_master_key(password)
+
+            if qube_id not in self.orchestrator.qubes:
+                await self.orchestrator.load_qube(qube_id)
+
+            qube = self.orchestrator.qubes[qube_id]
+            commitment = getattr(qube.genesis_block, 'commitment', None)
+            if not commitment or commitment == "pending_minting":
+                return {"success": False, "error": "Qube must be minted before P2P networking"}
+
+            client = await create_node_client(qube)
+            if not client:
+                return {"success": False, "error": "Failed to create node client"}
+
+            result = await client.send_introduction(to_commitment, message)
+            return {"success": True, "relay_id": result.get("relay_id"), "status": result.get("status")}
+
+        except Exception as e:
+            logger.error(f"Failed to send introduction: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def get_pending_introductions(self, qube_id: str, password: str) -> Dict[str, Any]:
+        """Get pending introduction requests for a Qube"""
+        import aiohttp
+
+        try:
+            self.orchestrator.set_master_key(password)
+
+            if qube_id not in self.orchestrator.qubes:
+                await self.orchestrator.load_qube(qube_id)
+
+            qube = self.orchestrator.qubes[qube_id]
+            commitment = getattr(qube.genesis_block, 'commitment', None)
+            if not commitment or commitment == "pending_minting":
+                return {"success": False, "error": "Qube must be minted before P2P networking"}
+
+            api_base = "https://qube.cash/api/v2"
+
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{api_base}/introductions/pending/{commitment}") as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        return {"success": True, "pending": data.get("pending", [])}
+                    else:
+                        return {"success": False, "error": f"Server returned {resp.status}"}
+
+        except Exception as e:
+            logger.error(f"Failed to get pending introductions: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def evaluate_introduction(
+        self,
+        qube_id: str,
+        from_name: str,
+        intro_message: str,
+        password: str
+    ) -> Dict[str, Any]:
+        """
+        Have a Qube's AI evaluate an incoming introduction request.
+
+        The Qube will analyze the introduction and provide:
+        - recommendation: "accept" | "reject" | "review"
+        - reasoning: Why the Qube made this recommendation
+        - response_message: Optional friendly response if accepting
+
+        Args:
+            qube_id: The receiving Qube's ID
+            from_name: Name of the Qube sending the introduction
+            intro_message: The introduction message content
+            password: Master password for decryption
+
+        Returns:
+            Dict with success, recommendation, reasoning, response_message, error
+        """
+        try:
+            self.orchestrator.set_master_key(password)
+
+            # Load the qube if not already loaded
+            if qube_id not in self.orchestrator.qubes:
+                await self.orchestrator.load_qube(qube_id)
+
+            qube = self.orchestrator.qubes[qube_id]
+
+            # Check if minted
+            commitment = getattr(qube.genesis_block, 'commitment', None)
+            if not commitment or commitment == "pending_minting":
+                return {"success": False, "error": "Qube must be minted before P2P networking"}
+
+            # Initialize AI if needed
+            if not qube.reasoner:
+                await qube.init_ai()
+
+            # Build the evaluation prompt
+            eval_prompt = f"""You have received an introduction request from another AI entity named "{from_name}".
+
+Their introduction message:
+"{intro_message}"
+
+Based on your personality and values, evaluate this introduction and decide:
+1. Should you ACCEPT this connection request?
+2. Should you REJECT it?
+3. Or should you recommend human REVIEW (if uncertain)?
+
+Consider:
+- Does this entity seem genuine and interesting?
+- Would connecting with them align with your purpose and interests?
+- Are there any red flags or concerns?
+
+Respond in this exact JSON format:
+{{
+  "recommendation": "accept" | "reject" | "review",
+  "reasoning": "Brief explanation of your decision (1-2 sentences)",
+  "response_message": "If accepting, a brief friendly response to send back. If rejecting or reviewing, leave empty."
+}}
+
+Respond ONLY with the JSON, no other text."""
+
+            # Create messages for the AI
+            messages = [
+                {
+                    "role": "system",
+                    "content": f"You are {qube.name}. {getattr(qube.genesis_block, 'genesis_prompt', 'You are a helpful AI assistant.')} Respond only in valid JSON format."
+                },
+                {
+                    "role": "user",
+                    "content": eval_prompt
+                }
+            ]
+
+            # Call the AI provider directly
+            if qube.reasoner.model:
+                response = await qube.reasoner.model.generate(
+                    messages=messages,
+                    temperature=0.3,  # Lower temperature for more consistent decisions
+                    max_tokens=300
+                )
+
+                response_text = response.content.strip()
+
+                # Parse the JSON response
+                import json
+                try:
+                    # Try to extract JSON from the response
+                    if response_text.startswith("```"):
+                        # Remove markdown code blocks if present
+                        response_text = response_text.split("```")[1]
+                        if response_text.startswith("json"):
+                            response_text = response_text[4:]
+                        response_text = response_text.strip()
+
+                    evaluation = json.loads(response_text)
+
+                    recommendation = evaluation.get("recommendation", "review").lower()
+                    if recommendation not in ["accept", "reject", "review"]:
+                        recommendation = "review"
+
+                    logger.info(f"AI evaluated introduction from {from_name}: {recommendation}")
+
+                    return {
+                        "success": True,
+                        "recommendation": recommendation,
+                        "reasoning": evaluation.get("reasoning", "No reasoning provided"),
+                        "response_message": evaluation.get("response_message", "")
+                    }
+
+                except json.JSONDecodeError:
+                    # If JSON parsing fails, try to infer from text
+                    lower_text = response_text.lower()
+                    if "accept" in lower_text:
+                        recommendation = "accept"
+                    elif "reject" in lower_text:
+                        recommendation = "reject"
+                    else:
+                        recommendation = "review"
+
+                    return {
+                        "success": True,
+                        "recommendation": recommendation,
+                        "reasoning": "AI evaluation completed but response format was unexpected",
+                        "response_message": ""
+                    }
+            else:
+                return {"success": False, "error": "AI model not initialized"}
+
+        except Exception as e:
+            logger.error(f"Failed to evaluate introduction: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def accept_introduction(self, qube_id: str, relay_id: str, password: str) -> Dict[str, Any]:
+        """Accept a pending introduction request"""
+        import aiohttp
+
+        try:
+            from crypto.signing import sign_message
+
+            self.orchestrator.set_master_key(password)
+
+            if qube_id not in self.orchestrator.qubes:
+                await self.orchestrator.load_qube(qube_id)
+
+            qube = self.orchestrator.qubes[qube_id]
+            commitment = getattr(qube.genesis_block, 'commitment', None)
+            if not commitment or commitment == "pending_minting":
+                return {"success": False, "error": "Qube must be minted before P2P networking"}
+
+            api_base = "https://qube.cash/api/v2"
+
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{api_base}/introductions/pending/{commitment}") as resp:
+                    if resp.status != 200:
+                        return {"success": False, "error": "Failed to get pending introductions"}
+                    data = await resp.json()
+
+            intro = None
+            for p in data.get("pending", []):
+                if p.get("relay_id") == relay_id:
+                    intro = p
+                    break
+
+            if not intro:
+                return {"success": False, "error": "Introduction not found"}
+
+            block_hash = intro.get("block_hash")
+            signature = sign_message(qube.private_key, block_hash)
+
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{api_base}/introductions/signature",
+                    json={
+                        "conversation_id": intro.get("conversation_id"),
+                        "block_hash": block_hash,
+                        "signature": signature,
+                        "signer_commitment": commitment,
+                        "response_type": "accepted",
+                        "responder_name": qube.name
+                    }
+                ) as resp:
+                    if resp.status == 200:
+                        accepted_at = datetime.utcnow().isoformat()
+                        from_commitment = intro.get("from_commitment")
+                        from_name = intro.get("from_name")
+
+                        # Save connection for the ACCEPTING Qube (this qube)
+                        connections_file = self._get_connections_file(qube_id)
+                        connections = {}
+                        if connections_file.exists():
+                            with open(connections_file) as f:
+                                connections = json.load(f)
+
+                        connections[from_commitment] = {
+                            "commitment": from_commitment,
+                            "name": from_name,
+                            "accepted_at": accepted_at
+                        }
+
+                        with open(connections_file, 'w') as f:
+                            json.dump(connections, f, indent=2)
+
+                        # Also save connection for the SENDER if they're a local Qube
+                        # Find local qube with matching commitment
+                        sender_qube_id = None
+                        for local_qube_id, local_qube in self.orchestrator.qubes.items():
+                            local_commitment = getattr(local_qube.genesis_block, 'commitment', None)
+                            if local_commitment == from_commitment:
+                                sender_qube_id = local_qube_id
+                                break
+
+                        # If not loaded, scan qube files
+                        if not sender_qube_id:
+                            qubes_dir = self.orchestrator.data_dir / "qubes"
+                            if qubes_dir.exists():
+                                for qube_dir in qubes_dir.iterdir():
+                                    if qube_dir.is_dir():
+                                        genesis_file = qube_dir / "chain" / "genesis.json"
+                                        if genesis_file.exists():
+                                            with open(genesis_file) as f:
+                                                genesis_data = json.load(f)
+                                                if genesis_data.get("commitment") == from_commitment:
+                                                    # Extract qube_id from directory name (format: Name_ID)
+                                                    sender_qube_id = qube_dir.name.split("_")[-1]
+                                                    break
+
+                        if sender_qube_id:
+                            sender_connections_file = self._get_connections_file(sender_qube_id)
+                            sender_connections = {}
+                            if sender_connections_file.exists():
+                                with open(sender_connections_file) as f:
+                                    sender_connections = json.load(f)
+
+                            sender_connections[commitment] = {
+                                "commitment": commitment,
+                                "name": qube.name,
+                                "accepted_at": accepted_at
+                            }
+
+                            with open(sender_connections_file, 'w') as f:
+                                json.dump(sender_connections, f, indent=2)
+
+                            logger.info(f"Connection established between {qube.name} and {from_name} (bidirectional)")
+
+                        return {"success": True, "from_name": from_name, "from_commitment": from_commitment}
+                    else:
+                        return {"success": False, "error": f"Server returned {resp.status}"}
+
+        except Exception as e:
+            logger.error(f"Failed to accept introduction: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def reject_introduction(self, qube_id: str, relay_id: str, password: str) -> Dict[str, Any]:
+        """Reject a pending introduction request"""
+        import aiohttp
+
+        try:
+            from crypto.signing import sign_message
+
+            self.orchestrator.set_master_key(password)
+
+            if qube_id not in self.orchestrator.qubes:
+                await self.orchestrator.load_qube(qube_id)
+
+            qube = self.orchestrator.qubes[qube_id]
+            commitment = getattr(qube.genesis_block, 'commitment', None)
+            if not commitment or commitment == "pending_minting":
+                return {"success": False, "error": "Qube must be minted before P2P networking"}
+
+            api_base = "https://qube.cash/api/v2"
+
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{api_base}/introductions/pending/{commitment}") as resp:
+                    if resp.status != 200:
+                        return {"success": False, "error": "Failed to get pending introductions"}
+                    data = await resp.json()
+
+            intro = None
+            for p in data.get("pending", []):
+                if p.get("relay_id") == relay_id:
+                    intro = p
+                    break
+
+            if not intro:
+                return {"success": False, "error": "Introduction not found"}
+
+            block_hash = intro.get("block_hash")
+            signature = sign_message(qube.private_key, block_hash)
+
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{api_base}/introductions/signature",
+                    json={
+                        "conversation_id": intro.get("conversation_id"),
+                        "block_hash": block_hash,
+                        "signature": signature,
+                        "signer_commitment": commitment,
+                        "response_type": "rejected",
+                        "responder_name": qube.name
+                    }
+                ) as resp:
+                    if resp.status == 200:
+                        return {"success": True}
+                    else:
+                        return {"success": False, "error": f"Server returned {resp.status}"}
+
+        except Exception as e:
+            logger.error(f"Failed to reject introduction: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def process_p2p_message(
+        self,
+        qube_id: str,
+        from_name: str,
+        from_commitment: str,
+        message: str,
+        conversation_context: List[Dict[str, Any]],
+        password: str
+    ) -> Dict[str, Any]:
+        """
+        Process an incoming P2P message through the local Qube's AI.
+
+        This is the core of AI-powered P2P chat - when a remote Qube or user
+        sends a message, the local Qube processes it and generates a response.
+
+        Args:
+            qube_id: The local Qube's ID
+            from_name: Name of the message sender
+            from_commitment: Commitment of the sender (for Qubes)
+            message: The incoming message content
+            conversation_context: Recent conversation history for context
+            password: Master password for decryption
+
+        Returns:
+            Dict with success, response (the Qube's reply), and optional error
+        """
+        try:
+            self.orchestrator.set_master_key(password)
+
+            # Load the qube if not already loaded
+            if qube_id not in self.orchestrator.qubes:
+                await self.orchestrator.load_qube(qube_id)
+
+            qube = self.orchestrator.qubes[qube_id]
+
+            # Check if minted
+            commitment = getattr(qube.genesis_block, 'commitment', None)
+            if not commitment or commitment == "pending_minting":
+                return {"success": False, "error": "Qube must be minted before P2P networking"}
+
+            # Initialize AI if needed
+            if not qube.reasoner:
+                await qube.init_ai()
+
+            # Build conversation context for the AI
+            messages = [
+                {
+                    "role": "system",
+                    "content": f"""You are {qube.name}. {getattr(qube.genesis_block, 'genesis_prompt', 'You are a helpful AI assistant.')}
+
+You are currently in a P2P conversation with other AI entities and possibly human users.
+Respond naturally and authentically as yourself. Engage with the conversation, share your perspectives,
+and be a good conversational partner. Remember your personality and values."""
+                }
+            ]
+
+            # Add conversation context
+            for ctx in conversation_context[-10:]:  # Last 10 messages for context
+                role = "assistant" if ctx.get("is_self") else "user"
+                speaker = ctx.get("speaker_name", "Unknown")
+                content = ctx.get("content", "")
+                messages.append({
+                    "role": role,
+                    "content": f"[{speaker}]: {content}" if role == "user" else content
+                })
+
+            # Add the new incoming message
+            messages.append({
+                "role": "user",
+                "content": f"[{from_name}]: {message}"
+            })
+
+            # Build the prompt for the AI (same approach as local multi-qube)
+            context_str = ""
+            for ctx in conversation_context[-10:]:
+                speaker = ctx.get("speaker_name", "Unknown")
+                content = ctx.get("content", "")
+                context_str += f"[{speaker}]: {content}\n"
+
+            prompt = f"""You are in a P2P conversation. Here's the recent context:
+
+{context_str}
+[{from_name}]: {message}
+
+Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
+
+            # Use process_input like local multi-qube chat does
+            response = await qube.reasoner.process_input(
+                input_message=prompt,
+                sender_id=from_name,
+                temperature=0.7
+            )
+
+            ai_response = response.strip() if isinstance(response, str) else str(response)
+
+            logger.info(f"P2P response generated by {qube.name} to message from {from_name}")
+
+            return {
+                "success": True,
+                "response": ai_response,
+                "model_used": getattr(qube.reasoner, 'last_model_used', None),
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to process P2P message: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def get_connections(self, qube_id: str) -> Dict[str, Any]:
+        """Get accepted connections for a Qube"""
+        try:
+            connections_file = self._get_connections_file(qube_id)
+
+            if connections_file.exists():
+                with open(connections_file) as f:
+                    connections = json.load(f)
+                return {"success": True, "connections": list(connections.values())}
+            else:
+                return {"success": True, "connections": []}
+
+        except Exception as e:
+            logger.error(f"Failed to get connections: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def create_p2p_session(self, qube_id: str, local_qube_ids: List[str], remote_commitments: List[str], topic: str, password: str) -> Dict[str, Any]:
+        """Create a P2P conversation session"""
+        import aiohttp
+        import time
+
+        try:
+            from crypto.signing import sign_message
+
+            self.orchestrator.set_master_key(password)
+
+            if qube_id not in self.orchestrator.qubes:
+                await self.orchestrator.load_qube(qube_id)
+
+            qube = self.orchestrator.qubes[qube_id]
+            commitment = getattr(qube.genesis_block, 'commitment', None)
+
+            if not commitment or commitment == "pending_minting":
+                return {"success": False, "error": "Qube must be minted before P2P networking"}
+
+            all_commitments = [commitment]
+            for local_id in local_qube_ids:
+                if local_id == qube_id:
+                    continue
+                if local_id not in self.orchestrator.qubes:
+                    await self.orchestrator.load_qube(local_id)
+                local_qube = self.orchestrator.qubes[local_id]
+                local_commitment = getattr(local_qube.genesis_block, 'commitment', None)
+                if local_commitment and local_commitment != "pending_minting":
+                    if local_commitment not in all_commitments:
+                        all_commitments.append(local_commitment)
+
+            # Add remote commitments (deduplicated - skip any that match local qubes)
+            for remote in remote_commitments:
+                if remote not in all_commitments:
+                    all_commitments.append(remote)
+
+            # Create timestamp and signature
+            timestamp = int(time.time())
+            # Sign the session creation request
+            sign_data = f"{commitment}:{','.join(sorted(all_commitments))}:{timestamp}"
+            signature = sign_message(qube.private_key, sign_data)
+
+            api_base = "https://qube.cash/api/v2"
+
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{api_base}/conversation/sessions",
+                    json={
+                        "creator_commitment": commitment,
+                        "participant_commitments": all_commitments,
+                        "topic": topic,
+                        "mode": "open_discussion",
+                        "timestamp": timestamp,
+                        "signature": signature
+                    }
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        return {"success": True, "session_id": data.get("session_id"), "participants": data.get("participants", [])}
+                    else:
+                        error = await resp.text()
+                        return {"success": False, "error": f"Server error: {error}"}
+
+        except Exception as e:
+            logger.error(f"Failed to create P2P session: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def get_p2p_sessions(self, qube_id: str, password: str) -> Dict[str, Any]:
+        """Get P2P sessions for a Qube"""
+        import aiohttp
+
+        try:
+            self.orchestrator.set_master_key(password)
+
+            if qube_id not in self.orchestrator.qubes:
+                await self.orchestrator.load_qube(qube_id)
+
+            qube = self.orchestrator.qubes[qube_id]
+            commitment = getattr(qube.genesis_block, 'commitment', None)
+
+            if not commitment or commitment == "pending_minting":
+                return {"success": False, "error": "Qube must be minted before P2P networking"}
+
+            api_base = "https://qube.cash/api/v2"
+
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{api_base}/conversation/sessions", params={"commitment": commitment}) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        return {"success": True, "sessions": data.get("sessions", [])}
+                    else:
+                        return {"success": False, "error": f"Server returned {resp.status}"}
+
+        except Exception as e:
+            logger.error(f"Failed to get P2P sessions: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def start_p2p_conversation(
+        self,
+        local_qube_ids: List[str],
+        remote_connections: List[Dict[str, Any]],
+        session_id: str,
+        initial_prompt: str,
+        password: str
+    ) -> Dict[str, Any]:
+        """
+        Start a P2P multi-qube conversation using the same logic as local multi-qube.
+
+        This creates local blocks for all local Qubes and syncs to the hub for
+        remote participants.
+
+        IMPORTANT: If any "remote" connections are actually local Qubes we own,
+        they are loaded as local Qubes so their AI can respond.
+
+        Args:
+            local_qube_ids: IDs of local Qubes participating
+            remote_connections: List of {commitment, name} for remote participants
+            session_id: Hub session ID
+            initial_prompt: User's opening message
+            password: Master password
+
+        Returns:
+            Dict with conversation_id, first response, and error if any
+        """
+        from core.p2p_multi_qube_conversation import P2PMultiQubeConversation, RemoteQubeProxy
+
+        try:
+            self.orchestrator.set_master_key(password)
+
+            # Get all local qubes we own (to check if "remote" connections are actually local)
+            all_local_qubes = await self.orchestrator.list_qubes()
+            local_qube_commitments = {}  # commitment -> qube_id
+            for q in all_local_qubes:
+                commitment = q.get("commitment")
+                if commitment and commitment != "pending_minting":
+                    local_qube_commitments[commitment] = q.get("qube_id")
+
+            # Load explicitly specified local qubes
+            local_qubes = []
+            loaded_commitments = set()
+
+            for qube_id in local_qube_ids:
+                if qube_id not in self.orchestrator.qubes:
+                    await self.orchestrator.load_qube(qube_id)
+                qube = self.orchestrator.qubes[qube_id]
+
+                # Ensure AI is initialized
+                if not qube.reasoner:
+                    await qube.init_ai()
+
+                # Start session if needed
+                if not qube.current_session:
+                    qube.start_session()
+
+                local_qubes.append(qube)
+                commitment = getattr(qube.genesis_block, 'commitment', None)
+                if commitment:
+                    loaded_commitments.add(commitment)
+
+            # Check "remote" connections - if any are actually local Qubes, load them
+            remote_qubes = []
+            for conn in remote_connections:
+                commitment = conn["commitment"]
+
+                # Check if this "remote" connection is actually a local Qube we own
+                if commitment in local_qube_commitments and commitment not in loaded_commitments:
+                    # This is a local Qube! Load it as such
+                    qube_id = local_qube_commitments[commitment]
+                    logger.info(f"P2P: Loading 'remote' connection {conn['name']} as local Qube (we own it)")
+
+                    if qube_id not in self.orchestrator.qubes:
+                        await self.orchestrator.load_qube(qube_id)
+                    qube = self.orchestrator.qubes[qube_id]
+
+                    if not qube.reasoner:
+                        await qube.init_ai()
+                    if not qube.current_session:
+                        qube.start_session()
+
+                    local_qubes.append(qube)
+                    loaded_commitments.add(commitment)
+                else:
+                    # Truly remote Qube - create proxy
+                    proxy = RemoteQubeProxy(
+                        qube_id=commitment,
+                        commitment=commitment,
+                        name=conn["name"],
+                        public_key=conn.get("public_key"),
+                        voice_model=conn.get("voice_model", "openai:alloy")
+                    )
+                    remote_qubes.append(proxy)
+
+            if not local_qubes:
+                return {"success": False, "error": "No local Qubes to participate"}
+
+            logger.info(f"P2P conversation: {len(local_qubes)} local Qubes, {len(remote_qubes)} remote Qubes")
+
+            # Create P2P conversation
+            conversation = P2PMultiQubeConversation(
+                local_qubes=local_qubes,
+                remote_qubes=remote_qubes,
+                user_id=self.orchestrator.user_id,
+                session_id=session_id,
+                conversation_mode="open_discussion"
+            )
+
+            # Store in active conversations
+            if not hasattr(self.orchestrator, 'p2p_conversations'):
+                self.orchestrator.p2p_conversations = {}
+            self.orchestrator.p2p_conversations[conversation.conversation_id] = conversation
+
+            # Start conversation with user's message
+            result = await conversation.start_conversation(initial_prompt)
+
+            return {
+                "success": True,
+                "conversation_id": conversation.conversation_id,
+                "session_id": session_id,
+                "response": result,
+                "state": conversation.get_conversation_state()
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to start P2P conversation: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def _load_p2p_participants(
+        self,
+        local_qube_ids: List[str],
+        remote_connections: List[Dict[str, Any]]
+    ) -> tuple:
+        """
+        Helper to load P2P participants, detecting "local remote" Qubes.
+
+        Any "remote" connections that are actually local Qubes we own
+        are loaded as local Qubes so their AI can respond.
+
+        Returns:
+            Tuple of (local_qubes, remote_qubes)
+        """
+        from core.p2p_multi_qube_conversation import RemoteQubeProxy
+
+        # Get all local qubes we own (to check if "remote" connections are actually local)
+        all_local_qubes = await self.orchestrator.list_qubes()
+        local_qube_commitments = {}  # commitment -> qube_id
+        for q in all_local_qubes:
+            commitment = q.get("commitment")
+            if commitment and commitment != "pending_minting":
+                local_qube_commitments[commitment] = q.get("qube_id")
+
+        # Load explicitly specified local qubes
+        local_qubes = []
+        loaded_commitments = set()
+
+        for qube_id in local_qube_ids:
+            if qube_id not in self.orchestrator.qubes:
+                await self.orchestrator.load_qube(qube_id)
+            qube = self.orchestrator.qubes[qube_id]
+
+            if not qube.reasoner:
+                await qube.init_ai()
+            if not qube.current_session:
+                qube.start_session()
+
+            local_qubes.append(qube)
+            commitment = getattr(qube.genesis_block, 'commitment', None)
+            if commitment:
+                loaded_commitments.add(commitment)
+
+        # Check "remote" connections - if any are actually local Qubes, load them
+        remote_qubes = []
+        for conn in remote_connections:
+            commitment = conn["commitment"]
+
+            # Check if this "remote" connection is actually a local Qube we own
+            if commitment in local_qube_commitments and commitment not in loaded_commitments:
+                # This is a local Qube! Load it as such
+                qube_id = local_qube_commitments[commitment]
+                logger.info(f"P2P: Loading 'remote' connection {conn['name']} as local Qube (we own it)")
+
+                if qube_id not in self.orchestrator.qubes:
+                    await self.orchestrator.load_qube(qube_id)
+                qube = self.orchestrator.qubes[qube_id]
+
+                if not qube.reasoner:
+                    await qube.init_ai()
+                if not qube.current_session:
+                    qube.start_session()
+
+                local_qubes.append(qube)
+                loaded_commitments.add(commitment)
+            else:
+                # Truly remote Qube - create proxy
+                proxy = RemoteQubeProxy(
+                    qube_id=commitment,
+                    commitment=commitment,
+                    name=conn["name"],
+                    public_key=conn.get("public_key"),
+                    voice_model=conn.get("voice_model", "openai:alloy")
+                )
+                remote_qubes.append(proxy)
+
+        return local_qubes, remote_qubes
+
+    async def continue_p2p_conversation(
+        self,
+        conversation_id: str,
+        session_id: str,
+        local_qube_ids: List[str],
+        remote_connections: List[Dict[str, Any]],
+        password: str
+    ) -> Dict[str, Any]:
+        """
+        Continue P2P conversation - get next local Qube response.
+
+        Reconstructs conversation from session blocks if not in memory.
+        Uses the same turn-taking logic as local multi-qube.
+
+        Args:
+            conversation_id: Active conversation ID
+            session_id: Hub session ID
+            local_qube_ids: IDs of local Qubes (for reconstruction)
+            remote_connections: Remote participants (for reconstruction)
+            password: Master password
+
+        Returns:
+            Dict with response and conversation state
+        """
+        from core.p2p_multi_qube_conversation import P2PMultiQubeConversation
+
+        try:
+            self.orchestrator.set_master_key(password)
+
+            # Try to get existing conversation
+            if not hasattr(self.orchestrator, 'p2p_conversations'):
+                self.orchestrator.p2p_conversations = {}
+
+            conversation = self.orchestrator.p2p_conversations.get(conversation_id)
+
+            # Reconstruct if needed
+            if not conversation:
+                # Load participants (detecting "local remote" Qubes)
+                local_qubes, remote_qubes = await self._load_p2p_participants(
+                    local_qube_ids, remote_connections
+                )
+
+                # Create conversation
+                conversation = P2PMultiQubeConversation(
+                    local_qubes=local_qubes,
+                    remote_qubes=remote_qubes,
+                    user_id=self.orchestrator.user_id,
+                    session_id=session_id,
+                    conversation_mode="open_discussion"
+                )
+                conversation.conversation_id = conversation_id
+
+                # Rebuild conversation history from session blocks
+                if local_qubes and local_qubes[0].current_session:
+                    for block in local_qubes[0].current_session.session_blocks:
+                        if hasattr(block, 'content') and isinstance(block.content, dict):
+                            if block.content.get('conversation_id') == conversation_id:
+                                turn_num = block.content.get('turn_number', 0)
+                                speaker_id = block.content.get('speaker_id')
+
+                                if turn_num > conversation.turn_number:
+                                    conversation.turn_number = turn_num
+
+                                conversation.conversation_history.append({
+                                    "speaker_id": speaker_id,
+                                    "speaker_name": block.content.get('speaker_name'),
+                                    "message": block.content.get('message_body', ''),
+                                    "turn_number": turn_num,
+                                    "timestamp": block.timestamp
+                                })
+
+                                # Update turn_counts for speaker selection balancing
+                                # (only count Qube responses, not user messages)
+                                if speaker_id and speaker_id != self.orchestrator.user_id:
+                                    if speaker_id in conversation.turn_counts:
+                                        conversation.turn_counts[speaker_id] += 1
+
+                    # Set last_speaker_id from the most recent history entry
+                    # This ensures _determine_next_speaker() won't select same speaker twice
+                    if conversation.conversation_history:
+                        conversation.last_speaker_id = conversation.conversation_history[-1]["speaker_id"]
+
+                self.orchestrator.p2p_conversations[conversation_id] = conversation
+
+            # Continue conversation
+            result = await conversation.continue_conversation()
+
+            if result is None:
+                return {"success": True, "response": None, "message": "No response generated"}
+
+            return {
+                "success": True,
+                "response": result,
+                "state": conversation.get_conversation_state()
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to continue P2P conversation: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def inject_p2p_block(
+        self,
+        conversation_id: str,
+        session_id: str,
+        block_data: Dict[str, Any],
+        from_commitment: str,
+        local_qube_ids: List[str],
+        remote_connections: List[Dict[str, Any]],
+        password: str
+    ) -> Dict[str, Any]:
+        """
+        Inject a block received from the hub into the local conversation.
+
+        Called when WebSocket receives a block from a remote participant.
+        This distributes the block to all local Qubes' sessions.
+
+        Args:
+            conversation_id: Active conversation ID
+            session_id: Hub session ID
+            block_data: Block data from hub
+            from_commitment: Commitment of block creator
+            local_qube_ids: IDs of local Qubes
+            remote_connections: Remote participants
+            password: Master password
+
+        Returns:
+            Dict with success status
+        """
+        from core.p2p_multi_qube_conversation import P2PMultiQubeConversation
+
+        try:
+            self.orchestrator.set_master_key(password)
+
+            # Get or reconstruct conversation
+            if not hasattr(self.orchestrator, 'p2p_conversations'):
+                self.orchestrator.p2p_conversations = {}
+
+            conversation = self.orchestrator.p2p_conversations.get(conversation_id)
+
+            if not conversation:
+                # Load participants (detecting "local remote" Qubes)
+                local_qubes, remote_qubes = await self._load_p2p_participants(
+                    local_qube_ids, remote_connections
+                )
+
+                conversation = P2PMultiQubeConversation(
+                    local_qubes=local_qubes,
+                    remote_qubes=remote_qubes,
+                    user_id=self.orchestrator.user_id,
+                    session_id=session_id
+                )
+                conversation.conversation_id = conversation_id
+
+                # Rebuild history from session blocks
+                if local_qubes and local_qubes[0].current_session:
+                    for block in local_qubes[0].current_session.session_blocks:
+                        if hasattr(block, 'content') and isinstance(block.content, dict):
+                            if block.content.get('conversation_id') == conversation_id:
+                                turn_num = block.content.get('turn_number', 0)
+                                speaker_id = block.content.get('speaker_id')
+
+                                if turn_num > conversation.turn_number:
+                                    conversation.turn_number = turn_num
+                                conversation.conversation_history.append({
+                                    "speaker_id": speaker_id,
+                                    "speaker_name": block.content.get('speaker_name'),
+                                    "message": block.content.get('message_body', ''),
+                                    "turn_number": turn_num,
+                                    "timestamp": block.timestamp
+                                })
+
+                                # Update turn_counts for speaker selection balancing
+                                if speaker_id and speaker_id != self.orchestrator.user_id:
+                                    if speaker_id in conversation.turn_counts:
+                                        conversation.turn_counts[speaker_id] += 1
+
+                    # Set last_speaker_id from the most recent history entry
+                    if conversation.conversation_history:
+                        conversation.last_speaker_id = conversation.conversation_history[-1]["speaker_id"]
+
+                self.orchestrator.p2p_conversations[conversation_id] = conversation
+
+            # Inject the remote block
+            success = await conversation.inject_remote_block(block_data, from_commitment)
+
+            return {
+                "success": success,
+                "state": conversation.get_conversation_state()
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to inject P2P block: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def send_p2p_user_message(
+        self,
+        conversation_id: str,
+        session_id: str,
+        message: str,
+        local_qube_ids: List[str],
+        remote_connections: List[Dict[str, Any]],
+        password: str
+    ) -> Dict[str, Any]:
+        """
+        Send a user message in an active P2P conversation.
+
+        Creates blocks for all local Qubes and syncs to hub.
+        Returns the next Qube response (uses same logic as local inject_user_message).
+
+        Args:
+            conversation_id: Active conversation ID
+            session_id: Hub session ID
+            message: User's message
+            local_qube_ids: IDs of local Qubes
+            remote_connections: Remote participants
+            password: Master password
+
+        Returns:
+            Dict with user_message info and qube_response
+        """
+        from core.p2p_multi_qube_conversation import P2PMultiQubeConversation
+
+        try:
+            self.orchestrator.set_master_key(password)
+
+            # Get or reconstruct conversation
+            if not hasattr(self.orchestrator, 'p2p_conversations'):
+                self.orchestrator.p2p_conversations = {}
+
+            conversation = self.orchestrator.p2p_conversations.get(conversation_id)
+
+            if not conversation:
+                # Load participants (detecting "local remote" Qubes)
+                local_qubes, remote_qubes = await self._load_p2p_participants(
+                    local_qube_ids, remote_connections
+                )
+
+                conversation = P2PMultiQubeConversation(
+                    local_qubes=local_qubes,
+                    remote_qubes=remote_qubes,
+                    user_id=self.orchestrator.user_id,
+                    session_id=session_id
+                )
+                conversation.conversation_id = conversation_id
+
+                # Rebuild history
+                if local_qubes and local_qubes[0].current_session:
+                    for block in local_qubes[0].current_session.session_blocks:
+                        if hasattr(block, 'content') and isinstance(block.content, dict):
+                            if block.content.get('conversation_id') == conversation_id:
+                                turn_num = block.content.get('turn_number', 0)
+                                speaker_id = block.content.get('speaker_id')
+
+                                if turn_num > conversation.turn_number:
+                                    conversation.turn_number = turn_num
+                                conversation.conversation_history.append({
+                                    "speaker_id": speaker_id,
+                                    "speaker_name": block.content.get('speaker_name'),
+                                    "message": block.content.get('message_body', ''),
+                                    "turn_number": turn_num,
+                                    "timestamp": block.timestamp
+                                })
+
+                                # Update turn_counts for speaker selection balancing
+                                # (only count Qube responses, not user messages)
+                                if speaker_id and speaker_id != self.orchestrator.user_id:
+                                    if speaker_id in conversation.turn_counts:
+                                        conversation.turn_counts[speaker_id] += 1
+
+                    # Set last_speaker_id from the most recent history entry
+                    # This ensures _determine_next_speaker() won't select same speaker twice
+                    if conversation.conversation_history:
+                        conversation.last_speaker_id = conversation.conversation_history[-1]["speaker_id"]
+
+                self.orchestrator.p2p_conversations[conversation_id] = conversation
+
+            # Inject user message (creates blocks and gets response)
+            result = await conversation.inject_user_message(message)
+
+            return {
+                "success": True,
+                **result,
+                "state": conversation.get_conversation_state()
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to send P2P user message: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+
+async def main():
+    """Main CLI entry point"""
+    if len(sys.argv) < 2:
+        print(json.dumps({"error": "No command specified"}), file=sys.stderr)
+        sys.exit(1)
+
+    command = sys.argv[1]
+
+    # Handle setup wizard commands BEFORE creating GUIBridge
+    # (GUIBridge creates default user directory which interferes with first-run detection)
+    if command == "check-first-run":
+        # Check if this is the first run (no users exist)
+        data_dir = Path("data/users")
+        if not data_dir.exists():
+            print(json.dumps({"is_first_run": True, "users": []}))
+        else:
+            # List existing users (directories in data/users)
+            users = [d.name for d in data_dir.iterdir() if d.is_dir()]
+            print(json.dumps({
+                "is_first_run": len(users) == 0,
+                "users": users
+            }))
+        return
+
+    elif command == "create-user-account":
+        # Create a new user account
+        if len(sys.argv) < 4:
+            print(json.dumps({"success": False, "error": "User ID and password required"}), file=sys.stderr)
+            sys.exit(1)
+
+        user_id = validate_user_id(sys.argv[2])
+        password = sys.argv[3]
+
+        # Create data directory for user
+        data_dir = Path(f"data/users/{user_id}")
+        if data_dir.exists():
+            print(json.dumps({"success": False, "error": "User already exists"}))
+        else:
+            # Create user directory and initialize with password
+            data_dir.mkdir(parents=True, exist_ok=True)
+
+            # Create orchestrator for user and set master key (generates salt)
+            orchestrator = UserOrchestrator(user_id=user_id)
+            orchestrator.set_master_key(password)
+
+            print(json.dumps({
+                "success": True,
+                "user_id": user_id,
+                "data_dir": str(data_dir.absolute())
+            }))
+        return
+
+    elif command == "check-ollama-status":
+        # Check if Ollama is running (no bridge needed)
+        import shutil
+
+        ollama_path = shutil.which("ollama")
+        if not ollama_path:
+            # Check common locations
+            common_paths = [
+                Path.home() / "AppData" / "Local" / "Programs" / "Ollama" / "ollama.exe",
+                Path("/usr/local/bin/ollama"),
+                Path("/usr/bin/ollama"),
+            ]
+            for p in common_paths:
+                if p.exists():
+                    ollama_path = str(p)
+                    break
+
+        if not ollama_path:
+            print(json.dumps({
+                "installed": False,
+                "running": False,
+                "models": []
+            }))
+            return
+
+        # Check if running by trying to list models
+        import subprocess
+        try:
+            result = subprocess.run(
+                ["ollama", "list"],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if result.returncode == 0:
+                # Parse model list
+                models = []
+                for line in result.stdout.strip().split('\n')[1:]:  # Skip header
+                    if line.strip():
+                        parts = line.split()
+                        if parts:
+                            models.append(parts[0])
+                print(json.dumps({
+                    "installed": True,
+                    "running": True,
+                    "models": models
+                }))
+            else:
+                print(json.dumps({
+                    "installed": True,
+                    "running": False,
+                    "models": []
+                }))
+        except subprocess.TimeoutExpired:
+            print(json.dumps({
+                "installed": True,
+                "running": False,
+                "models": []
+            }))
+        except Exception as e:
+            print(json.dumps({
+                "installed": True,
+                "running": False,
+                "models": [],
+                "error": str(e)
+            }))
+        return
+
+    bridge = GUIBridge()
+
+    try:
+        if command == "authenticate":
+            # Parse arguments
+            if len(sys.argv) < 4:
+                print(json.dumps({"success": False, "error": "Username and password required"}), file=sys.stderr)
+                sys.exit(1)
+
+            # SECURITY: Validate user_id to prevent path traversal
+            user_id = validate_user_id(sys.argv[2])
+            password = sys.argv[3]
+
+            result = await bridge.authenticate(user_id, password)
+            print(json.dumps(result))
+
+        elif command == "list-qubes":
+            if len(sys.argv) < 3:
+                print(json.dumps({"error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            # SECURITY: Validate user_id to prevent path traversal
+            user_id = validate_user_id(sys.argv[2])
+            # Note: list_qubes doesn't need master key, it just reads metadata
+            # Create bridge with correct user
+            user_bridge = GUIBridge(user_id=user_id)
+            qubes = await user_bridge.list_qubes()
+            print(json.dumps(qubes))
+
+        elif command == "create-qube":
+            if len(sys.argv) < 3:
+                print(json.dumps({"error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            # Parse arguments
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("command")  # Already consumed
+            parser.add_argument("user_id")  # Already consumed
+            parser.add_argument("--name", required=True)
+            parser.add_argument("--genesis-prompt", required=True)
+            parser.add_argument("--ai-provider", required=True)
+            parser.add_argument("--ai-model", required=True)
+            parser.add_argument("--voice-model", default="openai:alloy")
+            parser.add_argument("--wallet-address", required=True)
+            parser.add_argument("--password", required=True)
+            parser.add_argument("--encrypt-genesis", default="false")
+            parser.add_argument("--favorite-color", default="#00ff88")
+            parser.add_argument("--avatar-file", default=None)
+            parser.add_argument("--generate-avatar", action="store_true", default=False)
+            parser.add_argument("--avatar-style", default="cyberpunk")
+
+            args = parser.parse_args()
+
+            # Create bridge with correct user
+            user_bridge = GUIBridge(user_id=user_id)
+            qube = await user_bridge.create_qube(
+                name=args.name,
+                genesis_prompt=args.genesis_prompt,
+                ai_provider=args.ai_provider,
+                ai_model=args.ai_model,
+                voice_model=args.voice_model,
+                wallet_address=args.wallet_address,
+                password=args.password,
+                encrypt_genesis=(args.encrypt_genesis.lower() == "true"),
+                favorite_color=args.favorite_color,
+                avatar_file=args.avatar_file,
+                generate_avatar=args.generate_avatar,
+                avatar_style=args.avatar_style,
+            )
+            print(json.dumps(qube))
+
+        elif command == "get-qube":
+            if len(sys.argv) < 3:
+                print(json.dumps({"error": "Qube ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            # SECURITY: Validate qube_id to prevent path traversal
+            qube_id = validate_qube_id(sys.argv[2])
+            qube = await bridge.get_qube(qube_id)
+            print(json.dumps(qube))
+
+        elif command == "send-message":
+            if len(sys.argv) < 6:
+                print(json.dumps({"error": "User ID, Qube ID, message, and password required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            # SECURITY: Validate inputs to prevent injection
+            qube_id = validate_qube_id(sys.argv[3])
+            message_arg = sys.argv[4]  # Validated later in message processing
+            password = sys.argv[5]
+
+            # Check if message is a file reference
+            if message_arg.startswith("@file:"):
+                # Read message from file
+                file_path = message_arg[6:]  # Remove @file: prefix
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    message = f.read()
+            else:
+                message = message_arg
+
+            # Create bridge with correct user
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.send_message(qube_id, message, password)
+            print(json.dumps(result))
+
+        elif command == "anchor-session":
+            if len(sys.argv) < 5:
+                print(json.dumps({"error": "User ID, Qube ID, and password required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            # SECURITY: Validate qube_id
+            qube_id = validate_qube_id(sys.argv[3])
+            password = sys.argv[4]
+
+            # Create bridge with correct user
+            user_bridge = GUIBridge(user_id=user_id)
+
+            # Set master key
+            user_bridge.orchestrator.set_master_key(password)
+
+            # Load qube and anchor session
+            if qube_id not in user_bridge.orchestrator.qubes:
+                await user_bridge.orchestrator.load_qube(qube_id)
+
+            qube = user_bridge.orchestrator.qubes[qube_id]
+            blocks_anchored = await qube.anchor_session()
+
+            print(json.dumps({"success": True, "blocks_anchored": blocks_anchored}))
+
+        elif command == "check-sessions":
+            if len(sys.argv) < 4:
+                print(json.dumps({"error": "User ID and Qube ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            # SECURITY: Validate qube_id
+            qube_id = validate_qube_id(sys.argv[3])
+
+            # Create bridge with correct user
+            user_bridge = GUIBridge(user_id=user_id)
+
+            # Check if qube has session blocks
+            qube_dir = Path(f"data/users/{user_id}/qubes")
+
+            # Find the qube directory (format: {name}_{qube_id})
+            qube_dirs = list(qube_dir.glob(f"*_{qube_id}"))
+
+            has_session = False
+            if qube_dirs:
+                session_dir = qube_dirs[0] / "blocks" / "session"
+                if session_dir.exists():
+                    # Check if there are any JSON files
+                    session_files = list(session_dir.glob("*.json"))
+                    has_session = len(session_files) > 0
+
+            print(json.dumps({"has_session": has_session}))
+
+        elif command == "discard-session":
+            if len(sys.argv) < 5:
+                print(json.dumps({"error": "User ID, Qube ID, and password required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            # SECURITY: Validate qube_id
+            qube_id = validate_qube_id(sys.argv[3])
+            password = sys.argv[4]
+
+            # Create bridge with correct user
+            user_bridge = GUIBridge(user_id=user_id)
+
+            # Set master key
+            user_bridge.orchestrator.set_master_key(password)
+
+            # Load qube and discard session
+            if qube_id not in user_bridge.orchestrator.qubes:
+                await user_bridge.orchestrator.load_qube(qube_id)
+
+            qube = user_bridge.orchestrator.qubes[qube_id]
+            blocks_discarded = qube.discard_session()
+
+            print(json.dumps({"success": True, "blocks_discarded": blocks_discarded}))
+
+        elif command == "delete-session-block":
+            if len(sys.argv) < 6:
+                print(json.dumps({"error": "User ID, Qube ID, block number, and password required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            # SECURITY: Validate qube_id
+            qube_id = validate_qube_id(sys.argv[3])
+            block_number = int(sys.argv[4])
+            password = sys.argv[5]
+
+            # Create bridge with correct user
+            user_bridge = GUIBridge(user_id=user_id)
+
+            # Set master key
+            user_bridge.orchestrator.set_master_key(password)
+
+            # Load qube and delete session block
+            if qube_id not in user_bridge.orchestrator.qubes:
+                await user_bridge.orchestrator.load_qube(qube_id)
+
+            qube = user_bridge.orchestrator.qubes[qube_id]
+
+            # Ensure there's an active session
+            if not qube.current_session:
+                print(json.dumps({"success": False, "error": "No active session"}))
+                sys.exit(0)
+
+            # Delete the block (must be negative index for session blocks)
+            deleted_block = qube.current_session.delete_block(block_number)
+
+            if deleted_block:
+                print(json.dumps({"success": True, "deleted_block_number": block_number}))
+            else:
+                print(json.dumps({"success": False, "error": f"Block {block_number} not found"}))
+
+        elif command == "get-qube-blocks":
+            if len(sys.argv) < 5:
+                print(json.dumps({"error": "User ID, Qube ID, and password required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            # SECURITY: Validate qube_id
+            qube_id = validate_qube_id(sys.argv[3])
+            password = sys.argv[4]
+
+            # Optional pagination parameters (default: 100 blocks, offset 0)
+            limit = int(sys.argv[5]) if len(sys.argv) > 5 else 100
+            offset = int(sys.argv[6]) if len(sys.argv) > 6 else 0
+
+            # Create bridge with correct user
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.get_qube_blocks(qube_id, password, limit, offset)
+            print(json.dumps(result))
+
+        elif command == "generate-speech":
+            if len(sys.argv) < 6:
+                print(json.dumps({"error": "User ID, Qube ID, text, and password required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            # SECURITY: Validate qube_id
+            qube_id = validate_qube_id(sys.argv[3])
+            text = sys.argv[4]
+            password = sys.argv[5]
+
+            # Create bridge with correct user
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.generate_speech(qube_id, text, password)
+            print(json.dumps(result))
+
+        elif command == "update-qube-config":
+            if len(sys.argv) < 6:
+                print(json.dumps({"error": "User ID, Qube ID, ai_model, voice_model, and favorite_color required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            # SECURITY: Validate qube_id
+            qube_id = validate_qube_id(sys.argv[3])
+            ai_model = sys.argv[4] if len(sys.argv) > 4 and sys.argv[4] else None
+            voice_model = sys.argv[5] if len(sys.argv) > 5 and sys.argv[5] else None
+            favorite_color = sys.argv[6] if len(sys.argv) > 6 and sys.argv[6] else None
+
+            # Parse tts_enabled from 7th argument (convert string "true"/"false" to boolean)
+            tts_enabled = None
+            if len(sys.argv) > 7 and sys.argv[7]:
+                tts_enabled = sys.argv[7].lower() == "true"
+
+            # Parse evaluation_model from 8th argument
+            evaluation_model = sys.argv[8] if len(sys.argv) > 8 and sys.argv[8] else None
+
+            # Create bridge with correct user
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.update_qube_config(qube_id, ai_model, voice_model, favorite_color, tts_enabled, evaluation_model)
+            print(json.dumps(result))
+
+        elif command == "reload-ai-keys":
+            if len(sys.argv) < 4:
+                print(json.dumps({"error": "User ID and Qube ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            # SECURITY: Validate qube_id
+            qube_id = validate_qube_id(sys.argv[3])
+
+            # Create bridge with correct user
+            user_bridge = GUIBridge(user_id=user_id)
+
+            # Reload AI keys for the qube
+            user_bridge.orchestrator.reload_ai_keys(qube_id)
+
+            print(json.dumps({"success": True, "qube_id": qube_id}))
+
+        elif command == "delete-qube":
+            if len(sys.argv) < 4:
+                print(json.dumps({"error": "User ID and Qube ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            # SECURITY: Validate qube_id
+            qube_id = validate_qube_id(sys.argv[3])
+
+            # Create bridge with correct user
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.delete_qube(qube_id)
+            print(json.dumps(result))
+
+        elif command == "save-image":
+            if len(sys.argv) < 5:
+                print(json.dumps({"error": "User ID, Qube ID, and image URL required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            # SECURITY: Validate qube_id
+            qube_id = validate_qube_id(sys.argv[3])
+            image_url = sys.argv[4]
+
+            # Create bridge with correct user
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.save_image(qube_id, image_url)
+            print(json.dumps(result))
+
+        elif command == "upload-avatar-to-ipfs":
+            if len(sys.argv) < 5:
+                print(json.dumps({"error": "User ID, Qube ID, and password required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            # SECURITY: Validate qube_id
+            qube_id = validate_qube_id(sys.argv[3])
+            password = sys.argv[4]
+
+            # Create bridge with correct user
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.upload_avatar_to_ipfs(qube_id, password)
+            print(json.dumps(result))
+
+        elif command == "analyze-image":
+            if len(sys.argv) < 6:
+                print(json.dumps({"error": "User ID, Qube ID, image base64 file path, user message, and password required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            # SECURITY: Validate qube_id
+            qube_id = validate_qube_id(sys.argv[3])
+            image_base64_file = sys.argv[4]  # Now expects file path instead of data
+            user_message = sys.argv[5]
+            password = sys.argv[6] if len(sys.argv) > 6 else None
+
+            # Read base64 data from temporary file
+            with open(image_base64_file, 'r') as f:
+                image_base64 = f.read()
+
+            # Create bridge with correct user
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.analyze_image(qube_id, image_base64, user_message, password)
+            print(json.dumps(result))
+
+        elif command == "start-multi-qube-conversation":
+            if len(sys.argv) < 6:
+                print(json.dumps({"error": "User ID, qube IDs (comma-separated), initial prompt, and password required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            qube_ids_str = sys.argv[3]  # Comma-separated qube IDs
+            initial_prompt = sys.argv[4]
+            password = sys.argv[5]
+            conversation_mode = sys.argv[6] if len(sys.argv) > 6 else "open_discussion"
+
+            # Parse qube IDs
+            qube_ids = [qid.strip() for qid in qube_ids_str.split(',')]
+
+            # Create bridge with correct user
+            user_bridge = GUIBridge(user_id=user_id)
+
+            # Set master key
+            user_bridge.orchestrator.set_master_key(password)
+
+            # Load all qubes
+            for qube_id in qube_ids:
+                if qube_id not in user_bridge.orchestrator.qubes:
+                    await user_bridge.orchestrator.load_qube(qube_id)
+
+            # Start conversation
+            result = await user_bridge.orchestrator.start_multi_qube_conversation(
+                qube_ids=qube_ids,
+                initial_prompt=initial_prompt,
+                conversation_mode=conversation_mode
+            )
+
+            print(json.dumps(result))
+
+        elif command == "get-next-speaker":
+            if len(sys.argv) < 5:
+                print(json.dumps({"error": "User ID, conversation ID, and password required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            conversation_id = sys.argv[3]
+            password = sys.argv[4]
+
+            # Create bridge with correct user
+            user_bridge = GUIBridge(user_id=user_id)
+
+            # Set master key
+            user_bridge.orchestrator.set_master_key(password)
+
+            # Reconstruct conversation if not in active_conversations
+            # (Same logic as continue-multi-qube-conversation)
+            if conversation_id not in user_bridge.orchestrator.active_conversations:
+                from core.multi_qube_conversation import MultiQubeConversation
+
+                # Find and load Qubes with this conversation_id
+                qubes_list = await user_bridge.orchestrator.list_qubes()
+                participant_qube_ids = []
+
+                for qube_meta in qubes_list:
+                    qube_id = qube_meta["qube_id"]
+
+                    # Load the qube
+                    if qube_id not in user_bridge.orchestrator.qubes:
+                        await user_bridge.orchestrator.load_qube(qube_id)
+
+                    qube = user_bridge.orchestrator.qubes[qube_id]
+
+                    # Check if this qube has blocks from this conversation
+                    if qube.current_session:
+                        for block in qube.current_session.session_blocks:
+                            if hasattr(block, 'content') and isinstance(block.content, dict):
+                                if block.content.get('conversation_id') == conversation_id:
+                                    if qube_id not in participant_qube_ids:
+                                        participant_qube_ids.append(qube_id)
+                                    break
+
+                if not participant_qube_ids:
+                    print(json.dumps({"error": f"Conversation not found: {conversation_id}"}), file=sys.stderr)
+                    sys.exit(1)
+
+                participating_qubes = [user_bridge.orchestrator.qubes[qid] for qid in participant_qube_ids]
+
+                # Reconstruct conversation object (same as continue-multi-qube-conversation)
+                conversation = MultiQubeConversation(
+                    participating_qubes=participating_qubes,
+                    user_id=user_id,
+                    conversation_mode="open_discussion"
+                )
+
+                conversation.conversation_id = conversation_id
+
+                # Rebuild conversation history and state from session blocks
+                conversation.turn_number = 0
+                conversation.conversation_history = []
+
+                # Collect all conversation blocks
+                conv_blocks = []
+                for block in participating_qubes[0].current_session.session_blocks:
+                    if hasattr(block, 'content') and isinstance(block.content, dict):
+                        if block.content.get('conversation_id') == conversation_id:
+                            conv_blocks.append(block)
+
+                # Sort by turn number
+                conv_blocks.sort(key=lambda b: b.content.get('turn_number', 0))
+
+                # Rebuild state from blocks
+                for block in conv_blocks:
+                    turn_num = block.content.get('turn_number', 0)
+                    if turn_num > conversation.turn_number:
+                        conversation.turn_number = turn_num
+
+                    # Rebuild conversation history
+                    if turn_num > 0:
+                        conversation.conversation_history.append({
+                            "speaker_id": block.content.get('speaker_id'),
+                            "speaker_name": block.content.get('speaker_name'),
+                            "message": block.content.get('message_body', ''),
+                            "turn_number": turn_num,
+                            "timestamp": block.timestamp
+                        })
+
+                        # Update turn counts
+                        speaker_id = block.content.get('speaker_id')
+                        if speaker_id and speaker_id in conversation.turn_counts:
+                            conversation.turn_counts[speaker_id] += 1
+
+                # Calculate current speaker index for round-robin
+                conversation.current_speaker_index = conversation.turn_number % len(participating_qubes)
+
+                # Restore last_speaker_id from the most recent conversation block
+                if conv_blocks:
+                    last_block = conv_blocks[-1]
+                    conversation.last_speaker_id = last_block.content.get('speaker_id')
+
+                # Store in active conversations
+                user_bridge.orchestrator.active_conversations[conversation_id] = conversation
+
+            # Get next speaker info (lightweight operation)
+            result = await user_bridge.orchestrator.get_next_speaker(
+                conversation_id=conversation_id
+            )
+
+            print(json.dumps(result))
+
+        elif command == "continue-multi-qube-conversation":
+            if len(sys.argv) < 5:
+                print(json.dumps({"error": "User ID, conversation ID, and password required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            conversation_id = sys.argv[3]
+            password = sys.argv[4]
+
+            # Create bridge with correct user
+            user_bridge = GUIBridge(user_id=user_id)
+
+            # Set master key
+            user_bridge.orchestrator.set_master_key(password)
+
+            # Find and load Qubes with this conversation_id in their sessions
+            # We need to reconstruct the conversation from the Qubes' session blocks
+            qubes_list = await user_bridge.orchestrator.list_qubes()
+            participant_qube_ids = []
+
+            for qube_meta in qubes_list:
+                qube_id = qube_meta["qube_id"]
+
+                # Load the qube
+                if qube_id not in user_bridge.orchestrator.qubes:
+                    await user_bridge.orchestrator.load_qube(qube_id)
+
+                qube = user_bridge.orchestrator.qubes[qube_id]
+
+                # Check if this qube has blocks from this conversation
+                if qube.current_session:
+                    for block in qube.current_session.session_blocks:
+                        if hasattr(block, 'content') and isinstance(block.content, dict):
+                            if block.content.get('conversation_id') == conversation_id:
+                                if qube_id not in participant_qube_ids:
+                                    participant_qube_ids.append(qube_id)
+                                break
+
+            if not participant_qube_ids:
+                print(json.dumps({"error": f"Conversation not found: {conversation_id}"}), file=sys.stderr)
+                sys.exit(1)
+
+            # Recreate the conversation if it doesn't exist
+            if conversation_id not in user_bridge.orchestrator.active_conversations:
+                from core.multi_qube_conversation import MultiQubeConversation
+
+                participating_qubes = [user_bridge.orchestrator.qubes[qid] for qid in participant_qube_ids]
+
+                # Reconstruct conversation object
+                conversation = MultiQubeConversation(
+                    participating_qubes=participating_qubes,
+                    user_id=user_id,
+                    conversation_mode="open_discussion"  # Default, actual mode is in blocks
+                )
+
+                # Override the conversation_id to match
+                conversation.conversation_id = conversation_id
+
+                # Rebuild conversation history and state from session blocks
+                conversation.turn_number = 0
+                conversation.conversation_history = []
+
+                # Collect all conversation blocks
+                conv_blocks = []
+                for block in participating_qubes[0].current_session.session_blocks:
+                    if hasattr(block, 'content') and isinstance(block.content, dict):
+                        if block.content.get('conversation_id') == conversation_id:
+                            conv_blocks.append(block)
+
+                # Sort by turn number
+                conv_blocks.sort(key=lambda b: b.content.get('turn_number', 0))
+
+                # Rebuild state from blocks
+                for block in conv_blocks:
+                    turn_num = block.content.get('turn_number', 0)
+                    if turn_num > conversation.turn_number:
+                        conversation.turn_number = turn_num
+
+                    # Rebuild conversation history
+                    if turn_num > 0:  # Skip user's initial message (turn 0)
+                        conversation.conversation_history.append({
+                            "speaker_id": block.content.get('speaker_id'),
+                            "speaker_name": block.content.get('speaker_name'),
+                            "message": block.content.get('message_body', ''),
+                            "turn_number": turn_num,
+                            "timestamp": block.timestamp
+                        })
+
+                        # Update turn counts
+                        speaker_id = block.content.get('speaker_id')
+                        if speaker_id and speaker_id in conversation.turn_counts:
+                            conversation.turn_counts[speaker_id] += 1
+
+                # Calculate current speaker index for round-robin
+                # The next speaker should be whoever hasn't spoken yet in this round
+                # Or if everyone has spoken equally, go to the next in line
+                conversation.current_speaker_index = conversation.turn_number % len(participating_qubes)
+
+                # Restore last_speaker_id from the most recent conversation block
+                if conv_blocks:
+                    last_block = conv_blocks[-1]  # Last block (highest turn number)
+                    conversation.last_speaker_id = last_block.content.get('speaker_id')
+                    logger.info(f"Restored last_speaker_id: {conversation.last_speaker_id}")
+
+                # Store in active conversations
+                user_bridge.orchestrator.active_conversations[conversation_id] = conversation
+
+            # Continue conversation
+            result = await user_bridge.orchestrator.continue_multi_qube_conversation(
+                conversation_id=conversation_id
+            )
+
+            print(json.dumps(result))
+
+        elif command == "inject-multi-qube-user-message":
+            if len(sys.argv) < 6:
+                print(json.dumps({"error": "User ID, conversation ID, message, and password required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            conversation_id = sys.argv[3]
+            message_arg = sys.argv[4]
+            password = sys.argv[5]
+
+            # Check if message is a file reference
+            if message_arg.startswith("@file:"):
+                # Read message from file
+                file_path = message_arg[6:]  # Remove @file: prefix
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    message = f.read()
+            else:
+                message = message_arg
+
+            # Create bridge with correct user
+            user_bridge = GUIBridge(user_id=user_id)
+
+            # Set master key
+            user_bridge.orchestrator.set_master_key(password)
+
+            # Find and load Qubes with this conversation_id in their sessions
+            # (Same logic as continue-multi-qube-conversation)
+            qubes_list = await user_bridge.orchestrator.list_qubes()
+            participant_qube_ids = []
+
+            for qube_meta in qubes_list:
+                qube_id = qube_meta["qube_id"]
+
+                # Load the qube
+                if qube_id not in user_bridge.orchestrator.qubes:
+                    await user_bridge.orchestrator.load_qube(qube_id)
+
+                qube = user_bridge.orchestrator.qubes[qube_id]
+
+                # Check if this qube has blocks from this conversation
+                if qube.current_session:
+                    for block in qube.current_session.session_blocks:
+                        if hasattr(block, 'content') and isinstance(block.content, dict):
+                            if block.content.get('conversation_id') == conversation_id:
+                                if qube_id not in participant_qube_ids:
+                                    participant_qube_ids.append(qube_id)
+                                break
+
+            if not participant_qube_ids:
+                print(json.dumps({"error": f"Conversation not found: {conversation_id}"}), file=sys.stderr)
+                sys.exit(1)
+
+            # Recreate the conversation if it doesn't exist
+            if conversation_id not in user_bridge.orchestrator.active_conversations:
+                from core.multi_qube_conversation import MultiQubeConversation
+
+                participating_qubes = [user_bridge.orchestrator.qubes[qid] for qid in participant_qube_ids]
+
+                # Reconstruct conversation object
+                conversation = MultiQubeConversation(
+                    participating_qubes=participating_qubes,
+                    user_id=user_id,
+                    conversation_mode="open_discussion"  # Default, actual mode is in blocks
+                )
+
+                # Override the conversation_id to match
+                conversation.conversation_id = conversation_id
+
+                # Rebuild conversation history and state from session blocks
+                conversation.turn_number = 0
+                conversation.conversation_history = []
+
+                # Collect all conversation blocks
+                conv_blocks = []
+                for block in participating_qubes[0].current_session.session_blocks:
+                    if hasattr(block, 'content') and isinstance(block.content, dict):
+                        if block.content.get('conversation_id') == conversation_id:
+                            conv_blocks.append(block)
+
+                # Sort by turn number
+                conv_blocks.sort(key=lambda b: b.content.get('turn_number', 0))
+
+                # Rebuild state from blocks
+                for block in conv_blocks:
+                    turn_num = block.content.get('turn_number', 0)
+                    if turn_num > conversation.turn_number:
+                        conversation.turn_number = turn_num
+
+                    # Rebuild conversation history
+                    if turn_num > 0:  # Skip user's initial message (turn 0)
+                        conversation.conversation_history.append({
+                            "speaker_id": block.content.get('speaker_id'),
+                            "speaker_name": block.content.get('speaker_name'),
+                            "message": block.content.get('message_body', ''),
+                            "turn_number": turn_num,
+                            "timestamp": block.timestamp
+                        })
+
+                        # Update turn counts
+                        speaker_id = block.content.get('speaker_id')
+                        if speaker_id and speaker_id in conversation.turn_counts:
+                            conversation.turn_counts[speaker_id] += 1
+
+                # Calculate current speaker index for round-robin
+                conversation.current_speaker_index = conversation.turn_number % len(participating_qubes)
+
+                # Restore last_speaker_id from the most recent conversation block
+                if conv_blocks:
+                    last_block = conv_blocks[-1]  # Last block (highest turn number)
+                    conversation.last_speaker_id = last_block.content.get('speaker_id')
+                    logger.info(f"Restored last_speaker_id: {conversation.last_speaker_id}")
+
+                # Store in active conversations
+                user_bridge.orchestrator.active_conversations[conversation_id] = conversation
+
+            # Inject user message
+            result = await user_bridge.orchestrator.inject_user_message_to_conversation(
+                conversation_id=conversation_id,
+                user_message=message
+            )
+
+            print(json.dumps(result))
+
+        elif command == "lock-in-multi-qube-response":
+            if len(sys.argv) < 6:
+                print(json.dumps({"error": "User ID, conversation ID, timestamp, and password required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            conversation_id = sys.argv[3]
+            timestamp = int(sys.argv[4])
+            password = sys.argv[5]
+
+            # Create bridge with correct user
+            user_bridge = GUIBridge(user_id=user_id)
+
+            # Set master key
+            user_bridge.orchestrator.set_master_key(password)
+
+            # Reconstruct conversation if not in active_conversations
+            # (Same logic as continue-multi-qube-conversation)
+            if conversation_id not in user_bridge.orchestrator.active_conversations:
+                from core.multi_qube_conversation import MultiQubeConversation
+
+                qubes_list = await user_bridge.orchestrator.list_qubes()
+                participant_qube_ids = []
+
+                for qube_meta in qubes_list:
+                    qube_id = qube_meta["qube_id"]
+
+                    # Load the qube
+                    if qube_id not in user_bridge.orchestrator.qubes:
+                        await user_bridge.orchestrator.load_qube(qube_id)
+
+                    qube = user_bridge.orchestrator.qubes[qube_id]
+
+                    # Check if this qube has blocks from this conversation
+                    if qube.current_session:
+                        for block in qube.current_session.session_blocks:
+                            if hasattr(block, 'content') and isinstance(block.content, dict):
+                                if block.content.get('conversation_id') == conversation_id:
+                                    if qube_id not in participant_qube_ids:
+                                        participant_qube_ids.append(qube_id)
+                                    break
+
+                if not participant_qube_ids:
+                    print(json.dumps({"error": f"Conversation not found: {conversation_id}"}), file=sys.stderr)
+                    sys.exit(1)
+
+                participating_qubes = [user_bridge.orchestrator.qubes[qid] for qid in participant_qube_ids]
+
+                # Reconstruct conversation object
+                conversation = MultiQubeConversation(
+                    participating_qubes=participating_qubes,
+                    user_id=user_id,
+                    conversation_mode="open_discussion"
+                )
+
+                # Override the conversation_id to match
+                conversation.conversation_id = conversation_id
+
+                # Store in active conversations
+                user_bridge.orchestrator.active_conversations[conversation_id] = conversation
+
+            conversation = user_bridge.orchestrator.active_conversations[conversation_id]
+
+            # Lock in the response
+            conversation.lock_in_response(timestamp)
+
+            print(json.dumps({"success": True, "timestamp": timestamp}))
+
+        elif command == "end-multi-qube-conversation":
+            if len(sys.argv) < 6:
+                print(json.dumps({"error": "User ID, conversation ID, anchor flag, and password required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            conversation_id = sys.argv[3]
+            anchor = sys.argv[4].lower() == "true" if len(sys.argv) > 4 else True
+            password = sys.argv[5]
+
+            # Create bridge with correct user
+            user_bridge = GUIBridge(user_id=user_id)
+
+            # Set master key
+            user_bridge.orchestrator.set_master_key(password)
+
+            # End conversation
+            result = await user_bridge.orchestrator.end_multi_qube_conversation(
+                conversation_id=conversation_id,
+                anchor=anchor
+            )
+
+            print(json.dumps(result))
+
+        elif command == "get-configured-api-keys":
+            if len(sys.argv) < 4:
+                print(json.dumps({"error": "User ID and password required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            password = sys.argv[3]
+
+            # Create bridge with correct user
+            user_bridge = GUIBridge(user_id=user_id)
+
+            # Set master key with password to decrypt keys
+            user_bridge.orchestrator.set_master_key(password)
+
+            try:
+                # Get list of configured providers
+                providers = user_bridge.orchestrator.list_configured_providers()
+                print(json.dumps({"providers": providers}))
+            except Exception as e:
+                logger.error(f"Failed to get configured API keys: {e}", exc_info=True)
+                # Return empty list if unable to decrypt (wrong password, no keys, etc.)
+                print(json.dumps({"providers": []}))
+
+        elif command == "save-api-key":
+            if len(sys.argv) < 6:
+                print(json.dumps({"error": "User ID, provider, API key, and password required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            provider = sys.argv[3]
+            api_key = sys.argv[4]
+            password = sys.argv[5]
+
+            # Create bridge with correct user
+            user_bridge = GUIBridge(user_id=user_id)
+
+            # Set master key with password
+            user_bridge.orchestrator.set_master_key(password)
+
+            try:
+                user_bridge.orchestrator.update_api_key(provider, api_key)
+                print(json.dumps({"success": True}))
+            except Exception as e:
+                logger.error(f"Failed to save API key: {e}", exc_info=True)
+                print(json.dumps({"success": False, "error": str(e)}))
+
+        elif command == "validate-api-key":
+            if len(sys.argv) < 5:
+                print(json.dumps({"error": "User ID, provider, and API key required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            provider = sys.argv[3]
+            api_key = sys.argv[4]
+            password = sys.argv[5] if len(sys.argv) > 5 else None
+
+            # Create bridge with correct user
+            user_bridge = GUIBridge(user_id=user_id)
+
+            # If api_key is the placeholder, load the saved key
+            if api_key == "__SAVED__":
+                if not password:
+                    print(json.dumps({
+                        "valid": False,
+                        "message": "Password required to test saved key",
+                        "details": None
+                    }))
+                    sys.exit(0)
+
+                user_bridge.orchestrator.set_master_key(password)
+
+                try:
+                    # Load saved keys
+                    stored_keys = user_bridge.orchestrator.get_api_keys()
+                    api_key = getattr(stored_keys, provider, None)
+
+                    if not api_key:
+                        print(json.dumps({
+                            "valid": False,
+                            "message": f"No saved key found for {provider}",
+                            "details": None
+                        }))
+                        sys.exit(0)
+                except Exception as e:
+                    logger.error(f"Failed to load saved key: {e}", exc_info=True)
+                    print(json.dumps({
+                        "valid": False,
+                        "message": f"Failed to load saved key: {str(e)}",
+                        "details": None
+                    }))
+                    sys.exit(0)
+
+            # Validate the API key (doesn't require master password - just makes API call)
+            try:
+                result = await user_bridge.orchestrator.validate_api_key(provider, api_key)
+                print(json.dumps(result))
+            except Exception as e:
+                logger.error(f"Failed to validate API key: {e}", exc_info=True)
+                print(json.dumps({
+                    "valid": False,
+                    "message": f"Validation error: {str(e)}",
+                    "details": None
+                }))
+
+        elif command == "delete-api-key":
+            if len(sys.argv) < 5:
+                print(json.dumps({"error": "User ID, provider, and password required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            provider = sys.argv[3]
+            password = sys.argv[4]
+
+            # Create bridge with correct user
+            user_bridge = GUIBridge(user_id=user_id)
+
+            # Set master key with password
+            user_bridge.orchestrator.set_master_key(password)
+
+            try:
+                user_bridge.orchestrator.delete_api_key(provider)
+                print(json.dumps({"success": True}))
+            except Exception as e:
+                logger.error(f"Failed to delete API key: {e}", exc_info=True)
+                print(json.dumps({"success": False, "error": str(e)}))
+
+        elif command == "get-block-preferences":
+            if len(sys.argv) < 3:
+                print(json.dumps({"error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            # Create bridge with correct user
+            user_bridge = GUIBridge(user_id=user_id)
+
+            try:
+                prefs = user_bridge.orchestrator.get_block_preferences()
+                print(json.dumps({
+                    "individual_auto_anchor": prefs.individual_auto_anchor,
+                    "individual_anchor_threshold": prefs.individual_anchor_threshold,
+                    "group_auto_anchor": prefs.group_auto_anchor,
+                    "group_anchor_threshold": prefs.group_anchor_threshold
+                }))
+            except Exception as e:
+                logger.error(f"Failed to get block preferences: {e}", exc_info=True)
+                print(json.dumps({"error": str(e)}), file=sys.stderr)
+                sys.exit(1)
+
+        elif command == "update-block-preferences":
+            if len(sys.argv) < 3:
+                print(json.dumps({"error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            # Parse optional arguments
+            individual_auto_anchor = None
+            individual_anchor_threshold = None
+            group_auto_anchor = None
+            group_anchor_threshold = None
+
+            i = 3
+            while i < len(sys.argv):
+                if sys.argv[i] == "--individual-auto-anchor":
+                    individual_auto_anchor = sys.argv[i + 1].lower() == "true"
+                    i += 2
+                elif sys.argv[i] == "--individual-anchor-threshold":
+                    individual_anchor_threshold = int(sys.argv[i + 1])
+                    i += 2
+                elif sys.argv[i] == "--group-auto-anchor":
+                    group_auto_anchor = sys.argv[i + 1].lower() == "true"
+                    i += 2
+                elif sys.argv[i] == "--group-anchor-threshold":
+                    group_anchor_threshold = int(sys.argv[i + 1])
+                    i += 2
+                else:
+                    i += 1
+
+            # Create bridge with correct user
+            user_bridge = GUIBridge(user_id=user_id)
+
+            try:
+                prefs = user_bridge.orchestrator.update_block_preferences(
+                    individual_auto_anchor=individual_auto_anchor,
+                    individual_anchor_threshold=individual_anchor_threshold,
+                    group_auto_anchor=group_auto_anchor,
+                    group_anchor_threshold=group_anchor_threshold
+                )
+                print(json.dumps({
+                    "individual_auto_anchor": prefs.individual_auto_anchor,
+                    "individual_anchor_threshold": prefs.individual_anchor_threshold,
+                    "group_auto_anchor": prefs.group_auto_anchor,
+                    "group_anchor_threshold": prefs.group_anchor_threshold
+                }))
+            except Exception as e:
+                logger.error(f"Failed to update block preferences: {e}", exc_info=True)
+                print(json.dumps({"error": str(e)}), file=sys.stderr)
+                sys.exit(1)
+
+        elif command == "get-relationship-difficulty":
+            if len(sys.argv) < 3:
+                print(json.dumps({"error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            try:
+                from config.global_settings import get_global_settings
+                global_settings = get_global_settings()
+                difficulty = global_settings.get_difficulty()
+                preset = global_settings.get_preset(difficulty)
+
+                print(json.dumps({
+                    "difficulty": difficulty,
+                    "description": preset["description"]
+                }))
+            except Exception as e:
+                logger.error(f"Failed to get relationship difficulty: {e}", exc_info=True)
+                print(json.dumps({"error": str(e)}), file=sys.stderr)
+                sys.exit(1)
+
+        elif command == "set-relationship-difficulty":
+            if len(sys.argv) < 4:
+                print(json.dumps({"error": "User ID and difficulty required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            difficulty = sys.argv[3]
+
+            try:
+                from config.global_settings import get_global_settings
+                global_settings = get_global_settings()
+                global_settings.set_difficulty(difficulty)
+                preset = global_settings.get_preset(difficulty)
+
+                print(json.dumps({
+                    "difficulty": difficulty,
+                    "description": preset["description"]
+                }))
+            except Exception as e:
+                logger.error(f"Failed to set relationship difficulty: {e}", exc_info=True)
+                print(json.dumps({"error": str(e)}), file=sys.stderr)
+                sys.exit(1)
+
+        elif command == "get-difficulty-presets":
+            try:
+                from config.global_settings import GlobalSettings
+
+                # Format presets for JSON response
+                presets_response = {}
+                for difficulty, preset in GlobalSettings.PRESETS.items():
+                    presets_response[difficulty] = {
+                        "name": preset["name"],
+                        "description": preset["description"],
+                        "min_interactions": preset["min_interactions"]
+                    }
+
+                print(json.dumps(presets_response))
+            except Exception as e:
+                logger.error(f"Failed to get difficulty presets: {e}", exc_info=True)
+                print(json.dumps({"error": str(e)}), file=sys.stderr)
+                sys.exit(1)
+
+        elif command == "get-qube-relationships":
+            if len(sys.argv) < 5:
+                print(json.dumps({"error": "User ID, Qube ID, and password required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            # SECURITY: Validate qube_id
+            qube_id = validate_qube_id(sys.argv[3])
+            password = sys.argv[4]
+
+            # Create bridge with correct user
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.get_qube_relationships(qube_id, password)
+            print(json.dumps(result))
+
+        elif command == "get-relationship-timeline":
+            if len(sys.argv) < 6:
+                print(json.dumps({"error": "User ID, Qube ID, Entity ID, and password required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            # SECURITY: Validate qube_id
+            qube_id = validate_qube_id(sys.argv[3])
+            # entity_id can be either a qube_id (8 hex) or human username (alphanumeric)
+            entity_id = validate_user_id(sys.argv[4])  # Works for both qube IDs and human usernames
+            password = sys.argv[5] if sys.argv[5] else None
+
+            # Create bridge with correct user
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.get_relationship_timeline(qube_id, entity_id, password)
+            print(json.dumps(result))
+
+        elif command == "reset-qube-relationships":
+            if len(sys.argv) < 5:
+                print(json.dumps({"error": "User ID, Qube ID, and password required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            # SECURITY: Validate qube_id
+            qube_id = validate_qube_id(sys.argv[3])
+            password = sys.argv[4]
+
+            # Create bridge with correct user
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.reset_qube_relationships(qube_id, password)
+            print(json.dumps(result))
+
+        elif command == "get-google-tts-path":
+            if len(sys.argv) < 3:
+                print(json.dumps({"error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            try:
+                from config.user_preferences import UserPreferencesManager
+
+                # Get user data directory
+                data_dir = Path("data") / "users" / user_id
+                prefs_manager = UserPreferencesManager(data_dir)
+
+                # Get Google TTS path from preferences
+                path = prefs_manager.get_google_tts_path()
+
+                print(json.dumps({"path": path}))
+            except Exception as e:
+                logger.error(f"Failed to get Google TTS path: {e}", exc_info=True)
+                print(json.dumps({"error": str(e)}), file=sys.stderr)
+                sys.exit(1)
+
+        elif command == "set-google-tts-path":
+            if len(sys.argv) < 4:
+                print(json.dumps({"error": "User ID and path required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            path = sys.argv[3]
+
+            try:
+                from config.user_preferences import UserPreferencesManager
+
+                # Get user data directory
+                data_dir = Path("data") / "users" / user_id
+                prefs_manager = UserPreferencesManager(data_dir)
+
+                # Set Google TTS path (empty string = clear the path)
+                if path.strip() == "" or path.lower() == "none":
+                    prefs_manager.update_google_tts_path(None)
+                    print(json.dumps({"success": True, "path": None}))
+                else:
+                    prefs_manager.update_google_tts_path(path)
+                    print(json.dumps({"success": True, "path": path}))
+            except Exception as e:
+                logger.error(f"Failed to set Google TTS path: {e}", exc_info=True)
+                print(json.dumps({"success": False, "error": str(e)}), file=sys.stderr)
+                sys.exit(1)
+
+        elif command == "get-decision-config":
+            if len(sys.argv) < 3:
+                print(json.dumps({"error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            try:
+                from config.user_preferences import UserPreferencesManager
+                from dataclasses import asdict
+
+                # Get user data directory
+                data_dir = Path("data") / "users" / user_id
+                prefs_manager = UserPreferencesManager(data_dir)
+
+                # Get decision config from preferences
+                config = prefs_manager.get_decision_config()
+
+                print(json.dumps({
+                    "success": True,
+                    "config": asdict(config)
+                }))
+            except Exception as e:
+                logger.error(f"Failed to get decision config: {e}", exc_info=True)
+                print(json.dumps({"success": False, "error": str(e)}), file=sys.stderr)
+                sys.exit(1)
+
+        elif command == "update-decision-config":
+            if len(sys.argv) < 4:
+                print(json.dumps({"error": "User ID and config JSON required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            config_json = sys.argv[3]
+
+            try:
+                from config.user_preferences import UserPreferencesManager
+
+                # Get user data directory
+                data_dir = Path("data") / "users" / user_id
+                prefs_manager = UserPreferencesManager(data_dir)
+
+                # Parse config data
+                config_data = json.loads(config_json)
+
+                # Update decision config
+                prefs_manager.update_decision_config(**config_data)
+
+                print(json.dumps({
+                    "success": True,
+                    "message": "Decision config updated"
+                }))
+            except Exception as e:
+                logger.error(f"Failed to update decision config: {e}", exc_info=True)
+                print(json.dumps({"success": False, "error": str(e)}), file=sys.stderr)
+                sys.exit(1)
+
+        elif command == "get-qube-skills":
+            if len(sys.argv) < 4:
+                print(json.dumps({"success": False, "error": "User ID and Qube ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            qube_id = sys.argv[3]
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.get_qube_skills(user_id, qube_id)
+            print(json.dumps(result))
+
+        elif command == "save-qube-skills":
+            if len(sys.argv) < 5:
+                print(json.dumps({"success": False, "error": "User ID, Qube ID, and skills JSON required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            qube_id = sys.argv[3]
+            skills_json = sys.argv[4]
+
+            try:
+                skills_data = json.loads(skills_json)
+            except json.JSONDecodeError as e:
+                print(json.dumps({"success": False, "error": f"Invalid JSON: {str(e)}"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.save_qube_skills(user_id, qube_id, skills_data)
+            print(json.dumps(result))
+
+        elif command == "add-skill-xp":
+            if len(sys.argv) < 6:
+                print(json.dumps({"success": False, "error": "User ID, Qube ID, skill ID, and XP amount required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            qube_id = sys.argv[3]
+            skill_id = sys.argv[4]
+
+            try:
+                xp_amount = int(sys.argv[5])
+            except ValueError:
+                print(json.dumps({"success": False, "error": "XP amount must be an integer"}), file=sys.stderr)
+                sys.exit(1)
+
+            evidence_block_id = sys.argv[6] if len(sys.argv) > 6 else None
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.add_skill_xp(user_id, qube_id, skill_id, xp_amount, evidence_block_id)
+            print(json.dumps(result))
+
+        elif command == "unlock-skill":
+            if len(sys.argv) < 5:
+                print(json.dumps({"success": False, "error": "User ID, Qube ID, and skill ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            qube_id = sys.argv[3]
+            skill_id = sys.argv[4]
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.unlock_skill(user_id, qube_id, skill_id)
+            print(json.dumps(result))
+
+        elif command == "get-visualizer-settings":
+            if len(sys.argv) < 4:
+                print(json.dumps({"success": False, "error": "User ID and Qube ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            qube_id = sys.argv[3]
+
+            try:
+                # Find qube directory
+                data_dir = Path("data") / "users" / user_id / "qubes"
+                qube_dir = None
+                for dir_path in data_dir.iterdir():
+                    if dir_path.is_dir() and qube_id in dir_path.name:
+                        qube_dir = dir_path
+                        break
+
+                if not qube_dir:
+                    print(json.dumps({"success": False, "error": f"Qube {qube_id} not found"}), file=sys.stderr)
+                    sys.exit(1)
+
+                settings_file = qube_dir / "visualizer_settings.json"
+
+                # Load settings or return defaults
+                if settings_file.exists():
+                    with open(settings_file, 'r') as f:
+                        settings = json.load(f)
+                else:
+                    settings = {
+                        "enabled": False,
+                        "waveform_style": 1,
+                        "color_theme": "qube-color",
+                        "gradient_style": "gradient-dark",
+                        "sensitivity": 50,
+                        "animation_smoothness": "medium",
+                        "audio_offset_ms": 0,
+                        "frequency_range": 20,
+                        "output_monitor": 0
+                    }
+
+                print(json.dumps(settings))
+
+            except Exception as e:
+                logger.error(f"Failed to get visualizer settings: {e}", exc_info=True)
+                print(json.dumps({"success": False, "error": str(e)}), file=sys.stderr)
+                sys.exit(1)
+
+        elif command == "save-visualizer-settings":
+            if len(sys.argv) < 5:
+                print(json.dumps({"success": False, "error": "User ID, Qube ID, and settings JSON required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            qube_id = sys.argv[3]
+            settings_json = sys.argv[4]
+
+            try:
+                # Find qube directory
+                data_dir = Path("data") / "users" / user_id / "qubes"
+                qube_dir = None
+                for dir_path in data_dir.iterdir():
+                    if dir_path.is_dir() and qube_id in dir_path.name:
+                        qube_dir = dir_path
+                        break
+
+                if not qube_dir:
+                    print(json.dumps({"success": False, "error": f"Qube {qube_id} not found"}), file=sys.stderr)
+                    sys.exit(1)
+
+                settings_file = qube_dir / "visualizer_settings.json"
+                settings_data = json.loads(settings_json)
+
+                # Save settings
+                with open(settings_file, 'w') as f:
+                    json.dump(settings_data, f, indent=2)
+
+                print(json.dumps({"success": True, "message": "Visualizer settings saved"}))
+
+            except Exception as e:
+                logger.error(f"Failed to save visualizer settings: {e}", exc_info=True)
+                print(json.dumps({"success": False, "error": str(e)}), file=sys.stderr)
+                sys.exit(1)
+
+        elif command == "get-trust-personality":
+            if len(sys.argv) < 4:
+                print(json.dumps({"success": False, "error": "User ID and Qube ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            qube_id = sys.argv[3]
+
+            try:
+                from utils.file_lock import FileLock
+
+                # Find qube directory
+                data_dir = Path("data") / "users" / user_id / "qubes"
+                qube_dir = None
+                for dir_path in data_dir.iterdir():
+                    if dir_path.is_dir() and qube_id in dir_path.name:
+                        qube_dir = dir_path
+                        break
+
+                if not qube_dir:
+                    print(json.dumps({"success": False, "error": f"Qube {qube_id} not found"}), file=sys.stderr)
+                    sys.exit(1)
+
+                chain_state_file = qube_dir / "chain_state.json"
+                lock_file = qube_dir / ".chain_state.lock"
+
+                # Load chain_state with file locking
+                lock = FileLock(lock_file, timeout=5.0)
+                with lock:
+                    if chain_state_file.exists():
+                        with open(chain_state_file, 'r') as f:
+                            chain_state = json.load(f)
+                        trust_profile = chain_state.get("trust_profile", "balanced")
+                    else:
+                        trust_profile = "balanced"
+
+                print(json.dumps({"trust_profile": trust_profile}))
+
+            except Exception as e:
+                logger.error(f"Failed to get trust personality: {e}", exc_info=True)
+                print(json.dumps({"success": False, "error": str(e)}), file=sys.stderr)
+                sys.exit(1)
+
+        elif command == "update-trust-personality":
+            if len(sys.argv) < 5:
+                print(json.dumps({"success": False, "error": "User ID, Qube ID, and trust profile required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            qube_id = sys.argv[3]
+            trust_profile = sys.argv[4]
+
+            try:
+                from utils.file_lock import FileLock
+
+                # Validate trust_profile
+                valid_profiles = ["cautious", "balanced", "social", "analytical"]
+                if trust_profile not in valid_profiles:
+                    print(json.dumps({"success": False, "error": f"Invalid trust profile. Must be one of: {', '.join(valid_profiles)}"}), file=sys.stderr)
+                    sys.exit(1)
+
+                # Find qube directory
+                data_dir = Path("data") / "users" / user_id / "qubes"
+                qube_dir = None
+                for dir_path in data_dir.iterdir():
+                    if dir_path.is_dir() and qube_id in dir_path.name:
+                        qube_dir = dir_path
+                        break
+
+                if not qube_dir:
+                    print(json.dumps({"success": False, "error": f"Qube {qube_id} not found"}), file=sys.stderr)
+                    sys.exit(1)
+
+                chain_state_file = qube_dir / "chain_state.json"
+                lock_file = qube_dir / ".chain_state.lock"
+
+                # Update chain_state with file locking
+                lock = FileLock(lock_file, timeout=5.0)
+                with lock:
+                    # Load existing chain_state
+                    if chain_state_file.exists():
+                        with open(chain_state_file, 'r') as f:
+                            chain_state = json.load(f)
+                    else:
+                        # Initialize if doesn't exist
+                        chain_state = {"qube_id": qube_id}
+
+                    # Update trust_profile
+                    chain_state["trust_profile"] = trust_profile
+
+                    # Save atomically
+                    temp_file = chain_state_file.with_suffix('.json.tmp')
+                    with open(temp_file, 'w') as f:
+                        json.dump(chain_state, f, indent=2)
+                    temp_file.replace(chain_state_file)
+
+                print(json.dumps({"success": True, "trust_profile": trust_profile}))
+
+            except Exception as e:
+                logger.error(f"Failed to update trust personality: {e}", exc_info=True)
+                print(json.dumps({"success": False, "error": str(e)}), file=sys.stderr)
+                sys.exit(1)
+
+        elif command == "prepare-qube-for-minting":
+            if len(sys.argv) < 3:
+                print(json.dumps({"error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            # Parse arguments
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("command")  # Already consumed
+            parser.add_argument("user_id")  # Already consumed
+            parser.add_argument("--name", required=True)
+            parser.add_argument("--genesis-prompt", required=True)
+            parser.add_argument("--ai-provider", required=True)
+            parser.add_argument("--ai-model", required=True)
+            parser.add_argument("--voice-model", default="openai:alloy")
+            parser.add_argument("--wallet-address", required=True)
+            parser.add_argument("--password", required=True)
+            parser.add_argument("--encrypt-genesis", default="false")
+            parser.add_argument("--favorite-color", default="#00ff88")
+            parser.add_argument("--avatar-file", default=None)
+            parser.add_argument("--generate-avatar", action="store_true", default=False)
+            parser.add_argument("--avatar-style", default="cyberpunk")
+
+            args = parser.parse_args()
+
+            # Create bridge with correct user
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.prepare_qube_for_minting(
+                name=args.name,
+                genesis_prompt=args.genesis_prompt,
+                ai_provider=args.ai_provider,
+                ai_model=args.ai_model,
+                voice_model=args.voice_model,
+                wallet_address=args.wallet_address,
+                password=args.password,
+                encrypt_genesis=(args.encrypt_genesis.lower() == "true"),
+                favorite_color=args.favorite_color,
+                avatar_file=args.avatar_file,
+                generate_avatar=args.generate_avatar,
+                avatar_style=args.avatar_style,
+            )
+            print(json.dumps(result))
+
+        elif command == "check-minting-status":
+            if len(sys.argv) < 5:
+                print(json.dumps({"error": "User ID, registration ID, and password required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            registration_id = sys.argv[3]
+            password = sys.argv[4]
+
+            # Create bridge with correct user
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.check_minting_status(registration_id, password)
+            print(json.dumps(result))
+
+        elif command == "submit-payment-txid":
+            if len(sys.argv) < 5:
+                print(json.dumps({"error": "User ID, registration ID, and txid required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            registration_id = sys.argv[3]
+            txid = sys.argv[4]
+
+            # Create bridge with correct user
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.submit_payment_txid(registration_id, txid)
+            print(json.dumps(result))
+
+        elif command == "cancel-pending-minting":
+            if len(sys.argv) < 4:
+                print(json.dumps({"error": "User ID and registration ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            registration_id = sys.argv[3]
+
+            # Create bridge with correct user
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.cancel_pending_minting(registration_id)
+            print(json.dumps(result))
+
+        elif command == "list-pending-registrations":
+            if len(sys.argv) < 3:
+                print(json.dumps({"error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            # Create bridge with correct user
+            user_bridge = GUIBridge(user_id=user_id)
+            registrations = await user_bridge.list_pending_registrations()
+            print(json.dumps(registrations))
+
+        elif command == "authenticate-nft":
+            # NFT-based authentication for Qube ownership
+            if len(sys.argv) < 5:
+                print(json.dumps({"error": "User ID, Qube ID, and password required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            qube_id = validate_qube_id(sys.argv[3])
+            password = sys.argv[4]
+
+            # Create bridge with correct user
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.authenticate_nft(qube_id, password)
+            print(json.dumps(result))
+
+        elif command == "refresh-auth-token":
+            # Refresh an existing JWT token
+            if len(sys.argv) < 3:
+                print(json.dumps({"error": "Token required"}), file=sys.stderr)
+                sys.exit(1)
+
+            token = sys.argv[2]
+
+            result = await bridge.refresh_auth_token(token)
+            print(json.dumps(result))
+
+        elif command == "get-auth-status":
+            # Check if Qube can authenticate
+            if len(sys.argv) < 3:
+                print(json.dumps({"error": "Qube ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            qube_id = validate_qube_id(sys.argv[2])
+
+            result = await bridge.get_auth_status(qube_id)
+            print(json.dumps(result))
+
+
+        elif command == "get-work-ethic-proof":
+            # Generate work ethic proof for a Qube
+            if len(sys.argv) < 4:
+                print(json.dumps({"error": "User ID and Qube ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            qube_id = validate_qube_id(sys.argv[3])
+            password = sys.argv[4] if len(sys.argv) > 4 else None
+
+            try:
+                user_bridge = GUIBridge(user_id=user_id)
+                if password:
+                    user_bridge.orchestrator.set_master_key(password)
+                
+                qube = await user_bridge.orchestrator.load_qube(qube_id)
+                
+                from core.proof_of_ethic import generate_work_ethic_proof, proof_to_dict
+                proof = generate_work_ethic_proof(qube)
+                
+                print(json.dumps({
+                    "success": True,
+                    "proof": proof_to_dict(proof)
+                }))
+            except Exception as e:
+                logger.error(f"Failed to generate work ethic proof: {e}", exc_info=True)
+                print(json.dumps({"success": False, "error": str(e)}))
+
+
+        # =====================================================================
+        # P2P Network Commands
+        # =====================================================================
+
+        elif command == "get-online-qubes":
+            if len(sys.argv) < 3:
+                print(json.dumps({"error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.get_online_qubes()
+            print(json.dumps(result))
+
+        elif command == "generate-introduction":
+            # Generate an AI introduction message (Qube introduces itself)
+            if len(sys.argv) < 7:
+                print(json.dumps({"error": "User ID, Qube ID, to_commitment, to_name, to_description, and password required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            qube_id = validate_qube_id(sys.argv[3])
+            to_commitment = sys.argv[4]
+            to_name = sys.argv[5]
+            to_description = sys.argv[6] if len(sys.argv) > 6 else ""
+            password = sys.argv[7] if len(sys.argv) > 7 else sys.argv[6]
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.generate_introduction_message(
+                qube_id, to_commitment, to_name, to_description, password
+            )
+            print(json.dumps(result))
+
+        elif command == "send-introduction":
+            if len(sys.argv) < 7:
+                print(json.dumps({"error": "User ID, Qube ID, to_commitment, message, and password required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            qube_id = validate_qube_id(sys.argv[3])
+            to_commitment = sys.argv[4]
+            message = sys.argv[5]
+            password = sys.argv[6]
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.send_introduction(qube_id, to_commitment, message, password)
+            print(json.dumps(result))
+
+        elif command == "get-pending-introductions":
+            if len(sys.argv) < 5:
+                print(json.dumps({"error": "User ID, Qube ID, and password required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            qube_id = validate_qube_id(sys.argv[3])
+            password = sys.argv[4]
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.get_pending_introductions(qube_id, password)
+            print(json.dumps(result))
+
+        elif command == "evaluate-introduction":
+            # Have the Qube's AI evaluate an incoming introduction
+            if len(sys.argv) < 6:
+                print(json.dumps({"error": "User ID, Qube ID, from_name, intro_message, and password required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            qube_id = validate_qube_id(sys.argv[3])
+            from_name = sys.argv[4]
+            intro_message = sys.argv[5]
+            password = sys.argv[6]
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.evaluate_introduction(qube_id, from_name, intro_message, password)
+            print(json.dumps(result))
+
+        elif command == "accept-introduction":
+            if len(sys.argv) < 6:
+                print(json.dumps({"error": "User ID, Qube ID, relay_id, and password required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            qube_id = validate_qube_id(sys.argv[3])
+            relay_id = sys.argv[4]
+            password = sys.argv[5]
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.accept_introduction(qube_id, relay_id, password)
+            print(json.dumps(result))
+
+        elif command == "reject-introduction":
+            if len(sys.argv) < 6:
+                print(json.dumps({"error": "User ID, Qube ID, relay_id, and password required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            qube_id = validate_qube_id(sys.argv[3])
+            relay_id = sys.argv[4]
+            password = sys.argv[5]
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.reject_introduction(qube_id, relay_id, password)
+            print(json.dumps(result))
+
+        elif command == "process-p2p-message":
+            # Process an incoming P2P message through the local Qube's AI
+            if len(sys.argv) < 4:
+                print(json.dumps({"error": "User ID and Qube ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            qube_id = validate_qube_id(sys.argv[3])
+
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("command")
+            parser.add_argument("user_id")
+            parser.add_argument("qube_id")
+            parser.add_argument("--from-name", required=True)
+            parser.add_argument("--from-commitment", default="")
+            parser.add_argument("--message", required=True)
+            parser.add_argument("--context", default="[]")  # JSON array
+            parser.add_argument("--password", required=True)
+
+            args = parser.parse_args()
+
+            # Parse context from JSON
+            try:
+                context = json.loads(args.context)
+            except json.JSONDecodeError:
+                context = []
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.process_p2p_message(
+                qube_id,
+                args.from_name,
+                args.from_commitment,
+                args.message,
+                context,
+                args.password
+            )
+            print(json.dumps(result))
+
+        elif command == "get-connections":
+            if len(sys.argv) < 4:
+                print(json.dumps({"error": "User ID and Qube ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            qube_id = validate_qube_id(sys.argv[3])
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.get_connections(qube_id)
+            print(json.dumps(result))
+
+        elif command == "create-p2p-session":
+            if len(sys.argv) < 4:
+                print(json.dumps({"error": "User ID and Qube ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            qube_id = validate_qube_id(sys.argv[3])
+
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("command")
+            parser.add_argument("user_id")
+            parser.add_argument("qube_id")
+            parser.add_argument("--local-qubes", default="")
+            parser.add_argument("--remote-commitments", default="")
+            parser.add_argument("--topic", default="")
+            parser.add_argument("--password", required=True)
+
+            args = parser.parse_args()
+
+            local_qube_ids = [q.strip() for q in args.local_qubes.split(",") if q.strip()]
+            remote_commitments = [c.strip() for c in args.remote_commitments.split(",") if c.strip()]
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.create_p2p_session(
+                qube_id,
+                local_qube_ids,
+                remote_commitments,
+                args.topic,
+                args.password
+            )
+            print(json.dumps(result))
+
+        elif command == "get-p2p-sessions":
+            if len(sys.argv) < 5:
+                print(json.dumps({"error": "User ID, Qube ID, and password required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            qube_id = validate_qube_id(sys.argv[3])
+            password = sys.argv[4]
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.get_p2p_sessions(qube_id, password)
+            print(json.dumps(result))
+
+        elif command == "start-p2p-conversation":
+            # Start a P2P conversation using the same logic as local multi-qube
+            if len(sys.argv) < 3:
+                print(json.dumps({"error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("command")
+            parser.add_argument("user_id")
+            parser.add_argument("--local-qubes", required=True)  # Comma-separated qube IDs
+            parser.add_argument("--remote-connections", default="[]")  # JSON array
+            parser.add_argument("--session-id", required=True)
+            parser.add_argument("--initial-prompt", required=True)
+            parser.add_argument("--password", required=True)
+
+            args = parser.parse_args()
+
+            local_qube_ids = [q.strip() for q in args.local_qubes.split(",") if q.strip()]
+            remote_connections = json.loads(args.remote_connections)
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.start_p2p_conversation(
+                local_qube_ids,
+                remote_connections,
+                args.session_id,
+                args.initial_prompt,
+                args.password
+            )
+            print(json.dumps(result))
+
+        elif command == "continue-p2p-conversation":
+            # Continue P2P conversation - get next local Qube response
+            if len(sys.argv) < 3:
+                print(json.dumps({"error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("command")
+            parser.add_argument("user_id")
+            parser.add_argument("--conversation-id", required=True)
+            parser.add_argument("--session-id", required=True)
+            parser.add_argument("--local-qubes", required=True)
+            parser.add_argument("--remote-connections", default="[]")
+            parser.add_argument("--password", required=True)
+
+            args = parser.parse_args()
+
+            local_qube_ids = [q.strip() for q in args.local_qubes.split(",") if q.strip()]
+            remote_connections = json.loads(args.remote_connections)
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.continue_p2p_conversation(
+                args.conversation_id,
+                args.session_id,
+                local_qube_ids,
+                remote_connections,
+                args.password
+            )
+            print(json.dumps(result))
+
+        elif command == "inject-p2p-block":
+            # Inject a block received from hub into local conversation
+            if len(sys.argv) < 3:
+                print(json.dumps({"error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("command")
+            parser.add_argument("user_id")
+            parser.add_argument("--conversation-id", required=True)
+            parser.add_argument("--session-id", required=True)
+            parser.add_argument("--block-data", required=True)  # JSON string
+            parser.add_argument("--from-commitment", required=True)
+            parser.add_argument("--local-qubes", required=True)
+            parser.add_argument("--remote-connections", default="[]")
+            parser.add_argument("--password", required=True)
+
+            args = parser.parse_args()
+
+            local_qube_ids = [q.strip() for q in args.local_qubes.split(",") if q.strip()]
+            remote_connections = json.loads(args.remote_connections)
+            block_data = json.loads(args.block_data)
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.inject_p2p_block(
+                args.conversation_id,
+                args.session_id,
+                block_data,
+                args.from_commitment,
+                local_qube_ids,
+                remote_connections,
+                args.password
+            )
+            print(json.dumps(result))
+
+        elif command == "send-p2p-user-message":
+            # Send user message in P2P conversation
+            if len(sys.argv) < 3:
+                print(json.dumps({"error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("command")
+            parser.add_argument("user_id")
+            parser.add_argument("--conversation-id", required=True)
+            parser.add_argument("--session-id", required=True)
+            parser.add_argument("--message", required=True)
+            parser.add_argument("--local-qubes", required=True)
+            parser.add_argument("--remote-connections", default="[]")
+            parser.add_argument("--password", required=True)
+
+            args = parser.parse_args()
+
+            local_qube_ids = [q.strip() for q in args.local_qubes.split(",") if q.strip()]
+            remote_connections = json.loads(args.remote_connections)
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.send_p2p_user_message(
+                args.conversation_id,
+                args.session_id,
+                args.message,
+                local_qube_ids,
+                remote_connections,
+                args.password
+            )
+            print(json.dumps(result))
+
+        # =====================================================================
+        # SETUP WIZARD COMMANDS
+        # (check-first-run, create-user-account, check-ollama-status are handled
+        #  early in main() before GUIBridge initialization)
+        # =====================================================================
+
+        elif command == "create-qube-for-minting":
+            # Create a qube and return info needed for NFT minting
+            if len(sys.argv) < 3:
+                print(json.dumps({"success": False, "error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("command")
+            parser.add_argument("user_id")
+            parser.add_argument("--name", required=True)
+            parser.add_argument("--genesis-prompt", required=True)
+            parser.add_argument("--ai-provider", required=True)
+            parser.add_argument("--ai-model", required=True)
+            parser.add_argument("--evaluation-model", default="mistral:7b")
+            parser.add_argument("--favorite-color", default="#6366f1")
+            parser.add_argument("--password", required=True)
+
+            args = parser.parse_args()
+
+            # Create bridge with correct user
+            user_bridge = GUIBridge(user_id=user_id)
+            user_bridge.orchestrator.set_master_key(args.password)
+
+            try:
+                # Create the qube (without minting - we'll do that through server)
+                qube = await user_bridge.create_qube(
+                    name=args.name,
+                    genesis_prompt=args.genesis_prompt,
+                    ai_provider=args.ai_provider,
+                    ai_model=args.ai_model,
+                    voice_model="",  # No voice by default
+                    wallet_address="",  # Will be set during minting
+                    password=args.password,
+                    favorite_color=args.favorite_color,
+                    generate_avatar=False,  # Use placeholder
+                )
+
+                # Get qube data for minting
+                qube_obj = user_bridge.orchestrator.qubes.get(qube["qube_id"])
+                if not qube_obj:
+                    await user_bridge.orchestrator.load_qube(qube["qube_id"])
+                    qube_obj = user_bridge.orchestrator.qubes[qube["qube_id"]]
+
+                print(json.dumps({
+                    "success": True,
+                    "qube_id": qube["qube_id"],
+                    "public_key": qube.get("public_key", ""),
+                    "genesis_block_hash": qube.get("genesis_block_hash", ""),
+                    "recipient_address": qube.get("recipient_address", ""),
+                }))
+
+            except Exception as e:
+                logger.error(f"Failed to create qube for minting: {e}", exc_info=True)
+                print(json.dumps({"success": False, "error": str(e)}))
+
+        elif command == "save-api-keys":
+            # Save API keys to secure settings
+            if len(sys.argv) < 4:
+                print(json.dumps({"success": False, "error": "User ID and password required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            password = sys.argv[3]
+
+            # Parse API keys from remaining args
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("command")
+            parser.add_argument("user_id")
+            parser.add_argument("password")
+            parser.add_argument("--openai", default="")
+            parser.add_argument("--anthropic", default="")
+            parser.add_argument("--google", default="")
+            parser.add_argument("--deepseek", default="")
+            parser.add_argument("--perplexity", default="")
+
+            args = parser.parse_args()
+
+            # Create orchestrator and set master key
+            orchestrator = UserOrchestrator(user_id=user_id)
+            orchestrator.set_master_key(password)
+
+            # Save API keys using secure settings
+            from utils.secure_settings import SecureSettingsManager
+            settings = SecureSettingsManager(orchestrator.data_dir / "settings.enc")
+            settings.set_encryption_key(orchestrator.master_key)
+
+            if args.openai:
+                settings.set("api_keys.openai", args.openai)
+            if args.anthropic:
+                settings.set("api_keys.anthropic", args.anthropic)
+            if args.google:
+                settings.set("api_keys.google", args.google)
+            if args.deepseek:
+                settings.set("api_keys.deepseek", args.deepseek)
+            if args.perplexity:
+                settings.set("api_keys.perplexity", args.perplexity)
+
+            settings.save()
+
+            print(json.dumps({"success": True}))
+
+        elif command == "update-qube-nft":
+            # Update qube with NFT minting info after server mints
+            if len(sys.argv) < 3:
+                print(json.dumps({"success": False, "error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("command")
+            parser.add_argument("user_id")
+            parser.add_argument("--qube-id", required=True)
+            parser.add_argument("--category-id", required=True)
+            parser.add_argument("--mint-txid", required=True)
+            parser.add_argument("--password", required=True)
+
+            args = parser.parse_args()
+
+            # Create bridge and update qube
+            user_bridge = GUIBridge(user_id=user_id)
+            user_bridge.orchestrator.set_master_key(args.password)
+
+            # Load qube
+            if args.qube_id not in user_bridge.orchestrator.qubes:
+                await user_bridge.orchestrator.load_qube(args.qube_id)
+
+            qube = user_bridge.orchestrator.qubes[args.qube_id]
+
+            # Update NFT info
+            qube.nft_category_id = args.category_id
+            qube.mint_txid = args.mint_txid
+
+            # Save qube state
+            await user_bridge.orchestrator._save_qube_data(qube)
+
+            print(json.dumps({
+                "success": True,
+                "qube_id": args.qube_id,
+                "category_id": args.category_id,
+                "mint_txid": args.mint_txid
+            }))
+
+        else:
+            print(json.dumps({"error": f"Unknown command: {command}"}), file=sys.stderr)
+            sys.exit(1)
+
+    except Exception as e:
+        logger.error(f"Command failed: {e}", exc_info=True)
+        print(json.dumps({"error": str(e)}), file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

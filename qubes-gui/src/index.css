@@ -1,0 +1,184 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Global Styles */
+@layer base {
+  * {
+    @apply box-border;
+  }
+
+  html,
+  body,
+  #root {
+    @apply h-full w-full m-0 p-0;
+  }
+
+  body {
+    @apply bg-bg-primary text-text-primary font-primary;
+    @apply antialiased;
+    font-synthesis: none;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Scrollbar Styling (Cyberpunk) */
+  ::-webkit-scrollbar {
+    @apply w-2;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-bg-secondary;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-accent-primary/20 rounded-full;
+    @apply hover:bg-accent-primary/40;
+  }
+
+  /* Reduced Motion */
+  @media (prefers-reduced-motion: reduce) {
+    * {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+/* Glass Component Utilities */
+@layer components {
+  .glass-card {
+    @apply bg-glass-bg backdrop-blur-glass;
+    @apply border border-glass-border rounded-xl;
+    @apply shadow-glass;
+  }
+
+  .glass-card-hover {
+    @apply glass-card;
+    @apply transition-all duration-300 ease-out;
+  }
+
+  .glass-card-hover:hover {
+    @apply bg-bg-secondary/75 border-glass-border/30;
+    @apply shadow-glass-hover;
+  }
+
+  .glass-input {
+    @apply glass-card;
+    @apply px-4 py-2 text-text-primary placeholder-text-tertiary;
+    @apply focus:outline-none focus:ring-2 focus:ring-accent-primary/50;
+    @apply transition-all duration-200;
+  }
+
+  .glass-button {
+    @apply glass-card-hover;
+    @apply px-6 py-3 font-medium;
+    @apply cursor-pointer select-none;
+    @apply active:translate-y-0;
+  }
+
+  .glass-button-primary {
+    @apply glass-button;
+    @apply border-accent-primary/30 text-accent-primary;
+    @apply hover:shadow-glow-primary hover:border-accent-primary/50;
+  }
+
+  .glass-button-secondary {
+    @apply glass-button;
+    @apply border-accent-secondary/30 text-accent-secondary;
+    @apply hover:shadow-glow-secondary hover:border-accent-secondary/50;
+  }
+
+  .glass-button-danger {
+    @apply glass-button;
+    @apply border-accent-danger/30 text-accent-danger;
+    @apply hover:shadow-glow-danger hover:border-accent-danger/50;
+  }
+}
+
+/* React Flow - Hide default markers and center indicators */
+.react-flow__handle {
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
+.react-flow__connectionline {
+  display: none !important;
+}
+
+.react-flow__marker {
+  display: none !important;
+}
+
+.react-flow__viewport-portal {
+  display: none !important;
+}
+
+.react-flow__edgeupdater {
+  display: none !important;
+}
+
+.react-flow__edge-path {
+  pointer-events: none !important;
+}
+
+.react-flow__renderer {
+  cursor: grab !important;
+}
+
+.react-flow__renderer:active {
+  cursor: grabbing !important;
+}
+
+/* Hide any center indicators or crosshairs */
+.react-flow svg circle[r="4"] {
+  display: none !important;
+}
+
+.react-flow svg circle[r="5"] {
+  display: none !important;
+}
+
+.react-flow__nodes circle {
+  display: none !important;
+}
+
+.react-flow__edges circle {
+  display: none !important;
+}
+
+/* Hide any small white dots or markers */
+circle[fill="white"],
+circle[fill="#ffffff"],
+circle[fill="#fff"] {
+  opacity: 0 !important;
+  display: none !important;
+}
+
+/* Additional marker hiding */
+.react-flow marker circle {
+  display: none !important;
+}
+
+/* Hide any absolutely positioned small circles or dots */
+.react-flow__pane svg > circle {
+  display: none !important;
+}
+
+.react-flow__viewport svg > circle {
+  display: none !important;
+}
+
+.react-flow__container svg > circle {
+  display: none !important;
+}
+
+/* Target any SVG elements that might be center indicators */
+.react-flow svg[width="100%"] circle {
+  display: none !important;
+}
+
+.react-flow svg[height="100%"] circle {
+  display: none !important;
+}

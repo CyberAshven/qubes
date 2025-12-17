@@ -1,0 +1,112 @@
+name: Tests
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  test:
+    name: Test on ${{ matrix.os }} with Python ${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+        cache: 'pip'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest pytest-asyncio pytest-cov pytest-mock
+
+    - name: Run unit tests
+      run: |
+        pytest tests/unit/ -v -m unit --cov=. --cov-report=xml --cov-report=term
+      env:
+        QUBES_ENV: test
+
+    - name: Run integration tests (Linux only, not slow)
+      if: matrix.os == 'ubuntu-latest' && github.event_name == 'pull_request'
+      run: |
+        pytest tests/integration/ -v -m "integration and not slow" --cov=. --cov-append --cov-report=xml
+      env:
+        QUBES_ENV: test
+
+    - name: Upload coverage to Codecov
+      if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
+      uses: codecov/codecov-action@v4
+      with:
+        file: ./coverage.xml
+        flags: unittests
+        name: codecov-umbrella
+        fail_ci_if_error: false
+
+  security-tests:
+    name: Security Tests
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+        cache: 'pip'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest pytest-asyncio
+
+    - name: Run security tests
+      run: |
+        pytest tests/unit/ -v -m security
+      env:
+        QUBES_ENV: test
+
+  lint:
+    name: Lint and Format Check
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+        cache: 'pip'
+
+    - name: Install linting tools
+      run: |
+        pip install black ruff mypy
+
+    - name: Check formatting with black
+      run: black --check .
+      continue-on-error: true
+
+    - name: Lint with ruff
+      run: ruff check .
+      continue-on-error: true
+
+    - name: Type check with mypy (selected modules)
+      run: mypy utils/ core/ --ignore-missing-imports
+      continue-on-error: true

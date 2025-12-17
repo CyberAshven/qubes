@@ -1,0 +1,100 @@
+# Audio Configuration Defaults
+# From docs/27_Audio_TTS_STT_Integration.md Section 13.1
+
+# TTS (Text-to-Speech) Settings
+tts:
+  provider: openai              # openai | elevenlabs | piper
+  default_voice: alloy          # OpenAI: alloy, echo, fable, nova, onyx, shimmer
+  speed: 1.0                    # 0.5 - 2.0x
+  cache_enabled: true           # Cache audio files
+  streaming: true               # Stream audio (low latency)
+  audio_quality: standard       # standard | hd
+
+# STT (Speech-to-Text) Settings
+stt:
+  provider: openai              # openai | deepgram | whisper_cpp
+  mode: ptt                     # ptt | vad | continuous (v1.1+)
+  language: en                  # ISO language code
+  vad_silence_duration: 1.5     # Seconds of silence to stop recording
+  hallucination_filter: true    # Filter common hallucinations
+  confidence_threshold: 0.80    # Minimum confidence to accept transcription
+
+# Privacy Settings
+privacy:
+  save_audio_history: false     # Save TTS/STT audio files
+  require_confirmation: true    # Confirm destructive voice commands
+  show_recording_indicator: true # Show visual indicator when recording
+
+# Performance Settings
+performance:
+  max_tts_cache_size_mb: 500    # 500MB audio cache
+  max_stt_cache_size_mb: 100    # 100MB STT cache
+  tts_timeout_seconds: 30       # TTS API timeout
+  stt_timeout_seconds: 60       # STT API timeout
+
+# Quota Limits (Free Tier)
+quotas:
+  elevenlabs_chars_per_month: 30000    # 30K chars/month (free tier)
+  stt_minutes_per_month: 60            # 60 minutes/month (free tier)
+
+# Local Models (Sovereign Mode)
+local_models:
+  piper:
+    model_path: ~/.qubes/models/piper/en_US-lessac-medium.onnx
+    download_url: https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx
+
+  whisper_cpp:
+    model_path: ~/.qubes/models/whisper/ggml-base.en.bin
+    model_size: base.en           # tiny.en | base.en | small.en | medium.en
+    download_url: https://huggingface.co/ggerganov/whisper.cpp
+
+# Voice Presets (Quick Selection)
+voice_presets:
+  default:
+    provider: openai
+    voice_id: alloy
+    speed: 1.0
+
+  friendly:
+    provider: openai
+    voice_id: nova
+    speed: 1.0
+
+  professional:
+    provider: openai
+    voice_id: onyx
+    speed: 0.95
+
+  storyteller:
+    provider: openai
+    voice_id: fable
+    speed: 0.9
+
+  premium:
+    provider: elevenlabs
+    voice_id: Rachel
+    speed: 1.0
+    stability: 0.5
+
+# Supported Languages
+supported_languages:
+  - code: en
+    name: English
+  - code: es
+    name: Spanish
+  - code: fr
+    name: French
+  - code: de
+    name: German
+  - code: it
+    name: Italian
+  - code: pt
+    name: Portuguese
+  - code: ja
+    name: Japanese
+  - code: zh
+    name: Chinese
+  - code: ko
+    name: Korean
+  - code: ru
+    name: Russian

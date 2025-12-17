@@ -1,0 +1,344 @@
+"""
+Tool Registry and Definition
+
+Manages available tools for AI agents with multi-provider format conversion.
+Matches documentation in docs/09_AI_Integration_Tool_Calling.md Section 6.2
+"""
+
+from typing import Dict, Any, Callable, List, Optional, Awaitable
+from dataclasses import dataclass
+
+from core.block import create_action_block, BlockType
+from core.exceptions import AIError
+from utils.logging import get_logger
+from monitoring.metrics import MetricsRecorder
+
+logger = get_logger(__name__)
+
+
+@dataclass
+class ToolDefinition:
+    """
+    Tool definition with multi-provider format support
+
+    Attributes:
+        name: Tool identifier (e.g., "web_search")
+        description: Human-readable description
+        parameters: JSON schema for parameters
+        handler: Async function to execute tool
+    """
+    name: str
+    description: str
+    parameters: Dict[str, Any]
+    handler: Callable[[Dict[str, Any]], Awaitable[Any]]
+
+    def to_openai_format(self) -> Dict[str, Any]:
+        """Convert to OpenAI tool format"""
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.parameters
+            }
+        }
+
+    def to_anthropic_format(self) -> Dict[str, Any]:
+        """Convert to Anthropic tool format"""
+        return {
+            "name": self.name,
+            "description": self.description,
+            "input_schema": self.parameters
+        }
+
+    def to_google_format(self) -> Dict[str, Any]:
+        """Convert to Google (Gemini) tool format"""
+        def convert_schema(schema: Dict[str, Any]) -> Dict[str, Any]:
+            """Convert JSON Schema to Gemini Schema format"""
+            converted = {}
+
+            # Convert type field
+            if "type" in schema:
+                type_map = {
+                    "object": "OBJECT",
+                    "string": "STRING",
+                    "integer": "INTEGER",
+                    "number": "NUMBER",
+                    "boolean": "BOOLEAN",
+                    "array": "ARRAY"
+                }
+                converted["type_"] = type_map.get(schema["type"], "STRING")
+
+            # Convert properties recursively
+            if "properties" in schema:
+                converted["properties"] = {
+                    k: convert_schema(v) for k, v in schema["properties"].items()
+                }
+
+            # Copy other fields (Gemini doesn't support 'default')
+            for key in ["description", "required", "items"]:
+                if key in schema:
+                    if key == "items":
+                        converted["items"] = convert_schema(schema["items"])
+                    else:
+                        converted[key] = schema[key]
+
+            return converted
+
+        return {
+            "function_declarations": [{
+                "name": self.name,
+                "description": self.description,
+                "parameters": convert_schema(self.parameters)
+            }]
+        }
+
+
+class ToolRegistry:
+    """
+    Registry of tools available to Qube
+
+    Manages tool registration, execution, and format conversion
+    for different AI providers.
+    """
+
+    def __init__(self, qube):
+        """
+        Initialize tool registry
+
+        Args:
+            qube: Qube instance that owns these tools
+        """
+        self.qube = qube
+        self.tools: Dict[str, ToolDefinition] = {}
+
+        logger.info("tool_registry_initialized", qube_id=qube.qube_id)
+
+    def register(self, tool: ToolDefinition) -> None:
+        """
+        Register a new tool
+
+        Args:
+            tool: Tool definition to register
+        """
+        self.tools[tool.name] = tool
+        logger.debug("tool_registered", tool_name=tool.name, qube_id=self.qube.qube_id)
+
+    def unregister(self, tool_name: str) -> None:
+        """Unregister a tool"""
+        if tool_name in self.tools:
+            del self.tools[tool_name]
+            logger.debug("tool_unregistered", tool_name=tool_name)
+
+    def get_tool(self, tool_name: str) -> Optional[ToolDefinition]:
+        """Get tool by name"""
+        return self.tools.get(tool_name)
+
+    def list_tools(self) -> List[str]:
+        """List all registered tool names"""
+        return list(self.tools.keys())
+
+    def get_tools_for_model(self, model_provider: str) -> List[Dict[str, Any]]:
+        """
+        Get tools in format for specific model provider
+
+        Args:
+            model_provider: Provider name (openai, anthropic, google, perplexity, ollama)
+
+        Returns:
+            List of tools in provider-specific format
+        """
+        # Filter tools based on provider capabilities
+        # Ollama models (sovereign mode): Disable ALL tools
+        # Local models struggle with tool calling decisions and prefer external tools over system prompt
+        # For true sovereign operation, force them to rely only on system prompt and context
+        if model_provider == "ollama":
+            logger.info(
+                "tools_disabled_for_ollama_sovereign_mode",
+                reason="Local models work better without tools, relying on system prompt only",
+                qube_id=self.qube.qube_id
+            )
+            return []  # No tools for Ollama - pure sovereign mode
+
+        tools_to_use = self.tools.values()
+
+        if model_provider == "openai":
+            return [tool.to_openai_format() for tool in tools_to_use]
+        elif model_provider == "anthropic":
+            return [tool.to_anthropic_format() for tool in tools_to_use]
+        elif model_provider == "google":
+            # Google returns list of tool objects
+            return [tool.to_google_format() for tool in tools_to_use]
+        elif model_provider == "perplexity":
+            # Use OpenAI format (compatible)
+            return [tool.to_openai_format() for tool in tools_to_use]
+        else:
+            # Default to OpenAI format
+            return [tool.to_openai_format() for tool in tools_to_use]
+
+    async def execute_tool(
+        self,
+        tool_name: str,
+        parameters: Dict[str, Any],
+        record_blocks: bool = True
+    ) -> Any:
+        """
+        Execute a tool and return result
+
+        Creates ACTION block with result included (no separate OBSERVATION block).
+
+        Args:
+            tool_name: Name of tool to execute
+            parameters: Tool parameters
+            record_blocks: Whether to create memory blocks (default True)
+
+        Returns:
+            Tool execution result
+
+        Raises:
+            AIError: If tool not found or execution fails
+        """
+        # Validation layer - check if action should be allowed
+        if hasattr(self.qube, 'decision_config') and self.qube.decision_config.enable_validation_layer:
+            from ai.decision_validator import DecisionValidator
+
+            validator = DecisionValidator(self.qube)
+
+            # Extract target_entity if present in parameters
+            target_entity = parameters.get("entity_id") or parameters.get("recipient_id")
+
+            # Validate the action
+            validation = await validator.validate_action(
+                action_type=tool_name,
+                target_entity=target_entity,
+                **parameters
+            )
+
+            if not validation.allowed:
+                # Action blocked by validation layer
+                logger.warning(
+                    "action_blocked_by_validation",
+                    tool=tool_name,
+                    reason=validation.blocking_reason,
+                    warnings=validation.warnings,
+                    qube_id=self.qube.qube_id
+                )
+
+                return {
+                    "error": f"Action blocked: {validation.blocking_reason}",
+                    "warnings": validation.warnings,
+                    "suggestions": validation.suggestions,
+                    "success": False,
+                    "validation_failed": True
+                }
+
+            # Log warnings if present (but allow action to proceed)
+            if validation.warnings:
+                logger.warning(
+                    "action_validation_warnings",
+                    tool=tool_name,
+                    warnings=validation.warnings,
+                    confidence=validation.confidence,
+                    qube_id=self.qube.qube_id
+                )
+
+        tool = self.tools.get(tool_name)
+        if not tool:
+            raise AIError(
+                f"Unknown tool: {tool_name}",
+                context={"tool": tool_name, "available_tools": list(self.tools.keys())}
+            )
+
+        logger.info(
+            "tool_execution_started",
+            tool=tool_name,
+            parameters=parameters,
+            qube_id=self.qube.qube_id
+        )
+
+        # Execute tool first
+        try:
+            result = await tool.handler(parameters)
+            status = "completed"
+
+            MetricsRecorder.record_tool_execution(tool_name, "success")
+
+            logger.info(
+                "tool_execution_complete",
+                tool=tool_name,
+                success=True,
+                qube_id=self.qube.qube_id
+            )
+
+        except Exception as e:
+            status = "failed"
+            MetricsRecorder.record_tool_execution(tool_name, "error")
+
+            logger.error(
+                "tool_execution_failed",
+                tool=tool_name,
+                qube_id=self.qube.qube_id,
+                exc_info=True
+            )
+
+            result = {
+                "error": str(e),
+                "success": False
+            }
+
+        # Record ACTION block with result included
+        if record_blocks:
+            if self.qube.current_session:
+                # Add to session (temporary)
+                latest = self.qube.memory_chain.get_latest_block()
+                action_block_data = create_action_block(
+                    qube_id=self.qube.qube_id,
+                    block_number=-1,
+                    previous_block_number=latest.block_number if latest else 0,
+                    action_type=tool_name,
+                    parameters=parameters,
+                    initiated_by="self",
+                    status=status,
+                    result=result,
+                    temporary=True
+                )
+
+                # Note: Relationship updates now handled by AI during SUMMARY blocks
+                # No need to set relationship_updates on individual ACTION blocks
+
+                self.qube.current_session.create_block(action_block_data)
+            else:
+                # Add to permanent chain
+                latest = self.qube.memory_chain.get_latest_block()
+                action_block_data = create_action_block(
+                    qube_id=self.qube.qube_id,
+                    block_number=self.qube.memory_chain.get_chain_length(),
+                    previous_hash=latest.block_hash if latest else self.qube.genesis_block.block_hash,
+                    action_type=tool_name,
+                    parameters=parameters,
+                    initiated_by="self",
+                    status=status,
+                    result=result,
+                    temporary=False
+                )
+
+                # Note: Relationship updates now handled by AI during SUMMARY blocks
+                # No need to set relationship_updates on individual ACTION blocks
+
+                self.qube.memory_chain.add_block(action_block_data)
+                # Note: self.qube.storage was removed, blocks are saved as individual JSON files
+
+        return result
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize registry to dictionary"""
+        return {
+            "tools": [
+                {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.parameters
+                }
+                for tool in self.tools.values()
+            ]
+        }

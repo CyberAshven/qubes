@@ -1,0 +1,112 @@
+# Trust Scoring Configuration - VERY LONG GRIND MODE
+# Relationships take a VERY long time to build, making them more meaningful
+
+default_weights:
+  reliability: 0.25
+  honesty: 0.30
+  responsiveness: 0.15
+  expertise: 0.15
+  third_party_reputation: 0.15
+
+# DRAMATICALLY increased thresholds - makes relationships take 5-10x longer
+progression_thresholds:
+  unmet: 0
+  stranger: 1
+  acquaintance: 55      # Was 40 → +38% harder
+  friend: 75            # Was 65 → +15% harder
+  close_friend: 88      # Was 80 → +10% harder
+  best_friend: 95       # Was 90 → +6% harder
+
+# MUCH higher minimum interactions - the real grind
+min_interactions:
+  acquaintance: 25      # Was 5 → 5x more interactions
+  friend: 75            # Was 10 → 7.5x more interactions
+  close_friend: 200     # Was 20 → 10x more interactions
+  best_friend: 500      # Was 50 → 10x more interactions
+
+# Additional requirements for friendship levels
+friendship_requirements:
+  friend:
+    min_successful_collaborations: 3      # Was 1 → 3x harder
+    min_time_known_days: 7                # NEW: Must know for 1 week
+  close_friend:
+    min_successful_collaborations: 15     # NEW requirement
+    min_affection_level: 75               # Was 70
+    min_respect_level: 75                 # Was 70
+    min_time_known_days: 30               # NEW: Must know for 1 month
+  best_friend:
+    min_successful_collaborations: 30     # NEW requirement
+    min_affection_level: 85               # NEW requirement
+    min_time_known_days: 90               # NEW: Must know for 3 months
+
+# REDUCED trust deltas - trust builds much slower
+trust_deltas:
+  # Responsiveness (per message)
+  very_fast_response: 0.5    # Was 3.0 → 6x slower
+  fast_response: 0.2         # Was 1.0 → 5x slower
+  slow_response: -0.1        # Was -0.5
+  very_slow_response: -0.3   # Was -2.0
+
+  # Reliability (per collaboration)
+  successful_task: 0.4       # Was 2.0 → 5x slower
+  failed_task: -1.0          # Was -5.0 (less punishing)
+
+  # Penalties
+  warning: -2.0              # Was -10.0 (less harsh)
+  dispute: -1.0              # Was -5.0 (less harsh)
+
+# Trust decay - relationships degrade without interaction (NEW)
+trust_decay:
+  enabled: true
+  days_without_interaction: 30        # Starts decaying after 1 month
+  decay_rate_per_week: 0.5            # Lose 0.5 trust per week of inactivity
+  min_trust_score: 40                 # Won't decay below stranger level
+
+# Affection/Respect growth rates (MUCH slower)
+social_growth_rates:
+  affection_per_positive_exp: 1       # Was 2 → 2x slower
+  affection_per_negative_exp: -2      # Was -3 (less punishing)
+  respect_per_collaboration: 2        # Was 5 → 2.5x slower
+
+# Collaboration bonuses (reduced)
+collaboration_bonuses:
+  importance_multiplier_max: 2.0      # Was 3.0
+  shared_experience_threshold: 10     # Need 10 shared experiences for close friend
+
+default_penalties:
+  warning_multiplier: 2      # Was 5 (less harsh)
+  dispute_multiplier: 1      # Was 3 (less harsh)
+
+# Qube personality profiles (for different trust approaches)
+qube_profiles:
+  # Very cautious - builds trust extremely slowly
+  cautious:
+    reliability: 0.35
+    honesty: 0.35
+    responsiveness: 0.10
+    expertise: 0.10
+    third_party_reputation: 0.10
+
+  # Analytical - focused on competence
+  analytical:
+    reliability: 0.30
+    honesty: 0.20
+    responsiveness: 0.10
+    expertise: 0.30
+    third_party_reputation: 0.10
+
+  # Social - focused on interaction quality
+  social:
+    reliability: 0.20
+    honesty: 0.25
+    responsiveness: 0.25
+    expertise: 0.10
+    third_party_reputation: 0.20
+
+  # Balanced - default weights
+  balanced:
+    reliability: 0.25
+    honesty: 0.30
+    responsiveness: 0.15
+    expertise: 0.15
+    third_party_reputation: 0.15

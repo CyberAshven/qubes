@@ -1,0 +1,72 @@
+# Retry Configuration for Qubes
+
+# AI Provider Retry Settings
+ai_providers:
+  # Exponential backoff: wait = base * (multiplier ^ attempt) + jitter
+  retry_attempts: 3
+  base_wait: 1.0  # seconds
+  max_wait: 60.0  # seconds
+  multiplier: 2.0
+  jitter: true
+
+  # Retry on these error types
+  retry_on:
+    - ModelTimeoutError
+    - ModelAPIError
+    - ModelRateLimitError
+    - NetworkError
+
+  # Do NOT retry on these errors
+  no_retry_on:
+    - InvalidInputError
+    - ConfigurationError
+    - AllProvidersFailed
+
+# Blockchain Retry Settings
+blockchain:
+  retry_attempts: 5
+  base_wait: 2.0
+  max_wait: 120.0
+  multiplier: 2.0
+  jitter: true
+
+  retry_on:
+    - TransactionError
+    - ChaingraphError
+    - NetworkError
+
+  no_retry_on:
+    - InsufficientFundsError
+    - InvalidConfigError
+
+# P2P Network Retry Settings
+p2p_network:
+  retry_attempts: 3
+  base_wait: 0.5
+  max_wait: 30.0
+  multiplier: 2.0
+  jitter: true
+
+  retry_on:
+    - PeerConnectionError
+    - PeerDiscoveryError
+    - NetworkError
+
+  no_retry_on:
+    - HandshakeError
+    - InvalidSignatureError
+
+# Storage Retry Settings
+storage:
+  retry_attempts: 2
+  base_wait: 0.1
+  max_wait: 5.0
+  multiplier: 2.0
+  jitter: false
+
+  retry_on:
+    - StorageError
+
+  no_retry_on:
+    - DatabaseCorruptionError
+    - DiskFullError

@@ -1,0 +1,59 @@
+# Circuit Breaker Configuration for Qubes
+
+# AI Provider Circuit Breakers
+ai_providers:
+  openai:
+    failure_threshold: 5    # Open after 5 failures
+    recovery_timeout: 60    # Try recovery after 60 seconds
+    expected_exception: ModelAPIError
+
+  anthropic:
+    failure_threshold: 5
+    recovery_timeout: 60
+    expected_exception: ModelAPIError
+
+  google:
+    failure_threshold: 5
+    recovery_timeout: 60
+    expected_exception: ModelAPIError
+
+  deepseek:
+    failure_threshold: 5
+    recovery_timeout: 60
+    expected_exception: ModelAPIError
+
+  perplexity:
+    failure_threshold: 5
+    recovery_timeout: 60
+    expected_exception: ModelAPIError
+
+  ollama:
+    failure_threshold: 3    # Local, should fail faster
+    recovery_timeout: 30
+    expected_exception: ModelAPIError
+
+# Blockchain Circuit Breaker
+blockchain:
+  bitcoin_cash:
+    failure_threshold: 10
+    recovery_timeout: 120   # BCH blocks ~10 min
+    expected_exception: BlockchainError
+
+# P2P Circuit Breaker
+p2p:
+  libp2p:
+    failure_threshold: 10
+    recovery_timeout: 60
+    expected_exception: NetworkError
+
+# IPFS Circuit Breaker
+ipfs:
+  local_node:
+    failure_threshold: 5
+    recovery_timeout: 30
+    expected_exception: IPFSError
+
+# Circuit Breaker States:
+# - CLOSED: Normal operation, requests flow through
+# - OPEN: Circuit breaker tripped, fail fast without calling service
+# - HALF_OPEN: Testing if service recovered, allow 1 request

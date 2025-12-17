@@ -1,0 +1,21 @@
+# Prometheus Configuration for Qubes
+
+global:
+  scrape_interval: 15s  # Scrape metrics every 15 seconds
+  evaluation_interval: 15s  # Evaluate rules every 15 seconds
+  external_labels:
+    monitor: 'qubes-monitor'
+
+# Scrape configurations
+scrape_configs:
+  # Qubes Orchestrator metrics
+  - job_name: 'qubes-orchestrator'
+    static_configs:
+      - targets: ['qubes:8080']
+    metrics_path: '/health/metrics'
+    scrape_interval: 10s
+
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']

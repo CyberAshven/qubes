@@ -1,0 +1,51 @@
+# Alerting Configuration for Qubes
+
+# Alert thresholds
+thresholds:
+  # Error rate alerts
+  error_rate:
+    warning: 0.05   # 5% error rate
+    critical: 0.15  # 15% error rate
+    window: 300     # 5-minute window
+
+  # AI API cost alerts
+  ai_cost:
+    daily_warning: 50.0    # $50/day
+    daily_critical: 100.0  # $100/day
+    hourly_warning: 5.0    # $5/hour
+
+  # Storage alerts
+  storage:
+    disk_usage_warning: 0.80   # 80% full
+    disk_usage_critical: 0.95  # 95% full
+
+  # P2P network alerts
+  p2p:
+    peer_count_warning: 5      # < 5 peers
+    message_latency_warning: 5.0  # > 5 seconds
+
+  # Circuit breaker alerts
+  circuit_breaker:
+    open_duration_warning: 300  # Open for 5+ minutes
+
+# Alert channels
+channels:
+  console:
+    enabled: true
+    severity: WARNING  # Only WARNING and above
+
+  log_file:
+    enabled: true
+    severity: WARNING
+    path: logs/alerts.log
+
+  # Future: Email, Slack, PagerDuty, etc.
+  # email:
+  #   enabled: false
+  #   recipients: ["admin@qubes.network"]
+  #   severity: CRITICAL
+
+# Alert suppression (prevent alert fatigue)
+suppression:
+  duplicate_window: 300  # Suppress duplicate alerts within 5 minutes
+  max_alerts_per_hour: 10  # Max 10 alerts per hour per type

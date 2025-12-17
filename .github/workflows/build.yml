@@ -1,0 +1,383 @@
+name: Build Qubes
+
+on:
+  # Manual trigger with version input
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g., v1.0.0)'
+        required: false
+        default: ''
+      create_release:
+        description: 'Create a GitHub release'
+        type: boolean
+        default: false
+
+  # Auto-build on tags
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: Qubes-Windows
+            ollama_url: https://github.com/ollama/ollama/releases/download/v0.4.7/ollama-windows-amd64.zip
+            ollama_ext: zip
+            exe_ext: .exe
+
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: Qubes-macOS-ARM
+            ollama_url: https://github.com/ollama/ollama/releases/download/v0.4.7/ollama-darwin
+            ollama_ext: binary
+            exe_ext: ''
+
+          - platform: macos-13
+            target: x86_64-apple-darwin
+            artifact_name: Qubes-macOS-Intel
+            ollama_url: https://github.com/ollama/ollama/releases/download/v0.4.7/ollama-darwin
+            ollama_ext: binary
+            exe_ext: ''
+
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            artifact_name: Qubes-Linux
+            ollama_url: https://github.com/ollama/ollama/releases/download/v0.4.7/ollama-linux-amd64.tgz
+            ollama_ext: tgz
+            exe_ext: ''
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ========== System Dependencies ==========
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            portaudio19-dev \
+            python3-dev \
+            libffi-dev
+
+      - name: Install macOS dependencies
+        if: startsWith(matrix.platform, 'macos')
+        run: |
+          brew install portaudio
+
+      # ========== Setup Rust ==========
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: qubes-gui/src-tauri -> target
+
+      # ========== Setup Node.js ==========
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: qubes-gui/package-lock.json
+
+      # ========== Setup Python ==========
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller
+          pip install -r requirements.txt
+
+      # ========== Build Python Backend ==========
+      - name: Build Python backend (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          cd qubes-gui/src-tauri
+          pyinstaller --onefile --name qubes-backend --distpath dist ../gui_bridge.py
+
+      - name: Build Python backend (Unix)
+        if: matrix.platform != 'windows-latest'
+        run: |
+          cd qubes-gui/src-tauri
+          pyinstaller --onefile --name qubes-backend --distpath dist ../gui_bridge.py
+
+      # ========== Install Frontend Dependencies ==========
+      - name: Install frontend dependencies
+        working-directory: qubes-gui
+        run: npm ci
+
+      # ========== Build Tauri App ==========
+      - name: Build Tauri app (Windows)
+        if: matrix.platform == 'windows-latest'
+        working-directory: qubes-gui
+        shell: pwsh
+        run: npm run tauri build -- --target ${{ matrix.target }}
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      - name: Build Tauri app (Unix)
+        if: matrix.platform != 'windows-latest'
+        working-directory: qubes-gui
+        run: npm run tauri build -- --target ${{ matrix.target }}
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      # ========== Download Ollama ==========
+      - name: Download Ollama (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path ollama-temp
+          Invoke-WebRequest -Uri "${{ matrix.ollama_url }}" -OutFile "ollama-temp/ollama.zip"
+          Expand-Archive -Path "ollama-temp/ollama.zip" -DestinationPath "ollama-temp/extracted"
+          New-Item -ItemType Directory -Force -Path "dist-bundle/ollama"
+          Copy-Item -Path "ollama-temp/extracted/*" -Destination "dist-bundle/ollama/" -Recurse
+
+      - name: Download Ollama (macOS)
+        if: startsWith(matrix.platform, 'macos')
+        run: |
+          mkdir -p dist-bundle/ollama
+          curl -L "${{ matrix.ollama_url }}" -o dist-bundle/ollama/ollama
+          chmod +x dist-bundle/ollama/ollama
+
+      - name: Download Ollama (Linux)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          mkdir -p ollama-temp dist-bundle/ollama
+          curl -L "${{ matrix.ollama_url }}" -o ollama-temp/ollama.tgz
+          tar -xzf ollama-temp/ollama.tgz -C ollama-temp
+          cp -r ollama-temp/bin/* dist-bundle/ollama/ || cp ollama-temp/ollama dist-bundle/ollama/
+          chmod +x dist-bundle/ollama/*
+
+      # ========== Create Distribution Bundle ==========
+      - name: Create distribution bundle (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          $distDir = "dist-bundle/Qubes"
+          New-Item -ItemType Directory -Force -Path $distDir
+          New-Item -ItemType Directory -Force -Path "$distDir/data"
+          New-Item -ItemType Directory -Force -Path "$distDir/resources"
+
+          # Copy Tauri executable
+          Copy-Item "qubes-gui/src-tauri/target/${{ matrix.target }}/release/qubes-gui.exe" "$distDir/Qubes.exe"
+
+          # Copy Python backend
+          New-Item -ItemType Directory -Force -Path "$distDir/qubes-backend"
+          Copy-Item "qubes-gui/src-tauri/dist/qubes-backend.exe" "$distDir/qubes-backend/"
+
+          # Copy Ollama
+          Copy-Item "dist-bundle/ollama" "$distDir/" -Recurse
+
+          # Copy resources
+          if (Test-Path "qubes-gui/src-tauri/resources") {
+            Copy-Item "qubes-gui/src-tauri/resources/*" "$distDir/resources/" -Recurse
+          }
+
+          # Create config
+          @{
+            version = "1.0.0"
+            bundled = $true
+          } | ConvertTo-Json | Out-File "$distDir/qubes-config.json" -Encoding UTF8
+
+          # Create README
+          @"
+          Qubes - Sovereign AI Agents
+          ===========================
+
+          Getting Started:
+          1. Double-click Qubes.exe to launch
+          2. Follow the setup wizard to create your account
+          3. Create your first Qube!
+
+          Requirements:
+          - Windows 10/11 64-bit
+          - 8GB RAM minimum (16GB recommended for local AI)
+          - Internet connection for cloud AI providers
+
+          Support: https://github.com/yourusername/qubes
+          "@ | Out-File "$distDir/README.txt" -Encoding UTF8
+
+      - name: Create distribution bundle (macOS)
+        if: startsWith(matrix.platform, 'macos')
+        run: |
+          DIST_DIR="dist-bundle/Qubes"
+          mkdir -p "$DIST_DIR"/{data,resources,ollama,qubes-backend}
+
+          # Copy Tauri app bundle
+          cp -r "qubes-gui/src-tauri/target/${{ matrix.target }}/release/bundle/macos/qubes-gui.app" "$DIST_DIR/Qubes.app"
+
+          # Copy Python backend
+          cp "qubes-gui/src-tauri/dist/qubes-backend" "$DIST_DIR/qubes-backend/"
+          chmod +x "$DIST_DIR/qubes-backend/qubes-backend"
+
+          # Copy Ollama
+          cp -r dist-bundle/ollama/* "$DIST_DIR/ollama/"
+
+          # Copy resources
+          if [ -d "qubes-gui/src-tauri/resources" ]; then
+            cp -r qubes-gui/src-tauri/resources/* "$DIST_DIR/resources/"
+          fi
+
+          # Create config
+          echo '{"version": "1.0.0", "bundled": true}' > "$DIST_DIR/qubes-config.json"
+
+          # Create README
+          cat > "$DIST_DIR/README.txt" << 'EOF'
+          Qubes - Sovereign AI Agents
+          ===========================
+
+          Getting Started:
+          1. Double-click Qubes.app to launch
+          2. If blocked, right-click and select "Open"
+          3. Follow the setup wizard to create your account
+          4. Create your first Qube!
+
+          Requirements:
+          - macOS 11 (Big Sur) or later
+          - 8GB RAM minimum (16GB recommended for local AI)
+          - Internet connection for cloud AI providers
+
+          Support: https://github.com/yourusername/qubes
+          EOF
+
+      - name: Create distribution bundle (Linux)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          DIST_DIR="dist-bundle/Qubes"
+          mkdir -p "$DIST_DIR"/{data,resources,ollama,qubes-backend}
+
+          # Copy Tauri executable
+          cp "qubes-gui/src-tauri/target/${{ matrix.target }}/release/qubes-gui" "$DIST_DIR/Qubes"
+          chmod +x "$DIST_DIR/Qubes"
+
+          # Copy Python backend
+          cp "qubes-gui/src-tauri/dist/qubes-backend" "$DIST_DIR/qubes-backend/"
+          chmod +x "$DIST_DIR/qubes-backend/qubes-backend"
+
+          # Copy Ollama
+          cp -r dist-bundle/ollama/* "$DIST_DIR/ollama/"
+
+          # Copy resources
+          if [ -d "qubes-gui/src-tauri/resources" ]; then
+            cp -r qubes-gui/src-tauri/resources/* "$DIST_DIR/resources/"
+          fi
+
+          # Create config
+          echo '{"version": "1.0.0", "bundled": true}' > "$DIST_DIR/qubes-config.json"
+
+          # Create README
+          cat > "$DIST_DIR/README.txt" << 'EOF'
+          Qubes - Sovereign AI Agents
+          ===========================
+
+          Getting Started:
+          1. Run ./Qubes from terminal or double-click
+          2. Follow the setup wizard to create your account
+          3. Create your first Qube!
+
+          Requirements:
+          - Ubuntu 20.04+ / Debian 11+ / Fedora 35+
+          - 8GB RAM minimum (16GB recommended for local AI)
+          - Internet connection for cloud AI providers
+
+          Support: https://github.com/yourusername/qubes
+          EOF
+
+          # Create launcher script
+          cat > "$DIST_DIR/launch.sh" << 'EOF'
+          #!/bin/bash
+          cd "$(dirname "$0")"
+          ./Qubes
+          EOF
+          chmod +x "$DIST_DIR/launch.sh"
+
+      # ========== Create Archive ==========
+      - name: Create ZIP archive (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "dist-bundle/Qubes" -DestinationPath "${{ matrix.artifact_name }}.zip"
+
+      - name: Create ZIP archive (Unix)
+        if: matrix.platform != 'windows-latest'
+        run: |
+          cd dist-bundle
+          zip -r "../${{ matrix.artifact_name }}.zip" Qubes
+
+      # ========== Upload Artifact ==========
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_name }}.zip
+          retention-days: 90
+
+  # ========== Create Release ==========
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.version || github.ref_name }}
+          name: Qubes ${{ github.event.inputs.version || github.ref_name }}
+          body: |
+            ## Qubes - Sovereign AI Agents
+
+            ### Downloads
+            - **Windows**: `Qubes-Windows.zip` - Windows 10/11 64-bit
+            - **macOS (Apple Silicon)**: `Qubes-macOS-ARM.zip` - M1/M2/M3 Macs
+            - **macOS (Intel)**: `Qubes-macOS-Intel.zip` - Intel Macs
+            - **Linux**: `Qubes-Linux.zip` - Ubuntu/Debian/Fedora
+
+            ### Installation
+            1. Download the appropriate file for your system
+            2. Extract the ZIP file
+            3. Run the Qubes executable
+            4. Follow the setup wizard
+
+            ### Requirements
+            - 8GB RAM minimum (16GB recommended for local AI models)
+            - Internet connection (for cloud AI providers)
+            - Ollama is bundled for local AI
+          files: artifacts/**/*.zip
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

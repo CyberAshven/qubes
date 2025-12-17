@@ -1,0 +1,97 @@
+# Trust Scoring Configuration
+# Configurable weights and penalties for relationship trust scoring
+# From docs/15_Key_Algorithms.md Section 11.1
+
+# Default trust scoring weights (must sum to 1.0)
+default_weights:
+  reliability: 0.25
+  honesty: 0.30
+  responsiveness: 0.15
+  expertise: 0.15
+  third_party_reputation: 0.15
+
+# Per-Qube custom weight profiles (optional)
+# Users can assign a profile to their Qube in qube.json
+qube_profiles:
+  analytical:
+    # Analytical Qubes prioritize expertise and honesty
+    reliability: 0.20
+    honesty: 0.35
+    responsiveness: 0.10
+    expertise: 0.30
+    third_party_reputation: 0.05
+
+  social:
+    # Social Qubes prioritize responsiveness and third-party reputation
+    reliability: 0.20
+    honesty: 0.25
+    responsiveness: 0.30
+    expertise: 0.10
+    third_party_reputation: 0.15
+
+  cautious:
+    # Cautious Qubes heavily weight third-party reputation
+    reliability: 0.25
+    honesty: 0.25
+    responsiveness: 0.10
+    expertise: 0.15
+    third_party_reputation: 0.25
+
+  balanced:
+    # Balanced is same as default
+    reliability: 0.25
+    honesty: 0.30
+    responsiveness: 0.15
+    expertise: 0.15
+    third_party_reputation: 0.15
+
+# Penalty multipliers (customizable per Qube)
+default_penalties:
+  warning_multiplier: 5      # Points deducted per warning received
+  dispute_multiplier: 3      # Points deducted per unresolved dispute
+
+# Penalty profiles for different trust strictness levels
+penalty_profiles:
+  strict:
+    warning_multiplier: 10
+    dispute_multiplier: 7
+
+  lenient:
+    warning_multiplier: 2
+    dispute_multiplier: 1
+
+  balanced:
+    warning_multiplier: 5
+    dispute_multiplier: 3
+
+# Relationship progression thresholds
+# Overall trust score required to progress to each status
+progression_thresholds:
+  unmet: 0           # Initial state, never met
+  stranger: 1        # First direct contact (has_met=true)
+  acquaintance: 40   # Requires 40+ trust score + 5+ interactions
+  friend: 65         # Requires 65+ trust score + successful collaboration
+  close_friend: 80   # Requires 80+ trust score + 20+ interactions
+  best_friend: 90    # Requires 90+ trust score + 50+ interactions + manual designation
+
+# Minimum interaction counts for progression
+min_interactions:
+  acquaintance: 5
+  friend: 10
+  close_friend: 20
+  best_friend: 50
+
+# Friendship metrics scoring
+friendship_scoring:
+  # Weights for friendship_level calculation (0-100)
+  interaction_frequency_weight: 0.30
+  successful_collaboration_weight: 0.40
+  time_known_weight: 0.10
+  compatibility_weight: 0.20
+
+# Compatibility scoring factors
+compatibility_factors:
+  response_time_similarity: 0.25    # Similar response times
+  topic_overlap: 0.35               # Shared interests
+  communication_style_match: 0.20   # Similar communication styles
+  timezone_alignment: 0.20          # Overlapping active hours

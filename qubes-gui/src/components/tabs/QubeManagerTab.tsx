@@ -1,0 +1,2038 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import { convertFileSrc, invoke } from '@tauri-apps/api/core';
+import { emit } from '@tauri-apps/api/event';
+import { open } from '@tauri-apps/plugin-shell';
+import { readTextFile } from '@tauri-apps/plugin-fs';
+import { Qube } from '../../types';
+import { GlassCard, GlassButton } from '../glass';
+import { useAuth } from '../../hooks/useAuth';
+import { useQubeOrder } from '../../hooks/useQubeOrder';
+import { useQubeSelection } from '../../hooks/useQubeSelection';
+import {
+  DndContext,
+  closestCenter,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  DragEndEvent,
+} from '@dnd-kit/core';
+import {
+  arrayMove,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  rectSortingStrategy,
+  useSortable,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
+
+interface QubeManagerTabProps {
+  qubes: Qube[];
+  onCreateQube: () => void;
+  onEditQube: (qube: Qube) => void;
+  onDeleteQube: (qube: Qube) => void;
+  onUpdateQubeConfig: (qubeId: string, updates: { ai_model?: string; voice_model?: string; tts_enabled?: boolean; evaluation_model?: string }) => Promise<void>;
+}
+
+export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
+  qubes,
+  onCreateQube,
+  onEditQube,
+  onDeleteQube,
+  onUpdateQubeConfig,
+}) => {
+  // Debug: Log qube data to see what we're receiving from backend
+  useEffect(() => {
+    if (qubes.length > 0) {
+      console.log('Qube data received:', qubes[0]);
+    }
+  }, [qubes]);
+
+  const { userId } = useAuth();
+  const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
+  const [searchQuery, setSearchQuery] = useState('');
+  const { orderByUser, setQubeOrder, getQubeOrder } = useQubeOrder();
+  const { toggleSelection, setCurrentTab } = useQubeSelection();
+
+  // Set up drag-and-drop sensors
+  const sensors = useSensors(
+    useSensor(PointerSensor),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    })
+  );
+
+  // Get ordered qubes based on stored order
+  const orderedQubes = useMemo(() => {
+    if (!userId) return qubes;
+
+    const savedOrder = getQubeOrder(userId);
+    if (!savedOrder || savedOrder.length === 0) return qubes;
+
+    // Create a map for quick lookup
+    const qubeMap = new Map(qubes.map(q => [q.qube_id, q]));
+
+    // Start with qubes in saved order
+    const ordered: Qube[] = [];
+    const processedIds = new Set<string>();
+
+    for (const id of savedOrder) {
+      const qube = qubeMap.get(id);
+      if (qube) {
+        ordered.push(qube);
+        processedIds.add(id);
+      }
+    }
+
+    // Add any new qubes not in the saved order
+    for (const qube of qubes) {
+      if (!processedIds.has(qube.qube_id)) {
+        ordered.push(qube);
+      }
+    }
+
+    return ordered;
+  }, [qubes, userId, orderByUser]);
+
+  // Initialize saved order for new users or when first qubes are added
+  useEffect(() => {
+    if (userId && qubes.length > 0) {
+      const currentOrder = getQubeOrder(userId);
+
+      // Only set initial order if we have no saved order at all
+      if (currentOrder.length === 0) {
+        setQubeOrder(userId, qubes.map(q => q.qube_id));
+      }
+    }
+  }, [qubes.length, userId]);
+
+  const filteredQubes = orderedQubes.filter(qube =>
+    qube.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    qube.ai_model.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+
+    if (over && active.id !== over.id && userId) {
+      // Work with the full ordered list, not the filtered one
+      const oldIndex = orderedQubes.findIndex(q => q.qube_id === active.id);
+      const newIndex = orderedQubes.findIndex(q => q.qube_id === over.id);
+
+      const newOrder = arrayMove(orderedQubes, oldIndex, newIndex);
+      setQubeOrder(userId, newOrder.map(q => q.qube_id));
+    }
+  };
+
+  const handleSelectQube = (qube: Qube) => {
+    // Switch to dashboard first
+    setCurrentTab('dashboard');
+    // Then select the qube (without Ctrl/Shift, so it's a single selection)
+    toggleSelection(qube.qube_id, false, false);
+  };
+
+  // Construct avatar path from chain folder
+  const getAvatarPath = (qube: Qube): string => {
+    // Priority 1: IPFS URL from backend
+    if (qube.avatar_url) return qube.avatar_url;
+
+    // Priority 2: Local file path via Tauri convertFileSrc
+    if (qube.avatar_local_path) {
+      return convertFileSrc(qube.avatar_local_path);
+    }
+
+    // Priority 3: Construct path from qube info (fallback for older qubes)
+    const projectRoot = 'C:/Users/bit_f/Projects/Qubes';
+    const filePath = `${projectRoot}/data/users/${userId}/qubes/${qube.name}_${qube.qube_id}/chain/${qube.qube_id}_avatar.png`;
+    return convertFileSrc(filePath);
+  };
+
+  return (
+    <div className="flex-1 overflow-y-auto p-6">
+      {/* Controls */}
+      <div className="flex items-center gap-4 mb-6">
+        {/* View Toggle */}
+        <div className="flex gap-2">
+          <button
+            onClick={() => setViewMode('grid')}
+            className={`px-4 py-2 rounded-lg font-medium text-sm transition-all ${
+              viewMode === 'grid'
+                ? 'bg-accent-primary/10 text-accent-primary border border-accent-primary/30'
+                : 'text-text-secondary hover:text-text-primary hover:bg-bg-tertiary'
+            }`}
+          >
+            🔲 Grid
+          </button>
+          <button
+            onClick={() => setViewMode('list')}
+            className={`px-4 py-2 rounded-lg font-medium text-sm transition-all ${
+              viewMode === 'list'
+                ? 'bg-accent-primary/10 text-accent-primary border border-accent-primary/30'
+                : 'text-text-secondary hover:text-text-primary hover:bg-bg-tertiary'
+            }`}
+          >
+            ☰ List
+          </button>
+        </div>
+
+        {/* Search */}
+        <input
+          type="text"
+          placeholder="Search qubes..."
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          className="flex-1 max-w-md px-4 py-2 bg-glass-bg backdrop-blur-glass border border-glass-border rounded-lg text-text-primary placeholder-text-tertiary focus:outline-none focus:ring-2 focus:ring-accent-primary/50"
+        />
+
+        {/* Stats */}
+        <div className="text-text-tertiary text-sm">
+          {filteredQubes.length} of {qubes.length} qubes
+        </div>
+
+        {/* Create Button */}
+        <div className="ml-auto">
+          <GlassButton variant="primary" onClick={onCreateQube}>
+            + Create New Qube
+          </GlassButton>
+        </div>
+      </div>
+
+      {/* Empty State */}
+      {qubes.length === 0 ? (
+        <GlassCard className="p-12 text-center">
+          <div className="text-6xl mb-4">🤖</div>
+          <h2 className="text-2xl font-display text-text-primary mb-2">
+            No Qubes Yet
+          </h2>
+          <p className="text-text-secondary mb-6">
+            Create your first Qube to get started with AI conversations
+          </p>
+          <GlassButton variant="primary" onClick={onCreateQube}>
+            + Create Your First Qube
+          </GlassButton>
+        </GlassCard>
+      ) : (
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCenter}
+          onDragEnd={handleDragEnd}
+        >
+          <SortableContext
+            items={filteredQubes.map(q => q.qube_id)}
+            strategy={rectSortingStrategy}
+          >
+            {/* Grid View */}
+            {viewMode === 'grid' && (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                {filteredQubes.map((qube) => (
+                  <SortableQubeCard
+                    key={qube.qube_id}
+                    qube={qube}
+                    onEdit={() => onEditQube(qube)}
+                    onDelete={() => onDeleteQube(qube)}
+                    onSelect={() => handleSelectQube(qube)}
+                    onUpdateConfig={onUpdateQubeConfig}
+                    getAvatarPath={getAvatarPath}
+                    setCurrentTab={setCurrentTab}
+                    toggleSelection={toggleSelection}
+                  />
+                ))}
+              </div>
+            )}
+
+            {/* List View */}
+            {viewMode === 'list' && (
+              <div className="space-y-3">
+                {filteredQubes.map((qube) => (
+                  <SortableQubeListItem
+                    key={qube.qube_id}
+                    qube={qube}
+                    onEdit={() => onEditQube(qube)}
+                    onDelete={() => onDeleteQube(qube)}
+                    onSelect={() => handleSelectQube(qube)}
+                    onUpdateConfig={onUpdateQubeConfig}
+                    getAvatarPath={getAvatarPath}
+                    setCurrentTab={setCurrentTab}
+                    toggleSelection={toggleSelection}
+                  />
+                ))}
+              </div>
+            )}
+
+            {/* No Results */}
+            {filteredQubes.length === 0 && (
+              <div className="text-center py-12">
+                <p className="text-text-tertiary">
+                  No qubes match "{searchQuery}"
+                </p>
+              </div>
+            )}
+          </SortableContext>
+        </DndContext>
+      )}
+    </div>
+  );
+};
+
+// Qube Card Component (Grid View)
+interface QubeCardProps {
+  qube: Qube;
+  onEdit: () => void;
+  onDelete: () => void;
+  onSelect: () => void;
+  onUpdateConfig: (qubeId: string, updates: { ai_model?: string; voice_model?: string; favorite_color?: string; tts_enabled?: boolean; evaluation_model?: string }) => Promise<void>;
+  getAvatarPath: (qube: Qube) => string;
+  dragHandleProps?: React.HTMLAttributes<HTMLDivElement>;
+  setCurrentTab: (tab: string) => void;
+  toggleSelection: (qubeId: string, isCtrl: boolean, isShift: boolean) => void;
+}
+
+// Helper component for truncated, clickable blockchain fields
+interface BlockchainLinkProps {
+  value: string;
+  type: 'transaction' | 'address' | 'hash' | 'ipfs' | 'other';
+  network?: string;
+}
+
+const BlockchainLink: React.FC<BlockchainLinkProps> = ({ value, type, network = 'mainnet' }) => {
+  const truncate = (str: string, startChars: number = 10, endChars: number = 10) => {
+    if (str.length <= startChars + endChars + 3) return str;
+    return `${str.substring(0, startChars)}...${str.substring(str.length - endChars)}`;
+  };
+
+  const getUrl = () => {
+    const chain = network === 'mainnet' ? 'bitcoin-cash' : 'bitcoin-cash/testnet';
+
+    switch (type) {
+      case 'transaction':
+        return `https://blockchair.com/${chain}/transaction/${value}`;
+      case 'address':
+        // Remove bitcoincash: prefix if present
+        const cleanAddress = value.replace('bitcoincash:', '');
+        return `https://blockchair.com/${chain}/address/${cleanAddress}`;
+      case 'hash':
+        // For hashes, we can't directly link to blockchair, but we can try
+        return `https://blockchair.com/${chain}/transaction/${value}`;
+      case 'ipfs':
+        // For IPFS URIs, link to ipfs.io gateway
+        const cid = value.replace('ipfs://', '');
+        return `https://ipfs.io/ipfs/${cid}`;
+      default:
+        return null;
+    }
+  };
+
+  const handleClick = async (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const url = getUrl();
+    if (url) {
+      try {
+        await open(url);
+      } catch (error) {
+        console.error('Failed to open URL:', error);
+      }
+    }
+  };
+
+  return (
+    <span
+      onClick={handleClick}
+      className="text-text-primary font-mono bg-bg-tertiary/30 rounded px-1.5 py-0.5 leading-tight cursor-pointer hover:bg-accent-primary/20 hover:text-accent-primary transition-all inline-block"
+      title={`Click to view: ${value}`}
+    >
+      {truncate(value)}
+    </span>
+  );
+};
+
+const QubeCard: React.FC<QubeCardProps> = ({ qube, onEdit, onDelete, onSelect, onUpdateConfig, getAvatarPath, dragHandleProps, setCurrentTab, toggleSelection }) => {
+  const { userId } = useAuth();
+
+  // Infer provider from model if provider is unknown - MUST be defined before useState that uses it
+  const inferProvider = (model: string): string => {
+    if (model.startsWith('gpt-') || model.startsWith('o')) return 'openai';
+    if (model.startsWith('claude-')) return 'anthropic';
+    if (model.startsWith('gemini-')) return 'google';
+    if (model.startsWith('sonar')) return 'perplexity';
+    if (model.includes(':')) return 'ollama'; // Ollama models use colon notation (must check before deepseek)
+    if (model.startsWith('deepseek-')) return 'deepseek'; // Matches deepseek-chat, deepseek-reasoner, etc.
+    return 'openai'; // Default fallback
+  };
+
+  // State declarations
+  const [flipState, setFlipState] = useState(0); // 0 = front, 1 = blockchain, 2 = visualizer
+  const [rotation, setRotation] = useState(0); // Track cumulative rotation
+  const [isEditingModel, setIsEditingModel] = useState(false);
+
+  // Visualizer settings state
+  const [visualizerSettings, setVisualizerSettings] = useState({
+    enabled: false,
+    waveform_style: 1,
+    color_theme: 'qube-color',
+    gradient_style: 'gradient-dark',
+    sensitivity: 50,
+    animation_smoothness: 'medium',
+    audio_offset_ms: 0,
+    frequency_range: 20,
+    output_monitor: 0
+  });
+  const [loadingVisualizerSettings, setLoadingVisualizerSettings] = useState(false);
+  const [savingVisualizerSettings, setSavingVisualizerSettings] = useState(false);
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error'; isExiting?: boolean } | null>(null);
+  const [availableMonitors, setAvailableMonitors] = useState<Array<{id: number; name: string}>>([]);
+  const [isEditingVoice, setIsEditingVoice] = useState(false);
+  const [isEditingColor, setIsEditingColor] = useState(false);
+  const [isEditingEvalModel, setIsEditingEvalModel] = useState(false);
+  const [selectedModel, setSelectedModel] = useState(qube.ai_model);
+  const [selectedVoice, setSelectedVoice] = useState(qube.voice_model || '');
+  const [selectedVoiceProvider, setSelectedVoiceProvider] = useState(() => {
+    // Parse voice provider from voice_model (e.g., "gemini:Puck" -> "gemini")
+    const voiceModel = qube.voice_model || '';
+    return voiceModel.includes(':') ? voiceModel.split(':')[0] : 'openai';
+  });
+  const [selectedColor, setSelectedColor] = useState(qube.favorite_color);
+  const [selectedProvider, setSelectedProvider] = useState(qube.ai_provider);
+  const [selectedEvalModel, setSelectedEvalModel] = useState((qube as any).evaluation_model || 'llama3.2');
+  const [selectedEvalProvider, setSelectedEvalProvider] = useState(() => {
+    const evalModel = (qube as any).evaluation_model || 'llama3.2';
+    return inferProvider(evalModel);
+  });
+
+  const handleFlip = () => {
+    const newFlipState = (flipState + 1) % 3;
+    setFlipState(newFlipState);
+    setRotation(newFlipState * 180); // Keep rotation in sync with flipState
+  };
+
+  const loadVisualizerSettings = async () => {
+    try {
+      setLoadingVisualizerSettings(true);
+      const result = await invoke('get_visualizer_settings', {
+        userId,
+        qubeId: qube.qube_id
+      });
+      if (result) {
+        // Merge with defaults to handle missing fields (like output_monitor)
+        setVisualizerSettings({
+          ...visualizerSettings,
+          ...(result as any),
+          // Ensure output_monitor has a default if missing
+          output_monitor: (result as any).output_monitor ?? 0
+        });
+      }
+    } catch (error) {
+      console.error('Failed to load visualizer settings:', error);
+    } finally {
+      setLoadingVisualizerSettings(false);
+    }
+  };
+
+  const saveVisualizerSettings = async () => {
+    try {
+      setSavingVisualizerSettings(true);
+      await invoke('save_visualizer_settings', {
+        userId,
+        qubeId: qube.qube_id,
+        settings: JSON.stringify(visualizerSettings)
+      });
+      setToast({ message: 'Settings Saved', type: 'success' });
+    } catch (error) {
+      console.error('Failed to save visualizer settings:', error);
+      setToast({ message: `Error: ${String(error)}`, type: 'error' });
+    } finally {
+      setSavingVisualizerSettings(false);
+    }
+  };
+
+  const resetVisualizerSettings = () => {
+    setVisualizerSettings({
+      enabled: false,
+      waveform_style: 1,
+      color_theme: 'qube-color',
+      gradient_style: 'gradient-dark',
+      sensitivity: 50,
+      animation_smoothness: 'medium',
+      audio_offset_ms: 0,
+      frequency_range: 20,
+      output_monitor: 0
+    });
+  };
+
+  // Load available monitors
+  const loadAvailableMonitors = async () => {
+    try {
+      const result: any = await invoke('get_available_monitors');
+      if (result && result.monitors) {
+        setAvailableMonitors(result.monitors);
+      }
+    } catch (error) {
+      console.error('Failed to load monitors:', error);
+      // Fallback to hardcoded list
+      setAvailableMonitors([
+        { id: 1, name: 'External Monitor 1' },
+        { id: 2, name: 'External Monitor 2' },
+        { id: 3, name: 'External Monitor 3' }
+      ]);
+    }
+  };
+
+  // Handle output monitor change
+  const handleOutputMonitorChange = async (newMonitorIndex: number) => {
+    const oldMonitorIndex = visualizerSettings.output_monitor;
+
+    // Update settings
+    const newSettings = { ...visualizerSettings, output_monitor: newMonitorIndex };
+    setVisualizerSettings(newSettings);
+
+    // Save to database
+    try {
+      const settingsJson = JSON.stringify(newSettings);
+
+      await invoke('save_visualizer_settings', {
+        userId,
+        qubeId: qube.qube_id,
+        settings: settingsJson
+      });
+
+      // Emit event to notify other components (like ChatInterface) to reload settings
+      await emit('visualizer-settings-changed', { qubeId: qube.qube_id });
+    } catch (error) {
+      console.error('Failed to save visualizer settings:', error);
+    }
+
+    // Close existing visualizer window if it's currently open
+    // The window will be recreated when TTS plays (handled by ChatInterface)
+    if (oldMonitorIndex > 0) {
+      try {
+        await invoke('close_visualizer_window');
+      } catch (error) {
+        console.error('Failed to close visualizer window:', error);
+      }
+    }
+
+    // Don't create window here - it will be created automatically when TTS plays
+  };
+
+  // Auto-hide toast after 2 seconds with fade-out
+  useEffect(() => {
+    if (toast && !toast.isExiting) {
+      const fadeTimer = setTimeout(() => {
+        setToast({ ...toast, isExiting: true });
+      }, 1800);
+      return () => clearTimeout(fadeTimer);
+    } else if (toast && toast.isExiting) {
+      const removeTimer = setTimeout(() => {
+        setToast(null);
+      }, 200);
+      return () => clearTimeout(removeTimer);
+    }
+  }, [toast]);
+
+  // Load monitors on component mount
+  useEffect(() => {
+    loadAvailableMonitors();
+
+    // Cleanup: Close visualizer window on unmount
+    return () => {
+      if (visualizerSettings.output_monitor > 0) {
+        invoke('close_visualizer_window').catch(() => {
+          // Silently fail
+        });
+      }
+    };
+  }, [visualizerSettings.output_monitor]);
+
+  // Calculate trust color based on trust score (0-100)
+  const getTrustColor = (trust: number): string => {
+    if (trust >= 75) return '#00ff88'; // High trust - green
+    if (trust >= 50) return '#ffaa00'; // Medium trust - yellow/orange
+    if (trust >= 25) return '#ff8800'; // Low-medium trust - orange
+    return '#ff3366'; // Low trust - red
+  };
+
+  // Format model ID to display name
+  const formatModelName = (modelId: string): string => {
+    // Search through all model options to find the label
+    for (const provider of Object.values(modelOptions)) {
+      const found = provider.find(m => m.value === modelId);
+      if (found) return found.label;
+    }
+
+    // Fallback: Try to make it readable
+    // Handle common patterns
+    if (modelId.startsWith('gpt-')) {
+      return modelId.toUpperCase().replace('GPT-', 'GPT-');
+    }
+    if (modelId.startsWith('claude-')) {
+      // claude-sonnet-4-5-20250929 -> Claude Sonnet 4.5
+      const parts = modelId.replace('claude-', '').split('-');
+      const name = parts[0].charAt(0).toUpperCase() + parts[0].slice(1);
+      if (parts.length >= 3) {
+        return `Claude ${name} ${parts[1]}.${parts[2]}`;
+      }
+      return `Claude ${name}`;
+    }
+    if (modelId.startsWith('gemini-')) {
+      // gemini-2.5-pro -> Gemini 2.5 Pro
+      return modelId
+        .split('-')
+        .map(p => p.charAt(0).toUpperCase() + p.slice(1))
+        .join(' ');
+    }
+    if (modelId.startsWith('sonar')) {
+      // sonar-pro -> Sonar Pro
+      return modelId
+        .split('-')
+        .map(p => p.charAt(0).toUpperCase() + p.slice(1))
+        .join(' ');
+    }
+    if (modelId.startsWith('deepseek-')) {
+      // deepseek-chat -> DeepSeek Chat
+      return modelId
+        .split('-')
+        .map(p => p.charAt(0).toUpperCase() + p.slice(1))
+        .join(' ');
+    }
+
+    // Default: return as-is
+    return modelId;
+  };
+
+  // Format voice ID to display name
+  const formatVoiceName = (voiceId: string): string => {
+    if (!voiceId) return 'None';
+
+    // Fallback: format "provider:voice" to "Provider: Voice"
+    if (voiceId.includes(':')) {
+      const [provider, voice] = voiceId.split(':');
+      // Special case for OpenAI
+      const providerName = provider === 'openai' ? 'OpenAI' : provider.charAt(0).toUpperCase() + provider.slice(1);
+      const voiceName = voice.charAt(0).toUpperCase() + voice.slice(1);
+      return `${providerName}: ${voiceName}`;
+    }
+
+    return voiceId;
+  };
+
+  // Get the correct provider (infer if unknown)
+  const getCorrectProvider = () => {
+    return qube.ai_provider === 'unknown' || !qube.ai_provider
+      ? inferProvider(qube.ai_model)
+      : qube.ai_provider;
+  };
+
+  // Reset selections when qube changes
+  React.useEffect(() => {
+    setSelectedModel(qube.ai_model);
+    setSelectedVoice(qube.voice_model || '');
+    // Always infer provider from model name (don't trust ai_provider field)
+    setSelectedProvider(inferProvider(qube.ai_model));
+    // Parse voice provider from voice_model
+    const voiceModel = qube.voice_model || '';
+    setSelectedVoiceProvider(voiceModel.includes(':') ? voiceModel.split(':')[0] : 'openai');
+  }, [qube.ai_model, qube.voice_model]);
+
+  // Also reset when entering edit mode (always infer provider from current model)
+  React.useEffect(() => {
+    if (isEditingModel) {
+      setSelectedModel(qube.ai_model);
+      setSelectedProvider(inferProvider(qube.ai_model));
+    }
+  }, [isEditingModel]);
+
+  // Reset voice selections when entering voice edit mode
+  React.useEffect(() => {
+    if (isEditingVoice) {
+      setSelectedVoice(qube.voice_model || '');
+      const voiceModel = qube.voice_model || '';
+      setSelectedVoiceProvider(voiceModel.includes(':') ? voiceModel.split(':')[0] : 'openai');
+    }
+  }, [isEditingVoice]);
+
+  // Reset evaluation model selections when qube changes
+  React.useEffect(() => {
+    const evalModel = (qube as any).evaluation_model || 'llama3.2';
+    setSelectedEvalModel(evalModel);
+    setSelectedEvalProvider(inferProvider(evalModel));
+  }, [qube.qube_id, (qube as any).evaluation_model]);
+
+  // Reset evaluation model when entering edit mode (always infer provider from current model)
+  React.useEffect(() => {
+    if (isEditingEvalModel) {
+      const evalModel = (qube as any).evaluation_model || 'llama3.2';
+      setSelectedEvalModel(evalModel);
+      setSelectedEvalProvider(inferProvider(evalModel));
+    }
+  }, [isEditingEvalModel]);
+
+  // Load visualizer settings when qube changes
+  React.useEffect(() => {
+    if (qube.qube_id) {
+      loadVisualizerSettings();
+    }
+  }, [qube.qube_id]);
+
+  // Model options by provider
+  const modelOptions: Record<string, { label: string; value: string }[]> = {
+    openai: [
+      { label: 'GPT-5 Turbo', value: 'gpt-5-turbo' },
+      { label: 'GPT-5', value: 'gpt-5' },
+      { label: 'GPT-O4', value: 'o4' },
+      { label: 'GPT-O4 Mini', value: 'o4-mini' },
+      { label: 'GPT-4o', value: 'gpt-4o' },
+      { label: 'GPT-4o Mini', value: 'gpt-4o-mini' },
+    ],
+    anthropic: [
+      { label: 'Claude Sonnet 4.5', value: 'claude-sonnet-4-5-20250929' },
+      { label: 'Claude Opus 4.1', value: 'claude-opus-4-1-20250805' },
+      { label: 'Claude Sonnet 4', value: 'claude-sonnet-4-20250514' },
+      { label: 'Claude 3.7 Sonnet', value: 'claude-3-7-sonnet-20250219' },
+      { label: 'Claude 3.5 Haiku', value: 'claude-3-5-haiku-20241022' },
+    ],
+    google: [
+      { label: 'Gemini 2.5 Pro', value: 'gemini-2.5-pro' },
+      { label: 'Gemini 2.5 Flash', value: 'gemini-2.5-flash' },
+      { label: 'Gemini 2.5 Flash Lite', value: 'gemini-2.5-flash-lite' },
+      { label: 'Gemini 2.0 Flash', value: 'gemini-2.0-flash' },
+      { label: 'Gemini 1.5 Pro', value: 'gemini-1.5-pro' },
+    ],
+    perplexity: [
+      { label: 'Sonar (Fast)', value: 'sonar' },
+      { label: 'Sonar Pro', value: 'sonar-pro' },
+      { label: 'Sonar Reasoning', value: 'sonar-reasoning' },
+      { label: 'Sonar Reasoning Pro', value: 'sonar-reasoning-pro' },
+      { label: 'Sonar Deep Research', value: 'sonar-deep-research' },
+    ],
+    deepseek: [
+      { label: 'DeepSeek Chat (V3.2)', value: 'deepseek-chat' },
+      { label: 'DeepSeek Reasoner (R1)', value: 'deepseek-reasoner' },
+    ],
+    ollama: [
+      { label: 'Llama 3.3 70B', value: 'llama3.3:70b' },
+      { label: 'Llama 3.2', value: 'llama3.2' },
+      { label: 'Llama 3.2 1B', value: 'llama3.2:1b' },
+      { label: 'Llama 3.2 3B', value: 'llama3.2:3b' },
+      { label: 'Llama 3.2 Vision 11B', value: 'llama3.2-vision:11b' },
+      { label: 'Llama 3.2 Vision 90B', value: 'llama3.2-vision:90b' },
+      { label: 'Qwen 3 235B', value: 'qwen3:235b' },
+      { label: 'Qwen 3 30B', value: 'qwen3:30b' },
+      { label: 'Qwen 2.5 7B', value: 'qwen2.5:7b' },
+      { label: 'DeepSeek R1 8B (Local)', value: 'deepseek-r1:8b' },
+      { label: 'Phi 4 14B', value: 'phi4:14b' },
+      { label: 'Gemma 2 9B', value: 'gemma2:9b' },
+      { label: 'Mistral 7B', value: 'mistral:7b' },
+      { label: 'CodeLlama 7B', value: 'codellama:7b' },
+    ],
+  };
+
+  // Helper function to get voice gender labels
+  const getVoiceGender = (voiceId: string): string => {
+    const voiceName = voiceId.includes(':') ? voiceId.split(':')[1].toLowerCase() : voiceId.toLowerCase();
+
+    // Gemini voices
+    const geminiMale = ['achernar', 'algenib', 'alnilam', 'charon', 'fenrir', 'gacrux', 'iapetus', 'orus', 'puck', 'rasalgethi', 'sadachbia', 'sadaltager', 'umbriel', 'zephyr'];
+    const geminiFemale = ['achird', 'algieba', 'aoede', 'autonoe', 'callirrhoe', 'despina', 'enceladus', 'erinome', 'kore', 'laomedeia', 'leda', 'pulcherrima', 'schedar', 'sulafat', 'vindemiatrix', 'zubenelgenubi'];
+
+    // OpenAI voices
+    const openaiMale = ['echo', 'fable', 'onyx'];
+    const openaiFemale = ['alloy', 'nova', 'shimmer'];
+
+    // Google Cloud TTS voices (Standard, WaveNet, Neural2, Studio, Chirp)
+    const googleMale = [
+      'standard-a', 'standard-b', 'standard-d', 'standard-i', 'standard-j',
+      'wavenet-a', 'wavenet-b', 'wavenet-d', 'wavenet-i', 'wavenet-j',
+      'neural2-a', 'neural2-d', 'neural2-i', 'neural2-j',
+      'studio-q', 'chirp-hd-d'
+    ];
+    const googleFemale = [
+      'standard-c', 'standard-e', 'standard-f', 'standard-g', 'standard-h',
+      'wavenet-c', 'wavenet-e', 'wavenet-f', 'wavenet-g', 'wavenet-h',
+      'neural2-c', 'neural2-e', 'neural2-f', 'neural2-g', 'neural2-h',
+      'studio-o', 'chirp-hd-f'
+    ];
+
+    if (geminiMale.includes(voiceName)) return ' (male)';
+    if (geminiFemale.includes(voiceName)) return ' (female)';
+    if (openaiMale.includes(voiceName)) return ' (male)';
+    if (openaiFemale.includes(voiceName)) return ' (female)';
+    if (googleMale.includes(voiceName)) return ' (male)';
+    if (googleFemale.includes(voiceName)) return ' (female)';
+
+    return '';
+  };
+
+  // Voice options organized by provider
+  const voiceOptions: Record<string, { label: string; value: string }[]> = {
+    gemini: [
+      { label: `Achernar${getVoiceGender('gemini:achernar')}`, value: 'gemini:achernar' },
+      { label: `Achird${getVoiceGender('gemini:achird')}`, value: 'gemini:achird' },
+      { label: `Algenib${getVoiceGender('gemini:algenib')}`, value: 'gemini:algenib' },
+      { label: `Algieba${getVoiceGender('gemini:algieba')}`, value: 'gemini:algieba' },
+      { label: `Alnilam${getVoiceGender('gemini:alnilam')}`, value: 'gemini:alnilam' },
+      { label: `Aoede${getVoiceGender('gemini:aoede')}`, value: 'gemini:aoede' },
+      { label: `Autonoe${getVoiceGender('gemini:autonoe')}`, value: 'gemini:autonoe' },
+      { label: `Callirrhoe${getVoiceGender('gemini:callirrhoe')}`, value: 'gemini:callirrhoe' },
+      { label: `Charon${getVoiceGender('gemini:charon')}`, value: 'gemini:charon' },
+      { label: `Despina${getVoiceGender('gemini:despina')}`, value: 'gemini:despina' },
+      { label: `Enceladus${getVoiceGender('gemini:enceladus')}`, value: 'gemini:enceladus' },
+      { label: `Erinome${getVoiceGender('gemini:erinome')}`, value: 'gemini:erinome' },
+      { label: `Fenrir${getVoiceGender('gemini:fenrir')}`, value: 'gemini:fenrir' },
+      { label: `Gacrux${getVoiceGender('gemini:gacrux')}`, value: 'gemini:gacrux' },
+      { label: `Iapetus${getVoiceGender('gemini:iapetus')}`, value: 'gemini:iapetus' },
+      { label: `Kore${getVoiceGender('gemini:kore')}`, value: 'gemini:kore' },
+      { label: `Laomedeia${getVoiceGender('gemini:laomedeia')}`, value: 'gemini:laomedeia' },
+      { label: `Leda${getVoiceGender('gemini:leda')}`, value: 'gemini:leda' },
+      { label: `Orus${getVoiceGender('gemini:orus')}`, value: 'gemini:orus' },
+      { label: `Puck${getVoiceGender('gemini:puck')}`, value: 'gemini:puck' },
+      { label: `Pulcherrima${getVoiceGender('gemini:pulcherrima')}`, value: 'gemini:pulcherrima' },
+      { label: `Rasalgethi${getVoiceGender('gemini:rasalgethi')}`, value: 'gemini:rasalgethi' },
+      { label: `Sadachbia${getVoiceGender('gemini:sadachbia')}`, value: 'gemini:sadachbia' },
+      { label: `Sadaltager${getVoiceGender('gemini:sadaltager')}`, value: 'gemini:sadaltager' },
+      { label: `Schedar${getVoiceGender('gemini:schedar')}`, value: 'gemini:schedar' },
+      { label: `Sulafat${getVoiceGender('gemini:sulafat')}`, value: 'gemini:sulafat' },
+      { label: `Umbriel${getVoiceGender('gemini:umbriel')}`, value: 'gemini:umbriel' },
+      { label: `Vindemiatrix${getVoiceGender('gemini:vindemiatrix')}`, value: 'gemini:vindemiatrix' },
+      { label: `Zephyr${getVoiceGender('gemini:zephyr')}`, value: 'gemini:zephyr' },
+      { label: `Zubenelgenubi${getVoiceGender('gemini:zubenelgenubi')}`, value: 'gemini:zubenelgenubi' },
+    ],
+    openai: [
+      { label: `Alloy${getVoiceGender('openai:alloy')}`, value: 'openai:alloy' },
+      { label: `Echo${getVoiceGender('openai:echo')}`, value: 'openai:echo' },
+      { label: `Fable${getVoiceGender('openai:fable')}`, value: 'openai:fable' },
+      { label: `Nova${getVoiceGender('openai:nova')}`, value: 'openai:nova' },
+      { label: `Onyx${getVoiceGender('openai:onyx')}`, value: 'openai:onyx' },
+      { label: `Shimmer${getVoiceGender('openai:shimmer')}`, value: 'openai:shimmer' },
+    ],
+    google: [
+      // Neural2 voices (High Quality)
+      { label: `Neural2-A${getVoiceGender('google:Neural2-A')}`, value: 'google:en-US-Neural2-A' },
+      { label: `Neural2-C${getVoiceGender('google:Neural2-C')}`, value: 'google:en-US-Neural2-C' },
+      { label: `Neural2-D${getVoiceGender('google:Neural2-D')}`, value: 'google:en-US-Neural2-D' },
+      { label: `Neural2-E${getVoiceGender('google:Neural2-E')}`, value: 'google:en-US-Neural2-E' },
+      { label: `Neural2-F${getVoiceGender('google:Neural2-F')}`, value: 'google:en-US-Neural2-F' },
+      { label: `Neural2-G${getVoiceGender('google:Neural2-G')}`, value: 'google:en-US-Neural2-G' },
+      { label: `Neural2-H${getVoiceGender('google:Neural2-H')}`, value: 'google:en-US-Neural2-H' },
+      { label: `Neural2-I${getVoiceGender('google:Neural2-I')}`, value: 'google:en-US-Neural2-I' },
+      { label: `Neural2-J${getVoiceGender('google:Neural2-J')}`, value: 'google:en-US-Neural2-J' },
+      // WaveNet voices (High Quality)
+      { label: `Wavenet-A${getVoiceGender('google:Wavenet-A')}`, value: 'google:en-US-Wavenet-A' },
+      { label: `Wavenet-B${getVoiceGender('google:Wavenet-B')}`, value: 'google:en-US-Wavenet-B' },
+      { label: `Wavenet-C${getVoiceGender('google:Wavenet-C')}`, value: 'google:en-US-Wavenet-C' },
+      { label: `Wavenet-D${getVoiceGender('google:Wavenet-D')}`, value: 'google:en-US-Wavenet-D' },
+      { label: `Wavenet-E${getVoiceGender('google:Wavenet-E')}`, value: 'google:en-US-Wavenet-E' },
+      { label: `Wavenet-F${getVoiceGender('google:Wavenet-F')}`, value: 'google:en-US-Wavenet-F' },
+      { label: `Wavenet-G${getVoiceGender('google:Wavenet-G')}`, value: 'google:en-US-Wavenet-G' },
+      { label: `Wavenet-H${getVoiceGender('google:Wavenet-H')}`, value: 'google:en-US-Wavenet-H' },
+      { label: `Wavenet-I${getVoiceGender('google:Wavenet-I')}`, value: 'google:en-US-Wavenet-I' },
+      { label: `Wavenet-J${getVoiceGender('google:Wavenet-J')}`, value: 'google:en-US-Wavenet-J' },
+      // Studio voices (Premium)
+      { label: `Studio-O${getVoiceGender('google:Studio-O')}`, value: 'google:en-US-Studio-O' },
+      { label: `Studio-Q${getVoiceGender('google:Studio-Q')}`, value: 'google:en-US-Studio-Q' },
+      // Chirp-HD voices
+      { label: `Chirp-HD-D${getVoiceGender('google:Chirp-HD-D')}`, value: 'google:en-US-Chirp-HD-D' },
+      { label: `Chirp-HD-F${getVoiceGender('google:Chirp-HD-F')}`, value: 'google:en-US-Chirp-HD-F' },
+      // Standard voices (Budget)
+      { label: `Standard-A${getVoiceGender('google:Standard-A')}`, value: 'google:en-US-Standard-A' },
+      { label: `Standard-B${getVoiceGender('google:Standard-B')}`, value: 'google:en-US-Standard-B' },
+      { label: `Standard-C${getVoiceGender('google:Standard-C')}`, value: 'google:en-US-Standard-C' },
+      { label: `Standard-D${getVoiceGender('google:Standard-D')}`, value: 'google:en-US-Standard-D' },
+      { label: `Standard-E${getVoiceGender('google:Standard-E')}`, value: 'google:en-US-Standard-E' },
+      { label: `Standard-F${getVoiceGender('google:Standard-F')}`, value: 'google:en-US-Standard-F' },
+      { label: `Standard-G${getVoiceGender('google:Standard-G')}`, value: 'google:en-US-Standard-G' },
+      { label: `Standard-H${getVoiceGender('google:Standard-H')}`, value: 'google:en-US-Standard-H' },
+      { label: `Standard-I${getVoiceGender('google:Standard-I')}`, value: 'google:en-US-Standard-I' },
+      { label: `Standard-J${getVoiceGender('google:Standard-J')}`, value: 'google:en-US-Standard-J' },
+    ],
+    elevenlabs: [
+      { label: 'Default', value: 'elevenlabs:default' },
+    ],
+  };
+
+  const voiceProviderOptions = [
+    { label: 'Google Cloud TTS (380+ voices)', value: 'google' },
+    { label: 'Gemini TTS (30 voices)', value: 'gemini' },
+    { label: 'OpenAI TTS (6 voices)', value: 'openai' },
+    { label: 'ElevenLabs', value: 'elevenlabs' },
+  ];
+
+  const defaultVoices: Record<string, string> = {
+    google: 'google:en-US-Neural2-A',
+    gemini: 'gemini:puck',
+    openai: 'openai:alloy',
+    elevenlabs: 'elevenlabs:default',
+  };
+
+  const providerOptions = [
+    { label: 'OpenAI', value: 'openai' },
+    { label: 'Anthropic', value: 'anthropic' },
+    { label: 'Google', value: 'google' },
+    { label: 'Perplexity', value: 'perplexity' },
+    { label: 'DeepSeek', value: 'deepseek' },
+    { label: 'Ollama (Local)', value: 'ollama' },
+  ];
+
+  const defaultModels: Record<string, string> = {
+    openai: 'gpt-5-turbo',
+    anthropic: 'claude-sonnet-4-5-20250929',
+    google: 'gemini-2.5-flash',
+    perplexity: 'sonar',
+    deepseek: 'deepseek-chat',
+    ollama: 'llama3.3:70b',
+  };
+
+  const handleProviderChange = (newProvider: string) => {
+    setSelectedProvider(newProvider);
+    // Auto-select default model for new provider
+    const defaultModel = defaultModels[newProvider];
+    if (defaultModel) {
+      setSelectedModel(defaultModel);
+    }
+  };
+
+  const handleVoiceProviderChange = (newVoiceProvider: string) => {
+    setSelectedVoiceProvider(newVoiceProvider);
+    // Auto-select default voice for new provider
+    const defaultVoice = defaultVoices[newVoiceProvider];
+    if (defaultVoice) {
+      setSelectedVoice(defaultVoice);
+    }
+  };
+
+  const handleSaveModel = async () => {
+    try {
+      await onUpdateConfig(qube.qube_id, { ai_model: selectedModel });
+
+      // Auto-switch evaluation model to Mistral 7B if main model is now Llama 3.2
+      // and evaluation model is also Llama 3.2 (to avoid evaluating with the same model)
+      const currentEvalModel = (qube as any).evaluation_model || 'llama3.2';
+      if (selectedModel === 'llama3.2' && currentEvalModel === 'llama3.2') {
+        console.log('Auto-switching evaluation model to Mistral 7B (main model is Llama 3.2)');
+        await onUpdateConfig(qube.qube_id, { evaluation_model: 'mistral:7b' });
+      }
+
+      setIsEditingModel(false);
+    } catch (error) {
+      console.error('Failed to update model:', error);
+      alert(`Failed to update model: ${error}`);
+    }
+  };
+
+  const handleSaveVoice = async () => {
+    try {
+      await onUpdateConfig(qube.qube_id, { voice_model: selectedVoice });
+      setIsEditingVoice(false);
+    } catch (error) {
+      console.error('Failed to update voice:', error);
+      alert(`Failed to update voice: ${error}`);
+    }
+  };
+
+  const handleSaveColor = async () => {
+    try {
+      await onUpdateConfig(qube.qube_id, { favorite_color: selectedColor });
+      setIsEditingColor(false);
+    } catch (error) {
+      console.error('Failed to update color:', error);
+      alert(`Failed to update color: ${error}`);
+    }
+  };
+
+  const handleEvalProviderChange = (newProvider: string) => {
+    setSelectedEvalProvider(newProvider);
+    // Auto-select default model for new provider
+    const defaultModel = defaultModels[newProvider];
+    if (defaultModel) {
+      setSelectedEvalModel(defaultModel);
+    }
+  };
+
+  const handleSaveEvalModel = async () => {
+    try {
+      await onUpdateConfig(qube.qube_id, { evaluation_model: selectedEvalModel });
+      setIsEditingEvalModel(false);
+    } catch (error) {
+      console.error('Failed to update evaluation model:', error);
+      alert(`Failed to update evaluation model: ${error}`);
+    }
+  };
+
+  const statusColors = {
+    active: 'bg-[#00ff88]', // Neon dark green
+    inactive: 'bg-[#ff3366]', // Neon red
+    busy: 'bg-accent-warning',
+  };
+
+  // Format birth timestamp as readable date
+  const birthDate = qube.birth_timestamp
+    ? new Date(qube.birth_timestamp * 1000).toLocaleDateString()
+    : 'Unknown';
+
+  const handleToggleTTS = async () => {
+    try {
+      const newTTSState = !qube.tts_enabled;
+      await onUpdateConfig(qube.qube_id, { tts_enabled: newTTSState });
+    } catch (error) {
+      console.error('Failed to toggle TTS:', error);
+      alert(`Failed to toggle TTS: ${error}`);
+    }
+  };
+
+  return (
+    <div className="relative w-full overflow-hidden" style={{ perspective: '1000px', height: '600px' }}>
+      <div
+        className="relative w-full h-full"
+        style={{
+          transformStyle: 'preserve-3d',
+          transition: 'transform 0.6s ease-in-out',
+          transform: `rotateY(${rotation}deg)`,
+        }}
+      >
+        {/* FRONT SIDE */}
+        <div
+          className="absolute w-full h-full"
+          style={{
+            backfaceVisibility: 'hidden',
+            WebkitBackfaceVisibility: 'hidden',
+            opacity: flipState === 0 ? 1 : 0,
+            pointerEvents: flipState === 0 ? 'auto' : 'none',
+            transition: 'opacity 0.3s ease-in-out',
+            zIndex: flipState === 0 ? 2 : 1,
+          }}
+        >
+          <GlassCard variant="interactive" className="p-6 relative h-full flex flex-col">
+            {/* Flip Button - Top Left Corner */}
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                handleFlip();
+              }}
+              className="absolute top-3 left-3 text-2xl hover:scale-110 transition-transform cursor-pointer z-10"
+              title={flipState === 0 ? "Flip to blockchain stats" : flipState === 1 ? "Flip to relationship stats" : "Flip to front"}
+            >
+              🔄
+            </button>
+
+            {/* TTS Toggle - Top Right Corner */}
+            <button
+              onClick={handleToggleTTS}
+              className="absolute top-3 right-3 text-2xl hover:scale-110 transition-transform cursor-pointer z-10"
+              title={qube.tts_enabled ? "TTS Enabled - Click to disable" : "TTS Disabled - Click to enable"}
+            >
+              {qube.tts_enabled ? '🔊' : '🔇'}
+            </button>
+
+            {/* Avatar */}
+            <div className="flex flex-col items-center mb-4">
+              <div
+                {...dragHandleProps}
+                className="cursor-grab active:cursor-grabbing mb-3"
+                title="Drag to reorder"
+              >
+                <img
+                  src={getAvatarPath(qube)}
+                  alt={`${qube.name} avatar`}
+                  className="w-48 h-48 rounded-xl object-cover shadow-lg"
+                  style={{
+                    border: `2px solid ${qube.favorite_color || '#00ff88'}`,
+                    boxShadow: `0 0 15px ${qube.favorite_color || '#00ff88'}40`,
+                  }}
+                  onError={(e) => {
+                    // Fallback to letter if image fails to load
+                    const target = e.target as HTMLImageElement;
+                    target.style.display = 'none';
+                    const fallback = target.nextElementSibling as HTMLElement;
+                    if (fallback) fallback.style.display = 'flex';
+                  }}
+                />
+                {/* Fallback letter avatar (always rendered, shown if image fails) */}
+                <div
+                  className="w-48 h-48 rounded-xl flex items-center justify-center text-8xl font-display font-bold shadow-lg"
+                  style={{
+                    background: `linear-gradient(135deg, ${qube.favorite_color || '#00ff88'}40, ${qube.favorite_color || '#00ff88'}20)`,
+                    color: qube.favorite_color || '#00ff88',
+                    border: `2px solid ${qube.favorite_color || '#00ff88'}`,
+                    boxShadow: `0 0 15px ${qube.favorite_color || '#00ff88'}40`,
+                    display: 'none',
+                  }}
+                >
+                  {qube.name.charAt(0).toUpperCase()}
+                </div>
+              </div>
+              <h3 className="text-2xl font-bold text-text-primary text-center mb-1">
+                {qube.name}
+              </h3>
+              <p className="text-base text-text-tertiary font-mono mb-1">{qube.qube_id}</p>
+            </div>
+
+      {/* Stats */}
+      <div className="space-y-2 mb-4 text-sm">
+        {/* Blockchain */}
+        {qube.home_blockchain && (
+          <div className="flex justify-between items-center">
+            <span className="text-text-tertiary">Blockchain:</span>
+            <span className="text-text-primary font-medium flex items-center gap-1.5">
+              {qube.home_blockchain === 'bitcoincash' && (
+                <img
+                  src="/bitcoin_cash_logo.svg"
+                  alt="BCH"
+                  className="w-4 h-4"
+                />
+              )}
+              {qube.home_blockchain === 'bitcoincash' ? 'Bitcoin Cash' : qube.home_blockchain}
+            </span>
+          </div>
+        )}
+
+        {/* Model - Editable */}
+        <div className="flex justify-between items-start gap-2">
+          <span className="text-text-tertiary mt-1">Main Model:</span>
+          {isEditingModel ? (
+            <div className="flex flex-col gap-1 flex-1">
+              <div className="flex gap-1 items-center">
+                <select
+                  value={selectedProvider}
+                  onChange={(e) => handleProviderChange(e.target.value)}
+                  className="flex-1 px-2 py-1 bg-bg-tertiary border border-glass-border rounded text-xs text-text-primary focus:outline-none focus:ring-1 focus:ring-accent-primary/50"
+                >
+                  {providerOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex gap-1 items-center">
+                <select
+                  value={selectedModel}
+                  onChange={(e) => setSelectedModel(e.target.value)}
+                  className="flex-1 px-2 py-1 bg-bg-tertiary border border-glass-border rounded text-xs text-text-primary focus:outline-none focus:ring-1 focus:ring-accent-primary/50"
+                >
+                  {(modelOptions[selectedProvider] || []).map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  onClick={handleSaveModel}
+                  className="px-2 py-1 bg-accent-success/20 text-accent-success rounded hover:bg-accent-success/30 transition-all"
+                  title="Save"
+                >
+                  ✓
+                </button>
+                <button
+                  onClick={() => {
+                    setSelectedModel(qube.ai_model);
+                    setSelectedProvider(qube.ai_provider);
+                    setIsEditingModel(false);
+                  }}
+                  className="px-2 py-1 bg-accent-danger/20 text-accent-danger rounded hover:bg-accent-danger/30 transition-all"
+                  title="Cancel"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="flex gap-1 items-center">
+              <span className="text-text-primary font-medium">{formatModelName(qube.ai_model)}</span>
+              <button
+                onClick={() => setIsEditingModel(true)}
+                className="px-1 text-accent-primary hover:text-accent-primary/70 transition-colors"
+                title="Edit model"
+              >
+                ✎
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Voice - Editable */}
+        <div className="flex justify-between items-start gap-2">
+          <span className="text-text-tertiary mt-1">Voice:</span>
+          {isEditingVoice ? (
+            <div className="flex flex-col gap-1 flex-1">
+              <div className="flex gap-1 items-center">
+                <select
+                  value={selectedVoiceProvider}
+                  onChange={(e) => handleVoiceProviderChange(e.target.value)}
+                  className="flex-1 px-2 py-1 bg-bg-tertiary border border-glass-border rounded text-xs text-text-primary focus:outline-none focus:ring-1 focus:ring-accent-primary/50"
+                >
+                  {voiceProviderOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex gap-1 items-center">
+                <select
+                  value={selectedVoice}
+                  onChange={(e) => setSelectedVoice(e.target.value)}
+                  className="flex-1 px-2 py-1 bg-bg-tertiary border border-glass-border rounded text-xs text-text-primary focus:outline-none focus:ring-1 focus:ring-accent-primary/50"
+                  size={10}
+                >
+                  {(voiceOptions[selectedVoiceProvider] || []).map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  onClick={handleSaveVoice}
+                  className="px-2 py-1 bg-accent-success/20 text-accent-success rounded hover:bg-accent-success/30 transition-all"
+                  title="Save"
+                >
+                  ✓
+                </button>
+                <button
+                  onClick={() => {
+                    setSelectedVoice(qube.voice_model || '');
+                    // Reset voice provider when canceling
+                    const voiceModel = qube.voice_model || '';
+                    setSelectedVoiceProvider(voiceModel.includes(':') ? voiceModel.split(':')[0] : 'openai');
+                    setIsEditingVoice(false);
+                  }}
+                  className="px-2 py-1 bg-accent-danger/20 text-accent-danger rounded hover:bg-accent-danger/30 transition-all"
+                  title="Cancel"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="flex gap-1 items-center">
+              <span className="text-text-primary font-medium">{formatVoiceName(qube.voice_model || '')}</span>
+              <button
+                onClick={() => setIsEditingVoice(true)}
+                className="px-1 text-accent-primary hover:text-accent-primary/70 transition-colors"
+                title="Edit voice"
+              >
+                ✎
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Color - Editable */}
+        <div className="flex justify-between items-center">
+          <span className="text-text-tertiary">Color:</span>
+          {isEditingColor ? (
+            <div className="flex gap-1 items-center">
+              <input
+                type="color"
+                value={selectedColor}
+                onChange={(e) => setSelectedColor(e.target.value)}
+                className="w-8 h-8 rounded cursor-pointer border border-glass-border"
+              />
+              <input
+                type="text"
+                value={selectedColor}
+                onChange={(e) => setSelectedColor(e.target.value)}
+                className="px-2 py-1 bg-bg-tertiary border border-glass-border rounded text-xs text-text-primary font-mono w-20 focus:outline-none focus:ring-1 focus:ring-accent-primary/50"
+                placeholder="#00ff88"
+              />
+              <button
+                onClick={handleSaveColor}
+                className="px-2 py-1 bg-accent-success/20 text-accent-success rounded hover:bg-accent-success/30 transition-all"
+                title="Save"
+              >
+                ✓
+              </button>
+              <button
+                onClick={() => {
+                  setSelectedColor(qube.favorite_color);
+                  setIsEditingColor(false);
+                }}
+                className="px-2 py-1 bg-accent-danger/20 text-accent-danger rounded hover:bg-accent-danger/30 transition-all"
+                title="Cancel"
+              >
+                ✕
+              </button>
+            </div>
+          ) : (
+            <div className="flex gap-1 items-center">
+              <div
+                className="w-3 h-3 rounded-full"
+                style={{ backgroundColor: qube.favorite_color }}
+              />
+              <span className="text-text-primary font-medium text-sm font-mono">{qube.favorite_color}</span>
+              <button
+                onClick={() => setIsEditingColor(true)}
+                className="px-1 text-accent-primary hover:text-accent-primary/70 transition-colors"
+                title="Edit color"
+              >
+                ✎
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Evaluation Model - Editable */}
+        <div className="flex justify-between items-start gap-2">
+          <span className="text-text-tertiary mt-1">Evaluation Model:</span>
+          {isEditingEvalModel ? (
+            <div className="flex flex-col gap-1 flex-1">
+              <div className="flex gap-1 items-center">
+                <select
+                  value={selectedEvalProvider}
+                  onChange={(e) => handleEvalProviderChange(e.target.value)}
+                  className="flex-1 px-2 py-1 bg-bg-tertiary border border-glass-border rounded text-xs text-text-primary focus:outline-none focus:ring-1 focus:ring-accent-primary/50"
+                >
+                  {providerOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex gap-1 items-center">
+                <select
+                  value={selectedEvalModel}
+                  onChange={(e) => setSelectedEvalModel(e.target.value)}
+                  className="flex-1 px-2 py-1 bg-bg-tertiary border border-glass-border rounded text-xs text-text-primary focus:outline-none focus:ring-1 focus:ring-accent-primary/50"
+                >
+                  {(modelOptions[selectedEvalProvider] || []).map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  onClick={handleSaveEvalModel}
+                  className="px-2 py-1 bg-accent-success/20 text-accent-success rounded hover:bg-accent-success/30 transition-all"
+                  title="Save"
+                >
+                  ✓
+                </button>
+                <button
+                  onClick={() => {
+                    setSelectedEvalModel((qube as any).evaluation_model || 'llama3.2');
+                    setSelectedEvalProvider(inferProvider((qube as any).evaluation_model || 'llama3.2'));
+                    setIsEditingEvalModel(false);
+                  }}
+                  className="px-2 py-1 bg-accent-danger/20 text-accent-danger rounded hover:bg-accent-danger/30 transition-all"
+                  title="Cancel"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="flex gap-1 items-center">
+              <span className="text-text-primary font-medium">{formatModelName((qube as any).evaluation_model || 'llama3.2')}</span>
+              <button
+                onClick={() => setIsEditingEvalModel(true)}
+                className="px-1 text-accent-primary hover:text-accent-primary/70 transition-colors"
+                title="Edit evaluation model"
+              >
+                ✎
+              </button>
+            </div>
+          )}
+        </div>
+
+        {qube.creator && (
+          <div className="flex justify-between">
+            <span className="text-text-tertiary">Creator:</span>
+            <span className="text-text-primary font-medium">{qube.creator}</span>
+          </div>
+        )}
+        {qube.memory_blocks_count !== undefined && (
+          <div className="flex justify-between">
+            <span className="text-text-tertiary">Blocks:</span>
+            <span className="text-text-primary font-medium">
+              {qube.memory_blocks_count.toLocaleString()}
+            </span>
+          </div>
+        )}
+      </div>
+
+            {/* Actions */}
+            <div className="flex gap-2 flex-shrink-0 mt-auto">
+              <button
+                onClick={onSelect}
+                className="flex-1 px-4 py-2 bg-accent-primary/10 text-accent-primary rounded-lg hover:bg-accent-primary/20 transition-all text-sm font-medium"
+              >
+                Chat
+              </button>
+              <button
+                onClick={onDelete}
+                className="flex-1 px-4 py-2 bg-accent-danger/10 text-accent-danger rounded-lg hover:bg-accent-danger/20 transition-all text-sm font-medium"
+              >
+                Delete
+              </button>
+            </div>
+          </GlassCard>
+        </div>
+
+        {/* BLOCKCHAIN SIDE (flipState 1) */}
+        <div
+          className="absolute w-full h-full"
+          style={{
+            backfaceVisibility: 'hidden',
+            WebkitBackfaceVisibility: 'hidden',
+            transform: 'rotateY(180deg)',
+            opacity: flipState === 1 ? 1 : 0,
+            pointerEvents: flipState === 1 ? 'auto' : 'none',
+            transition: 'opacity 0.3s ease-in-out',
+            zIndex: flipState === 1 ? 2 : 1,
+          }}
+        >
+          <GlassCard variant="interactive" className="p-6 relative h-full flex flex-col overflow-hidden">
+            {/* Flip Button - Top Left Corner (same position as front) */}
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                handleFlip();
+              }}
+              className="absolute top-3 left-3 text-2xl hover:scale-110 transition-transform cursor-pointer z-10"
+              title="Flip to relationship stats"
+            >
+              🔄
+            </button>
+
+            {/* Header */}
+            <div className="text-center mb-4">
+              <h3 className="text-2xl font-bold text-text-primary mb-1">{qube.name}</h3>
+              <p className="text-xs text-text-tertiary">Blockchain Stats</p>
+            </div>
+
+            {/* Blockchain Stats Section */}
+            <div className="flex-1 overflow-y-auto">
+              <div className="mb-2 pb-2 border-b border-glass-border">
+                <h4 className="text-base font-semibold text-accent-primary flex items-center gap-2">
+                  ⛓️ Blockchain Data
+                </h4>
+              </div>
+              <div className="space-y-2 text-xs">
+                {qube.home_blockchain && (
+                  <div className="flex justify-between items-center py-0.5">
+                    <span className="text-text-tertiary">Blockchain:</span>
+                    <span className="text-text-primary font-medium">
+                      {qube.home_blockchain === 'bitcoincash' ? 'Bitcoin Cash' : qube.home_blockchain}
+                    </span>
+                  </div>
+                )}
+                {qube.birth_timestamp && (
+                  <div className="flex justify-between items-center py-0.5">
+                    <span className="text-text-tertiary">Birth:</span>
+                    <span className="text-text-primary font-mono">
+                      {new Date(qube.birth_timestamp * 1000).toLocaleString(undefined, {
+                        month: 'short',
+                        day: 'numeric',
+                        year: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit'
+                      })}
+                    </span>
+                  </div>
+                )}
+                {qube.nft_category_id && (
+                  <div className="flex justify-between items-center py-0.5">
+                    <span className="text-text-tertiary whitespace-nowrap">Category ID:</span>
+                    <BlockchainLink value={qube.nft_category_id} type="hash" network={qube.network} />
+                  </div>
+                )}
+                {qube.mint_txid && (
+                  <div className="flex justify-between items-center py-0.5">
+                    <span className="text-text-tertiary whitespace-nowrap">Mint TX:</span>
+                    <BlockchainLink value={qube.mint_txid} type="transaction" network={qube.network} />
+                  </div>
+                )}
+                {qube.recipient_address && (
+                  <div className="flex justify-between items-center py-0.5">
+                    <span className="text-text-tertiary whitespace-nowrap">Owner Address:</span>
+                    <BlockchainLink value={qube.recipient_address} type="address" network={qube.network} />
+                  </div>
+                )}
+                {qube.genesis_block_hash && (
+                  <div className="flex justify-between items-center py-0.5">
+                    <span className="text-text-tertiary whitespace-nowrap">Genesis Hash:</span>
+                    <BlockchainLink value={qube.genesis_block_hash} type="hash" network={qube.network} />
+                  </div>
+                )}
+                {qube.commitment && (
+                  <div className="flex justify-between items-center py-0.5">
+                    <span className="text-text-tertiary whitespace-nowrap">Commitment:</span>
+                    <BlockchainLink value={qube.commitment} type="hash" network={qube.network} />
+                  </div>
+                )}
+                {qube.public_key && (
+                  <div className="flex justify-between items-center py-0.5">
+                    <span className="text-text-tertiary whitespace-nowrap">Public Key:</span>
+                    <BlockchainLink value={qube.public_key} type="other" network={qube.network} />
+                  </div>
+                )}
+                {qube.avatar_ipfs_cid ? (
+                  <div className="flex justify-between items-center py-0.5">
+                    <span className="text-text-tertiary whitespace-nowrap">Avatar CID:</span>
+                    <BlockchainLink value={qube.avatar_ipfs_cid} type="ipfs" />
+                  </div>
+                ) : qube.avatar_local_path ? (
+                  <div className="flex justify-between items-center py-0.5">
+                    <span className="text-text-tertiary whitespace-nowrap">Avatar CID:</span>
+                    <button
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        const { password } = useAuth.getState();
+                        const { userId } = useAuth.getState();
+                        if (!password || !userId) {
+                          alert('Please log in to upload avatar');
+                          return;
+                        }
+                        try {
+                          const result = await invoke<{ success: boolean; avatar_ipfs_cid?: string; error?: string }>('upload_avatar_to_ipfs', {
+                            userId,
+                            qubeId: qube.qube_id,
+                            password,
+                          });
+                          if (result.success && result.avatar_ipfs_cid) {
+                            alert(`Avatar uploaded to IPFS!\nCID: ${result.avatar_ipfs_cid}`);
+                            // Trigger a refresh of the qube list
+                            window.location.reload();
+                          } else {
+                            alert(`Failed to upload: ${result.error || 'Unknown error'}`);
+                          }
+                        } catch (err) {
+                          alert(`Error: ${err}`);
+                        }
+                      }}
+                      className="text-xs text-accent-warning hover:text-accent-primary transition-colors underline"
+                    >
+                      Upload to IPFS
+                    </button>
+                  </div>
+                ) : null}
+                {qube.bcmr_uri && (
+                  <div className="flex justify-between items-center py-0.5">
+                    <span className="text-text-tertiary whitespace-nowrap">BCMR URI:</span>
+                    <BlockchainLink value={qube.bcmr_uri} type="ipfs" />
+                  </div>
+                )}
+                <div className="flex justify-between items-center py-0.5">
+                  <span className="text-text-tertiary">Network:</span>
+                  <span className="flex items-center gap-2">
+                    <div className={`w-2 h-2 rounded-full ${qube.status === 'active' ? 'bg-green-500' : 'bg-red-500'}`} />
+                    <span className="text-text-primary font-medium capitalize">
+                      {qube.status === 'active' ? 'Connected' : 'Disconnected'}
+                    </span>
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Flip hint */}
+            <div className="text-center pt-2 border-t border-glass-border flex-shrink-0">
+              <p className="text-[9px] text-text-tertiary">
+                Click 🔄 to see relationships
+              </p>
+            </div>
+          </GlassCard>
+        </div>
+
+        {/* VISUALIZER SETTINGS SIDE (flipState 2) */}
+        <div
+          className="absolute w-full h-full"
+          style={{
+            backfaceVisibility: 'hidden',
+            WebkitBackfaceVisibility: 'hidden',
+            transform: 'rotateY(360deg)',
+            opacity: flipState === 2 ? 1 : 0,
+            pointerEvents: flipState === 2 ? 'auto' : 'none',
+            transition: 'opacity 0.3s ease-in-out',
+            zIndex: flipState === 2 ? 2 : 1,
+          }}
+        >
+          <GlassCard variant="interactive" className="p-6 relative h-full flex flex-col overflow-hidden">
+            {/* Flip Button - Top Left Corner (same position as front) */}
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                handleFlip();
+              }}
+              className="absolute top-3 left-3 text-2xl hover:scale-110 transition-transform cursor-pointer z-10"
+              title="Flip to front"
+            >
+              🔄
+            </button>
+
+            {/* Visualizer Toggle - Top Right Corner */}
+            <button
+              onClick={async (e) => {
+                e.stopPropagation();
+                const newEnabled = !visualizerSettings.enabled;
+                setVisualizerSettings({ ...visualizerSettings, enabled: newEnabled });
+
+                // Save to backend immediately
+                try {
+                  await invoke('save_visualizer_settings', {
+                    userId,
+                    qubeId: qube.qube_id,
+                    settings: JSON.stringify({ ...visualizerSettings, enabled: newEnabled })
+                  });
+                } catch (error) {
+                  console.error('Failed to save visualizer toggle:', error);
+                }
+              }}
+              className="absolute top-3 right-3 text-2xl hover:scale-110 transition-transform cursor-pointer z-10"
+              title={visualizerSettings.enabled ? "Visualizer Enabled (V to toggle, 1-9/0/- to switch styles)" : "Visualizer Disabled (V to toggle)"}
+            >
+              {visualizerSettings.enabled ? '🎵' : '🚫'}
+            </button>
+
+            {/* Header */}
+            <div className="text-center mb-4">
+              <h3 className="text-2xl font-bold text-text-primary mb-1">{qube.name}</h3>
+              <p className="text-xs text-text-tertiary">Audio Visualizer Settings</p>
+            </div>
+
+            {/* Settings Form */}
+            <div className="flex-1 overflow-y-auto mb-4 pr-2 space-y-4">
+              {loadingVisualizerSettings ? (
+                <div className="text-center text-text-tertiary text-sm py-8">Loading settings...</div>
+              ) : (
+                <>
+                  {/* Waveform Style */}
+                  <div>
+                    <label className="text-xs font-semibold text-text-primary mb-2 block flex items-center gap-1.5">
+                      🎨 Waveform Style (F1-F11)
+                    </label>
+                    <select
+                      value={visualizerSettings.waveform_style}
+                      onChange={(e) => setVisualizerSettings({ ...visualizerSettings, waveform_style: parseInt(e.target.value) as any })}
+                      className="w-full px-3 py-2 text-xs rounded bg-bg-secondary border text-text-primary focus:outline-none focus:border-accent-primary"
+                      style={{ borderColor: qube.favorite_color }}
+                    >
+                      <option value={1}>1. Classic Bars</option>
+                      <option value={2}>2. Symmetric Bars</option>
+                      <option value={3}>3. Smooth Waveform</option>
+                      <option value={4}>4. Radial Spectrum</option>
+                      <option value={5}>5. Dot Matrix</option>
+                      <option value={6}>6. Polygon Morph</option>
+                      <option value={7}>7. Concentric Circles</option>
+                      <option value={8}>8. Spiral Wave</option>
+                      <option value={9}>9. Particle Field</option>
+                      <option value={10}>10. Ring Bars</option>
+                      <option value={11}>11. Wave Mesh</option>
+                    </select>
+                  </div>
+
+                  {/* Color Theme */}
+                  <div>
+                    <label className="text-xs font-semibold text-text-primary mb-2 block flex items-center gap-1.5">
+                      🌈 Color Theme
+                    </label>
+                    <select
+                      value={visualizerSettings.color_theme}
+                      onChange={(e) => setVisualizerSettings({ ...visualizerSettings, color_theme: e.target.value as any })}
+                      className="w-full px-3 py-2 text-xs rounded bg-bg-secondary border text-text-primary focus:outline-none focus:border-accent-primary"
+                      style={{ borderColor: qube.favorite_color }}
+                    >
+                      <option value="qube-color">Qube Color</option>
+                      <option value="rainbow">Rainbow</option>
+                      <option value="neon-cyan">Neon Cyan</option>
+                      <option value="electric-purple">Electric Purple</option>
+                      <option value="matrix-green">Matrix Green</option>
+                      <option value="fire">Fire</option>
+                      <option value="ice">Ice</option>
+                    </select>
+                  </div>
+
+                  {/* Gradient Style (only for qube-color) */}
+                  {visualizerSettings.color_theme === 'qube-color' && (
+                    <div>
+                      <label className="text-xs font-semibold text-text-primary mb-2 block flex items-center gap-1.5">
+                        🎭 Gradient Style
+                      </label>
+                      <select
+                        value={visualizerSettings.gradient_style}
+                        onChange={(e) => setVisualizerSettings({ ...visualizerSettings, gradient_style: e.target.value as any })}
+                        className="w-full px-3 py-2 text-xs rounded bg-bg-secondary border text-text-primary focus:outline-none focus:border-accent-primary"
+                        style={{ borderColor: qube.favorite_color }}
+                      >
+                        <option value="solid">Solid Color</option>
+                        <option value="gradient-dark">Gradient to Dark</option>
+                        <option value="gradient-complementary">Gradient to Complementary</option>
+                        <option value="gradient-analogous">Gradient to Similar Colors</option>
+                      </select>
+                    </div>
+                  )}
+
+                  {/* Sensitivity */}
+                  <div>
+                    <label className="text-xs font-semibold text-text-primary mb-2 block flex items-center justify-between">
+                      <span className="flex items-center gap-1.5">🎚️ Sensitivity</span>
+                      <span className="font-mono text-accent-primary">{visualizerSettings.sensitivity}%</span>
+                    </label>
+                    <input
+                      type="range"
+                      min="0"
+                      max="100"
+                      value={visualizerSettings.sensitivity}
+                      onChange={(e) => setVisualizerSettings({ ...visualizerSettings, sensitivity: parseInt(e.target.value) })}
+                      className="w-full h-2 bg-white/20 rounded-lg appearance-none cursor-pointer"
+                      style={{
+                        accentColor: qube.favorite_color || '#00ff88'
+                      }}
+                    />
+                  </div>
+
+                  {/* Animation Smoothness */}
+                  <div>
+                    <label className="text-xs font-semibold text-text-primary mb-2 block flex items-center gap-1.5">
+                      ⚡ Animation Smoothness
+                    </label>
+                    <select
+                      value={visualizerSettings.animation_smoothness}
+                      onChange={(e) => setVisualizerSettings({ ...visualizerSettings, animation_smoothness: e.target.value as any })}
+                      className="w-full px-3 py-2 text-xs rounded bg-bg-secondary border text-text-primary focus:outline-none focus:border-accent-primary"
+                      style={{ borderColor: qube.favorite_color }}
+                    >
+                      <option value="low">Low (30fps - Better performance)</option>
+                      <option value="medium">Medium (45fps - Balanced)</option>
+                      <option value="high">High (60fps - Smooth)</option>
+                      <option value="ultra">Ultra (60fps+ - Maximum quality)</option>
+                    </select>
+                  </div>
+
+                  {/* Audio Offset */}
+                  <div>
+                    <label className="text-xs font-semibold text-text-primary mb-2 block flex items-center justify-between">
+                      <span className="flex items-center gap-1.5">⏱️ Audio Offset (Bluetooth sync)</span>
+                      <span className="font-mono text-accent-primary">{visualizerSettings.audio_offset_ms > 0 ? '+' : ''}{visualizerSettings.audio_offset_ms}ms</span>
+                    </label>
+                    <input
+                      type="range"
+                      min="-500"
+                      max="500"
+                      step="10"
+                      value={visualizerSettings.audio_offset_ms}
+                      onChange={(e) => setVisualizerSettings({ ...visualizerSettings, audio_offset_ms: parseInt(e.target.value) })}
+                      className="w-full h-2 bg-white/20 rounded-lg appearance-none cursor-pointer"
+                      style={{
+                        accentColor: qube.favorite_color || '#00ff88'
+                      }}
+                    />
+                  </div>
+
+                  {/* Frequency Range */}
+                  <div>
+                    <label className="text-xs font-semibold text-text-primary mb-2 block flex items-center justify-between">
+                      <span className="flex items-center gap-1.5">📊 Frequency Range</span>
+                      <span className="font-mono text-accent-primary">{visualizerSettings.frequency_range}%</span>
+                    </label>
+                    <input
+                      type="range"
+                      min="1"
+                      max="100"
+                      value={visualizerSettings.frequency_range}
+                      onChange={(e) => setVisualizerSettings({ ...visualizerSettings, frequency_range: parseInt(e.target.value) })}
+                      className="w-full h-2 bg-white/20 rounded-lg appearance-none cursor-pointer"
+                      style={{
+                        accentColor: qube.favorite_color || '#00ff88'
+                      }}
+                    />
+                    <p className="text-[10px] text-text-tertiary mt-1">
+                      Controls how much of the frequency spectrum to visualize (lower = bass/vocals, higher = full range)
+                    </p>
+                  </div>
+
+                  {/* Output Monitor */}
+                  <div>
+                    <label className="text-xs font-semibold text-text-primary mb-2 block">
+                      🖥️ Output Monitor
+                    </label>
+                    <select
+                      value={visualizerSettings.output_monitor}
+                      onChange={(e) => handleOutputMonitorChange(parseInt(e.target.value))}
+                      className="w-full h-7 px-2 text-xs rounded bg-bg-secondary border text-text-primary focus:outline-none focus:border-accent-primary"
+                      style={{ borderColor: qube.favorite_color || '#00ff88' }}
+                    >
+                      <option value={0}>Main Window (Overlay)</option>
+                      {availableMonitors.map((monitor) => (
+                        <option key={monitor.id} value={monitor.id}>
+                          {monitor.name}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="text-[10px] text-text-tertiary mt-1">
+                      Choose where to display the visualizer (external monitor opens a dedicated fullscreen window)
+                    </p>
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Action Buttons */}
+            <div className="flex-shrink-0 border-t border-glass-border pt-3 flex gap-2">
+              <button
+                onClick={saveVisualizerSettings}
+                disabled={savingVisualizerSettings || loadingVisualizerSettings}
+                className="flex-1 px-4 py-2 rounded text-xs font-semibold bg-accent-primary/20 border border-accent-primary/40 text-accent-primary hover:bg-accent-primary/30 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {savingVisualizerSettings ? 'Saving...' : '💾 Save Settings'}
+              </button>
+              <button
+                onClick={resetVisualizerSettings}
+                disabled={savingVisualizerSettings || loadingVisualizerSettings}
+                className="px-4 py-2 rounded text-xs font-semibold bg-white/5 border border-white/10 text-text-secondary hover:bg-white/10 hover:text-text-primary transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                title="Reset to defaults"
+              >
+                🔄 Reset
+              </button>
+            </div>
+          </GlassCard>
+        </div>
+      </div>
+
+      {/* Toast Notification */}
+      {toast && (
+        <div
+          className="fixed top-1/2 left-1/2 z-50 px-6 py-3 rounded-lg shadow-2xl border backdrop-blur-md"
+          style={{
+            backgroundColor: toast.type === 'success' ? 'rgba(0, 255, 136, 0.15)' : 'rgba(255, 51, 102, 0.15)',
+            borderColor: toast.type === 'success' ? '#00ff88' : '#ff3366',
+            opacity: toast.isExiting ? 0 : 1,
+            transform: toast.isExiting
+              ? 'translate(-50%, -50%) scale(0.95)'
+              : 'translate(-50%, -50%) scale(1)',
+            transition: 'opacity 0.2s ease-out, transform 0.2s ease-out'
+          }}
+        >
+          <div className="flex items-center gap-2">
+            <span className="text-lg">{toast.type === 'success' ? '✓' : '✕'}</span>
+            <span
+              className="font-medium text-sm"
+              style={{
+                color: toast.type === 'success' ? '#00ff88' : '#ff3366'
+              }}
+            >
+              {toast.message}
+            </span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// Helper function to format model names (used by both components)
+const formatModelDisplay = (modelId: string): string => {
+  // Common model mappings
+  const modelMap: Record<string, string> = {
+    'gpt-5-turbo': 'GPT-5 Turbo',
+    'gpt-5': 'GPT-5',
+    'o4': 'GPT-O4',
+    'o4-mini': 'GPT-O4 Mini',
+    'gpt-4o': 'GPT-4o',
+    'gpt-4o-mini': 'GPT-4o Mini',
+    'claude-sonnet-4-5-20250929': 'Claude Sonnet 4.5',
+    'claude-opus-4-1-20250805': 'Claude Opus 4.1',
+    'claude-sonnet-4-20250514': 'Claude Sonnet 4',
+    'claude-3-7-sonnet-20250219': 'Claude 3.7 Sonnet',
+    'claude-3-5-haiku-20241022': 'Claude 3.5 Haiku',
+    'gemini-2.5-pro': 'Gemini 2.5 Pro',
+    'gemini-2.5-flash': 'Gemini 2.5 Flash',
+    'gemini-2.5-flash-lite': 'Gemini 2.5 Flash Lite',
+    'gemini-2.0-flash': 'Gemini 2.0 Flash',
+    'gemini-1.5-pro': 'Gemini 1.5 Pro',
+    'sonar': 'Sonar (Fast)',
+    'sonar-pro': 'Sonar Pro',
+    'sonar-reasoning': 'Sonar Reasoning',
+    'sonar-reasoning-pro': 'Sonar Reasoning Pro',
+    'sonar-deep-research': 'Sonar Deep Research',
+    'deepseek-chat': 'DeepSeek Chat (V3.2)',
+    'deepseek-reasoner': 'DeepSeek Reasoner (R1)',
+  };
+
+  if (modelMap[modelId]) return modelMap[modelId];
+
+  // Fallback formatting
+  if (modelId.startsWith('llama')) {
+    return modelId.split(':').map(p => p.charAt(0).toUpperCase() + p.slice(1)).join(' ');
+  }
+
+  return modelId;
+};
+
+// Helper function to format voice names (used by both components)
+const formatVoiceDisplay = (voiceId: string): string => {
+  if (!voiceId) return 'None';
+
+  // Fallback: format "provider:voice" to "Provider: Voice"
+  if (voiceId.includes(':')) {
+    const [provider, voice] = voiceId.split(':');
+    // Special case for OpenAI
+    const providerName = provider === 'openai' ? 'OpenAI' : provider.charAt(0).toUpperCase() + provider.slice(1);
+    const voiceName = voice.charAt(0).toUpperCase() + voice.slice(1);
+    return `${providerName}: ${voiceName}`;
+  }
+
+  return voiceId;
+};
+
+// Sortable wrapper for QubeCard
+const SortableQubeCard: React.FC<QubeCardProps> = (props) => {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: props.qube.qube_id });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+  };
+
+  return (
+    <div ref={setNodeRef} style={style}>
+      <QubeCard {...props} dragHandleProps={{ ...attributes, ...listeners }} />
+    </div>
+  );
+};
+
+// Sortable wrapper for QubeListItem
+const SortableQubeListItem: React.FC<QubeCardProps> = (props) => {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: props.qube.qube_id });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+  };
+
+  return (
+    <div ref={setNodeRef} style={style}>
+      <QubeListItem {...props} dragHandleProps={{ ...attributes, ...listeners }} />
+    </div>
+  );
+};
+
+// Qube List Item Component (List View)
+const QubeListItem: React.FC<QubeCardProps> = ({ qube, onEdit, onDelete, onSelect, getAvatarPath, dragHandleProps, setCurrentTab, toggleSelection }) => {
+  const statusColors = {
+    active: 'bg-[#00ff88]', // Neon dark green
+    inactive: 'bg-[#ff3366]', // Neon red
+    busy: 'bg-accent-warning',
+  };
+
+  const birthDate = qube.birth_timestamp
+    ? new Date(qube.birth_timestamp * 1000).toLocaleDateString()
+    : 'Unknown';
+
+  return (
+    <GlassCard variant="interactive" className="p-4">
+      <div className="flex items-center gap-4">
+        {/* Avatar */}
+        <div
+          {...dragHandleProps}
+          className="cursor-grab active:cursor-grabbing flex-shrink-0"
+          title="Drag to reorder"
+        >
+          <img
+            src={getAvatarPath(qube)}
+            alt={`${qube.name} avatar`}
+            className="w-16 h-16 rounded-xl object-cover shadow-lg"
+            style={{
+              border: `2px solid ${qube.favorite_color || '#00ff88'}`,
+              boxShadow: `0 0 15px ${qube.favorite_color || '#00ff88'}40`,
+            }}
+            onError={(e) => {
+              const target = e.target as HTMLImageElement;
+              target.style.display = 'none';
+              const fallback = target.nextElementSibling as HTMLElement;
+              if (fallback) fallback.style.display = 'flex';
+            }}
+          />
+          <div
+            className="w-16 h-16 rounded-xl flex items-center justify-center text-2xl font-display font-bold shadow-lg"
+            style={{
+              background: `linear-gradient(135deg, ${qube.favorite_color || '#00ff88'}40, ${qube.favorite_color || '#00ff88'}20)`,
+              color: qube.favorite_color || '#00ff88',
+              border: `2px solid ${qube.favorite_color || '#00ff88'}`,
+              boxShadow: `0 0 15px ${qube.favorite_color || '#00ff88'}40`,
+              display: 'none',
+            }}
+          >
+            {qube.name.charAt(0).toUpperCase()}
+          </div>
+        </div>
+
+        {/* Info */}
+        <div className="flex-1 min-w-0">
+          <h3 className="text-lg font-bold text-text-primary mb-1">{qube.name}</h3>
+          <p className="text-xs text-text-tertiary font-mono mb-1">{qube.qube_id}</p>
+          <div className="flex gap-4 text-xs text-text-tertiary items-center">
+            <span>Model: {formatModelDisplay(qube.ai_model)}</span>
+            {qube.voice_model && <span>Voice: {formatVoiceDisplay(qube.voice_model)}</span>}
+            <span className="flex items-center gap-1">
+              Color:
+              <span
+                className="inline-block w-3 h-3 rounded-full"
+                style={{ backgroundColor: qube.favorite_color || '#00ff88' }}
+              />
+              <span className="font-mono">{qube.favorite_color || '#00ff88'}</span>
+            </span>
+            {qube.creator && <span>By: {qube.creator}</span>}
+          </div>
+        </div>
+
+        {/* Stats */}
+        <div className="flex gap-6 text-sm">
+          {qube.memory_blocks_count !== undefined && (
+            <div className="text-center">
+              <div className="text-text-tertiary text-xs mb-1">Blocks</div>
+              <div className="text-text-primary font-medium">
+                {qube.memory_blocks_count.toLocaleString()}
+              </div>
+            </div>
+          )}
+          {qube.home_blockchain && (
+            <div className="text-center">
+              <div className="text-text-tertiary text-xs mb-1">Blockchain</div>
+              <div className="text-text-primary font-medium text-xs">
+                {qube.home_blockchain === 'bitcoincash' ? 'Bitcoin Cash' : qube.home_blockchain}
+              </div>
+            </div>
+          )}
+          <div className="text-center">
+            <div className="text-text-tertiary text-xs mb-1">Status</div>
+            <div className="flex items-center gap-1">
+              <div className={`w-2 h-2 rounded-full ${statusColors[qube.status]}`} />
+              <span className="text-text-primary capitalize text-xs">{qube.status}</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Actions */}
+        <div className="flex-shrink-0 flex gap-2">
+          <button
+            onClick={onSelect}
+            className="px-4 py-2 bg-accent-primary/10 text-accent-primary rounded-lg hover:bg-accent-primary/20 transition-all text-sm font-medium"
+          >
+            Chat
+          </button>
+          <button
+            onClick={onDelete}
+            className="px-4 py-2 bg-accent-danger/10 text-accent-danger rounded-lg hover:bg-accent-danger/20 transition-all text-sm font-medium"
+          >
+            Delete
+          </button>
+        </div>
+      </div>
+    </GlassCard>
+  );
+};

@@ -1,0 +1,46 @@
+[run]
+source = .
+branch = True
+omit =
+    tests/*
+    */site-packages/*
+    */dist-packages/*
+    */node_modules/*
+    venv/*
+    .venv/*
+    setup.py
+    */__pycache__/*
+    */migrations/*
+
+[report]
+precision = 2
+skip_empty = True
+skip_covered = False
+sort = Cover
+
+exclude_lines =
+    # Standard exclusions
+    pragma: no cover
+    def __repr__
+    def __str__
+    raise AssertionError
+    raise NotImplementedError
+    if __name__ == .__main__.:
+    if TYPE_CHECKING:
+    @abstractmethod
+    @abc.abstractmethod
+
+    # Type checking blocks
+    if typing.TYPE_CHECKING:
+
+    # Defensive programming
+    assert False
+
+    # Logging debug statements
+    logger.debug
+
+[html]
+directory = coverage_html
+
+[xml]
+output = coverage.xml

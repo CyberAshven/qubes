@@ -1,0 +1,1173 @@
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { open } from '@tauri-apps/plugin-dialog';
+import { invoke } from '@tauri-apps/api/core';
+import { QRCodeSVG } from 'qrcode.react';
+import { GlassCard, GlassButton, GlassInput } from '../glass';
+import { PendingMintingResult, MintingStatusResult, MintingStatus } from '../../types';
+import { useAuth } from '../../hooks/useAuth';
+
+interface CreateQubeModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  onCreate: (data: CreateQubeData) => Promise<void>;
+  onQubesChange?: () => void;  // Called when qube creation is complete (for refreshing list)
+}
+
+export interface CreateQubeData {
+  name: string;
+  genesisPrompt: string;
+  aiProvider: string;
+  aiModel: string;
+  voiceModel?: string;
+  walletAddress: string;
+  encryptGenesis?: boolean;
+  favoriteColor: string;
+  avatarFile?: string;
+  generateAvatar?: boolean;
+  avatarStyle?: string;
+}
+
+// Voice gender mapping
+const getVoiceGender = (voiceId: string): string => {
+  const voiceName = voiceId.includes(':') ? voiceId.split(':')[1].toLowerCase() : voiceId.toLowerCase();
+
+  // Gemini voices
+  const geminiMale = ['achernar', 'algenib', 'alnilam', 'charon', 'fenrir', 'gacrux', 'iapetus', 'orus', 'puck', 'rasalgethi', 'sadachbia', 'sadaltager', 'umbriel', 'zephyr'];
+  const geminiFemale = ['achird', 'algieba', 'aoede', 'autonoe', 'callirrhoe', 'despina', 'enceladus', 'erinome', 'kore', 'laomedeia', 'leda', 'pulcherrima', 'schedar', 'sulafat', 'vindemiatrix', 'zubenelgenubi'];
+
+  // OpenAI voices
+  const openaiMale = ['echo', 'fable', 'onyx'];
+  const openaiFemale = ['alloy', 'nova', 'shimmer'];
+
+  // Google Cloud TTS voices (Standard, WaveNet, Neural2, Studio, Chirp)
+  const googleMale = [
+    'standard-a', 'standard-b', 'standard-d', 'standard-i', 'standard-j',
+    'wavenet-a', 'wavenet-b', 'wavenet-d', 'wavenet-i', 'wavenet-j',
+    'neural2-a', 'neural2-d', 'neural2-i', 'neural2-j',
+    'studio-q', 'chirp-hd-d'
+  ];
+  const googleFemale = [
+    'standard-c', 'standard-e', 'standard-f', 'standard-g', 'standard-h',
+    'wavenet-c', 'wavenet-e', 'wavenet-f', 'wavenet-g', 'wavenet-h',
+    'neural2-c', 'neural2-e', 'neural2-f', 'neural2-g', 'neural2-h',
+    'studio-o', 'chirp-hd-f'
+  ];
+
+  if (geminiMale.includes(voiceName)) return ' (male)';
+  if (geminiFemale.includes(voiceName)) return ' (female)';
+  if (openaiMale.includes(voiceName)) return ' (male)';
+  if (openaiFemale.includes(voiceName)) return ' (female)';
+  if (googleMale.includes(voiceName)) return ' (male)';
+  if (googleFemale.includes(voiceName)) return ' (female)';
+
+  return ''; // Unknown or no gender info
+};
+
+export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
+  isOpen,
+  onClose,
+  onCreate,
+  onQubesChange,
+}) => {
+  const { userId, password } = useAuth();
+  const [step, setStep] = useState(1);
+  const [loading, setLoading] = useState(false);
+  const [success, setSuccess] = useState(false);
+  const [voiceProvider, setVoiceProvider] = useState('google');
+
+  // Fee-based minting state
+  const [pendingMinting, setPendingMinting] = useState<PendingMintingResult | null>(null);
+  const [mintingStatus, setMintingStatus] = useState<MintingStatus | null>(null);
+  const [statusPollingInterval, setStatusPollingInterval] = useState<ReturnType<typeof setInterval> | null>(null);
+  const [paymentError, setPaymentError] = useState<string | null>(null);
+  const [expiresIn, setExpiresIn] = useState<number>(0);
+  const [txidInput, setTxidInput] = useState<string>('');
+  const [submittingTxid, setSubmittingTxid] = useState<boolean>(false);
+  const [voiceDropdownOpen, setVoiceDropdownOpen] = useState(false);
+  const voiceDropdownRef = useRef<HTMLDivElement>(null);
+
+  const [formData, setFormData] = useState<CreateQubeData>({
+    name: '',
+    genesisPrompt: '',
+    aiProvider: 'openai',
+    aiModel: 'gpt-4',
+    voiceModel: 'google:en-US-Neural2-A',  // Default to Google Cloud TTS Neural2!
+    walletAddress: '',
+    encryptGenesis: false,
+    favoriteColor: '#00ff88',
+    generateAvatar: true,
+    avatarStyle: 'cyberpunk',
+  });
+
+  const [errors, setErrors] = useState<Partial<CreateQubeData>>({});
+  const [pinataConfigured, setPinataConfigured] = useState<boolean | null>(null);
+  const [checkingPinata, setCheckingPinata] = useState(false);
+
+  // Check if Pinata API key is configured on modal open
+  useEffect(() => {
+    if (isOpen && userId && password) {
+      checkPinataConfiguration();
+    }
+  }, [isOpen, userId, password]);
+
+  const checkPinataConfiguration = async () => {
+    setCheckingPinata(true);
+    try {
+      const result = await invoke<{ providers: string[] }>('get_configured_api_keys', {
+        userId,
+        password,
+      });
+      const isPinataConfigured = result.providers.includes('pinata_jwt');
+      setPinataConfigured(isPinataConfigured);
+    } catch (error) {
+      console.error('Failed to check Pinata configuration:', error);
+      setPinataConfigured(false);
+    } finally {
+      setCheckingPinata(false);
+    }
+  };
+
+  // Update model when AI provider changes
+  useEffect(() => {
+    const defaultModels: Record<string, string> = {
+      'openai': 'gpt-5-turbo',
+      'anthropic': 'claude-sonnet-4-5-20250929',
+      'google': 'gemini-2.5-flash',
+      'perplexity': 'sonar',
+      'deepseek': 'deepseek-chat',
+      'ollama': 'llama3.3:70b'
+    };
+
+    if (formData.aiProvider && defaultModels[formData.aiProvider]) {
+      setFormData(prev => ({ ...prev, aiModel: defaultModels[prev.aiProvider] }));
+    }
+  }, [formData.aiProvider]);
+
+  // Update voice when voice provider changes
+  useEffect(() => {
+    const defaultVoices: Record<string, string> = {
+      'google': 'google:en-US-Neural2-A',
+      'gemini': 'gemini:puck',
+      'openai': 'openai:alloy',
+      'elevenlabs': 'elevenlabs:default'
+    };
+
+    if (voiceProvider && defaultVoices[voiceProvider]) {
+      setFormData(prev => ({ ...prev, voiceModel: defaultVoices[voiceProvider] }));
+    }
+  }, [voiceProvider]);
+
+  // Close voice dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (voiceDropdownRef.current && !voiceDropdownRef.current.contains(event.target as Node)) {
+        setVoiceDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  // Cleanup polling on unmount or close
+  useEffect(() => {
+    return () => {
+      if (statusPollingInterval) {
+        clearInterval(statusPollingInterval);
+      }
+    };
+  }, [statusPollingInterval]);
+
+  // Countdown timer for payment expiry
+  useEffect(() => {
+    if (expiresIn > 0 && step === 6) {
+      const timer = setTimeout(() => {
+        setExpiresIn(prev => Math.max(0, prev - 1));
+      }, 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [expiresIn, step]);
+
+  // Poll minting status
+  const pollMintingStatus = useCallback(async (registrationId: string) => {
+    try {
+      const result = await invoke<MintingStatusResult>('check_minting_status', {
+        userId,
+        registrationId,
+        password,
+      });
+
+      if (result.success) {
+        setMintingStatus(result.status || null);
+
+        if (result.status === 'complete') {
+          // Stop polling
+          if (statusPollingInterval) {
+            clearInterval(statusPollingInterval);
+            setStatusPollingInterval(null);
+          }
+          setSuccess(true);
+          setStep(7);  // Success step
+          onQubesChange?.();  // Refresh qube list
+        } else if (result.status === 'failed') {
+          if (statusPollingInterval) {
+            clearInterval(statusPollingInterval);
+            setStatusPollingInterval(null);
+          }
+          setPaymentError(result.error_message || 'Minting failed');
+        } else if (result.status === 'expired') {
+          if (statusPollingInterval) {
+            clearInterval(statusPollingInterval);
+            setStatusPollingInterval(null);
+          }
+          setPaymentError('Payment window expired. Please try again.');
+        }
+      }
+    } catch (error) {
+      console.error('Failed to check minting status:', error);
+    }
+  }, [userId, password, statusPollingInterval, onQubesChange]);
+
+  // Start fee-based minting
+  const handleStartMinting = async () => {
+    setLoading(true);
+    setPaymentError(null);
+
+    try {
+      const result = await invoke<PendingMintingResult>('prepare_qube_for_minting', {
+        userId,
+        name: formData.name,
+        genesisPrompt: formData.genesisPrompt,
+        aiProvider: formData.aiProvider,
+        aiModel: formData.aiModel,
+        voiceModel: formData.voiceModel,
+        walletAddress: formData.walletAddress,
+        password,
+        encryptGenesis: formData.encryptGenesis || false,
+        favoriteColor: formData.favoriteColor,
+        avatarFile: formData.avatarFile || null,
+        generateAvatar: formData.generateAvatar || false,
+        avatarStyle: formData.avatarStyle || null,
+      });
+
+      if (result.success && result.registration_id) {
+        setPendingMinting(result);
+        setExpiresIn(result.expires_in_seconds || 1800);
+        setStep(6);  // Payment step
+
+        // Start polling for status
+        const interval = setInterval(() => {
+          pollMintingStatus(result.registration_id!);
+        }, 5000);  // Poll every 5 seconds
+        setStatusPollingInterval(interval);
+      } else {
+        setPaymentError(result.error || 'Failed to prepare minting');
+      }
+    } catch (error) {
+      console.error('Failed to prepare minting:', error);
+      setPaymentError(`Failed to prepare minting: ${error}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Submit transaction ID
+  const handleSubmitTxid = async () => {
+    if (!pendingMinting?.registration_id || !txidInput.trim()) return;
+
+    setSubmittingTxid(true);
+    setPaymentError(null);
+
+    try {
+      const result = await invoke<{ success: boolean; status?: string; error?: string }>('submit_payment_txid', {
+        userId,
+        registrationId: pendingMinting.registration_id,
+        txid: txidInput.trim(),
+      });
+
+      if (result.success) {
+        setMintingStatus('paid');
+        // Continue polling - the status will update to 'minting' then 'complete'
+      } else {
+        setPaymentError(result.error || 'Failed to verify payment');
+      }
+    } catch (error) {
+      console.error('Failed to submit txid:', error);
+      setPaymentError(`Failed to submit transaction: ${error}`);
+    } finally {
+      setSubmittingTxid(false);
+    }
+  };
+
+  // Cancel pending minting
+  const handleCancelMinting = async () => {
+    if (!pendingMinting?.registration_id) return;
+
+    try {
+      await invoke('cancel_pending_minting', {
+        userId,
+        registrationId: pendingMinting.registration_id,
+      });
+    } catch (error) {
+      console.error('Failed to cancel minting:', error);
+    }
+
+    // Stop polling
+    if (statusPollingInterval) {
+      clearInterval(statusPollingInterval);
+      setStatusPollingInterval(null);
+    }
+
+    setPendingMinting(null);
+    setMintingStatus(null);
+    setStep(5);  // Go back to confirmation
+  };
+
+  if (!isOpen) return null;
+
+  // Legacy submit handler (for dev mode if needed)
+  const handleSubmit = async () => {
+    // Use fee-based minting flow
+    await handleStartMinting();
+  };
+
+  const handleClose = () => {
+    // Stop any polling
+    if (statusPollingInterval) {
+      clearInterval(statusPollingInterval);
+      setStatusPollingInterval(null);
+    }
+
+    // Reset form
+    setFormData({
+      name: '',
+      genesisPrompt: '',
+      aiProvider: 'openai',
+      aiModel: 'gpt-5-turbo',
+      voiceModel: 'google:en-US-Neural2-A',  // Default to Google Cloud TTS Neural2!
+      walletAddress: '',
+      encryptGenesis: false,
+      favoriteColor: '#00ff88',
+      generateAvatar: true,
+      avatarStyle: 'cyberpunk',
+      avatarFile: undefined,
+    });
+    setVoiceProvider('google');
+    setStep(1);
+    setSuccess(false);
+    setErrors({});
+
+    // Reset minting state
+    setPendingMinting(null);
+    setMintingStatus(null);
+    setPaymentError(null);
+    setExpiresIn(0);
+    setTxidInput('');
+    setSubmittingTxid(false);
+
+    onClose();
+  };
+
+  const validateStep = (currentStep: number): boolean => {
+    const newErrors: Partial<CreateQubeData> = {};
+
+    if (currentStep === 1) {
+      if (!formData.name.trim()) {
+        newErrors.name = 'Name is required';
+      }
+      if (!formData.genesisPrompt.trim()) {
+        newErrors.genesisPrompt = 'Genesis prompt is required';
+      }
+    }
+
+    if (currentStep === 3) {
+      if (!formData.walletAddress.trim()) {
+        newErrors.walletAddress = 'Bitcoin Cash wallet address is required for NFT minting';
+      } else if (!formData.walletAddress.startsWith('bitcoincash:')) {
+        newErrors.walletAddress = 'Must be a valid Bitcoin Cash address (starts with bitcoincash:)';
+      }
+    }
+
+    if (currentStep === 4) {
+      // Avatar is mandatory - must either upload or generate
+      if (!formData.avatarFile && !formData.generateAvatar) {
+        newErrors.avatarFile = 'Avatar is required. Please upload an image or enable AI generation.';
+      }
+      // Pinata must be configured for IPFS upload
+      if (pinataConfigured === false) {
+        newErrors.avatarFile = 'Pinata IPFS API key is required. Please configure it in Settings first.';
+      }
+    }
+
+    setErrors(newErrors);
+    return Object.keys(newErrors).length === 0;
+  };
+
+  const nextStep = () => {
+    if (validateStep(step)) {
+      setStep(step + 1);
+    }
+  };
+
+  const prevStep = () => {
+    setStep(step - 1);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+      <GlassCard className="w-full max-w-2xl max-h-[90vh] overflow-y-auto p-8">
+        {success ? (
+          // Success View
+          <div className="text-center py-12">
+            <div className="text-6xl mb-6">🎉</div>
+            <h2 className="text-3xl font-display text-accent-primary mb-4">
+              Qube Created Successfully!
+            </h2>
+            <p className="text-text-secondary mb-2">
+              {formData.name} has been created and their NFT has been minted.
+            </p>
+            <p className="text-text-tertiary text-sm mb-8">
+              Check the console for blockchain transaction details.
+            </p>
+            <GlassButton onClick={handleClose}>
+              Close
+            </GlassButton>
+          </div>
+        ) : (
+          <>
+            {/* Header */}
+            <div className="mb-6">
+              <h2 className="text-3xl font-display text-accent-primary mb-2">
+                {step === 6 ? 'Payment Required' : step === 7 ? 'Success!' : 'Create New Qube'}
+              </h2>
+              <div className="flex gap-2">
+                {[1, 2, 3, 4, 5, 6].map((s) => (
+                  <div
+                    key={s}
+                    className={`h-1 flex-1 rounded ${
+                      s <= step ? 'bg-accent-primary' : 'bg-glass-border'
+                    }`}
+                  />
+                ))}
+              </div>
+            </div>
+            {/* Step 1: Basic Info */}
+            {step === 1 && (
+          <div className="space-y-4">
+            <h3 className="text-xl text-text-primary font-medium mb-4">
+              Basic Information
+            </h3>
+
+            <GlassInput
+              label="Qube Name *"
+              placeholder="e.g., Athena, Hermes, Apollo..."
+              value={formData.name}
+              onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+              error={errors.name}
+            />
+
+            <div>
+              <label className="block text-sm font-medium text-text-secondary mb-2">
+                Genesis Prompt *
+              </label>
+              <textarea
+                placeholder="Describe your Qube's purpose, personality, and expertise..."
+                value={formData.genesisPrompt}
+                onChange={(e) => setFormData({ ...formData, genesisPrompt: e.target.value })}
+                rows={5}
+                className={`w-full px-4 py-2 bg-glass-bg backdrop-blur-glass border rounded-lg text-text-primary placeholder-text-tertiary focus:outline-none focus:ring-2 ${
+                  errors.genesisPrompt
+                    ? 'border-accent-danger focus:ring-accent-danger'
+                    : 'border-glass-border focus:ring-accent-primary/50'
+                }`}
+              />
+              {errors.genesisPrompt && (
+                <span className="text-sm text-accent-danger">{errors.genesisPrompt}</span>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Step 2: AI Configuration */}
+        {step === 2 && (
+          <div className="space-y-4">
+            <h3 className="text-xl text-text-primary font-medium mb-4">
+              AI Configuration
+            </h3>
+
+            <div>
+              <label className="block text-sm font-medium text-text-secondary mb-2">
+                AI Provider
+              </label>
+              <select
+                value={formData.aiProvider}
+                onChange={(e) => setFormData({ ...formData, aiProvider: e.target.value })}
+                className="w-full px-4 py-2 bg-glass-bg backdrop-blur-glass border border-glass-border rounded-lg text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-primary/50"
+              >
+                <option value="openai">OpenAI</option>
+                <option value="anthropic">Anthropic</option>
+                <option value="google">Google</option>
+                <option value="perplexity">Perplexity</option>
+                <option value="deepseek">DeepSeek</option>
+                <option value="ollama">Ollama (Local)</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-text-secondary mb-2">
+                AI Model
+              </label>
+              <select
+                value={formData.aiModel}
+                onChange={(e) => setFormData({ ...formData, aiModel: e.target.value })}
+                className="w-full px-4 py-2 bg-glass-bg backdrop-blur-glass border border-glass-border rounded-lg text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-primary/50"
+              >
+                {formData.aiProvider === 'openai' && (
+                  <>
+                    <option value="gpt-5-turbo">GPT-5 Turbo</option>
+                    <option value="gpt-5">GPT-5</option>
+                    <option value="o4">GPT-O4</option>
+                    <option value="o4-mini">GPT-O4 Mini</option>
+                    <option value="gpt-4o">GPT-4o</option>
+                    <option value="gpt-4o-mini">GPT-4o Mini</option>
+                  </>
+                )}
+                {formData.aiProvider === 'anthropic' && (
+                  <>
+                    <option value="claude-sonnet-4-5-20250929">Claude Sonnet 4.5 (Sep 2025)</option>
+                    <option value="claude-opus-4-1-20250805">Claude Opus 4.1 (Aug 2025)</option>
+                    <option value="claude-sonnet-4-20250514">Claude Sonnet 4 (May 2025)</option>
+                    <option value="claude-3-7-sonnet-20250219">Claude 3.7 Sonnet (Feb 2025)</option>
+                    <option value="claude-3-5-haiku-20241022">Claude 3.5 Haiku (Oct 2024)</option>
+                  </>
+                )}
+                {formData.aiProvider === 'google' && (
+                  <>
+                    <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
+                    <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+                    <option value="gemini-2.5-flash-lite">Gemini 2.5 Flash Lite</option>
+                    <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
+                    <option value="gemini-1.5-pro">Gemini 1.5 Pro</option>
+                  </>
+                )}
+                {formData.aiProvider === 'perplexity' && (
+                  <>
+                    <option value="sonar">Sonar (Fast)</option>
+                    <option value="sonar-pro">Sonar Pro (Deep Search)</option>
+                    <option value="sonar-reasoning">Sonar Reasoning</option>
+                    <option value="sonar-reasoning-pro">Sonar Reasoning Pro</option>
+                    <option value="sonar-deep-research">Sonar Deep Research</option>
+                  </>
+                )}
+                {formData.aiProvider === 'deepseek' && (
+                  <>
+                    <option value="deepseek-chat">DeepSeek Chat (V3.2)</option>
+                    <option value="deepseek-reasoner">DeepSeek Reasoner (R1)</option>
+                  </>
+                )}
+                {formData.aiProvider === 'ollama' && (
+                  <>
+                    <option value="llama3.3:70b">Llama 3.3 70B</option>
+                    <option value="llama3.2">Llama 3.2</option>
+                    <option value="llama3.2:1b">Llama 3.2 1B</option>
+                    <option value="llama3.2:3b">Llama 3.2 3B</option>
+                    <option value="llama3.2-vision:11b">Llama 3.2 Vision 11B</option>
+                    <option value="llama3.2-vision:90b">Llama 3.2 Vision 90B</option>
+                    <option value="qwen3:235b">Qwen 3 235B</option>
+                    <option value="qwen3:30b">Qwen 3 30B</option>
+                    <option value="qwen2.5:7b">Qwen 2.5 7B</option>
+                    <option value="deepseek-r1:8b">DeepSeek R1 8B (Local)</option>
+                    <option value="phi4:14b">Phi 4 14B</option>
+                    <option value="gemma2:9b">Gemma 2 9B</option>
+                    <option value="mistral:7b">Mistral 7B</option>
+                    <option value="codellama:7b">CodeLlama 7B</option>
+                  </>
+                )}
+              </select>
+            </div>
+          </div>
+        )}
+
+        {/* Step 3: Voice & Wallet */}
+        {step === 3 && (
+          <div className="space-y-4">
+            <h3 className="text-xl text-text-primary font-medium mb-4">
+              Voice & Blockchain Configuration
+            </h3>
+
+            <div>
+              <label className="block text-sm font-medium text-text-secondary mb-2">
+                Voice Provider
+              </label>
+              <select
+                value={voiceProvider}
+                onChange={(e) => setVoiceProvider(e.target.value)}
+                className="w-full px-4 py-2 bg-glass-bg backdrop-blur-glass border border-glass-border rounded-lg text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-primary/50"
+              >
+                <option value="google">Google Cloud TTS (380+ voices)</option>
+                <option value="gemini">Gemini TTS (30 voices)</option>
+                <option value="openai">OpenAI TTS (6 voices)</option>
+                <option value="elevenlabs">ElevenLabs</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-text-secondary mb-2">
+                Voice
+              </label>
+              <div className="relative" ref={voiceDropdownRef}>
+                <button
+                  type="button"
+                  onClick={() => setVoiceDropdownOpen(!voiceDropdownOpen)}
+                  className="w-full px-4 py-2 bg-glass-bg backdrop-blur-glass border border-glass-border rounded-lg text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-primary/50 text-left flex justify-between items-center"
+                >
+                  <span>
+                    {formData.voiceModel?.split(':')[1] || 'Select voice'}{getVoiceGender(formData.voiceModel || '')}
+                  </span>
+                  <svg className={`w-4 h-4 transition-transform ${voiceDropdownOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+                {voiceDropdownOpen && (
+                  <div className="absolute z-50 w-full mt-1 bg-[#2a3441] border border-glass-border rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                    {voiceProvider === 'gemini' && (
+                      <>
+                        {['achernar', 'achird', 'algenib', 'algieba', 'alnilam', 'aoede', 'autonoe', 'callirrhoe', 'charon', 'despina', 'enceladus', 'erinome', 'fenrir', 'gacrux', 'iapetus', 'kore', 'laomedeia', 'leda', 'orus', 'puck', 'pulcherrima', 'rasalgethi', 'sadachbia', 'sadaltager', 'schedar', 'sulafat', 'umbriel', 'vindemiatrix', 'zephyr', 'zubenelgenubi'].map(voice => (
+                          <div
+                            key={voice}
+                            onClick={() => { setFormData({ ...formData, voiceModel: `gemini:${voice}` }); setVoiceDropdownOpen(false); }}
+                            className={`px-4 py-2 cursor-pointer hover:bg-accent-primary/20 ${formData.voiceModel === `gemini:${voice}` ? 'bg-accent-primary/30' : ''}`}
+                          >
+                            {voice.charAt(0).toUpperCase() + voice.slice(1)}{getVoiceGender(`gemini:${voice}`)}
+                          </div>
+                        ))}
+                      </>
+                    )}
+                    {voiceProvider === 'openai' && (
+                      <>
+                        {['alloy', 'echo', 'fable', 'nova', 'onyx', 'shimmer'].map(voice => (
+                          <div
+                            key={voice}
+                            onClick={() => { setFormData({ ...formData, voiceModel: `openai:${voice}` }); setVoiceDropdownOpen(false); }}
+                            className={`px-4 py-2 cursor-pointer hover:bg-accent-primary/20 ${formData.voiceModel === `openai:${voice}` ? 'bg-accent-primary/30' : ''}`}
+                          >
+                            {voice.charAt(0).toUpperCase() + voice.slice(1)}{getVoiceGender(`openai:${voice}`)}
+                          </div>
+                        ))}
+                      </>
+                    )}
+                    {voiceProvider === 'google' && (
+                      <>
+                        <div className="px-4 py-1 text-xs text-text-tertiary bg-glass-border/30 sticky top-0">Neural2 (High Quality - $16/1M chars)</div>
+                        {['A', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'].map(v => (
+                          <div
+                            key={`neural2-${v}`}
+                            onClick={() => { setFormData({ ...formData, voiceModel: `google:en-US-Neural2-${v}` }); setVoiceDropdownOpen(false); }}
+                            className={`px-4 py-2 cursor-pointer hover:bg-accent-primary/20 ${formData.voiceModel === `google:en-US-Neural2-${v}` ? 'bg-accent-primary/30' : ''}`}
+                          >
+                            Neural2-{v}{getVoiceGender(`google:Neural2-${v}`)}
+                          </div>
+                        ))}
+                        <div className="px-4 py-1 text-xs text-text-tertiary bg-glass-border/30 sticky top-0">WaveNet (High Quality - $16/1M chars)</div>
+                        {['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'].map(v => (
+                          <div
+                            key={`wavenet-${v}`}
+                            onClick={() => { setFormData({ ...formData, voiceModel: `google:en-US-Wavenet-${v}` }); setVoiceDropdownOpen(false); }}
+                            className={`px-4 py-2 cursor-pointer hover:bg-accent-primary/20 ${formData.voiceModel === `google:en-US-Wavenet-${v}` ? 'bg-accent-primary/30' : ''}`}
+                          >
+                            Wavenet-{v}{getVoiceGender(`google:Wavenet-${v}`)}
+                          </div>
+                        ))}
+                        <div className="px-4 py-1 text-xs text-text-tertiary bg-glass-border/30 sticky top-0">Studio (Premium - $160/1M chars)</div>
+                        {['O', 'Q'].map(v => (
+                          <div
+                            key={`studio-${v}`}
+                            onClick={() => { setFormData({ ...formData, voiceModel: `google:en-US-Studio-${v}` }); setVoiceDropdownOpen(false); }}
+                            className={`px-4 py-2 cursor-pointer hover:bg-accent-primary/20 ${formData.voiceModel === `google:en-US-Studio-${v}` ? 'bg-accent-primary/30' : ''}`}
+                          >
+                            Studio-{v}{getVoiceGender(`google:Studio-${v}`)}
+                          </div>
+                        ))}
+                        <div className="px-4 py-1 text-xs text-text-tertiary bg-glass-border/30 sticky top-0">Chirp-HD (High Quality - $16/1M chars)</div>
+                        {['D', 'F'].map(v => (
+                          <div
+                            key={`chirp-${v}`}
+                            onClick={() => { setFormData({ ...formData, voiceModel: `google:en-US-Chirp-HD-${v}` }); setVoiceDropdownOpen(false); }}
+                            className={`px-4 py-2 cursor-pointer hover:bg-accent-primary/20 ${formData.voiceModel === `google:en-US-Chirp-HD-${v}` ? 'bg-accent-primary/30' : ''}`}
+                          >
+                            Chirp-HD-{v}{getVoiceGender(`google:Chirp-HD-${v}`)}
+                          </div>
+                        ))}
+                        <div className="px-4 py-1 text-xs text-text-tertiary bg-glass-border/30 sticky top-0">Standard (Budget - $4/1M chars)</div>
+                        {['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'].map(v => (
+                          <div
+                            key={`standard-${v}`}
+                            onClick={() => { setFormData({ ...formData, voiceModel: `google:en-US-Standard-${v}` }); setVoiceDropdownOpen(false); }}
+                            className={`px-4 py-2 cursor-pointer hover:bg-accent-primary/20 ${formData.voiceModel === `google:en-US-Standard-${v}` ? 'bg-accent-primary/30' : ''}`}
+                          >
+                            Standard-{v}{getVoiceGender(`google:Standard-${v}`)}
+                          </div>
+                        ))}
+                      </>
+                    )}
+                    {voiceProvider === 'elevenlabs' && (
+                      <div
+                        onClick={() => { setFormData({ ...formData, voiceModel: 'elevenlabs:default' }); setVoiceDropdownOpen(false); }}
+                        className={`px-4 py-2 cursor-pointer hover:bg-accent-primary/20 ${formData.voiceModel === 'elevenlabs:default' ? 'bg-accent-primary/30' : ''}`}
+                      >
+                        Default
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+              <p className="text-xs text-text-tertiary mt-1">
+                {voiceProvider === 'google' && 'Google Cloud TTS requires service account credentials. 1M free chars/month for Neural2/WaveNet!'}
+                {voiceProvider === 'gemini' && 'Gemini voices use your Google API key - FREE during preview!'}
+                {voiceProvider === 'openai' && 'OpenAI voices use your OpenAI API key.'}
+                {voiceProvider === 'elevenlabs' && 'ElevenLabs uses your ElevenLabs API key.'}
+              </p>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-text-secondary mb-2">
+                Bitcoin Cash Wallet Address *
+              </label>
+              <input
+                type="text"
+                placeholder="bitcoincash:qp..."
+                value={formData.walletAddress}
+                onChange={(e) => setFormData({ ...formData, walletAddress: e.target.value })}
+                className={`w-full px-4 py-2 bg-glass-bg backdrop-blur-glass border rounded-lg text-text-primary font-mono text-sm placeholder-text-tertiary focus:outline-none focus:ring-2 ${
+                  errors.walletAddress
+                    ? 'border-accent-danger focus:ring-accent-danger'
+                    : 'border-glass-border focus:ring-accent-primary/50'
+                }`}
+              />
+              {errors.walletAddress && (
+                <span className="text-sm text-accent-danger">{errors.walletAddress}</span>
+              )}
+              <p className="text-xs text-text-tertiary mt-1">
+                ⚠️ This address must support CashTokens for NFT minting. The Qube's genesis NFT will be sent here.
+              </p>
+            </div>
+
+            <div>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={formData.encryptGenesis}
+                  onChange={(e) =>
+                    setFormData({ ...formData, encryptGenesis: e.target.checked })
+                  }
+                  className="w-5 h-5 rounded bg-glass-bg border-glass-border text-accent-primary focus:ring-2 focus:ring-accent-primary/50"
+                />
+                <span className="text-text-primary">Encrypt Genesis Block</span>
+              </label>
+              <p className="text-xs text-text-tertiary mt-1 ml-7">
+                If enabled, the genesis prompt will be encrypted and only visible when unlocked with your password. The private key is always encrypted.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Step 4: Appearance */}
+        {step === 4 && (
+          <div className="space-y-4">
+            <h3 className="text-xl text-text-primary font-medium mb-4">
+              Appearance
+            </h3>
+
+            <div>
+              <label className="block text-sm font-medium text-text-secondary mb-2">
+                Favorite Color (for glow effects)
+              </label>
+              <div className="flex gap-4">
+                <input
+                  type="color"
+                  value={formData.favoriteColor}
+                  onChange={(e) => setFormData({ ...formData, favoriteColor: e.target.value })}
+                  className="h-12 w-20 rounded-lg cursor-pointer"
+                />
+                <input
+                  type="text"
+                  value={formData.favoriteColor}
+                  onChange={(e) => setFormData({ ...formData, favoriteColor: e.target.value })}
+                  placeholder="#00ff88"
+                  className="flex-1 px-4 py-2 bg-glass-bg backdrop-blur-glass border border-glass-border rounded-lg text-text-primary font-mono focus:outline-none focus:ring-2 focus:ring-accent-primary/50"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-text-secondary mb-2">
+                Avatar
+              </label>
+
+              {/* Upload Avatar Option */}
+              <div className="mb-3">
+                <button
+                  type="button"
+                  onClick={async (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    try {
+                      const filePath = await open({
+                        multiple: false,
+                        filters: [{
+                          name: 'Image',
+                          extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp']
+                        }]
+                      });
+
+                      if (filePath && typeof filePath === 'string') {
+                        setFormData({
+                          ...formData,
+                          avatarFile: filePath,
+                          generateAvatar: false
+                        });
+                      }
+                    } catch (err) {
+                      console.error('Error opening file dialog:', err);
+                    }
+                  }}
+                  className="block w-full px-4 py-3 bg-glass-bg backdrop-blur-glass border border-glass-border rounded-lg text-text-primary hover:border-accent-primary/50 transition-colors cursor-pointer"
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="text-lg">📁</span>
+                    <span>{formData.avatarFile ? 'Avatar Selected' : 'Upload Avatar Image'}</span>
+                  </div>
+                  {formData.avatarFile && (
+                    <p className="text-xs text-text-tertiary mt-1 ml-7 text-left">
+                      {formData.avatarFile}
+                    </p>
+                  )}
+                </button>
+              </div>
+
+              {/* Generate Avatar Option */}
+              <div className="flex items-center justify-between">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={formData.generateAvatar}
+                    disabled={!!formData.avatarFile}
+                    onChange={(e) =>
+                      setFormData({ ...formData, generateAvatar: e.target.checked })
+                    }
+                    className="w-5 h-5 rounded bg-glass-bg border-glass-border text-accent-primary focus:ring-2 focus:ring-accent-primary/50 disabled:opacity-50"
+                  />
+                  <span className={formData.avatarFile ? 'text-text-tertiary' : 'text-text-primary'}>
+                    Generate AI Avatar (DALL-E 3)
+                  </span>
+                </label>
+                {formData.avatarFile && (
+                  <button
+                    onClick={() => setFormData({ ...formData, avatarFile: undefined })}
+                    className="text-xs text-accent-danger hover:underline"
+                  >
+                    Remove uploaded file
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {formData.generateAvatar && (
+              <div>
+                <label className="block text-sm font-medium text-text-secondary mb-2">
+                  Avatar Style
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  {['cyberpunk', 'realistic', 'cartoon', 'abstract', 'anime'].map((style) => (
+                    <button
+                      key={style}
+                      onClick={() => setFormData({ ...formData, avatarStyle: style })}
+                      className={`px-4 py-2 rounded-lg capitalize transition-all ${
+                        formData.avatarStyle === style
+                          ? 'bg-accent-primary/10 text-accent-primary border border-accent-primary/30'
+                          : 'bg-glass-bg text-text-secondary border border-glass-border hover:text-text-primary'
+                      }`}
+                    >
+                      {style}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Pinata IPFS Warning */}
+            {checkingPinata ? (
+              <div className="p-3 bg-glass-bg border border-glass-border rounded-lg">
+                <p className="text-text-tertiary text-sm">Checking IPFS configuration...</p>
+              </div>
+            ) : pinataConfigured === false ? (
+              <div className="p-3 bg-accent-danger/10 border border-accent-danger/30 rounded-lg">
+                <p className="text-accent-danger text-sm font-medium mb-1">
+                  Pinata IPFS API Key Required
+                </p>
+                <p className="text-text-secondary text-xs">
+                  Avatar images must be uploaded to IPFS. Please configure your Pinata API key in the Settings tab before creating a Qube.
+                </p>
+              </div>
+            ) : pinataConfigured === true ? (
+              <div className="p-3 bg-accent-success/10 border border-accent-success/30 rounded-lg">
+                <p className="text-accent-success text-sm">
+                  Pinata IPFS configured - avatar will be uploaded to IPFS
+                </p>
+              </div>
+            ) : null}
+
+            {/* Avatar validation error */}
+            {errors.avatarFile && (
+              <p className="text-accent-danger text-sm mt-2">{errors.avatarFile}</p>
+            )}
+          </div>
+        )}
+
+        {/* Step 5: Confirm */}
+        {step === 5 && (
+          <div className="space-y-4">
+            <h3 className="text-xl text-text-primary font-medium mb-4">
+              Confirm & Create
+            </h3>
+
+            <GlassCard className="p-4 bg-bg-secondary/50">
+              <div className="space-y-3">
+                <div>
+                  <span className="text-text-tertiary text-sm">Name:</span>
+                  <p className="text-text-primary font-medium">{formData.name}</p>
+                </div>
+                <div>
+                  <span className="text-text-tertiary text-sm">AI Model:</span>
+                  <p className="text-text-primary font-medium">
+                    {formData.aiProvider} - {formData.aiModel}
+                  </p>
+                </div>
+                <div>
+                  <span className="text-text-tertiary text-sm">Voice Model:</span>
+                  <p className="text-text-primary font-medium">{formData.voiceModel}</p>
+                </div>
+                <div>
+                  <span className="text-text-tertiary text-sm">Wallet Address:</span>
+                  <p className="text-text-primary font-mono text-xs break-all">{formData.walletAddress}</p>
+                </div>
+                <div>
+                  <span className="text-text-tertiary text-sm">Encrypt Genesis:</span>
+                  <p className="text-text-primary">{formData.encryptGenesis ? 'Yes' : 'No'}</p>
+                </div>
+                <div>
+                  <span className="text-text-tertiary text-sm">Genesis Prompt:</span>
+                  <p className="text-text-primary">{formData.genesisPrompt}</p>
+                </div>
+                <div>
+                  <span className="text-text-tertiary text-sm">Avatar:</span>
+                  <p className="text-text-primary">
+                    {formData.generateAvatar
+                      ? `Generate (${formData.avatarStyle})`
+                      : 'Default'}
+                  </p>
+                </div>
+              </div>
+            </GlassCard>
+
+            <div className="bg-accent-primary/10 border border-accent-primary/30 rounded-lg p-4">
+              <p className="text-text-primary text-sm">
+                ⚠️ Creating this Qube requires a small minting fee (0.0001 BCH / ~10,000 sats).
+                You'll be shown payment details on the next step.
+              </p>
+            </div>
+
+            {paymentError && (
+              <div className="bg-accent-danger/10 border border-accent-danger/30 rounded-lg p-4">
+                <p className="text-accent-danger text-sm">{paymentError}</p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Step 6: Payment */}
+        {step === 6 && pendingMinting && (
+          <div className="space-y-4">
+            <h3 className="text-xl text-text-primary font-medium mb-4">
+              Complete Payment to Mint NFT
+            </h3>
+
+            <div className="text-center mb-6">
+              <div className="text-text-tertiary text-sm mb-2">Time remaining</div>
+              <div className="text-3xl font-mono text-accent-primary">
+                {Math.floor(expiresIn / 60)}:{(expiresIn % 60).toString().padStart(2, '0')}
+              </div>
+            </div>
+
+            <GlassCard className="p-6 bg-bg-secondary/50">
+              <div className="text-center space-y-4">
+                <div className="text-text-tertiary text-sm">Send exactly</div>
+                <div className="text-4xl font-display text-accent-primary">
+                  {pendingMinting.payment?.amount_bch} BCH
+                </div>
+                <div className="text-text-secondary text-sm">
+                  ({pendingMinting.payment?.amount_satoshis.toLocaleString()} satoshis)
+                </div>
+
+                <div className="text-text-tertiary text-sm mt-4">to this address:</div>
+                <div className="bg-bg-primary/50 p-3 rounded-lg">
+                  <code className="text-accent-primary text-xs break-all font-mono">
+                    {pendingMinting.payment?.address}
+                  </code>
+                </div>
+
+                {/* QR Code */}
+                {pendingMinting.payment?.qr_data && (
+                  <div className="bg-white p-3 rounded-lg inline-block mt-4">
+                    <QRCodeSVG
+                      value={pendingMinting.payment.qr_data}
+                      size={192}
+                      level="M"
+                      includeMargin={false}
+                    />
+                  </div>
+                )}
+
+                {/* Payment URI button */}
+                {pendingMinting.payment?.payment_uri && (
+                  <div className="mt-4">
+                    <a
+                      href={pendingMinting.payment.payment_uri}
+                      className="inline-flex items-center gap-2 px-4 py-2 bg-accent-primary/10 border border-accent-primary/30 rounded-lg text-accent-primary hover:bg-accent-primary/20 transition-colors"
+                    >
+                      Open in Wallet App
+                    </a>
+                  </div>
+                )}
+              </div>
+            </GlassCard>
+
+            {/* Transaction ID Input */}
+            <GlassCard className="p-4 bg-bg-secondary/30 mt-4">
+              <div className="space-y-3">
+                <div className="text-text-secondary text-sm text-center">
+                  Already paid? Enter your transaction ID:
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    placeholder="Enter transaction ID (txid)..."
+                    value={txidInput}
+                    onChange={(e) => setTxidInput(e.target.value)}
+                    className="flex-1 px-3 py-2 bg-glass-bg backdrop-blur-glass border border-glass-border rounded-lg text-text-primary font-mono text-xs placeholder-text-tertiary focus:outline-none focus:ring-2 focus:ring-accent-primary/50"
+                  />
+                  <GlassButton
+                    variant="primary"
+                    onClick={handleSubmitTxid}
+                    loading={submittingTxid}
+                    disabled={!txidInput.trim() || submittingTxid}
+                  >
+                    Verify
+                  </GlassButton>
+                </div>
+              </div>
+            </GlassCard>
+
+            {/* Status indicator */}
+            <div className="text-center mt-4">
+              <div className="text-text-secondary text-sm">
+                Status: <span className="font-medium text-text-primary capitalize">{mintingStatus || 'Waiting for payment...'}</span>
+              </div>
+              {mintingStatus === 'paid' && (
+                <div className="text-accent-primary text-sm mt-1">
+                  Payment received! Minting NFT...
+                </div>
+              )}
+              {mintingStatus === 'minting' && (
+                <div className="text-accent-primary text-sm mt-1 flex items-center justify-center gap-2">
+                  <span className="animate-spin">⟳</span>
+                  Minting in progress...
+                </div>
+              )}
+            </div>
+
+            {paymentError && (
+              <div className="bg-accent-danger/10 border border-accent-danger/30 rounded-lg p-4 mt-4">
+                <p className="text-accent-danger text-sm">{paymentError}</p>
+              </div>
+            )}
+
+            <p className="text-text-tertiary text-xs text-center mt-4">
+              Creating: <span className="text-text-primary">{pendingMinting.qube_name}</span>
+            </p>
+          </div>
+        )}
+
+        {/* Step 7: Success (after minting completes) */}
+        {step === 7 && (
+          <div className="text-center py-8">
+            <div className="text-6xl mb-6">🎉</div>
+            <h2 className="text-3xl font-display text-accent-primary mb-4">
+              Qube Created Successfully!
+            </h2>
+            <p className="text-text-secondary mb-2">
+              {formData.name} has been created and their NFT has been minted on Bitcoin Cash.
+            </p>
+            <p className="text-text-tertiary text-sm mb-8">
+              Your new Qube is ready to chat!
+            </p>
+          </div>
+        )}
+
+        {/* Actions */}
+        <div className="flex justify-between mt-8">
+          {step === 6 ? (
+            <>
+              <GlassButton variant="ghost" onClick={handleCancelMinting}>
+                Cancel & Go Back
+              </GlassButton>
+              <div className="flex gap-2">
+                <GlassButton
+                  variant="secondary"
+                  onClick={() => {
+                    // Copy address to clipboard
+                    if (pendingMinting?.payment?.address) {
+                      navigator.clipboard.writeText(pendingMinting.payment.address);
+                    }
+                  }}
+                >
+                  Copy Address
+                </GlassButton>
+              </div>
+            </>
+          ) : step === 7 ? (
+            <div className="w-full flex justify-center">
+              <GlassButton variant="primary" onClick={handleClose}>
+                Done
+              </GlassButton>
+            </div>
+          ) : (
+            <>
+              <GlassButton variant="ghost" onClick={handleClose}>
+                Cancel
+              </GlassButton>
+
+              <div className="flex gap-2">
+                {step > 1 && (
+                  <GlassButton variant="secondary" onClick={prevStep}>
+                    Back
+                  </GlassButton>
+                )}
+                {step < 5 ? (
+                  <GlassButton variant="primary" onClick={nextStep}>
+                    Next
+                  </GlassButton>
+                ) : (
+                  <GlassButton variant="primary" onClick={handleSubmit} loading={loading}>
+                    Pay & Create Qube
+                  </GlassButton>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+          </>
+        )}
+      </GlassCard>
+    </div>
+  );
+};

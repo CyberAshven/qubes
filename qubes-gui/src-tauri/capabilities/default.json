@@ -1,0 +1,18 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capability for the main window",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "opener:default",
+    "dialog:allow-open",
+    "dialog:default",
+    "fs:allow-read-file",
+    "fs:allow-home-read-recursive",
+    "fs:allow-document-read-recursive",
+    "fs:allow-download-read-recursive",
+    "fs:allow-picture-read-recursive",
+    "shell:allow-open"
+  ]
+}
