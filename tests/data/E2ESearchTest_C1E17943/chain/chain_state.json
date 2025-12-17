@@ -1,0 +1,33 @@
+{
+  "qube_id": "C1E17943",
+  "chain_length": 7,
+  "last_block_number": 6,
+  "last_block_hash": "275471e502dabf57af83946875a9950eda7b3aa4caa4903f573e42387e0c1308",
+  "last_merkle_root": null,
+  "last_anchor_block": null,
+  "current_session_id": null,
+  "session_block_count": 0,
+  "next_negative_index": -1,
+  "session_start_timestamp": null,
+  "auto_anchor_enabled": false,
+  "auto_anchor_threshold": 50,
+  "block_counts": {
+    "GENESIS": 1,
+    "THOUGHT": 0,
+    "ACTION": 0,
+    "OBSERVATION": 0,
+    "MESSAGE": 5,
+    "DECISION": 0,
+    "MEMORY_ANCHOR": 0,
+    "COLLABORATIVE_MEMORY": 0,
+    "SUMMARY": 1
+  },
+  "total_tokens_used": 0,
+  "total_api_cost": 0.0,
+  "tokens_by_model": {},
+  "api_calls_by_tool": {},
+  "last_updated": 1759952694,
+  "last_backup": null,
+  "integrity_verified": true,
+  "merkle_tree_valid": true
+}

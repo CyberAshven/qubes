@@ -1,0 +1,38 @@
+{
+  "block_type": "GENESIS",
+  "block_number": 0,
+  "qube_id": "10B394A2",
+  "timestamp": 1759952719,
+  "content": {},
+  "encrypted": false,
+  "temporary": false,
+  "previous_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+  "block_hash": "1caae014f77ee7365089849c7c2ffe2ea7994638cc4840990974a12fd7e76eac",
+  "signature": "3044022032e745e901496caa5eb3d6b656bd7255ce7b370d6ac4b09a69a29e8c99836989022039d6a2fca4a8c4494fcb046a2f414e21365ad2560af7546cc1fc4c0a9d1b2b0d",
+  "qube_name": "E2ESearchTest",
+  "creator": "TestUser",
+  "public_key": "0216a170d49fe99c6fd216438a11cfc8ee796cbb073e71510465ef2ac6b0a07afa",
+  "birth_timestamp": 1759952719,
+  "genesis_prompt": "Test intelligent search",
+  "genesis_prompt_encrypted": false,
+  "ai_model": "gpt-4o",
+  "voice_model": "test",
+  "avatar": {
+    "source": "generated",
+    "ipfs_cid": null,
+    "generation_model": null,
+    "file_format": "png",
+    "dimensions": "1024x1024"
+  },
+  "favorite_color": "#4A90E2",
+  "home_blockchain": "bitcoin_cash",
+  "capabilities": {
+    "web_search": true,
+    "image_generation": true,
+    "image_processing": true,
+    "tts": true,
+    "stt": true,
+    "code_execution": false
+  },
+  "default_trust_level": 50
+}

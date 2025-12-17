@@ -1,0 +1,38 @@
+{
+  "block_type": "GENESIS",
+  "block_number": 0,
+  "qube_id": "0B4D5172",
+  "timestamp": 1759952707,
+  "content": {},
+  "encrypted": false,
+  "temporary": false,
+  "previous_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+  "block_hash": "5bccf38659ae72378a09615797e8a38716614c010f0dd6276a64c193357dc83e",
+  "signature": "30450220683fe6862668a3f3848ae01b983e83feca856cc3e60ed397d7b1377eaf3464b7022100f71e716c56eb55e704545d7b5a21b8b448eb2869885ee747c123dd7b80453625",
+  "qube_name": "FilterTest",
+  "creator": "TestUser",
+  "public_key": "03f4c341c34c0a4d8a213c5de84adff0c36afebb12f1104ff2fbfadb14b6b3a055",
+  "birth_timestamp": 1759952707,
+  "genesis_prompt": "Test",
+  "genesis_prompt_encrypted": false,
+  "ai_model": "gpt-4o",
+  "voice_model": "test",
+  "avatar": {
+    "source": "generated",
+    "ipfs_cid": null,
+    "generation_model": null,
+    "file_format": "png",
+    "dimensions": "1024x1024"
+  },
+  "favorite_color": "#4A90E2",
+  "home_blockchain": "bitcoin_cash",
+  "capabilities": {
+    "web_search": true,
+    "image_generation": true,
+    "image_processing": true,
+    "tts": true,
+    "stt": true,
+    "code_execution": false
+  },
+  "default_trust_level": 50
+}

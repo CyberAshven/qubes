@@ -1,0 +1,18 @@
+{
+  "block_type": "THOUGHT",
+  "block_number": 5,
+  "qube_id": "09E5FCA1",
+  "timestamp": 1759953185,
+  "content": {
+    "ciphertext": "99129a690fc9cc82f0d2545177470a0f8c30c1a412706a52b79c3558f960caf373483894fd94471f86ceee916f946345e636ae45b848936c1cedd5de6aa656101fbc5f85752fa70911c37872fdbcce8018294bf3e1ac3a407768b7b1a76cdc57437250d90ffcc78265b095c77a628609d8b324de",
+    "nonce": "d88dbc7b586bee2bd03150ab",
+    "algorithm": "AES-256-GCM"
+  },
+  "encrypted": true,
+  "temporary": false,
+  "session_id": "active",
+  "original_session_index": -5,
+  "previous_hash": "bae92d3afcb47afb0ffa8adccb8fa79036f8393314851bf8025a3c346730a864",
+  "block_hash": "fa91045931fced0642c56a2e576d3ffbc5621e14353ec0c19fd96b605ecf2822",
+  "signature": "304402207907c1b70dc65e4530d09a75132631bdd0c78c2bef6fe4380eb165ac22486e54022001e6d34b745398eeeca2cde3a870d26aa4b5c6fcf8cf1f698b3c31c61570cbf3"
+}

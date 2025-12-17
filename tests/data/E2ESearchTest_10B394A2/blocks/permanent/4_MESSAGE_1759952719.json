@@ -1,0 +1,18 @@
+{
+  "block_type": "MESSAGE",
+  "block_number": 4,
+  "qube_id": "10B394A2",
+  "timestamp": 1759952719,
+  "content": {
+    "ciphertext": "4d63b1fc998d6a2583259583797b8078b2724e5aa9c106cc8f757a2299d5cfbfbed4ddaea8d7717a2df576afed5732d68f68337577788ac654dc63cb40e046f8e582eea46a120bb70c8f1aae6e47e3cf28c3cad4c7244e8e938e30256838212597830aba49c8abf4a9d18f917022ef6ca2ccfa72f905cdbdfc4fa20b2f3c8851604dea647b3603fee352734294e20bb568ea5657cc10d3c5f1a8ba2b2b0587825a23848d027925eb223b3d097c3c07d03d4659941a391d6cab3075aacbf496141813bf67df75cf6bb2f3d72e65d8842c990af63887b29c9cb3cf9c390d16e6292e212c8bd26c",
+    "nonce": "d83ef5b24beb532048ecf57d",
+    "algorithm": "AES-256-GCM"
+  },
+  "encrypted": true,
+  "temporary": false,
+  "session_id": "active",
+  "original_session_index": -4,
+  "previous_hash": "59dde8554ddeaea60a8d838e51c7511a8c5b5d0e069dcab10f97cbe63e8dce4c",
+  "block_hash": "fd66dc079547474920d59ea203e4a9e824e13b166081ec8000a5a52c3d715293",
+  "signature": "30450220649a1c55d9ae13f9a285742d553b4ccbe262debbca699e2377ae226360535bc5022100e6a5b2f4c72c5fd36aa07fadbb3673341469bd59801ff8b28c1c3243d2c42e94"
+}

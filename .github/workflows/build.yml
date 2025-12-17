@@ -227,8 +227,8 @@ jobs:
           DIST_DIR="dist-bundle/Qubes"
           mkdir -p "$DIST_DIR"/{data,resources,ollama,qubes-backend}
 
-          # Copy Tauri app bundle
-          cp -r "qubes-gui/src-tauri/target/${{ matrix.target }}/release/bundle/macos/qubes-gui.app" "$DIST_DIR/Qubes.app"
+          # Copy Tauri app bundle (named Qubes.app from tauri.conf.json)
+          cp -r "qubes-gui/src-tauri/target/${{ matrix.target }}/release/bundle/macos/Qubes.app" "$DIST_DIR/Qubes.app"
 
           # Copy Python backend
           cp "qubes-gui/src-tauri/dist/qubes-backend" "$DIST_DIR/qubes-backend/"

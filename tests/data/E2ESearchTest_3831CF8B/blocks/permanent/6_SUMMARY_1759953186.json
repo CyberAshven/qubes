@@ -1,0 +1,40 @@
+{
+  "block_type": "SUMMARY",
+  "block_number": 6,
+  "qube_id": "3831CF8B",
+  "timestamp": 1759953186,
+  "content": {
+    "summarized_blocks": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "block_count": 5,
+    "time_period": {
+      "start": 1759953185,
+      "end": 1759953186,
+      "duration_hours": 0.0002777777777777778
+    },
+    "summary_type": "session",
+    "summary_text": "Session with 5 messages over 5 blocks.",
+    "sentiment_analysis": {
+      "overall": "neutral",
+      "trend": "stable",
+      "key_emotions": []
+    },
+    "topics_covered": [
+      "conversation"
+    ],
+    "session_id": "active",
+    "participants": {
+      "humans": [],
+      "qubes": []
+    }
+  },
+  "encrypted": true,
+  "temporary": false,
+  "previous_hash": "3585d6f53c869cafdd4e5fe6c1ad1a326af756d4b00a697fe93151a92e064214",
+  "block_hash": "f12c0cccad60e64753e3dd6a5ddd5d969d51eae67384c6ae5720cf7574526e91"
+}
