@@ -22,8 +22,8 @@ build/
 logs/
 *.log
 
-# Data
-data/
+# Data (root level only - user data storage)
+/data/
 *.db
 *.lmdb
 *.mdb
