@@ -3086,6 +3086,615 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
             logger.error(f"Failed to send P2P user message: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
 
+    # =========================================================================
+    # Import/Export Methods
+    # =========================================================================
+
+    async def export_qube(self, qube_id: str, export_path: str, export_password: str, master_password: str) -> Dict[str, Any]:
+        """
+        Export a Qube to a portable .qube package file.
+
+        Args:
+            qube_id: The Qube ID to export
+            export_path: Path where to save the .qube file
+            export_password: Password to encrypt the export package
+            master_password: User's master password to decrypt the Qube data
+
+        Returns:
+            Dict with success, file_path, block_count, qube_name
+        """
+        import zipfile
+        import base64
+        import os
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+        from cryptography.hazmat.primitives import hashes
+
+        try:
+            # Set master key to access Qube data
+            self.orchestrator.set_master_key(master_password)
+
+            # Find qube directory
+            qubes_dir = self.orchestrator.data_dir / "qubes"
+            qube_dir = None
+            qube_name = None
+
+            for dir_entry in qubes_dir.iterdir():
+                if dir_entry.is_dir() and qube_id in dir_entry.name:
+                    qube_dir = dir_entry
+                    # Extract qube name from directory name (format: {name}_{id})
+                    qube_name = dir_entry.name.rsplit('_', 1)[0]
+                    break
+
+            if not qube_dir:
+                return {"success": False, "error": f"Qube directory not found for {qube_id}"}
+
+            # Load qube to get metadata and decrypt private key
+            if qube_id not in self.orchestrator.qubes:
+                await self.orchestrator.load_qube(qube_id)
+
+            qube = self.orchestrator.qubes[qube_id]
+
+            # Anchor any active session first
+            if qube.current_session and len(qube.current_session.blocks) > 0:
+                await qube.anchor_session()
+                logger.info(f"Auto-anchored session before export for {qube_id}")
+
+            # Collect all data to export
+            export_data = {
+                "qube_id": qube_id,
+                "qube_name": qube_name,
+                "genesis_block": qube.genesis_block.to_dict() if qube.genesis_block else None,
+                "chain_state": None,
+                "memory_blocks": [],
+                "relationships": None,
+                "nft_metadata": None,
+                "bcmr_data": None,
+                "avatar_base64": None,
+            }
+
+            # Get the decrypted private key and serialize it
+            private_key_pem = qube.private_key.private_bytes(
+                encoding=__import__('cryptography.hazmat.primitives.serialization', fromlist=['Encoding']).Encoding.PEM,
+                format=__import__('cryptography.hazmat.primitives.serialization', fromlist=['PrivateFormat']).PrivateFormat.PKCS8,
+                encryption_algorithm=__import__('cryptography.hazmat.primitives.serialization', fromlist=['NoEncryption']).NoEncryption()
+            ).decode('utf-8')
+            export_data["private_key_pem"] = private_key_pem
+
+            # Load chain state
+            chain_state_file = qube_dir / "chain" / "chain_state.json"
+            if chain_state_file.exists():
+                with open(chain_state_file, 'r', encoding='utf-8') as f:
+                    export_data["chain_state"] = json.load(f)
+
+            # Load all memory blocks
+            blocks_dir = qube_dir / "blocks" / "permanent"
+            if blocks_dir.exists():
+                for block_file in sorted(blocks_dir.glob("*.json")):
+                    with open(block_file, 'r', encoding='utf-8') as f:
+                        export_data["memory_blocks"].append(json.load(f))
+
+            # Load relationships
+            relationships_file = qube_dir / "relationships" / "relationships.json"
+            if relationships_file.exists():
+                with open(relationships_file, 'r', encoding='utf-8') as f:
+                    export_data["relationships"] = json.load(f)
+
+            # Load NFT metadata
+            nft_metadata_file = qube_dir / "chain" / "nft_metadata.json"
+            if nft_metadata_file.exists():
+                with open(nft_metadata_file, 'r', encoding='utf-8') as f:
+                    export_data["nft_metadata"] = json.load(f)
+
+            # Load BCMR data
+            bcmr_file = qube_dir / "blockchain" / f"{qube_name}_bcmr.json"
+            if bcmr_file.exists():
+                with open(bcmr_file, 'r', encoding='utf-8') as f:
+                    export_data["bcmr_data"] = json.load(f)
+
+            # Load avatar as base64
+            avatar_patterns = ["*.png", "*.jpg", "*.jpeg", "*.webp"]
+            for pattern in avatar_patterns:
+                avatar_files = list((qube_dir / "chain").glob(f"*_avatar{pattern[1:]}"))
+                if avatar_files:
+                    with open(avatar_files[0], 'rb') as f:
+                        export_data["avatar_base64"] = base64.b64encode(f.read()).decode('utf-8')
+                        export_data["avatar_filename"] = avatar_files[0].name
+                    break
+
+            # Generate encryption key from export password
+            salt = os.urandom(32)
+            nonce = os.urandom(12)
+
+            kdf = PBKDF2HMAC(
+                algorithm=hashes.SHA256(),
+                length=32,
+                salt=salt,
+                iterations=600000,
+            )
+            key = kdf.derive(export_password.encode('utf-8'))
+
+            # Encrypt the data
+            aesgcm = AESGCM(key)
+            data_json = json.dumps(export_data, ensure_ascii=False).encode('utf-8')
+            encrypted_data = aesgcm.encrypt(nonce, data_json, None)
+
+            # Create manifest (unencrypted metadata)
+            manifest = {
+                "version": "1.0",
+                "qube_id": qube_id,
+                "qube_name": qube_name,
+                "export_date": datetime.now().isoformat(),
+                "block_count": len(export_data["memory_blocks"]),
+                "has_nft": export_data["nft_metadata"] is not None,
+                "salt": salt.hex(),
+                "nonce": nonce.hex(),
+            }
+
+            # Create ZIP file with manifest and encrypted data
+            with zipfile.ZipFile(export_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr("manifest.json", json.dumps(manifest, indent=2))
+                zf.writestr("data.enc", encrypted_data)
+
+            logger.info(f"Exported Qube {qube_id} to {export_path} ({len(export_data['memory_blocks'])} blocks)")
+
+            return {
+                "success": True,
+                "file_path": export_path,
+                "block_count": len(export_data["memory_blocks"]),
+                "qube_name": qube_name,
+                "qube_id": qube_id
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to export Qube {qube_id}: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def import_qube(self, import_path: str, import_password: str, master_password: str) -> Dict[str, Any]:
+        """
+        Import a Qube from a .qube package file.
+
+        Args:
+            import_path: Path to the .qube file
+            import_password: Password to decrypt the import package
+            master_password: User's master password to re-encrypt the Qube data
+
+        Returns:
+            Dict with success, qube_id, qube_name, block_count
+        """
+        import zipfile
+        import base64
+        import os
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.serialization import load_pem_private_key
+
+        try:
+            # Set master key for re-encryption
+            self.orchestrator.set_master_key(master_password)
+
+            # Read and validate the ZIP file
+            if not Path(import_path).exists():
+                return {"success": False, "error": "Import file not found"}
+
+            with zipfile.ZipFile(import_path, 'r') as zf:
+                # Read manifest
+                manifest_data = zf.read("manifest.json").decode('utf-8')
+                manifest = json.loads(manifest_data)
+
+                # Read encrypted data
+                encrypted_data = zf.read("data.enc")
+
+            qube_id = manifest["qube_id"]
+            qube_name = manifest["qube_name"]
+
+            # Check if Qube already exists
+            qubes_dir = self.orchestrator.data_dir / "qubes"
+            for dir_entry in qubes_dir.iterdir():
+                if dir_entry.is_dir() and qube_id in dir_entry.name:
+                    return {"success": False, "error": f"This Qube already exists on this device (ID: {qube_id})"}
+
+            # Derive decryption key from import password
+            salt = bytes.fromhex(manifest["salt"])
+            nonce = bytes.fromhex(manifest["nonce"])
+
+            kdf = PBKDF2HMAC(
+                algorithm=hashes.SHA256(),
+                length=32,
+                salt=salt,
+                iterations=600000,
+            )
+            key = kdf.derive(import_password.encode('utf-8'))
+
+            # Decrypt the data
+            aesgcm = AESGCM(key)
+            try:
+                decrypted_data = aesgcm.decrypt(nonce, encrypted_data, None)
+            except Exception:
+                return {"success": False, "error": "Invalid password - could not decrypt package"}
+
+            export_data = json.loads(decrypted_data.decode('utf-8'))
+
+            # Create qube directory
+            qube_dir = qubes_dir / f"{qube_name}_{qube_id}"
+            qube_dir.mkdir(parents=True, exist_ok=True)
+
+            # Create subdirectories
+            (qube_dir / "chain").mkdir(exist_ok=True)
+            (qube_dir / "blocks" / "permanent").mkdir(parents=True, exist_ok=True)
+            (qube_dir / "blocks" / "session").mkdir(parents=True, exist_ok=True)
+            (qube_dir / "relationships").mkdir(exist_ok=True)
+            (qube_dir / "blockchain").mkdir(exist_ok=True)
+
+            # Re-encrypt private key with user's master key
+            private_key = load_pem_private_key(
+                export_data["private_key_pem"].encode('utf-8'),
+                password=None
+            )
+
+            # Encrypt private key with master key
+            from crypto.keys import encrypt_private_key
+            encrypted_private_key = encrypt_private_key(private_key, self.orchestrator.master_key)
+
+            # Get public key
+            from crypto.keys import serialize_public_key
+            public_key = private_key.public_key()
+            public_key_hex = serialize_public_key(public_key)
+
+            # Create qube_metadata.json
+            qube_metadata = {
+                "qube_id": qube_id,
+                "encrypted_private_key": encrypted_private_key.hex(),
+                "public_key": public_key_hex,
+                "genesis_block": export_data["genesis_block"],
+            }
+
+            with open(qube_dir / "chain" / "qube_metadata.json", 'w', encoding='utf-8') as f:
+                json.dump(qube_metadata, f, indent=2)
+
+            # Save chain state
+            if export_data.get("chain_state"):
+                with open(qube_dir / "chain" / "chain_state.json", 'w', encoding='utf-8') as f:
+                    json.dump(export_data["chain_state"], f, indent=2)
+
+            # Save memory blocks
+            for block in export_data.get("memory_blocks", []):
+                block_num = block.get("block_number", 0)
+                block_type = block.get("block_type", "UNKNOWN")
+                timestamp = block.get("timestamp", 0)
+                filename = f"{block_num}_{block_type}_{timestamp}.json"
+                with open(qube_dir / "blocks" / "permanent" / filename, 'w', encoding='utf-8') as f:
+                    json.dump(block, f, indent=2)
+
+            # Save relationships
+            if export_data.get("relationships"):
+                with open(qube_dir / "relationships" / "relationships.json", 'w', encoding='utf-8') as f:
+                    json.dump(export_data["relationships"], f, indent=2)
+
+            # Save NFT metadata
+            if export_data.get("nft_metadata"):
+                with open(qube_dir / "chain" / "nft_metadata.json", 'w', encoding='utf-8') as f:
+                    json.dump(export_data["nft_metadata"], f, indent=2)
+
+            # Save BCMR data
+            if export_data.get("bcmr_data"):
+                with open(qube_dir / "blockchain" / f"{qube_name}_bcmr.json", 'w', encoding='utf-8') as f:
+                    json.dump(export_data["bcmr_data"], f, indent=2)
+
+            # Save avatar
+            if export_data.get("avatar_base64") and export_data.get("avatar_filename"):
+                avatar_data = base64.b64decode(export_data["avatar_base64"])
+                with open(qube_dir / "chain" / export_data["avatar_filename"], 'wb') as f:
+                    f.write(avatar_data)
+
+            logger.info(f"Imported Qube {qube_id} ({qube_name}) with {len(export_data.get('memory_blocks', []))} blocks")
+
+            return {
+                "success": True,
+                "qube_id": qube_id,
+                "qube_name": qube_name,
+                "block_count": len(export_data.get("memory_blocks", []))
+            }
+
+        except zipfile.BadZipFile:
+            return {"success": False, "error": "Invalid .qube file - not a valid package"}
+        except KeyError as e:
+            return {"success": False, "error": f"Invalid .qube file - missing required field: {e}"}
+        except Exception as e:
+            logger.error(f"Failed to import Qube: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    # =========================================================================
+    # Chain Sync Methods (NFT-Bundled Storage)
+    # =========================================================================
+
+    async def sync_to_chain(self, qube_id: str, master_password: str) -> Dict[str, Any]:
+        """
+        Sync Qube to chain (backup to IPFS, encrypted to owner).
+
+        Args:
+            qube_id: The Qube ID to sync
+            master_password: User's master password
+
+        Returns:
+            Dict with success, ipfs_cid, chain_length, etc.
+        """
+        from blockchain.chain_sync import ChainSyncService
+        from crypto.keys import serialize_public_key
+
+        try:
+            # Set master key to access Qube data
+            self.orchestrator.set_master_key(master_password)
+
+            # Find qube directory and load qube
+            qubes_dir = self.orchestrator.data_dir / "qubes"
+            qube_dir = None
+            qube_name = None
+
+            for dir_entry in qubes_dir.iterdir():
+                if dir_entry.is_dir() and qube_id in dir_entry.name:
+                    qube_dir = dir_entry
+                    qube_name = dir_entry.name.rsplit('_', 1)[0]
+                    break
+
+            if not qube_dir:
+                return {"success": False, "error": f"Qube directory not found for {qube_id}"}
+
+            # Load qube
+            if qube_id not in self.orchestrator.qubes:
+                await self.orchestrator.load_qube(qube_id)
+
+            qube = self.orchestrator.qubes[qube_id]
+
+            # Check if Qube has NFT
+            nft_metadata_file = qube_dir / "chain" / "nft_metadata.json"
+            if not nft_metadata_file.exists():
+                return {"success": False, "error": "Qube does not have an NFT. Mint NFT first."}
+
+            with open(nft_metadata_file, 'r', encoding='utf-8') as f:
+                nft_metadata = json.load(f)
+
+            category_id = nft_metadata.get("category_id")
+            if not category_id:
+                return {"success": False, "error": "No category_id in NFT metadata"}
+
+            # Anchor any active session first
+            if qube.current_session and len(qube.current_session.blocks) > 0:
+                await qube.anchor_session()
+                logger.info(f"Auto-anchored session before sync for {qube_id}")
+
+            # Get public key
+            public_key_hex = serialize_public_key(qube.public_key)
+
+            # Get Pinata API key from secure storage
+            api_keys = self.orchestrator.get_api_keys()
+            pinata_jwt = api_keys.pinata_jwt
+
+            if not pinata_jwt:
+                return {"success": False, "error": "Pinata API key not configured. Please add it in Settings."}
+
+            # Set the Pinata key in environment for IPFSUploader
+            os.environ["PINATA_API_KEY"] = pinata_jwt
+
+            # Sync to chain
+            sync_service = ChainSyncService(use_pinata=True, pinata_api_key=pinata_jwt)
+            # Convert genesis_block to dict if it's a Block object
+            genesis_dict = qube.genesis_block.to_dict() if hasattr(qube.genesis_block, 'to_dict') else qube.genesis_block
+            result = await sync_service.sync_to_chain(
+                qube_dir=str(qube_dir),
+                qube_id=qube_id,
+                qube_name=qube_name,
+                owner_public_key_hex=public_key_hex,
+                genesis_block=genesis_dict,
+                user_id=self.orchestrator.user_id,
+                category_id=category_id
+            )
+
+            return result.to_dict()
+
+        except Exception as e:
+            logger.error(f"Failed to sync Qube {qube_id} to chain: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def transfer_qube(
+        self,
+        qube_id: str,
+        recipient_address: str,
+        recipient_public_key: str,
+        wallet_wif: str,
+        master_password: str
+    ) -> Dict[str, Any]:
+        """
+        Transfer Qube to new owner.
+
+        DESTRUCTIVE: Local Qube will be deleted after successful transfer.
+
+        Args:
+            qube_id: The Qube ID to transfer
+            recipient_address: Recipient's BCH address
+            recipient_public_key: Recipient's public key hex
+            wallet_wif: Sender's wallet WIF for NFT transfer
+            master_password: User's master password
+
+        Returns:
+            Dict with success, transfer_txid, etc.
+        """
+        from blockchain.chain_sync import ChainSyncService
+        from crypto.keys import serialize_public_key
+
+        try:
+            # Set master key to access Qube data
+            self.orchestrator.set_master_key(master_password)
+
+            # Find qube directory and load qube
+            qubes_dir = self.orchestrator.data_dir / "qubes"
+            qube_dir = None
+            qube_name = None
+
+            for dir_entry in qubes_dir.iterdir():
+                if dir_entry.is_dir() and qube_id in dir_entry.name:
+                    qube_dir = dir_entry
+                    qube_name = dir_entry.name.rsplit('_', 1)[0]
+                    break
+
+            if not qube_dir:
+                return {"success": False, "error": f"Qube directory not found for {qube_id}"}
+
+            # Load qube
+            if qube_id not in self.orchestrator.qubes:
+                await self.orchestrator.load_qube(qube_id)
+
+            qube = self.orchestrator.qubes[qube_id]
+
+            # Check if Qube has NFT
+            nft_metadata_file = qube_dir / "chain" / "nft_metadata.json"
+            if not nft_metadata_file.exists():
+                return {"success": False, "error": "Qube does not have an NFT. Cannot transfer."}
+
+            with open(nft_metadata_file, 'r', encoding='utf-8') as f:
+                nft_metadata = json.load(f)
+
+            category_id = nft_metadata.get("category_id")
+            if not category_id:
+                return {"success": False, "error": "No category_id in NFT metadata"}
+
+            # Anchor any active session first
+            if qube.current_session and len(qube.current_session.blocks) > 0:
+                await qube.anchor_session()
+                logger.info(f"Auto-anchored session before transfer for {qube_id}")
+
+            # Get public key
+            public_key_hex = serialize_public_key(qube.public_key)
+
+            # Get Pinata API key from secure storage
+            api_keys = self.orchestrator.get_api_keys()
+            pinata_jwt = api_keys.pinata_jwt
+
+            if not pinata_jwt:
+                return {"success": False, "error": "Pinata API key not configured. Please add it in Settings."}
+
+            # Set the Pinata key in environment for IPFSUploader
+            os.environ["PINATA_API_KEY"] = pinata_jwt
+
+            # Transfer
+            sync_service = ChainSyncService(use_pinata=True, pinata_api_key=pinata_jwt)
+            # Convert genesis_block to dict if it's a Block object
+            genesis_dict = qube.genesis_block.to_dict() if hasattr(qube.genesis_block, 'to_dict') else qube.genesis_block
+            result = await sync_service.transfer_qube(
+                qube_dir=str(qube_dir),
+                qube_id=qube_id,
+                qube_name=qube_name,
+                owner_private_key=qube.private_key,
+                owner_public_key_hex=public_key_hex,
+                recipient_address=recipient_address,
+                recipient_public_key_hex=recipient_public_key,
+                genesis_block=genesis_dict,
+                user_id=self.orchestrator.user_id,
+                category_id=category_id,
+                wallet_wif=wallet_wif
+            )
+
+            # Remove from orchestrator's cache if transfer successful
+            if result.success and qube_id in self.orchestrator.qubes:
+                del self.orchestrator.qubes[qube_id]
+
+            return result.to_dict()
+
+        except Exception as e:
+            logger.error(f"Failed to transfer Qube {qube_id}: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def import_from_wallet(
+        self,
+        wallet_wif: str,
+        category_id: str,
+        master_password: str
+    ) -> Dict[str, Any]:
+        """
+        Import Qube from wallet.
+
+        Args:
+            wallet_wif: Wallet's WIF private key
+            category_id: NFT category ID to import
+            master_password: User's master password for re-encryption
+
+        Returns:
+            Dict with success, qube_id, qube_name, qube_dir
+        """
+        from blockchain.chain_sync import ChainSyncService
+
+        try:
+            # Set master key for re-encryption
+            self.orchestrator.set_master_key(master_password)
+
+            target_user_dir = str(self.orchestrator.data_dir / "qubes")
+
+            sync_service = ChainSyncService()
+            result = await sync_service.import_from_wallet(
+                wallet_wif=wallet_wif,
+                category_id=category_id,
+                target_user_dir=target_user_dir,
+                master_password=master_password
+            )
+
+            return result.to_dict()
+
+        except Exception as e:
+            logger.error(f"Failed to import from wallet: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def scan_wallet_for_qubes(self, wallet_address: str) -> Dict[str, Any]:
+        """
+        Scan wallet for Qube NFTs.
+
+        Args:
+            wallet_address: BCH address to scan
+
+        Returns:
+            Dict with success, qubes list
+        """
+        from blockchain.chain_sync import ChainSyncService
+
+        try:
+            sync_service = ChainSyncService()
+            qubes = await sync_service.scan_wallet_for_qubes(wallet_address)
+
+            return {
+                "success": True,
+                "qubes": [q.to_dict() for q in qubes]
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to scan wallet: {e}", exc_info=True)
+            return {"success": False, "error": str(e), "qubes": []}
+
+    async def resolve_recipient_public_key(self, recipient_address: str) -> Dict[str, Any]:
+        """
+        Resolve recipient's public key from BCH address.
+
+        Args:
+            recipient_address: BCH address
+
+        Returns:
+            Dict with success, public_key (or None if not found)
+        """
+        from blockchain.chain_sync import ChainSyncService
+
+        try:
+            sync_service = ChainSyncService()
+            public_key = await sync_service.resolve_recipient_public_key(recipient_address)
+
+            return {
+                "success": True,
+                "public_key": public_key,
+                "found": public_key is not None
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to resolve public key: {e}", exc_info=True)
+            return {"success": False, "error": str(e), "public_key": None, "found": False}
+
 
 async def main():
     """Main CLI entry point"""
@@ -5373,6 +5982,130 @@ async def main():
                 "category_id": args.category_id,
                 "mint_txid": args.mint_txid
             }))
+
+        elif command == "sync-to-chain":
+            # Sync Qube to chain (backup to IPFS)
+            if len(sys.argv) < 3:
+                print(json.dumps({"success": False, "error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("command")
+            parser.add_argument("user_id")
+            parser.add_argument("--qube-id", required=True)
+            parser.add_argument("--password", required=True)  # Master password
+
+            args = parser.parse_args()
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.sync_to_chain(
+                qube_id=args.qube_id,
+                master_password=args.password
+            )
+            print(json.dumps(result))
+
+        elif command == "transfer-qube":
+            # Transfer Qube to new owner (DESTRUCTIVE - deletes local copy)
+            if len(sys.argv) < 3:
+                print(json.dumps({"success": False, "error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("command")
+            parser.add_argument("user_id")
+            parser.add_argument("--qube-id", required=True)
+            parser.add_argument("--recipient-address", required=True)
+            parser.add_argument("--recipient-public-key", required=True)
+            parser.add_argument("--wallet-wif", required=True)
+            parser.add_argument("--password", required=True)  # Master password
+
+            args = parser.parse_args()
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.transfer_qube(
+                qube_id=args.qube_id,
+                recipient_address=args.recipient_address,
+                recipient_public_key=args.recipient_public_key,
+                wallet_wif=args.wallet_wif,
+                master_password=args.password
+            )
+            print(json.dumps(result))
+
+        elif command == "import-from-wallet":
+            # Import Qube from wallet
+            if len(sys.argv) < 3:
+                print(json.dumps({"success": False, "error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("command")
+            parser.add_argument("user_id")
+            parser.add_argument("--wallet-wif", required=True)
+            parser.add_argument("--category-id", required=True)
+            parser.add_argument("--password", required=True)  # Master password
+
+            args = parser.parse_args()
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.import_from_wallet(
+                wallet_wif=args.wallet_wif,
+                category_id=args.category_id,
+                master_password=args.password
+            )
+            print(json.dumps(result))
+
+        elif command == "scan-wallet":
+            # Scan wallet for Qube NFTs
+            if len(sys.argv) < 3:
+                print(json.dumps({"success": False, "error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("command")
+            parser.add_argument("user_id")
+            parser.add_argument("--wallet-address", required=True)
+
+            args = parser.parse_args()
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.scan_wallet_for_qubes(
+                wallet_address=args.wallet_address
+            )
+            print(json.dumps(result))
+
+        elif command == "resolve-public-key":
+            # Resolve public key from BCH address
+            if len(sys.argv) < 3:
+                print(json.dumps({"success": False, "error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("command")
+            parser.add_argument("user_id")
+            parser.add_argument("--address", required=True)
+
+            args = parser.parse_args()
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.resolve_recipient_public_key(
+                recipient_address=args.address
+            )
+            print(json.dumps(result))
 
         else:
             print(json.dumps({"error": f"Unknown command: {command}"}), file=sys.stderr)

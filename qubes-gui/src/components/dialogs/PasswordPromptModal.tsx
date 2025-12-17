@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { GlassCard, GlassButton, GlassInput } from '../glass';
 
 interface PasswordPromptModalProps {
@@ -7,6 +7,8 @@ interface PasswordPromptModalProps {
   onSubmit: (password: string) => void;
   title?: string;
   message?: string;
+  defaultPassword?: string;
+  submitButtonText?: string;
 }
 
 export const PasswordPromptModal: React.FC<PasswordPromptModalProps> = ({
@@ -15,8 +17,17 @@ export const PasswordPromptModal: React.FC<PasswordPromptModalProps> = ({
   onSubmit,
   title = 'Password Required',
   message = 'Please enter your password to decrypt this content',
+  defaultPassword = '',
+  submitButtonText = 'Decrypt',
 }) => {
-  const [password, setPassword] = useState('');
+  const [password, setPassword] = useState(defaultPassword);
+
+  // Update password when defaultPassword changes or modal opens
+  useEffect(() => {
+    if (isOpen) {
+      setPassword(defaultPassword);
+    }
+  }, [isOpen, defaultPassword]);
 
   if (!isOpen) return null;
 
@@ -71,7 +82,7 @@ export const PasswordPromptModal: React.FC<PasswordPromptModalProps> = ({
               className="flex-1"
               disabled={!password}
             >
-              Decrypt
+              {submitButtonText}
             </GlassButton>
           </div>
         </form>

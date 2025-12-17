@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
-import { emit } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-shell';
 import { readTextFile } from '@tauri-apps/plugin-fs';
 import { Qube } from '../../types';
@@ -48,11 +47,64 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
     }
   }, [qubes]);
 
-  const { userId } = useAuth();
+  const { userId, password: masterPassword } = useAuth();
+
+  // Check Pinata configuration on mount
+  useEffect(() => {
+    const checkPinataConfig = async () => {
+      if (!userId || !masterPassword) return;
+      try {
+        const result = await invoke<{ providers: string[] }>('get_configured_api_keys', {
+          userId,
+          password: masterPassword,
+        });
+        setPinataConfigured(result.providers.includes('pinata_jwt'));
+      } catch (error) {
+        console.error('Failed to check Pinata configuration:', error);
+        setPinataConfigured(false);
+      }
+    };
+    checkPinataConfig();
+  }, [userId, masterPassword]);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [searchQuery, setSearchQuery] = useState('');
   const { orderByUser, setQubeOrder, getQubeOrder } = useQubeOrder();
-  const { toggleSelection, setCurrentTab } = useQubeSelection();
+  const { toggleSelection, setCurrentTab, getSelectedQubeIds, selectionByTab, currentTab } = useQubeSelection();
+
+  // Get selected qube IDs for the current tab
+  const selectedQubeIds = selectionByTab[currentTab] || [];
+
+  // Chain Sync state (NFT-Bundled Storage)
+  const [selectedQubeForSync, setSelectedQubeForSync] = useState<Qube | null>(null);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [isTransferring, setIsTransferring] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
+  const [showTransferModal, setShowTransferModal] = useState(false);
+  const [showImportFromWalletModal, setShowImportFromWalletModal] = useState(false);
+
+  // Transfer modal state
+  const [transferRecipientAddress, setTransferRecipientAddress] = useState('');
+  const [transferRecipientPublicKey, setTransferRecipientPublicKey] = useState('');
+  const [transferWalletWif, setTransferWalletWif] = useState('');
+  const [isResolvingPublicKey, setIsResolvingPublicKey] = useState(false);
+  const [transferConfirmed, setTransferConfirmed] = useState(false);
+
+  // Import from wallet modal state
+  const [importWalletWif, setImportWalletWif] = useState('');
+  const [importWalletAddress, setImportWalletAddress] = useState('');
+  const [isScanning, setIsScanning] = useState(false);
+
+  // Pinata configuration check
+  const [pinataConfigured, setPinataConfigured] = useState<boolean | null>(null);
+  const [walletQubes, setWalletQubes] = useState<Array<{
+    qube_id: string;
+    qube_name: string;
+    category_id: string;
+    ipfs_cid: string;
+    chain_length: number;
+    sync_timestamp: number;
+  }>>([]);
+  const [selectedWalletQube, setSelectedWalletQube] = useState<string | null>(null);
 
   // Set up drag-and-drop sensors
   const sensors = useSensors(
@@ -147,6 +199,266 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
     return convertFileSrc(filePath);
   };
 
+  // Sync to Chain handler - syncs selected Qube to IPFS
+  const handleSyncToChain = async () => {
+    const selectedId = selectedQubeIds[0];
+    const qubeToSync = selectedId ? qubes.find(q => q.qube_id === selectedId) : null;
+
+    if (!qubeToSync) {
+      alert('Please select a Qube to sync');
+      return;
+    }
+
+    // Check if Qube has NFT (required for sync)
+    if (!qubeToSync.nft_category_id) {
+      alert('This Qube does not have an NFT. Please mint an NFT first before syncing to chain.');
+      return;
+    }
+
+    if (!userId || !masterPassword) {
+      alert('Missing authentication data');
+      return;
+    }
+
+    // Check if Pinata is configured
+    if (pinataConfigured === false) {
+      alert('Pinata API key not configured.\n\nTo sync your Qube to IPFS, you need to add your Pinata JWT in:\nSettings → API Keys → Pinata IPFS\n\nGet a free API key at: https://app.pinata.cloud/developers/api-keys');
+      return;
+    }
+
+    setSelectedQubeForSync(qubeToSync);
+    setIsSyncing(true);
+
+    try {
+      const result = await invoke<{ success: boolean; error?: string; ipfs_cid?: string; chain_length?: number }>('sync_to_chain', {
+        userId,
+        qubeId: qubeToSync.qube_id,
+        password: masterPassword,
+      });
+
+      if (result.success) {
+        alert(`Synced ${qubeToSync.name} to chain!\n\nIPFS CID: ${result.ipfs_cid}\nBlocks: ${result.chain_length}\n\nYour Qube is now backed up on IPFS.`);
+      } else {
+        alert(`Sync failed: ${result.error}`);
+      }
+    } catch (error) {
+      alert(`Sync failed: ${error}`);
+    } finally {
+      setIsSyncing(false);
+      setSelectedQubeForSync(null);
+    }
+  };
+
+  // Transfer handler - opens transfer modal
+  const handleTransferClick = () => {
+    const selectedId = selectedQubeIds[0];
+    const qubeToTransfer = selectedId ? qubes.find(q => q.qube_id === selectedId) : null;
+
+    if (!qubeToTransfer) {
+      alert('Please select a Qube to transfer');
+      return;
+    }
+
+    // Check if Qube has NFT (required for transfer)
+    if (!qubeToTransfer.nft_category_id) {
+      alert('This Qube does not have an NFT. Please mint an NFT first before transferring.');
+      return;
+    }
+
+    // Check if Pinata is configured (required for IPFS upload during transfer)
+    if (pinataConfigured === false) {
+      alert('Pinata API key not configured.\n\nTo transfer your Qube, you need to add your Pinata JWT in:\nSettings → API Keys → Pinata IPFS\n\nGet a free API key at: https://app.pinata.cloud/developers/api-keys');
+      return;
+    }
+
+    setSelectedQubeForSync(qubeToTransfer);
+    setShowTransferModal(true);
+  };
+
+  // Import from Wallet handler - opens import modal
+  const handleImportFromWalletClick = () => {
+    setShowImportFromWalletModal(true);
+  };
+
+  // Resolve recipient public key from address
+  const handleResolvePublicKey = async () => {
+    if (!transferRecipientAddress || !userId) return;
+
+    setIsResolvingPublicKey(true);
+    try {
+      const result = await invoke<{ success: boolean; public_key?: string; found: boolean; error?: string }>('resolve_public_key', {
+        userId,
+        address: transferRecipientAddress,
+      });
+
+      if (result.found && result.public_key) {
+        setTransferRecipientPublicKey(result.public_key);
+      } else {
+        alert('Could not find public key for this address.\n\nThe recipient may not have spent from this address yet.\nPlease ask them for their public key directly.');
+      }
+    } catch (error) {
+      alert(`Failed to resolve public key: ${error}`);
+    } finally {
+      setIsResolvingPublicKey(false);
+    }
+  };
+
+  // Execute transfer
+  const handleExecuteTransfer = async () => {
+    if (!selectedQubeForSync || !userId || !masterPassword) {
+      alert('Missing required data');
+      return;
+    }
+
+    if (!transferRecipientAddress || !transferRecipientPublicKey || !transferWalletWif) {
+      alert('Please fill in all required fields');
+      return;
+    }
+
+    if (!transferConfirmed) {
+      alert('Please confirm that you understand this action is irreversible');
+      return;
+    }
+
+    setIsTransferring(true);
+    try {
+      const result = await invoke<{
+        success: boolean;
+        error?: string;
+        transfer_txid?: string;
+        recipient_address?: string;
+        local_deleted?: boolean;
+      }>('transfer_qube', {
+        userId,
+        qubeId: selectedQubeForSync.qube_id,
+        recipientAddress: transferRecipientAddress,
+        recipientPublicKey: transferRecipientPublicKey,
+        walletWif: transferWalletWif,
+        password: masterPassword,
+      });
+
+      if (result.success) {
+        alert(`Transfer successful!\n\nTransaction: ${result.transfer_txid}\nRecipient: ${result.recipient_address}\n\n${selectedQubeForSync.name} has been transferred and removed from your device.`);
+        // Close modal and reset state
+        setShowTransferModal(false);
+        resetTransferState();
+        // Emit event to refresh qubes list
+        window.dispatchEvent(new CustomEvent('qube-deleted', { detail: { qube_id: selectedQubeForSync.qube_id } }));
+      } else {
+        alert(`Transfer failed: ${result.error}`);
+      }
+    } catch (error) {
+      alert(`Transfer failed: ${error}`);
+    } finally {
+      setIsTransferring(false);
+    }
+  };
+
+  // Reset transfer modal state
+  const resetTransferState = () => {
+    setSelectedQubeForSync(null);
+    setTransferRecipientAddress('');
+    setTransferRecipientPublicKey('');
+    setTransferWalletWif('');
+    setTransferConfirmed(false);
+  };
+
+  // Scan wallet for Qubes
+  const handleScanWallet = async () => {
+    if (!importWalletAddress || !userId) {
+      alert('Please enter a wallet address');
+      return;
+    }
+
+    setIsScanning(true);
+    setWalletQubes([]);
+    setSelectedWalletQube(null);
+
+    try {
+      const result = await invoke<{
+        success: boolean;
+        qubes?: Array<{
+          qube_id: string;
+          qube_name: string;
+          category_id: string;
+          ipfs_cid: string;
+          chain_length: number;
+          sync_timestamp: number;
+        }>;
+        error?: string;
+      }>('scan_wallet', {
+        userId,
+        walletAddress: importWalletAddress,
+      });
+
+      if (result.success && result.qubes) {
+        setWalletQubes(result.qubes);
+        if (result.qubes.length === 0) {
+          alert('No Qubes found in this wallet');
+        }
+      } else {
+        alert(`Scan failed: ${result.error}`);
+      }
+    } catch (error) {
+      alert(`Scan failed: ${error}`);
+    } finally {
+      setIsScanning(false);
+    }
+  };
+
+  // Execute import from wallet
+  const handleExecuteImport = async () => {
+    if (!selectedWalletQube || !importWalletWif || !userId || !masterPassword) {
+      alert('Please select a Qube and enter your wallet WIF');
+      return;
+    }
+
+    const qubeToImport = walletQubes.find(q => q.category_id === selectedWalletQube);
+    if (!qubeToImport) {
+      alert('Selected Qube not found');
+      return;
+    }
+
+    setIsImporting(true);
+    try {
+      const result = await invoke<{
+        success: boolean;
+        qube_id?: string;
+        qube_name?: string;
+        qube_dir?: string;
+        error?: string;
+      }>('import_from_wallet', {
+        userId,
+        walletWif: importWalletWif,
+        categoryId: selectedWalletQube,
+        password: masterPassword,
+      });
+
+      if (result.success) {
+        alert(`Import successful!\n\n${result.qube_name} (${result.qube_id}) has been imported.`);
+        // Close modal and reset state
+        setShowImportFromWalletModal(false);
+        resetImportState();
+        // Emit event to refresh qubes list
+        window.dispatchEvent(new CustomEvent('qube-created', { detail: { qube_id: result.qube_id } }));
+      } else {
+        alert(`Import failed: ${result.error}`);
+      }
+    } catch (error) {
+      alert(`Import failed: ${error}`);
+    } finally {
+      setIsImporting(false);
+    }
+  };
+
+  // Reset import modal state
+  const resetImportState = () => {
+    setImportWalletWif('');
+    setImportWalletAddress('');
+    setWalletQubes([]);
+    setSelectedWalletQube(null);
+  };
+
   return (
     <div className="flex-1 overflow-y-auto p-6">
       {/* Controls */}
@@ -189,13 +501,70 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
           {filteredQubes.length} of {qubes.length} qubes
         </div>
 
-        {/* Create Button */}
-        <div className="ml-auto">
+        {/* Action Buttons */}
+        <div className="ml-auto flex gap-2">
+          <GlassButton
+            variant="secondary"
+            onClick={handleImportFromWalletClick}
+            disabled={isImporting}
+            title="Import a Qube from your wallet"
+          >
+            {isImporting ? 'Importing...' : 'Import from Wallet'}
+          </GlassButton>
+          <GlassButton
+            variant="secondary"
+            onClick={handleSyncToChain}
+            disabled={isSyncing || selectedQubeIds.length === 0}
+            title={
+              pinataConfigured === false
+                ? '⚠️ Pinata API key required - Configure in Settings → API Keys'
+                : selectedQubeIds.length === 0
+                ? 'Select a Qube to sync'
+                : 'Backup selected Qube to IPFS'
+            }
+          >
+            {isSyncing ? 'Syncing...' : 'Sync to Chain'}
+          </GlassButton>
+          <GlassButton
+            variant="secondary"
+            onClick={handleTransferClick}
+            disabled={isTransferring || selectedQubeIds.length === 0}
+            title={
+              pinataConfigured === false
+                ? '⚠️ Pinata API key required - Configure in Settings → API Keys'
+                : selectedQubeIds.length === 0
+                ? 'Select a Qube to transfer'
+                : 'Transfer selected Qube to new owner'
+            }
+          >
+            {isTransferring ? 'Transferring...' : 'Transfer'}
+          </GlassButton>
           <GlassButton variant="primary" onClick={onCreateQube}>
             + Create New Qube
           </GlassButton>
         </div>
       </div>
+
+      {/* Pinata Configuration Warning */}
+      {pinataConfigured === false && (
+        <div className="mb-4 p-4 bg-yellow-500/20 border border-yellow-500/50 rounded-lg flex items-center gap-3">
+          <span className="text-2xl">⚠️</span>
+          <div className="flex-1">
+            <p className="text-text-primary font-medium">Pinata API Key Required</p>
+            <p className="text-text-secondary text-sm">
+              To sync or transfer Qubes to IPFS, add your Pinata JWT in Settings → API Keys.{' '}
+              <a
+                href="https://app.pinata.cloud/developers/api-keys"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-accent-primary hover:underline"
+              >
+                Get a free API key →
+              </a>
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Empty State */}
       {qubes.length === 0 ? (
@@ -235,6 +604,7 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
                     getAvatarPath={getAvatarPath}
                     setCurrentTab={setCurrentTab}
                     toggleSelection={toggleSelection}
+                    isSelected={selectedQubeIds.includes(qube.qube_id)}
                   />
                 ))}
               </div>
@@ -254,6 +624,7 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
                     getAvatarPath={getAvatarPath}
                     setCurrentTab={setCurrentTab}
                     toggleSelection={toggleSelection}
+                    isSelected={selectedQubeIds.includes(qube.qube_id)}
                   />
                 ))}
               </div>
@@ -270,6 +641,211 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
           </SortableContext>
         </DndContext>
       )}
+
+      {/* Transfer Modal */}
+      {showTransferModal && selectedQubeForSync && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="glass-card p-6 max-w-lg w-full mx-4 max-h-[90vh] overflow-y-auto">
+            <h2 className="text-xl font-bold text-text-primary mb-2">Transfer {selectedQubeForSync.name}</h2>
+            <p className="text-red-400 text-sm mb-4 font-semibold">
+              WARNING: This action is IRREVERSIBLE. Your local copy will be permanently deleted.
+            </p>
+
+            {/* Recipient Address */}
+            <div className="mb-4">
+              <label className="block text-text-secondary text-sm mb-1">Recipient BCH Address</label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={transferRecipientAddress}
+                  onChange={(e) => setTransferRecipientAddress(e.target.value)}
+                  placeholder="bitcoincash:qz..."
+                  className="flex-1 bg-surface-secondary border border-border-primary rounded-lg px-3 py-2 text-text-primary text-sm"
+                />
+                <GlassButton
+                  variant="secondary"
+                  onClick={handleResolvePublicKey}
+                  disabled={!transferRecipientAddress || isResolvingPublicKey}
+                  title="Try to find public key from blockchain"
+                >
+                  {isResolvingPublicKey ? '...' : 'Lookup'}
+                </GlassButton>
+              </div>
+            </div>
+
+            {/* Recipient Public Key */}
+            <div className="mb-4">
+              <label className="block text-text-secondary text-sm mb-1">
+                Recipient Public Key <span className="text-text-tertiary">(66 hex chars)</span>
+              </label>
+              <input
+                type="text"
+                value={transferRecipientPublicKey}
+                onChange={(e) => setTransferRecipientPublicKey(e.target.value)}
+                placeholder="02 or 03 followed by 64 hex characters"
+                className="w-full bg-surface-secondary border border-border-primary rounded-lg px-3 py-2 text-text-primary text-sm font-mono"
+              />
+              <p className="text-text-tertiary text-xs mt-1">
+                Click "Lookup" to auto-resolve, or ask recipient for their public key
+              </p>
+            </div>
+
+            {/* Your Wallet WIF */}
+            <div className="mb-4">
+              <label className="block text-text-secondary text-sm mb-1">Your Wallet WIF (Private Key)</label>
+              <input
+                type="password"
+                value={transferWalletWif}
+                onChange={(e) => setTransferWalletWif(e.target.value)}
+                placeholder="Starts with K, L, or 5..."
+                className="w-full bg-surface-secondary border border-border-primary rounded-lg px-3 py-2 text-text-primary text-sm font-mono"
+              />
+              <p className="text-text-tertiary text-xs mt-1">
+                Required to sign the NFT transfer transaction
+              </p>
+            </div>
+
+            {/* Confirmation Checkbox */}
+            <div className="mb-6 p-3 bg-red-500/10 border border-red-500/30 rounded-lg">
+              <label className="flex items-start gap-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={transferConfirmed}
+                  onChange={(e) => setTransferConfirmed(e.target.checked)}
+                  className="mt-1"
+                />
+                <span className="text-text-secondary text-sm">
+                  I understand that transferring <strong>{selectedQubeForSync.name}</strong> will permanently delete
+                  my local copy. The only way to recover this Qube will be to import it from the recipient's wallet.
+                </span>
+              </label>
+            </div>
+
+            {/* Actions */}
+            <div className="flex gap-3 justify-end">
+              <GlassButton
+                variant="secondary"
+                onClick={() => {
+                  setShowTransferModal(false);
+                  resetTransferState();
+                }}
+                disabled={isTransferring}
+              >
+                Cancel
+              </GlassButton>
+              <GlassButton
+                variant="primary"
+                onClick={handleExecuteTransfer}
+                disabled={isTransferring || !transferConfirmed || !transferRecipientAddress || !transferRecipientPublicKey || !transferWalletWif}
+                className="bg-red-600 hover:bg-red-700"
+              >
+                {isTransferring ? 'Transferring...' : 'Transfer Qube'}
+              </GlassButton>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Import from Wallet Modal */}
+      {showImportFromWalletModal && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="glass-card p-6 max-w-lg w-full mx-4 max-h-[90vh] overflow-y-auto">
+            <h2 className="text-xl font-bold text-text-primary mb-4">Import from Wallet</h2>
+
+            {/* Step 1: Scan Wallet */}
+            <div className="mb-4">
+              <label className="block text-text-secondary text-sm mb-1">Wallet Address</label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={importWalletAddress}
+                  onChange={(e) => setImportWalletAddress(e.target.value)}
+                  placeholder="bitcoincash:qz..."
+                  className="flex-1 bg-surface-secondary border border-border-primary rounded-lg px-3 py-2 text-text-primary text-sm"
+                />
+                <GlassButton
+                  variant="secondary"
+                  onClick={handleScanWallet}
+                  disabled={!importWalletAddress || isScanning}
+                >
+                  {isScanning ? 'Scanning...' : 'Scan'}
+                </GlassButton>
+              </div>
+            </div>
+
+            {/* Step 2: Select Qube */}
+            {walletQubes.length > 0 && (
+              <div className="mb-4">
+                <label className="block text-text-secondary text-sm mb-2">Select Qube to Import</label>
+                <div className="space-y-2 max-h-48 overflow-y-auto">
+                  {walletQubes.map((q) => (
+                    <div
+                      key={q.category_id}
+                      onClick={() => setSelectedWalletQube(q.category_id)}
+                      className={`p-3 rounded-lg border cursor-pointer transition-all ${
+                        selectedWalletQube === q.category_id
+                          ? 'border-accent-primary bg-accent-primary/10'
+                          : 'border-border-primary bg-surface-secondary hover:border-border-secondary'
+                      }`}
+                    >
+                      <div className="flex justify-between items-start">
+                        <div>
+                          <p className="text-text-primary font-medium">{q.qube_name}</p>
+                          <p className="text-text-tertiary text-xs">{q.qube_id}</p>
+                        </div>
+                        <div className="text-right text-xs text-text-tertiary">
+                          <p>{q.chain_length} blocks</p>
+                          <p>{new Date(q.sync_timestamp * 1000).toLocaleDateString()}</p>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Step 3: Wallet WIF */}
+            {selectedWalletQube && (
+              <div className="mb-4">
+                <label className="block text-text-secondary text-sm mb-1">Wallet WIF (Private Key)</label>
+                <input
+                  type="password"
+                  value={importWalletWif}
+                  onChange={(e) => setImportWalletWif(e.target.value)}
+                  placeholder="Starts with K, L, or 5..."
+                  className="w-full bg-surface-secondary border border-border-primary rounded-lg px-3 py-2 text-text-primary text-sm font-mono"
+                />
+                <p className="text-text-tertiary text-xs mt-1">
+                  Required to decrypt the Qube data from IPFS
+                </p>
+              </div>
+            )}
+
+            {/* Actions */}
+            <div className="flex gap-3 justify-end">
+              <GlassButton
+                variant="secondary"
+                onClick={() => {
+                  setShowImportFromWalletModal(false);
+                  resetImportState();
+                }}
+                disabled={isImporting}
+              >
+                Cancel
+              </GlassButton>
+              {selectedWalletQube && (
+                <GlassButton
+                  variant="primary"
+                  onClick={handleExecuteImport}
+                  disabled={isImporting || !importWalletWif}
+                >
+                  {isImporting ? 'Importing...' : 'Import Qube'}
+                </GlassButton>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -285,6 +861,7 @@ interface QubeCardProps {
   dragHandleProps?: React.HTMLAttributes<HTMLDivElement>;
   setCurrentTab: (tab: string) => void;
   toggleSelection: (qubeId: string, isCtrl: boolean, isShift: boolean) => void;
+  isSelected?: boolean;
 }
 
 // Helper component for truncated, clickable blockchain fields
@@ -346,7 +923,7 @@ const BlockchainLink: React.FC<BlockchainLinkProps> = ({ value, type, network = 
   );
 };
 
-const QubeCard: React.FC<QubeCardProps> = ({ qube, onEdit, onDelete, onSelect, onUpdateConfig, getAvatarPath, dragHandleProps, setCurrentTab, toggleSelection }) => {
+const QubeCard: React.FC<QubeCardProps> = ({ qube, onEdit, onDelete, onSelect, onUpdateConfig, getAvatarPath, dragHandleProps, setCurrentTab, toggleSelection, isSelected = false }) => {
   const { userId } = useAuth();
 
   // Infer provider from model if provider is unknown - MUST be defined before useState that uses it
@@ -1000,7 +1577,18 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, onEdit, onDelete, onSelect, o
             zIndex: flipState === 0 ? 2 : 1,
           }}
         >
-          <GlassCard variant="interactive" className="p-6 relative h-full flex flex-col">
+          <GlassCard
+            variant="interactive"
+            className="p-6 relative h-full flex flex-col cursor-pointer"
+            onClick={(e: React.MouseEvent) => {
+              // Toggle selection on card click
+              toggleSelection(qube.qube_id, e.ctrlKey || e.metaKey, e.shiftKey);
+            }}
+            style={{
+              border: isSelected ? `3px solid ${qube.favorite_color || '#00ff88'}` : undefined,
+              boxShadow: isSelected ? `0 0 20px ${qube.favorite_color || '#00ff88'}60` : undefined,
+            }}
+          >
             {/* Flip Button - Top Left Corner */}
             <button
               onClick={(e) => {
@@ -1922,7 +2510,7 @@ const SortableQubeListItem: React.FC<QubeCardProps> = (props) => {
 };
 
 // Qube List Item Component (List View)
-const QubeListItem: React.FC<QubeCardProps> = ({ qube, onEdit, onDelete, onSelect, getAvatarPath, dragHandleProps, setCurrentTab, toggleSelection }) => {
+const QubeListItem: React.FC<QubeCardProps> = ({ qube, onEdit, onDelete, onSelect, getAvatarPath, dragHandleProps, setCurrentTab, toggleSelection, isSelected = false }) => {
   const statusColors = {
     active: 'bg-[#00ff88]', // Neon dark green
     inactive: 'bg-[#ff3366]', // Neon red
@@ -1934,7 +2522,18 @@ const QubeListItem: React.FC<QubeCardProps> = ({ qube, onEdit, onDelete, onSelec
     : 'Unknown';
 
   return (
-    <GlassCard variant="interactive" className="p-4">
+    <GlassCard
+      variant="interactive"
+      className="p-4 cursor-pointer"
+      onClick={(e: React.MouseEvent) => {
+        // Toggle selection on row click
+        toggleSelection(qube.qube_id, e.ctrlKey || e.metaKey, e.shiftKey);
+      }}
+      style={{
+        border: isSelected ? `3px solid ${qube.favorite_color || '#00ff88'}` : undefined,
+        boxShadow: isSelected ? `0 0 20px ${qube.favorite_color || '#00ff88'}60` : undefined,
+      }}
+    >
       <div className="flex items-center gap-4">
         {/* Avatar */}
         <div

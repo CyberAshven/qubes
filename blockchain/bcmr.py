@@ -360,3 +360,197 @@ class BCMRGenerator:
 
         with open(bcmr_path, 'r') as f:
             return json.load(f)
+
+    # =========================================================================
+    # CHAIN SYNC EXTENSION METHODS
+    # =========================================================================
+
+    def update_chain_sync_metadata(
+        self,
+        category_id: str,
+        ipfs_cid: str,
+        encrypted_key: str,
+        chain_length: int,
+        merkle_root: str,
+        key_version: int = 1
+    ) -> str:
+        """
+        Update BCMR with chain sync metadata for NFT-bundled storage.
+
+        This adds/updates the chain_sync extension that contains:
+        - IPFS CID pointing to encrypted Qube data
+        - ECIES-encrypted symmetric key (only NFT holder can decrypt)
+        - Merkle root for integrity verification
+
+        Args:
+            category_id: CashToken category ID
+            ipfs_cid: IPFS CID of encrypted Qube package
+            encrypted_key: ECIES-encrypted symmetric key (hex)
+            chain_length: Number of blocks in the chain
+            merkle_root: Merkle root of all block hashes
+            key_version: Version number for key re-encryption tracking
+
+        Returns:
+            Local file path
+        """
+        logger.info(
+            "updating_chain_sync_metadata",
+            category_id=category_id[:16] + "...",
+            ipfs_cid=ipfs_cid[:16] + "...",
+            chain_length=chain_length
+        )
+
+        # Load existing BCMR
+        bcmr_metadata = self.load_bcmr(category_id)
+
+        if not bcmr_metadata:
+            logger.warning(
+                "bcmr_not_found_for_chain_sync",
+                category_id=category_id[:16] + "..."
+            )
+            # Create minimal BCMR if none exists
+            bcmr_metadata = self._create_empty_bcmr_template(category_id)
+
+        # Create new revision timestamp
+        revision_timestamp = datetime.now(timezone.utc).isoformat() + "Z"
+        sync_timestamp = int(datetime.now(timezone.utc).timestamp())
+
+        # Get latest revision data to copy
+        identity_data = bcmr_metadata.get("identities", {}).get(category_id, {})
+        latest_revision_key = bcmr_metadata.get("latestRevision", "")
+        latest_snapshot = identity_data.get(latest_revision_key, {})
+
+        # Create new snapshot with chain_sync extension
+        new_snapshot = latest_snapshot.copy() if latest_snapshot else {
+            "name": "Qube",
+            "description": "Sovereign AI Agent",
+            "token": {
+                "category": category_id,
+                "symbol": "QUBE",
+                "decimals": 0
+            }
+        }
+
+        # Ensure extensions dict exists
+        if "extensions" not in new_snapshot:
+            new_snapshot["extensions"] = {}
+
+        # Add/update chain_sync extension
+        new_snapshot["extensions"]["chain_sync"] = {
+            "ipfs_cid": ipfs_cid,
+            "encrypted_key": encrypted_key,
+            "key_version": key_version,
+            "sync_timestamp": sync_timestamp,
+            "chain_length": chain_length,
+            "merkle_root": merkle_root,
+            "package_version": "1.0"
+        }
+
+        # Add new revision
+        bcmr_metadata["identities"][category_id][revision_timestamp] = new_snapshot
+        bcmr_metadata["latestRevision"] = revision_timestamp
+
+        # Save updated BCMR
+        return self.save_bcmr_locally(category_id, bcmr_metadata)
+
+    def get_chain_sync_metadata(self, category_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get chain sync metadata from BCMR.
+
+        Args:
+            category_id: CashToken category ID
+
+        Returns:
+            chain_sync extension dict or None if not found
+        """
+        bcmr_metadata = self.load_bcmr(category_id)
+
+        if not bcmr_metadata:
+            return None
+
+        # Get latest revision
+        identity_data = bcmr_metadata.get("identities", {}).get(category_id, {})
+        latest_revision_key = bcmr_metadata.get("latestRevision", "")
+
+        if not latest_revision_key or latest_revision_key not in identity_data:
+            return None
+
+        latest_snapshot = identity_data[latest_revision_key]
+        extensions = latest_snapshot.get("extensions", {})
+
+        chain_sync = extensions.get("chain_sync")
+
+        if chain_sync:
+            logger.debug(
+                "chain_sync_metadata_found",
+                category_id=category_id[:16] + "...",
+                ipfs_cid=chain_sync.get("ipfs_cid", "")[:16] + "...",
+                chain_length=chain_sync.get("chain_length", 0)
+            )
+
+        return chain_sync
+
+    def update_encrypted_key_for_transfer(
+        self,
+        category_id: str,
+        new_encrypted_key: str,
+        new_key_version: int
+    ) -> str:
+        """
+        Update the encrypted key for a transfer (re-encrypt for new owner).
+
+        This is called during transfer to update the BCMR with a new
+        encrypted symmetric key that only the new owner can decrypt.
+
+        Args:
+            category_id: CashToken category ID
+            new_encrypted_key: New ECIES-encrypted key for recipient (hex)
+            new_key_version: Incremented version number
+
+        Returns:
+            Local file path
+
+        Raises:
+            ValueError: If no chain_sync metadata exists
+        """
+        logger.info(
+            "updating_encrypted_key_for_transfer",
+            category_id=category_id[:16] + "...",
+            new_key_version=new_key_version
+        )
+
+        # Load existing BCMR
+        bcmr_metadata = self.load_bcmr(category_id)
+
+        if not bcmr_metadata:
+            raise ValueError(f"No BCMR found for category {category_id}")
+
+        # Get latest revision
+        identity_data = bcmr_metadata.get("identities", {}).get(category_id, {})
+        latest_revision_key = bcmr_metadata.get("latestRevision", "")
+
+        if not latest_revision_key or latest_revision_key not in identity_data:
+            raise ValueError(f"No identity snapshot found for category {category_id}")
+
+        latest_snapshot = identity_data[latest_revision_key]
+        chain_sync = latest_snapshot.get("extensions", {}).get("chain_sync")
+
+        if not chain_sync:
+            raise ValueError(f"No chain_sync metadata found for category {category_id}")
+
+        # Create new revision with updated encrypted key
+        revision_timestamp = datetime.now(timezone.utc).isoformat() + "Z"
+
+        new_snapshot = latest_snapshot.copy()
+        new_snapshot["extensions"]["chain_sync"]["encrypted_key"] = new_encrypted_key
+        new_snapshot["extensions"]["chain_sync"]["key_version"] = new_key_version
+        new_snapshot["extensions"]["chain_sync"]["transfer_timestamp"] = int(
+            datetime.now(timezone.utc).timestamp()
+        )
+
+        # Add new revision
+        bcmr_metadata["identities"][category_id][revision_timestamp] = new_snapshot
+        bcmr_metadata["latestRevision"] = revision_timestamp
+
+        # Save updated BCMR
+        return self.save_bcmr_locally(category_id, bcmr_metadata)

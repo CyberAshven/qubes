@@ -403,6 +403,80 @@ struct TimelineResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+struct ExportQubeResponse {
+    success: bool,
+    file_path: Option<String>,
+    block_count: Option<u32>,
+    qube_name: Option<String>,
+    qube_id: Option<String>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ImportQubeResponse {
+    success: bool,
+    qube_id: Option<String>,
+    qube_name: Option<String>,
+    block_count: Option<u32>,
+    error: Option<String>,
+}
+
+// Chain Sync Response Types (NFT-Bundled Storage)
+#[derive(Debug, Serialize, Deserialize)]
+struct SyncToChainResponse {
+    success: bool,
+    ipfs_cid: Option<String>,
+    encrypted_key: Option<String>,
+    merkle_root: Option<String>,
+    chain_length: Option<u32>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct TransferQubeResponse {
+    success: bool,
+    transfer_txid: Option<String>,
+    recipient_address: Option<String>,
+    ipfs_cid: Option<String>,
+    local_deleted: Option<bool>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ImportFromWalletResponse {
+    success: bool,
+    qube_id: Option<String>,
+    qube_name: Option<String>,
+    qube_dir: Option<String>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct WalletQubeInfo {
+    qube_id: String,
+    qube_name: String,
+    category_id: String,
+    ipfs_cid: String,
+    chain_length: u32,
+    sync_timestamp: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ScanWalletResponse {
+    success: bool,
+    qubes: Option<Vec<WalletQubeInfo>>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ResolvePublicKeyResponse {
+    success: bool,
+    public_key: Option<String>,
+    found: bool,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 struct Qube {
     qube_id: String,
     name: String,
@@ -3481,6 +3555,214 @@ async fn open_external_url(url: String) -> Result<bool, String> {
     Ok(true)
 }
 
+/// Sync Qube to chain (backup to IPFS, encrypted to owner)
+#[tauri::command]
+async fn sync_to_chain(
+    user_id: String,
+    qube_id: String,
+    password: String,
+) -> Result<SyncToChainResponse, String> {
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let project_root = get_python_project_path();
+    let (mut cmd, skip_bridge_arg) = create_backend_command();
+    cmd.current_dir(&project_root);
+
+    if !skip_bridge_arg {
+        let bridge_path = get_python_bridge_path();
+        cmd.arg(&bridge_path);
+    }
+
+    let output = cmd
+        .arg("sync-to-chain")
+        .arg(&user_id)
+        .arg("--qube-id")
+        .arg(&qube_id)
+        .arg("--password")
+        .arg(&password)
+        .output()
+        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Python bridge error: {}", error));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: SyncToChainResponse = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+/// Transfer Qube to new owner (DESTRUCTIVE - deletes local copy)
+#[tauri::command]
+async fn transfer_qube(
+    user_id: String,
+    qube_id: String,
+    recipient_address: String,
+    recipient_public_key: String,
+    wallet_wif: String,
+    password: String,
+) -> Result<TransferQubeResponse, String> {
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let project_root = get_python_project_path();
+    let (mut cmd, skip_bridge_arg) = create_backend_command();
+    cmd.current_dir(&project_root);
+
+    if !skip_bridge_arg {
+        let bridge_path = get_python_bridge_path();
+        cmd.arg(&bridge_path);
+    }
+
+    let output = cmd
+        .arg("transfer-qube")
+        .arg(&user_id)
+        .arg("--qube-id")
+        .arg(&qube_id)
+        .arg("--recipient-address")
+        .arg(&recipient_address)
+        .arg("--recipient-public-key")
+        .arg(&recipient_public_key)
+        .arg("--wallet-wif")
+        .arg(&wallet_wif)
+        .arg("--password")
+        .arg(&password)
+        .output()
+        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Python bridge error: {}", error));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: TransferQubeResponse = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+/// Import Qube from wallet
+#[tauri::command]
+async fn import_from_wallet(
+    user_id: String,
+    wallet_wif: String,
+    category_id: String,
+    password: String,
+) -> Result<ImportFromWalletResponse, String> {
+    validate_identifier(&user_id, "user_id")?;
+
+    let project_root = get_python_project_path();
+    let (mut cmd, skip_bridge_arg) = create_backend_command();
+    cmd.current_dir(&project_root);
+
+    if !skip_bridge_arg {
+        let bridge_path = get_python_bridge_path();
+        cmd.arg(&bridge_path);
+    }
+
+    let output = cmd
+        .arg("import-from-wallet")
+        .arg(&user_id)
+        .arg("--wallet-wif")
+        .arg(&wallet_wif)
+        .arg("--category-id")
+        .arg(&category_id)
+        .arg("--password")
+        .arg(&password)
+        .output()
+        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Python bridge error: {}", error));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: ImportFromWalletResponse = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+/// Scan wallet for Qube NFTs
+#[tauri::command]
+async fn scan_wallet(
+    user_id: String,
+    wallet_address: String,
+) -> Result<ScanWalletResponse, String> {
+    validate_identifier(&user_id, "user_id")?;
+
+    let project_root = get_python_project_path();
+    let (mut cmd, skip_bridge_arg) = create_backend_command();
+    cmd.current_dir(&project_root);
+
+    if !skip_bridge_arg {
+        let bridge_path = get_python_bridge_path();
+        cmd.arg(&bridge_path);
+    }
+
+    let output = cmd
+        .arg("scan-wallet")
+        .arg(&user_id)
+        .arg("--wallet-address")
+        .arg(&wallet_address)
+        .output()
+        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Python bridge error: {}", error));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: ScanWalletResponse = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+/// Resolve public key from BCH address
+#[tauri::command]
+async fn resolve_public_key(
+    user_id: String,
+    address: String,
+) -> Result<ResolvePublicKeyResponse, String> {
+    validate_identifier(&user_id, "user_id")?;
+
+    let project_root = get_python_project_path();
+    let (mut cmd, skip_bridge_arg) = create_backend_command();
+    cmd.current_dir(&project_root);
+
+    if !skip_bridge_arg {
+        let bridge_path = get_python_bridge_path();
+        cmd.arg(&bridge_path);
+    }
+
+    let output = cmd
+        .arg("resolve-public-key")
+        .arg(&user_id)
+        .arg("--address")
+        .arg(&address)
+        .output()
+        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Python bridge error: {}", error));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: ResolvePublicKeyResponse = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -3574,7 +3856,13 @@ pub fn run() {
             create_qube_for_minting,
             pre_register_qube,
             check_registration_status,
-            open_external_url
+            open_external_url,
+            // Chain Sync (NFT-Bundled Storage)
+            sync_to_chain,
+            transfer_qube,
+            import_from_wallet,
+            scan_wallet,
+            resolve_public_key
         ])
         .setup(|app| {
             // Get the main and splash windows

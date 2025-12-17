@@ -4,7 +4,7 @@ interface GlassCardProps {
   children: React.ReactNode;
   className?: string;
   variant?: 'default' | 'elevated' | 'interactive';
-  onClick?: () => void;
+  onClick?: (e: React.MouseEvent) => void;
   style?: React.CSSProperties;
 }
 
