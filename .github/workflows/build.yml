@@ -72,12 +72,13 @@ jobs:
             patchelf \
             portaudio19-dev \
             python3-dev \
-            libffi-dev
+            libffi-dev \
+            ffmpeg
 
       - name: Install macOS dependencies
         if: startsWith(matrix.platform, 'macos')
         run: |
-          brew install portaudio
+          brew install portaudio ffmpeg
 
       # ========== Setup Rust ==========
       - name: Setup Rust
