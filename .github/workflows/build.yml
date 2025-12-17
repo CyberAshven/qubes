@@ -1,5 +1,8 @@
 name: Build Qubes
 
+permissions:
+  contents: write
+
 on:
   # Manual trigger with version input
   workflow_dispatch:
