@@ -41,12 +41,8 @@ jobs:
             ollama_ext: binary
             exe_ext: ''
 
-          - platform: macos-13
-            target: x86_64-apple-darwin
-            artifact_name: Qubes-macOS-Intel
-            ollama_url: https://github.com/ollama/ollama/releases/download/v0.4.7/ollama-darwin
-            ollama_ext: binary
-            exe_ext: ''
+          # Intel Mac removed - macos-13 is retired and macos-13-large requires paid plan
+          # Most Macs today are Apple Silicon (M1/M2/M3)
 
           - platform: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
@@ -110,7 +106,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install pyinstaller
-          pip install -r requirements.txt
+          pip install -r requirements-ci.txt
 
       # ========== Build Python Backend ==========
       - name: Build Python backend (Windows)
@@ -362,8 +358,7 @@ jobs:
 
             ### Downloads
             - **Windows**: `Qubes-Windows.zip` - Windows 10/11 64-bit
-            - **macOS (Apple Silicon)**: `Qubes-macOS-ARM.zip` - M1/M2/M3 Macs
-            - **macOS (Intel)**: `Qubes-macOS-Intel.zip` - Intel Macs
+            - **macOS (Apple Silicon)**: `Qubes-macOS-ARM.zip` - M1/M2/M3/M4 Macs
             - **Linux**: `Qubes-Linux.zip` - Ubuntu/Debian/Fedora
 
             ### Installation

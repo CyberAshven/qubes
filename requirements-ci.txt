@@ -1,0 +1,35 @@
+# Minimal requirements for CI builds (gui_bridge.py dependencies only)
+# Full requirements.txt has packages that don't build cleanly in CI
+
+# Core
+pydantic>=2.0.0
+pyyaml>=6.0
+python-dotenv>=1.0.0
+
+# Cryptography
+cryptography>=41.0.0
+ecdsa>=0.18.0
+
+# Logging
+structlog>=24.1.0
+
+# Error handling
+tenacity>=8.2.0
+
+# System
+psutil>=5.9.0
+
+# AI providers
+openai>=1.0.0
+anthropic>=0.8.0
+httpx>=0.27.0
+
+# Async
+aiohttp>=3.8.0
+
+# CLI
+typer>=0.9.0
+rich>=13.0.0
+
+# Web
+beautifulsoup4>=4.12.0
