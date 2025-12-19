@@ -3,7 +3,7 @@
 **Your AI, your rules. Cryptographically-secured, blockchain-verified, truly yours.**
 
 [![Download](https://img.shields.io/badge/Download-Latest%20Release-brightgreen.svg)](https://github.com/BitFaced2/Qubes/releases/latest)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-Source%20Available-purple.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)]()
 
 ---
