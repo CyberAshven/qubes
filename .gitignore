@@ -68,3 +68,9 @@ qubes-gui/src-tauri/dist/
 
 # Website (deployed separately)
 website/
+
+# Development/internal
+images/
+.claude/
+scripts/
+docs/
