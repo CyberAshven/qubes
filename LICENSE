@@ -1,0 +1,139 @@
+Qubes AI - Source Available License
+Version 1.0, December 2025
+
+Copyright (c) 2025 Qubes AI. All rights reserved.
+
+TERMS AND CONDITIONS
+
+1. DEFINITIONS
+
+   "Software" means the Qubes AI application, including all source code,
+   object code, documentation, and associated files in this repository.
+
+   "You" means the individual or entity exercising rights under this License.
+
+   "Official Release" means Software distributed through official Qubes AI
+   channels (GitHub releases, qube.cash, or authorized distributors).
+
+   "Derivative Work" means any work that is based on or derived from the
+   Software, including modifications, translations, or adaptations.
+
+2. GRANT OF RIGHTS
+
+   Subject to the terms of this License, You are granted the following rights:
+
+   a) VIEW AND STUDY: You may view, read, and study the source code for
+      educational and evaluation purposes.
+
+   b) PERSONAL USE: You may download, install, and use Official Releases
+      for personal or internal business purposes.
+
+   c) MODIFICATION FOR PERSONAL USE: You may modify the Software for your
+      own personal use, provided such modifications are not distributed.
+
+   d) CONTRIBUTION: You may submit bug reports, feature requests, and code
+      contributions to the official repository. By submitting contributions,
+      you grant Qubes AI a perpetual, worldwide, royalty-free license to use,
+      modify, and incorporate your contributions into the Software.
+
+3. RESTRICTIONS
+
+   You may NOT:
+
+   a) REDISTRIBUTE: Distribute, publish, or make available the Software or
+      any Derivative Work to third parties, whether for commercial or
+      non-commercial purposes.
+
+   b) CREATE COMPETING PRODUCTS: Use the Software or any portion thereof to
+      create, develop, or distribute a product or service that competes with
+      Qubes AI.
+
+   c) REMOVE PROTECTIONS: Remove, disable, circumvent, or bypass any
+      licensing, minting, payment, or authentication mechanisms in the
+      Software.
+
+   d) SUBLICENSE: Grant sublicenses or transfer your rights under this
+      License to any third party.
+
+   e) COMMERCIAL SERVICES: Offer the Software as a hosted service, SaaS
+      product, or any form of commercial service without explicit written
+      permission from Qubes AI.
+
+   f) REMOVE NOTICES: Remove, alter, or obscure any copyright, trademark,
+      or other proprietary notices in the Software.
+
+4. MINTING AND PAYMENTS
+
+   The Software includes functionality for minting NFT identities on the
+   Bitcoin Cash blockchain. By using this functionality, you agree to pay
+   the applicable minting fees as displayed in the Software at the time
+   of minting. Attempting to bypass, circumvent, or avoid these fees is
+   a violation of this License.
+
+5. INTELLECTUAL PROPERTY
+
+   Qubes AI retains all right, title, and interest in and to the Software,
+   including all intellectual property rights. This License does not grant
+   You any rights to trademarks, service marks, or trade names of Qubes AI.
+
+6. NO WARRANTY
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+   OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL
+   QUBES AI BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN
+   AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR IN
+   CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+7. LIMITATION OF LIABILITY
+
+   IN NO EVENT SHALL QUBES AI BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL,
+   CONSEQUENTIAL, OR PUNITIVE DAMAGES, INCLUDING WITHOUT LIMITATION, LOSS OF
+   PROFITS, DATA, USE, GOODWILL, OR OTHER INTANGIBLE LOSSES, RESULTING FROM
+   YOUR USE OF OR INABILITY TO USE THE SOFTWARE.
+
+8. TERMINATION
+
+   This License is effective until terminated. Your rights under this License
+   will terminate automatically without notice if you fail to comply with any
+   of its terms. Upon termination, you must cease all use of the Software and
+   destroy any copies in your possession.
+
+9. GOVERNING LAW
+
+   This License shall be governed by and construed in accordance with the
+   laws of the jurisdiction in which Qubes AI operates, without regard to
+   its conflict of law provisions.
+
+10. MODIFICATIONS TO LICENSE
+
+    Qubes AI reserves the right to modify this License at any time. Continued
+    use of the Software after such modifications constitutes acceptance of
+    the modified terms.
+
+11. CONTACT
+
+    For licensing inquiries, permissions, or questions:
+
+    Website: https://qube.cash
+    Twitter: https://x.com/Bit_Faced
+
+---
+
+SUMMARY (not legally binding):
+
+You CAN:
+  - Download and use official releases
+  - View and study the source code
+  - Modify for personal use
+  - Submit contributions
+
+You CANNOT:
+  - Redistribute the software
+  - Create competing products
+  - Bypass minting fees
+  - Offer as a commercial service
+  - Remove copyright notices
+
+This is source-available software, not open source. The code is transparent
+for trust and verification, but usage rights are restricted.
