@@ -25,7 +25,51 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # ========== Create Release First ==========
+  create-release:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - name: Get version
+        id: version
+        run: |
+          VERSION="${{ github.event.inputs.version || github.ref_name }}"
+          echo "tag=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Qubes ${{ steps.version.outputs.tag }}
+          body: |
+            ## Qubes - Sovereign AI Agents
+
+            ### Downloads
+            - **Windows**: `Qubes-Windows.zip` - Windows 10/11 64-bit
+            - **macOS (Apple Silicon)**: `Qubes-macOS-ARM.zip` - M1/M2/M3/M4 Macs
+            - **Linux**: `Qubes-Linux.zip` - Ubuntu/Debian/Fedora
+
+            ### Installation
+            1. Download the appropriate file for your system
+            2. Extract the ZIP file
+            3. Run the Qubes executable
+            4. Follow the setup wizard
+
+            ### Requirements
+            - 8GB RAM minimum (16GB recommended for local AI models)
+            - Internet connection (for cloud AI providers)
+            - Ollama is bundled for local AI
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ========== Build ==========
   build:
+    needs: [create-release]
+    if: always() && (needs.create-release.result == 'success' || needs.create-release.result == 'skipped')
     strategy:
       fail-fast: false
       matrix:
@@ -332,71 +376,10 @@ jobs:
           cd dist-bundle
           zip -r "../${{ matrix.artifact_name }}.zip" Qubes
 
-      # ========== Upload Artifact ==========
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        continue-on-error: true  # Don't fail if quota is hit
-        with:
-          name: ${{ matrix.artifact_name }}
-          path: ${{ matrix.artifact_name }}.zip
-          retention-days: 7  # Shorter retention to reduce quota usage
-
-  # ========== Create Release ==========
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')
-
-    steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-
-      - name: Get version
-        id: version
-        run: |
-          VERSION="${{ github.event.inputs.version || github.ref_name }}"
-          VERSION="${VERSION#v}"  # Remove 'v' prefix if present
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "tag=${{ github.event.inputs.version || github.ref_name }}" >> $GITHUB_OUTPUT
-
-      - name: Prepare release files
-        run: |
-          mkdir -p release-files
-
-          # Copy ZIP bundles
-          cp artifacts/Qubes-Windows/*.zip release-files/ 2>/dev/null || true
-          cp artifacts/Qubes-macOS-ARM/*.zip release-files/ 2>/dev/null || true
-          cp artifacts/Qubes-Linux/*.zip release-files/ 2>/dev/null || true
-
-          ls -la release-files/
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.version.outputs.tag }}
-          name: Qubes ${{ steps.version.outputs.tag }}
-          body: |
-            ## Qubes - Sovereign AI Agents
-
-            ### Downloads
-            - **Windows**: `Qubes-Windows.zip` - Windows 10/11 64-bit
-            - **macOS (Apple Silicon)**: `Qubes-macOS-ARM.zip` - M1/M2/M3/M4 Macs
-            - **Linux**: `Qubes-Linux.zip` - Ubuntu/Debian/Fedora
-
-            ### Installation
-            1. Download the appropriate file for your system
-            2. Extract the ZIP file
-            3. Run the Qubes executable
-            4. Follow the setup wizard
-
-            ### Requirements
-            - 8GB RAM minimum (16GB recommended for local AI models)
-            - Internet connection (for cloud AI providers)
-            - Ollama is bundled for local AI
-          files: release-files/*
-          draft: false
-          prerelease: false
+      # ========== Upload directly to Release (bypasses artifact storage) ==========
+      - name: Upload to Release
+        if: needs.create-release.result == 'success'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ needs.create-release.outputs.tag }}" "${{ matrix.artifact_name }}.zip" --clobber
