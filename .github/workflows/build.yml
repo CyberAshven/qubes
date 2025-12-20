@@ -320,6 +320,40 @@ jobs:
           chmod +x "$DIST_DIR/launch.sh"
 
       # ========== Create Archive ==========
+      # ========== Upload Installer + Signature for Updater ==========
+      - name: Upload installer artifacts (Windows)
+        if: matrix.platform == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: |
+            qubes-gui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+            qubes-gui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.sig
+          retention-days: 90
+
+      - name: Upload installer artifacts (macOS)
+        if: startsWith(matrix.platform, 'macos')
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-installer
+          path: |
+            qubes-gui/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+            qubes-gui/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.sig
+            qubes-gui/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz
+            qubes-gui/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.sig
+          retention-days: 90
+
+      - name: Upload installer artifacts (Linux)
+        if: matrix.platform == 'ubuntu-22.04'
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-installer
+          path: |
+            qubes-gui/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
+            qubes-gui/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.sig
+            qubes-gui/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
+          retention-days: 90
+
       - name: Create ZIP archive (Windows)
         if: matrix.platform == 'windows-latest'
         shell: pwsh
@@ -352,11 +386,87 @@ jobs:
         with:
           path: artifacts
 
+      - name: Get version
+        id: version
+        run: |
+          VERSION="${{ github.event.inputs.version || github.ref_name }}"
+          VERSION="${VERSION#v}"  # Remove 'v' prefix if present
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "tag=${{ github.event.inputs.version || github.ref_name }}" >> $GITHUB_OUTPUT
+
+      - name: Create latest.json for updater
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          TAG="${{ steps.version.outputs.tag }}"
+
+          # Read signatures
+          WIN_SIG=""
+          LINUX_SIG=""
+          MACOS_SIG=""
+
+          if [ -f "artifacts/windows-installer/"*.sig ]; then
+            WIN_SIG=$(cat artifacts/windows-installer/*.exe.sig 2>/dev/null || echo "")
+          fi
+          if [ -f "artifacts/linux-installer/"*.AppImage.sig ]; then
+            LINUX_SIG=$(cat artifacts/linux-installer/*.AppImage.sig 2>/dev/null || echo "")
+          fi
+          if [ -f "artifacts/macos-installer/"*.app.tar.gz.sig ]; then
+            MACOS_SIG=$(cat artifacts/macos-installer/*.app.tar.gz.sig 2>/dev/null || echo "")
+          fi
+
+          cat > latest.json << EOF
+          {
+            "version": "$VERSION",
+            "notes": "See release notes on GitHub",
+            "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "platforms": {
+              "windows-x86_64": {
+                "signature": "$WIN_SIG",
+                "url": "https://github.com/BitFaced2/Qubes/releases/download/$TAG/Qubes_${VERSION}_x64-setup.exe"
+              },
+              "linux-x86_64": {
+                "signature": "$LINUX_SIG",
+                "url": "https://github.com/BitFaced2/Qubes/releases/download/$TAG/Qubes_${VERSION}_amd64.AppImage"
+              },
+              "darwin-aarch64": {
+                "signature": "$MACOS_SIG",
+                "url": "https://github.com/BitFaced2/Qubes/releases/download/$TAG/Qubes.app.tar.gz"
+              }
+            }
+          }
+          EOF
+
+          cat latest.json
+
+      - name: Prepare release files
+        run: |
+          mkdir -p release-files
+
+          # Copy ZIP bundles
+          cp artifacts/Qubes-Windows/*.zip release-files/ 2>/dev/null || true
+          cp artifacts/Qubes-macOS-ARM/*.zip release-files/ 2>/dev/null || true
+          cp artifacts/Qubes-Linux/*.zip release-files/ 2>/dev/null || true
+
+          # Copy installers for auto-updater
+          cp artifacts/windows-installer/*.exe release-files/ 2>/dev/null || true
+          cp artifacts/windows-installer/*.sig release-files/ 2>/dev/null || true
+          cp artifacts/linux-installer/*.AppImage release-files/ 2>/dev/null || true
+          cp artifacts/linux-installer/*.sig release-files/ 2>/dev/null || true
+          cp artifacts/linux-installer/*.deb release-files/ 2>/dev/null || true
+          cp artifacts/macos-installer/*.dmg release-files/ 2>/dev/null || true
+          cp artifacts/macos-installer/*.app.tar.gz release-files/ 2>/dev/null || true
+          cp artifacts/macos-installer/*.sig release-files/ 2>/dev/null || true
+
+          # Copy latest.json
+          cp latest.json release-files/
+
+          ls -la release-files/
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.inputs.version || github.ref_name }}
-          name: Qubes ${{ github.event.inputs.version || github.ref_name }}
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Qubes ${{ steps.version.outputs.tag }}
           body: |
             ## Qubes - Sovereign AI Agents
 
@@ -371,11 +481,14 @@ jobs:
             3. Run the Qubes executable
             4. Follow the setup wizard
 
+            ### Auto-Update
+            Existing installations will automatically detect this update.
+
             ### Requirements
             - 8GB RAM minimum (16GB recommended for local AI models)
             - Internet connection (for cloud AI providers)
             - Ollama is bundled for local AI
-          files: artifacts/**/*.zip
+          files: release-files/*
           draft: false
           prerelease: false
         env:

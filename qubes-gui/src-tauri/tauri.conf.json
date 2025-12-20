@@ -3,6 +3,14 @@
   "productName": "Qubes",
   "version": "0.1.0",
   "identifier": "com.bitfaced.qubes",
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/BitFaced2/Qubes/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDkxNTUwNjYyMkY5RTI1NzgKUldSNEpaNHZZZ1pWa1VLaDRBK0x1OHBWdmFjVWIxbDlWMHBhd3hYNW04QzVTbHM0dFhSaHNJbTMK"
+    }
+  },
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",

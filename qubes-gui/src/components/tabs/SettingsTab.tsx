@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { GlassCard, GlassButton, GlassInput } from '../glass';
 import { useAuth } from '../../hooks/useAuth';
+import { useUpdater } from '../../hooks/useUpdater';
 
 interface APIKeyStatus {
   provider: string;
@@ -59,6 +60,18 @@ interface DecisionConfig {
 
 export const SettingsTab: React.FC = () => {
   const { userId, password } = useAuth();
+  const {
+    updateAvailable,
+    updateStatus,
+    isChecking,
+    isDownloading,
+    downloadProgress,
+    error: updateError,
+    checkForUpdates,
+    installUpdate,
+    dismissUpdate,
+  } = useUpdater(true); // Check for updates on mount
+
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({
     openai: '',
     anthropic: '',
@@ -1292,6 +1305,97 @@ export const SettingsTab: React.FC = () => {
                       </div>
                     </div>
                   </div>
+                )}
+              </div>
+            </GlassCard>
+
+            {/* Software Updates Section */}
+            <GlassCard className="p-4 mt-4">
+              <h2 className="text-lg font-display text-text-primary mb-2">
+                🔄 Software Updates
+              </h2>
+              <p className="text-[10px] text-text-tertiary mb-3">
+                Keep Qubes up to date with the latest features and security fixes.
+              </p>
+
+              <div className="space-y-3">
+                {/* Update Available Banner */}
+                {updateAvailable && updateStatus && (
+                  <div className="bg-accent-primary/10 border border-accent-primary/30 rounded-lg p-3">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm font-medium text-accent-primary">
+                          Update Available!
+                        </p>
+                        <p className="text-[10px] text-text-secondary">
+                          Version {updateStatus.newVersion} is ready to install
+                        </p>
+                      </div>
+                      <div className="flex gap-2">
+                        <GlassButton
+                          onClick={dismissUpdate}
+                          variant="secondary"
+                          size="sm"
+                          className="text-xs h-7 px-3"
+                        >
+                          Later
+                        </GlassButton>
+                        <GlassButton
+                          onClick={installUpdate}
+                          disabled={isDownloading}
+                          size="sm"
+                          className="text-xs h-7 px-3"
+                        >
+                          {isDownloading ? 'Installing...' : 'Install Now'}
+                        </GlassButton>
+                      </div>
+                    </div>
+                    {isDownloading && downloadProgress && (
+                      <div className="mt-2">
+                        <div className="h-1.5 bg-white/10 rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-accent-primary transition-all duration-300"
+                            style={{
+                              width: `${(downloadProgress.downloaded / downloadProgress.total) * 100}%`
+                            }}
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Current Version & Check Button */}
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-xs text-text-secondary">Current Version</p>
+                    <p className="text-sm font-mono text-text-primary">
+                      {updateStatus?.currentVersion || 'Unknown'}
+                    </p>
+                  </div>
+                  <GlassButton
+                    onClick={checkForUpdates}
+                    disabled={isChecking}
+                    variant="secondary"
+                    size="sm"
+                    className="text-xs h-8 px-4"
+                  >
+                    {isChecking ? 'Checking...' : 'Check for Updates'}
+                  </GlassButton>
+                </div>
+
+                {/* Error Display */}
+                {updateError && (
+                  <p className="text-[10px] text-accent-danger">
+                    Error: {updateError}
+                  </p>
+                )}
+
+                {/* No Update Available Message */}
+                {updateStatus && !updateStatus.available && !updateError && !isChecking && (
+                  <p className="text-[10px] text-accent-success">
+                    ✓ You're running the latest version
+                  </p>
                 )}
               </div>
             </GlassCard>
