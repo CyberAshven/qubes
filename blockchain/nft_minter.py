@@ -12,6 +12,7 @@ from typing import Dict, Any, Optional
 from pathlib import Path
 
 from blockchain.platform_init import load_minting_token_config
+from crypto.keys import derive_commitment
 from utils.logging import get_logger
 from monitoring.metrics import MetricsRecorder
 
@@ -258,33 +259,36 @@ class OptimizedNFTMinter:
 
     def _create_commitment(self, qube, ipfs_cid: Optional[str] = None) -> bytes:
         """
-        Create 32-byte commitment from Qube metadata
-        From docs Section 7.8.2
+        Create 32-byte commitment from Qube's public key.
+
+        The commitment is SHA256(public_key), making it directly derivable
+        from the Qube's cryptographic identity. The qube_id is simply the
+        first 8 characters of this commitment (uppercase).
+
+        This means:
+        - commitment = "a3f2c1b8def456..." (64 hex chars / 32 bytes)
+        - qube_id = "A3F2C1B8" (first 8 chars, uppercase)
 
         Args:
-            qube: Qube instance
-            ipfs_cid: Optional IPFS CID for Model 3 (NFT + IPFS backup)
+            qube: Qube instance (must have public_key attribute)
+            ipfs_cid: Ignored (kept for API compatibility, stored in BCMR instead)
 
         Returns:
-            32-byte SHA-256 hash commitment
+            32-byte commitment as bytes
         """
-        commitment_data = {
-            "qube_id": qube.qube_id,
-            "genesis_block_hash": qube.genesis_block.block_hash,
-            "creator_public_key": getattr(qube.genesis_block, "creator", ""),
-            "birth_timestamp": qube.genesis_block.birth_timestamp,
-            "name": getattr(qube, 'name', qube.qube_id),
-            "version": "1.0"
-        }
+        # Derive commitment from public key - qube_id is prefix of this
+        commitment_hex = derive_commitment(qube.public_key)
+        commitment = bytes.fromhex(commitment_hex)
 
-        # Model 3: Include IPFS CID in commitment if provided
-        if ipfs_cid:
-            commitment_data["ipfs_cid"] = ipfs_cid
-            commitment_data["model"] = "ipfs_backup"  # Flag for restore process
-
-        # Hash to create 32-byte commitment
-        commitment_json = json.dumps(commitment_data, sort_keys=True)
-        commitment = hashlib.sha256(commitment_json.encode()).digest()
+        # Verify qube_id matches commitment prefix
+        expected_qube_id = commitment_hex[:8].upper()
+        if qube.qube_id != expected_qube_id:
+            logger.warning(
+                "qube_id_commitment_mismatch",
+                qube_id=qube.qube_id,
+                expected=expected_qube_id,
+                note="This Qube may have been created before the commitment refactor"
+            )
 
         return commitment
 

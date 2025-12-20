@@ -14,6 +14,7 @@ from blockchain.ipfs import IPFSUploader
 from blockchain.verifier import NFTVerifier
 from blockchain.registry import QubeNFTRegistry
 from blockchain.platform_init import check_minting_token_exists
+from crypto.keys import derive_commitment
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -135,7 +136,8 @@ class BlockchainManager:
             # Generate mock NFT data for development
             mock_category_id = hashlib.sha256(f"mock_{qube.qube_id}".encode()).hexdigest()
             mock_txid = hashlib.sha256(f"mock_tx_{qube.qube_id}_{datetime.now(timezone.utc).isoformat()}".encode()).hexdigest()
-            mock_commitment = hashlib.sha256(qube.qube_id.encode()).hexdigest()
+            # Commitment is SHA256(public_key) - qube_id is first 8 chars of this
+            mock_commitment = derive_commitment(qube.public_key)
 
             mint_result = {
                 "category_id": mock_category_id,

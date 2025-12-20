@@ -184,15 +184,53 @@ def deserialize_public_key(hex_str: str) -> ec.EllipticCurvePublicKey:
 # QUBE ID DERIVATION
 # =============================================================================
 
+def derive_commitment(public_key: ec.EllipticCurvePublicKey) -> str:
+    """
+    Derive NFT commitment from public key (64-character hex string / 32 bytes)
+
+    The commitment is the canonical identity of a Qube on the blockchain.
+    The qube_id is simply the first 8 characters (4 bytes) of this commitment.
+
+    Process:
+    1. Serialize public key to compressed hex
+    2. SHA-256 hash (32 bytes)
+    3. Return full hash as lowercase hex
+
+    Args:
+        public_key: ECDSA public key
+
+    Returns:
+        64-character commitment hex string (e.g., "a3f2c1b8...")
+
+    Example:
+        >>> private_key, public_key = generate_key_pair()
+        >>> commitment = derive_commitment(public_key)
+        >>> qube_id = commitment[:8].upper()  # "A3F2C1B8"
+    """
+    # Serialize public key
+    public_key_hex = serialize_public_key(public_key)
+
+    # SHA-256 hash - this IS the commitment
+    commitment_bytes = hashlib.sha256(public_key_hex.encode()).digest()
+    commitment = commitment_bytes.hex()
+
+    logger.debug(
+        "commitment_derived",
+        commitment=commitment[:16] + "...",
+        public_key_prefix=public_key_hex[:16] + "..."
+    )
+
+    return commitment
+
+
 def derive_qube_id(public_key: ec.EllipticCurvePublicKey) -> str:
     """
     Derive Qube ID from public key (8-character hex string)
 
-    Process:
-    1. Serialize public key to compressed hex
-    2. SHA-256 hash
-    3. Take first 4 bytes (8 hex characters)
-    4. Uppercase for readability
+    The qube_id is the first 4 bytes (8 hex characters) of the commitment,
+    uppercased for readability. This means:
+    - commitment = "a3f2c1b8def456..."
+    - qube_id = "A3F2C1B8"
 
     Args:
         public_key: ECDSA public key
@@ -205,19 +243,14 @@ def derive_qube_id(public_key: ec.EllipticCurvePublicKey) -> str:
         >>> qube_id = derive_qube_id(public_key)
         >>> print(qube_id)  # "A3F2C1B8"
     """
-    # Serialize public key
-    public_key_hex = serialize_public_key(public_key)
-
-    # SHA-256 hash
-    hash_bytes = hashlib.sha256(public_key_hex.encode()).digest()
-
-    # Take first 4 bytes (8 hex characters)
-    qube_id = hash_bytes[:4].hex().upper()
+    # Get full commitment and take first 8 chars
+    commitment = derive_commitment(public_key)
+    qube_id = commitment[:8].upper()
 
     logger.debug(
         "qube_id_derived",
         qube_id=qube_id,
-        public_key_hash=public_key_hex[:16] + "..."
+        commitment_prefix=commitment[:16] + "..."
     )
 
     return qube_id
