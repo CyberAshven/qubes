@@ -383,3 +383,120 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release upload "${{ needs.create-release.outputs.tag }}" "${{ matrix.artifact_name }}.zip" --clobber
+
+      # ========== Upload Tauri Updater Assets ==========
+      - name: Upload Windows updater assets
+        if: needs.create-release.result == 'success' && matrix.platform == 'windows-latest'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $nsisDir = "qubes-gui/src-tauri/target/${{ matrix.target }}/release/bundle/nsis"
+          $files = Get-ChildItem -Path $nsisDir -Filter "*.exe" | Select-Object -First 1
+          if ($files) {
+            $exe = $files.FullName
+            $sig = "$exe.sig"
+            # Rename for consistent naming
+            Copy-Item $exe "Qubes-Windows-setup.exe"
+            if (Test-Path $sig) {
+              Copy-Item $sig "Qubes-Windows-setup.exe.sig"
+              gh release upload "${{ needs.create-release.outputs.tag }}" "Qubes-Windows-setup.exe.sig" --clobber
+            }
+            gh release upload "${{ needs.create-release.outputs.tag }}" "Qubes-Windows-setup.exe" --clobber
+          }
+
+      - name: Upload macOS updater assets
+        if: needs.create-release.result == 'success' && startsWith(matrix.platform, 'macos')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BUNDLE_DIR="qubes-gui/src-tauri/target/${{ matrix.target }}/release/bundle/macos"
+          if [ -d "$BUNDLE_DIR/Qubes.app" ]; then
+            cd "$BUNDLE_DIR"
+            tar -czf Qubes-macOS-ARM.app.tar.gz Qubes.app
+            gh release upload "${{ needs.create-release.outputs.tag }}" "Qubes-macOS-ARM.app.tar.gz" --clobber
+            if [ -f "Qubes.app.tar.gz.sig" ]; then
+              cp "Qubes.app.tar.gz.sig" "Qubes-macOS-ARM.app.tar.gz.sig"
+              gh release upload "${{ needs.create-release.outputs.tag }}" "Qubes-macOS-ARM.app.tar.gz.sig" --clobber
+            fi
+          fi
+
+      - name: Upload Linux updater assets
+        if: needs.create-release.result == 'success' && matrix.platform == 'ubuntu-22.04'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          APPIMAGE_DIR="qubes-gui/src-tauri/target/${{ matrix.target }}/release/bundle/appimage"
+          APPIMAGE=$(find "$APPIMAGE_DIR" -name "*.AppImage" 2>/dev/null | head -1)
+          if [ -n "$APPIMAGE" ] && [ -f "$APPIMAGE" ]; then
+            cp "$APPIMAGE" "Qubes-Linux.AppImage"
+            tar -czf "Qubes-Linux.AppImage.tar.gz" "Qubes-Linux.AppImage"
+            gh release upload "${{ needs.create-release.outputs.tag }}" "Qubes-Linux.AppImage.tar.gz" --clobber
+            if [ -f "$APPIMAGE.tar.gz.sig" ]; then
+              cp "$APPIMAGE.tar.gz.sig" "Qubes-Linux.AppImage.tar.gz.sig"
+              gh release upload "${{ needs.create-release.outputs.tag }}" "Qubes-Linux.AppImage.tar.gz.sig" --clobber
+            fi
+          fi
+
+  # ========== Generate Updater Manifest ==========
+  updater-manifest:
+    needs: [create-release, build]
+    runs-on: ubuntu-latest
+    if: needs.create-release.result == 'success'
+
+    steps:
+      - name: Generate latest.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ needs.create-release.outputs.tag }}"
+          VERSION="${TAG#v}"
+          REPO="BitFaced2/Qubes"
+          BASE_URL="https://github.com/$REPO/releases/download/$TAG"
+          PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          # Download signatures if they exist
+          WIN_SIG=""
+          MAC_SIG=""
+          LINUX_SIG=""
+
+          # Try to get Windows signature
+          if gh release download "$TAG" --repo "$REPO" --pattern "Qubes-Windows-setup.exe.sig" 2>/dev/null; then
+            WIN_SIG=$(cat Qubes-Windows-setup.exe.sig)
+          fi
+
+          # Try to get macOS signature
+          if gh release download "$TAG" --repo "$REPO" --pattern "Qubes-macOS-ARM.app.tar.gz.sig" 2>/dev/null; then
+            MAC_SIG=$(cat Qubes-macOS-ARM.app.tar.gz.sig)
+          fi
+
+          # Try to get Linux signature
+          if gh release download "$TAG" --repo "$REPO" --pattern "Qubes-Linux.AppImage.tar.gz.sig" 2>/dev/null; then
+            LINUX_SIG=$(cat Qubes-Linux.AppImage.tar.gz.sig)
+          fi
+
+          # Create latest.json
+          cat > latest.json << EOF
+          {
+            "version": "$VERSION",
+            "notes": "Qubes $TAG release",
+            "pub_date": "$PUB_DATE",
+            "platforms": {
+              "windows-x86_64": {
+                "signature": "$WIN_SIG",
+                "url": "$BASE_URL/Qubes-Windows-setup.exe"
+              },
+              "darwin-aarch64": {
+                "signature": "$MAC_SIG",
+                "url": "$BASE_URL/Qubes-macOS-ARM.app.tar.gz"
+              },
+              "linux-x86_64": {
+                "signature": "$LINUX_SIG",
+                "url": "$BASE_URL/Qubes-Linux.AppImage.tar.gz"
+              }
+            }
+          }
+          EOF
+
+          cat latest.json
+          gh release upload "$TAG" latest.json --repo "$REPO" --clobber
