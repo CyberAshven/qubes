@@ -156,19 +156,25 @@ jobs:
           pip install pyinstaller
           pip install -r requirements-ci.txt
 
-      # ========== Build Python Backend ==========
+      # ========== Build Python Backend (as Tauri sidecar) ==========
       - name: Build Python backend (Windows)
         if: matrix.platform == 'windows-latest'
         shell: pwsh
         run: |
           cd qubes-gui/src-tauri
-          pyinstaller --onefile --name qubes-backend --distpath dist ../../gui_bridge.py
+          New-Item -ItemType Directory -Force -Path binaries
+          pyinstaller --onefile --name qubes-backend --distpath binaries ../../gui_bridge.py
+          # Rename to target-triple format for Tauri sidecar
+          Move-Item -Force "binaries/qubes-backend.exe" "binaries/qubes-backend-${{ matrix.target }}.exe"
 
       - name: Build Python backend (Unix)
         if: matrix.platform != 'windows-latest'
         run: |
           cd qubes-gui/src-tauri
-          pyinstaller --onefile --name qubes-backend --distpath dist ../../gui_bridge.py
+          mkdir -p binaries
+          pyinstaller --onefile --name qubes-backend --distpath binaries ../../gui_bridge.py
+          # Rename to target-triple format for Tauri sidecar
+          mv binaries/qubes-backend "binaries/qubes-backend-${{ matrix.target }}"
 
       # ========== Install Frontend Dependencies ==========
       - name: Install frontend dependencies
@@ -233,9 +239,8 @@ jobs:
           # Copy Tauri executable
           Copy-Item "qubes-gui/src-tauri/target/${{ matrix.target }}/release/qubes-gui.exe" "$distDir/Qubes.exe"
 
-          # Copy Python backend
-          New-Item -ItemType Directory -Force -Path "$distDir/qubes-backend"
-          Copy-Item "qubes-gui/src-tauri/dist/qubes-backend.exe" "$distDir/qubes-backend/"
+          # Copy Python backend sidecar (bundled with Tauri, located next to exe)
+          Copy-Item "qubes-gui/src-tauri/target/${{ matrix.target }}/release/qubes-backend.exe" "$distDir/"
 
           # Copy Ollama
           Copy-Item "dist-bundle/ollama" "$distDir/" -Recurse
@@ -273,14 +278,10 @@ jobs:
         if: startsWith(matrix.platform, 'macos')
         run: |
           DIST_DIR="dist-bundle/Qubes"
-          mkdir -p "$DIST_DIR"/{data,resources,ollama,qubes-backend}
+          mkdir -p "$DIST_DIR"/{data,resources,ollama}
 
-          # Copy Tauri app bundle (named Qubes.app from tauri.conf.json)
+          # Copy Tauri app bundle (includes sidecar inside)
           cp -r "qubes-gui/src-tauri/target/${{ matrix.target }}/release/bundle/macos/Qubes.app" "$DIST_DIR/Qubes.app"
-
-          # Copy Python backend
-          cp "qubes-gui/src-tauri/dist/qubes-backend" "$DIST_DIR/qubes-backend/"
-          chmod +x "$DIST_DIR/qubes-backend/qubes-backend"
 
           # Copy Ollama
           cp -r dist-bundle/ollama/* "$DIST_DIR/ollama/"
@@ -316,15 +317,15 @@ jobs:
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           DIST_DIR="dist-bundle/Qubes"
-          mkdir -p "$DIST_DIR"/{data,resources,ollama,qubes-backend}
+          mkdir -p "$DIST_DIR"/{data,resources,ollama}
 
           # Copy Tauri executable
           cp "qubes-gui/src-tauri/target/${{ matrix.target }}/release/qubes-gui" "$DIST_DIR/Qubes"
           chmod +x "$DIST_DIR/Qubes"
 
-          # Copy Python backend
-          cp "qubes-gui/src-tauri/dist/qubes-backend" "$DIST_DIR/qubes-backend/"
-          chmod +x "$DIST_DIR/qubes-backend/qubes-backend"
+          # Copy Python backend sidecar (bundled with Tauri, located next to exe)
+          cp "qubes-gui/src-tauri/target/${{ matrix.target }}/release/qubes-backend" "$DIST_DIR/"
+          chmod +x "$DIST_DIR/qubes-backend"
 
           # Copy Ollama
           cp -r dist-bundle/ollama/* "$DIST_DIR/ollama/"

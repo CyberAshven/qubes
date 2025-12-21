@@ -525,24 +525,47 @@ struct Qube {
     block_breakdown: Option<serde_json::Value>,
 }
 
-// Check if we're running as a bundled distribution (has qubes-backend folder)
+// Check if we're running as a bundled distribution (has qubes-backend sidecar)
 fn is_bundled_distribution() -> bool {
-    if let Ok(exe_path) = std::env::current_exe() {
-        if let Some(exe_dir) = exe_path.parent() {
-            let bundled_backend = exe_dir.join("qubes-backend").join("qubes-backend.exe");
-            return bundled_backend.exists();
-        }
-    }
-    false
+    get_bundled_backend_path().is_some()
 }
 
-// Get path to the bundled backend executable
+// Get path to the bundled backend executable (Tauri sidecar)
 fn get_bundled_backend_path() -> Option<PathBuf> {
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
-            let bundled_backend = exe_dir.join("qubes-backend").join("qubes-backend.exe");
-            if bundled_backend.exists() {
-                return Some(bundled_backend);
+            // Check for Tauri sidecar (placed next to main exe)
+            #[cfg(target_os = "windows")]
+            let sidecar_name = "qubes-backend.exe";
+            #[cfg(not(target_os = "windows"))]
+            let sidecar_name = "qubes-backend";
+
+            let sidecar_path = exe_dir.join(sidecar_name);
+            if sidecar_path.exists() {
+                return Some(sidecar_path);
+            }
+
+            // Also check macOS bundle location (inside .app/Contents/MacOS/)
+            #[cfg(target_os = "macos")]
+            {
+                // exe_dir is already Contents/MacOS/ on macOS, so sidecar should be there
+                // Already checked above, but let's also check Resources just in case
+                if let Some(contents_dir) = exe_dir.parent() {
+                    let resources_path = contents_dir.join("Resources").join(sidecar_name);
+                    if resources_path.exists() {
+                        return Some(resources_path);
+                    }
+                }
+            }
+
+            // Legacy: check for old distribution format (qubes-backend subfolder)
+            #[cfg(target_os = "windows")]
+            let legacy_path = exe_dir.join("qubes-backend").join("qubes-backend.exe");
+            #[cfg(not(target_os = "windows"))]
+            let legacy_path = exe_dir.join("qubes-backend").join("qubes-backend");
+
+            if legacy_path.exists() {
+                return Some(legacy_path);
             }
         }
     }
@@ -552,10 +575,9 @@ fn get_bundled_backend_path() -> Option<PathBuf> {
 // Get the path to the Python project directory
 fn get_python_project_path() -> PathBuf {
     // First check if we're running as a bundled distribution
-    if let Ok(exe_path) = std::env::current_exe() {
-        if let Some(exe_dir) = exe_path.parent() {
-            let bundled_backend = exe_dir.join("qubes-backend").join("qubes-backend.exe");
-            if bundled_backend.exists() {
+    if is_bundled_distribution() {
+        if let Ok(exe_path) = std::env::current_exe() {
+            if let Some(exe_dir) = exe_path.parent() {
                 // Return the exe directory for bundled distribution
                 return exe_dir.to_path_buf();
             }
