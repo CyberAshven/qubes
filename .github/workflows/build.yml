@@ -47,15 +47,13 @@ jobs:
             ## Qubes - Sovereign AI Agents
 
             ### Downloads
-            - **Windows**: `Qubes-Windows.zip` - Windows 10/11 64-bit
+            - **Windows**: `Qubes-Windows-setup.exe` - Windows 10/11 64-bit installer
             - **macOS (Apple Silicon)**: `Qubes-macOS-ARM.zip` - M1/M2/M3/M4 Macs
             - **Linux**: `Qubes-Linux.zip` - Ubuntu/Debian/Fedora
 
             ### Installation
-            1. Download the appropriate file for your system
-            2. Extract the ZIP file
-            3. Run the Qubes executable
-            4. Follow the setup wizard
+            **Windows**: Download and run the installer
+            **macOS/Linux**: Download, extract the ZIP, and run the executable
 
             ### Requirements
             - 8GB RAM minimum (16GB recommended for local AI models)
@@ -364,13 +362,7 @@ jobs:
           EOF
           chmod +x "$DIST_DIR/launch.sh"
 
-      # ========== Create Archive ==========
-      - name: Create ZIP archive (Windows)
-        if: matrix.platform == 'windows-latest'
-        shell: pwsh
-        run: |
-          Compress-Archive -Path "dist-bundle/Qubes" -DestinationPath "${{ matrix.artifact_name }}.zip"
-
+      # ========== Create Archive (macOS and Linux only) ==========
       - name: Create ZIP archive (Unix)
         if: matrix.platform != 'windows-latest'
         run: |
@@ -379,7 +371,7 @@ jobs:
 
       # ========== Upload directly to Release (bypasses artifact storage) ==========
       - name: Upload to Release
-        if: needs.create-release.result == 'success'
+        if: needs.create-release.result == 'success' && matrix.platform != 'windows-latest'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
