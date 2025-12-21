@@ -42,3 +42,7 @@ google-cloud-texttospeech>=2.14.0  # Google Cloud TTS
 
 # Google AI
 google-genai>=1.0.0         # Gemini models
+
+# Monitoring & Resilience (needed for tests)
+prometheus_client>=0.17.0   # Metrics
+pybreaker>=1.0.0            # Circuit breaker
