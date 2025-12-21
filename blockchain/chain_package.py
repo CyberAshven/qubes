@@ -2,7 +2,7 @@
 Chain Package - Package Qube data for IPFS storage
 
 Creates encrypted packages containing all Qube data for:
-- Backup to IPFS (Sync to Chain)
+- Backup to IPFS (Sync to Pinata)
 - Transfer to new owner
 - Recovery from NFT
 

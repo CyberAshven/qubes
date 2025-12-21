@@ -199,7 +199,7 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
     return convertFileSrc(filePath);
   };
 
-  // Sync to Chain handler - syncs selected Qube to IPFS
+  // Sync to Pinata handler - syncs selected Qube to IPFS via Pinata
   const handleSyncToChain = async () => {
     const selectedId = selectedQubeIds[0];
     const qubeToSync = selectedId ? qubes.find(q => q.qube_id === selectedId) : null;
@@ -523,7 +523,7 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
                 : 'Backup selected Qube to IPFS'
             }
           >
-            {isSyncing ? 'Syncing...' : 'Sync to Chain'}
+            {isSyncing ? 'Syncing...' : 'Sync to Pinata'}
           </GlassButton>
           <GlassButton
             variant="secondary"

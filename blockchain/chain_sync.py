@@ -8,7 +8,7 @@ Orchestrates the sync/transfer/import of Qubes using:
 - CashToken NFT (ownership proof and metadata carrier)
 
 Two main modes:
-1. Sync to Chain: Backup Qube to IPFS, encrypted to self
+1. Sync to Pinata: Backup Qube to IPFS via Pinata, encrypted to self
 2. Transfer: Re-encrypt to recipient, send NFT, delete local
 
 From the NFT-Bundled Qube Transfer System plan.
