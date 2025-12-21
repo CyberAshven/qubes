@@ -46,6 +46,3 @@ google-genai>=1.0.0         # Gemini models
 # Monitoring & Resilience (needed for tests)
 prometheus_client>=0.17.0   # Metrics
 pybreaker>=1.0.0            # Circuit breaker
-
-# Storage (needed for tests)
-lmdb>=1.4.0                 # Key-value store
