@@ -158,8 +158,52 @@ function App() {
 
 
   // Handle wizard completion
-  const handleWizardComplete = (data: { userId: string; password: string; dataDir: string }) => {
+  const handleWizardComplete = async (data: {
+    userId: string;
+    password: string;
+    dataDir: string;
+    apiKeys?: {
+      openai?: string;
+      anthropic?: string;
+      google?: string;
+      deepseek?: string;
+      perplexity?: string;
+      pinata?: string;
+    };
+  }) => {
     console.log('Wizard completed, logging in user:', data.userId);
+
+    // Save API keys if provided
+    if (data.apiKeys) {
+      const keyMapping: Record<string, string> = {
+        openai: 'openai',
+        anthropic: 'anthropic',
+        google: 'google',
+        deepseek: 'deepseek',
+        perplexity: 'perplexity',
+        pinata: 'pinata',
+      };
+
+      for (const [key, provider] of Object.entries(keyMapping)) {
+        const apiKey = data.apiKeys[key as keyof typeof data.apiKeys];
+        if (apiKey && apiKey.trim()) {
+          try {
+            console.log(`Saving ${provider} API key...`);
+            await invoke('save_api_key', {
+              userId: data.userId,
+              provider,
+              apiKey: apiKey.trim(),
+              password: data.password,
+            });
+            console.log(`${provider} API key saved successfully`);
+          } catch (err) {
+            console.error(`Failed to save ${provider} API key:`, err);
+            // Continue with other keys even if one fails
+          }
+        }
+      }
+    }
+
     setIsFirstRun(false);
     // Log in the user with their credentials from the wizard
     login(data.userId, data.dataDir, data.password);

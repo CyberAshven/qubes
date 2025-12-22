@@ -531,7 +531,13 @@ fn is_bundled_distribution() -> bool {
 }
 
 // Get path to the bundled backend executable (Tauri sidecar)
+// In dev mode, always use Python directly for faster iteration
 fn get_bundled_backend_path() -> Option<PathBuf> {
+    // Skip bundled backend in dev mode - Python is much faster for development
+    if cfg!(dev) {
+        return None;
+    }
+
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
             // Check for Tauri sidecar (placed next to main exe)
