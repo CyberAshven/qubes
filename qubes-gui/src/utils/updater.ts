@@ -109,7 +109,7 @@ export async function downloadAndInstallUpdate(
 
 /**
  * Check for updates silently on app startup
- * Returns update info if available, null otherwise
+ * Returns update status (always includes currentVersion)
  */
 export async function checkForUpdateSilently(): Promise<UpdateStatus | null> {
   try {
@@ -117,10 +117,10 @@ export async function checkForUpdateSilently(): Promise<UpdateStatus | null> {
 
     if (status.available) {
       console.log(`Update available: ${status.newVersion}`);
-      return status;
     }
 
-    return null;
+    // Always return status so we have currentVersion
+    return status;
   } catch (error) {
     // Silently fail on startup check
     console.warn('Silent update check failed:', error);
