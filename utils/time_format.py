@@ -11,10 +11,15 @@ from typing import Optional
 try:
     from zoneinfo import ZoneInfo
     EASTERN_TZ = ZoneInfo('America/New_York')
-except ImportError:
-    # Fallback for Python < 3.9
-    import pytz
-    EASTERN_TZ = pytz.timezone('America/New_York')
+except Exception:
+    # Fallback for Python < 3.9, missing tzdata, or PyInstaller bundle issues
+    # zoneinfo can raise ZoneInfoNotFoundError (subclass of KeyError), or other errors
+    try:
+        import pytz
+        EASTERN_TZ = pytz.timezone('America/New_York')
+    except Exception:
+        # No timezone support at all - use None and fall back to local time
+        EASTERN_TZ = None
 
 
 def format_timestamp(
