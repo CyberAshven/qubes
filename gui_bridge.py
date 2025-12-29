@@ -72,9 +72,125 @@ configure_logging(
 )
 
 from orchestrator.user_orchestrator import UserOrchestrator
-from utils.input_validation import validate_user_id, validate_qube_id, validate_qube_name, validate_message
+from utils.input_validation import validate_user_id, validate_qube_id, validate_qube_name, validate_message, sanitize_filename
 
 logger = structlog.get_logger(__name__)
+
+
+# ============================================================================
+# SECURE SECRETS HANDLING VIA STDIN
+# ============================================================================
+# Secrets (passwords, API keys, wallet keys) are passed via stdin JSON instead
+# of command-line arguments to prevent exposure in process listings.
+#
+# Format: Single line of JSON on stdin, e.g.: {"password": "secret", "api_key": "sk-xxx"}
+# Backwards compatible: Falls back to argv if stdin is empty (during migration)
+# ============================================================================
+
+_stdin_secrets: Optional[Dict[str, str]] = None  # Cached stdin secrets (read once)
+_stdin_read_attempted: bool = False  # Track if we've tried reading stdin
+
+
+def _read_stdin_secrets() -> Dict[str, str]:
+    """
+    Read secrets JSON from stdin (single line).
+    Only reads once, caches result for subsequent calls.
+    Cross-platform: works on Windows and Unix.
+    """
+    global _stdin_secrets, _stdin_read_attempted
+
+    if _stdin_read_attempted:
+        return _stdin_secrets or {}
+
+    _stdin_read_attempted = True
+    _stdin_secrets = {}
+
+    try:
+        # Check if stdin is a TTY (interactive terminal)
+        # If it's a TTY, we're running interactively - no stdin secrets
+        # If it's NOT a TTY, we're being called from Rust with piped input
+        if sys.stdin.isatty():
+            logger.debug("stdin_is_tty_skipping_secrets_read")
+            return {}
+
+        # stdin is a pipe - Rust should have written secrets before we get here
+        # Use a simple read with the understanding that data should already be buffered
+        import threading
+
+        result = {"line": None, "error": None}
+
+        def read_line():
+            try:
+                result["line"] = sys.stdin.readline()
+            except Exception as e:
+                result["error"] = str(e)
+
+        # Read with timeout to prevent hanging if no data
+        reader_thread = threading.Thread(target=read_line, daemon=True)
+        reader_thread.start()
+        reader_thread.join(timeout=0.5)  # 500ms timeout
+
+        if reader_thread.is_alive():
+            # Timeout - no data available
+            logger.debug("stdin_read_timeout")
+            return {}
+
+        if result["error"]:
+            logger.debug("stdin_read_error", error=result["error"])
+            return {}
+
+        line = (result["line"] or "").strip()
+        if line:
+            _stdin_secrets = json.loads(line)
+            logger.debug("stdin_secrets_loaded", keys=list(_stdin_secrets.keys()))
+
+    except (json.JSONDecodeError, IOError, OSError) as e:
+        logger.debug("stdin_secrets_read_failed", error=str(e))
+        _stdin_secrets = {}
+    except Exception as e:
+        # Catch-all for any platform-specific issues
+        logger.debug("stdin_secrets_unexpected_error", error=str(e))
+        _stdin_secrets = {}
+
+    return _stdin_secrets
+
+
+def get_secret(name: str, argv_index: Optional[int] = None, required: bool = True) -> Optional[str]:
+    """
+    Get a secret value securely. Tries stdin first (secure), falls back to argv (legacy).
+
+    This backwards-compatible approach allows gradual migration from argv to stdin:
+    - If Rust passes secret via stdin JSON: uses that (secure, not visible in ps)
+    - If Rust passes secret via argv: falls back to that (legacy, visible in ps)
+    - If neither and required=True: raises ValueError
+
+    Args:
+        name: Secret name (e.g., "password", "api_key", "wallet_wif")
+        argv_index: Fallback argv index for backwards compatibility (optional)
+        required: Whether to raise error if secret not found (default True)
+
+    Returns:
+        Secret value or None if not found and not required
+
+    Raises:
+        ValueError: If secret not found and required=True
+    """
+    # Try stdin first (new secure method)
+    secrets = _read_stdin_secrets()
+    if name in secrets:
+        return secrets[name]
+
+    # Fall back to argv (legacy method - for backwards compatibility during migration)
+    if argv_index is not None and len(sys.argv) > argv_index:
+        value = sys.argv[argv_index]
+        # Don't return empty strings as valid secrets
+        if value and value.strip():
+            return value
+
+    # Secret not found
+    if required:
+        raise ValueError(f"Missing required secret: {name}")
+    return None
 
 
 class GUIBridge:
@@ -126,30 +242,59 @@ class GUIBridge:
                 logger.error(f"Failed to set master key for {user_id}: {e}")
                 return {"success": False, "error": "Invalid password"}
 
-            # Verify password by trying to decrypt a qube's private key
-            # List qubes first
-            qubes_list = await orchestrator.list_qubes()
+            # Verify password using the password verifier file
+            # This is a known plaintext encrypted with the derived key
+            verifier_file = orchestrator.data_dir / "password_verifier.enc"
 
-            if len(qubes_list) > 0:
-                # Try to decrypt the first qube's private key to verify password
-                # This will fail if password is wrong (can't decrypt private key)
+            if verifier_file.exists():
+                # Verify password by decrypting the verifier
                 try:
-                    first_qube_id = qubes_list[0]["qube_id"]
-                    # Just try to load the qube data and decrypt the key
-                    qube_data = await orchestrator._load_qube_data(first_qube_id)
-                    # This will throw if password is wrong
-                    orchestrator._decrypt_private_key(
-                        qube_data["encrypted_private_key"],
-                        orchestrator.master_key
-                    )
-                    logger.info(f"Authentication successful for {user_id}")
+                    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+                    import json as json_module
+
+                    with open(verifier_file, 'r') as f:
+                        verifier_data = json_module.load(f)
+
+                    aesgcm = AESGCM(orchestrator.master_key)
+                    nonce = bytes.fromhex(verifier_data["nonce"])
+                    ciphertext = bytes.fromhex(verifier_data["ciphertext"])
+
+                    # Decrypt - will throw InvalidTag if password is wrong
+                    plaintext = aesgcm.decrypt(nonce, ciphertext, None)
+
+                    # Verify the magic string
+                    if plaintext.decode() != "QUBES_PASSWORD_VERIFIED":
+                        return {"success": False, "error": "Invalid password"}
+
+                    logger.info(f"Authentication successful for {user_id} (verifier matched)")
                 except Exception as e:
                     logger.error(f"Authentication failed for {user_id}: {e}")
                     return {"success": False, "error": "Invalid password"}
             else:
-                # No qubes to verify with, but salt exists so accept the password
-                # (User might have just created account but no qubes yet)
-                logger.info(f"Authentication successful for {user_id} (no qubes to verify)")
+                # Legacy: No verifier file, fall back to qube-based verification
+                qubes_list = await orchestrator.list_qubes()
+
+                if len(qubes_list) > 0:
+                    # Try to decrypt the first qube's private key to verify password
+                    try:
+                        first_qube_id = qubes_list[0]["qube_id"]
+                        qube_data = await orchestrator._load_qube_data(first_qube_id)
+                        orchestrator._decrypt_private_key(
+                            qube_data["encrypted_private_key"],
+                            orchestrator.master_key
+                        )
+                        logger.info(f"Authentication successful for {user_id} (legacy qube verification)")
+
+                        # Migrate: Create verifier file for future logins
+                        await self._create_password_verifier(orchestrator)
+                    except Exception as e:
+                        logger.error(f"Authentication failed for {user_id}: {e}")
+                        return {"success": False, "error": "Invalid password"}
+                else:
+                    # No qubes AND no verifier - this is a broken state
+                    # User must have been created before verifier was implemented
+                    logger.error(f"No password verifier and no qubes for {user_id}")
+                    return {"success": False, "error": "Account corrupted. Please contact support."}
 
             # Authentication successful
             return {
@@ -161,6 +306,41 @@ class GUIBridge:
         except Exception as e:
             logger.error(f"Authentication error: {e}")
             return {"success": False, "error": str(e)}
+
+    async def _create_password_verifier(self, orchestrator: UserOrchestrator) -> None:
+        """
+        Create password verifier file for future authentication.
+
+        Encrypts a known magic string with the derived master key.
+        On login, we decrypt this to verify the password is correct.
+        """
+        import secrets
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+        try:
+            verifier_file = orchestrator.data_dir / "password_verifier.enc"
+
+            # Encrypt the magic string
+            aesgcm = AESGCM(orchestrator.master_key)
+            nonce = secrets.token_bytes(12)  # 96-bit nonce for GCM
+            plaintext = b"QUBES_PASSWORD_VERIFIED"
+            ciphertext = aesgcm.encrypt(nonce, plaintext, None)
+
+            # Save as JSON
+            verifier_data = {
+                "nonce": nonce.hex(),
+                "ciphertext": ciphertext.hex(),
+                "algorithm": "AES-256-GCM",
+                "version": "1.0"
+            }
+
+            with open(verifier_file, 'w') as f:
+                json.dump(verifier_data, f, indent=2)
+
+            logger.info(f"Created password verifier for {orchestrator.user_id}")
+        except Exception as e:
+            logger.error(f"Failed to create password verifier: {e}")
+            # Non-fatal - login will still work via qube verification
 
     async def list_qubes(self) -> List[Dict[str, Any]]:
         """List all qubes with their metadata"""
@@ -3382,10 +3562,11 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
                 with open(qube_dir / "blockchain" / f"{qube_name}_bcmr.json", 'w', encoding='utf-8') as f:
                     json.dump(export_data["bcmr_data"], f, indent=2)
 
-            # Save avatar
+            # Save avatar (sanitize filename to prevent path traversal)
             if export_data.get("avatar_base64") and export_data.get("avatar_filename"):
                 avatar_data = base64.b64decode(export_data["avatar_base64"])
-                with open(qube_dir / "chain" / export_data["avatar_filename"], 'wb') as f:
+                safe_avatar_filename = sanitize_filename(export_data["avatar_filename"])
+                with open(qube_dir / "chain" / safe_avatar_filename, 'wb') as f:
                     f.write(avatar_data)
 
             logger.info(f"Imported Qube {qube_id} ({qube_name}) with {len(export_data.get('memory_blocks', []))} blocks")
@@ -3722,12 +3903,13 @@ async def main():
 
     elif command == "create-user-account":
         # Create a new user account
-        if len(sys.argv) < 4:
-            print(json.dumps({"success": False, "error": "User ID and password required"}), file=sys.stderr)
+        if len(sys.argv) < 3:
+            print(json.dumps({"success": False, "error": "User ID required"}), file=sys.stderr)
             sys.exit(1)
 
         user_id = validate_user_id(sys.argv[2])
-        password = sys.argv[3]
+        # Password from stdin (secure) or argv fallback (backwards compat)
+        password = get_secret("password", argv_index=3)
 
         # Create data directory for user
         data_dir = Path(f"data/users/{user_id}")
@@ -3740,6 +3922,27 @@ async def main():
             # Create orchestrator for user and set master key (generates salt)
             orchestrator = UserOrchestrator(user_id=user_id)
             orchestrator.set_master_key(password)
+
+            # Create password verifier for secure authentication
+            # This encrypts a known plaintext so we can verify the password later
+            import secrets
+            from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+            verifier_file = data_dir / "password_verifier.enc"
+            aesgcm = AESGCM(orchestrator.master_key)
+            nonce = secrets.token_bytes(12)
+            plaintext = b"QUBES_PASSWORD_VERIFIED"
+            ciphertext = aesgcm.encrypt(nonce, plaintext, None)
+
+            verifier_data = {
+                "nonce": nonce.hex(),
+                "ciphertext": ciphertext.hex(),
+                "algorithm": "AES-256-GCM",
+                "version": "1.0"
+            }
+
+            with open(verifier_file, 'w') as f:
+                json.dump(verifier_data, f, indent=2)
 
             print(json.dumps({
                 "success": True,
@@ -3821,13 +4024,14 @@ async def main():
     try:
         if command == "authenticate":
             # Parse arguments
-            if len(sys.argv) < 4:
-                print(json.dumps({"success": False, "error": "Username and password required"}), file=sys.stderr)
+            if len(sys.argv) < 3:
+                print(json.dumps({"success": False, "error": "Username required"}), file=sys.stderr)
                 sys.exit(1)
 
             # SECURITY: Validate user_id to prevent path traversal
             user_id = validate_user_id(sys.argv[2])
-            password = sys.argv[3]
+            # Password from stdin (secure) or argv fallback (backwards compat)
+            password = get_secret("password", argv_index=3)
 
             result = await bridge.authenticate(user_id, password)
             print(json.dumps(result))
@@ -3872,6 +4076,9 @@ async def main():
 
             args = parser.parse_args()
 
+            # Use stdin secret if available, fall back to argparse
+            password = get_secret("password", required=False) or args.password
+
             # Create bridge with correct user
             user_bridge = GUIBridge(user_id=user_id)
             qube = await user_bridge.create_qube(
@@ -3881,7 +4088,7 @@ async def main():
                 ai_model=args.ai_model,
                 voice_model=args.voice_model,
                 wallet_address=args.wallet_address,
-                password=args.password,
+                password=password,
                 encrypt_genesis=(args.encrypt_genesis.lower() == "true"),
                 favorite_color=args.favorite_color,
                 avatar_file=args.avatar_file,
@@ -3901,15 +4108,15 @@ async def main():
             print(json.dumps(qube))
 
         elif command == "send-message":
-            if len(sys.argv) < 6:
-                print(json.dumps({"error": "User ID, Qube ID, message, and password required"}), file=sys.stderr)
+            if len(sys.argv) < 5:
+                print(json.dumps({"error": "User ID, Qube ID, and message required"}), file=sys.stderr)
                 sys.exit(1)
 
             user_id = sys.argv[2]
             # SECURITY: Validate inputs to prevent injection
             qube_id = validate_qube_id(sys.argv[3])
             message_arg = sys.argv[4]  # Validated later in message processing
-            password = sys.argv[5]
+            password = get_secret("password", argv_index=5)
 
             # Check if message is a file reference
             if message_arg.startswith("@file:"):
@@ -3926,14 +4133,14 @@ async def main():
             print(json.dumps(result))
 
         elif command == "anchor-session":
-            if len(sys.argv) < 5:
-                print(json.dumps({"error": "User ID, Qube ID, and password required"}), file=sys.stderr)
+            if len(sys.argv) < 4:
+                print(json.dumps({"error": "User ID and Qube ID required"}), file=sys.stderr)
                 sys.exit(1)
 
             user_id = sys.argv[2]
             # SECURITY: Validate qube_id
             qube_id = validate_qube_id(sys.argv[3])
-            password = sys.argv[4]
+            password = get_secret("password", argv_index=4)
 
             # Create bridge with correct user
             user_bridge = GUIBridge(user_id=user_id)
@@ -3979,14 +4186,14 @@ async def main():
             print(json.dumps({"has_session": has_session}))
 
         elif command == "discard-session":
-            if len(sys.argv) < 5:
-                print(json.dumps({"error": "User ID, Qube ID, and password required"}), file=sys.stderr)
+            if len(sys.argv) < 4:
+                print(json.dumps({"error": "User ID and Qube ID required"}), file=sys.stderr)
                 sys.exit(1)
 
             user_id = sys.argv[2]
             # SECURITY: Validate qube_id
             qube_id = validate_qube_id(sys.argv[3])
-            password = sys.argv[4]
+            password = get_secret("password", argv_index=4)
 
             # Create bridge with correct user
             user_bridge = GUIBridge(user_id=user_id)
@@ -4004,15 +4211,15 @@ async def main():
             print(json.dumps({"success": True, "blocks_discarded": blocks_discarded}))
 
         elif command == "delete-session-block":
-            if len(sys.argv) < 6:
-                print(json.dumps({"error": "User ID, Qube ID, block number, and password required"}), file=sys.stderr)
+            if len(sys.argv) < 5:
+                print(json.dumps({"error": "User ID, Qube ID, and block number required"}), file=sys.stderr)
                 sys.exit(1)
 
             user_id = sys.argv[2]
             # SECURITY: Validate qube_id
             qube_id = validate_qube_id(sys.argv[3])
             block_number = int(sys.argv[4])
-            password = sys.argv[5]
+            password = get_secret("password", argv_index=5)
 
             # Create bridge with correct user
             user_bridge = GUIBridge(user_id=user_id)
@@ -4040,18 +4247,19 @@ async def main():
                 print(json.dumps({"success": False, "error": f"Block {block_number} not found"}))
 
         elif command == "get-qube-blocks":
-            if len(sys.argv) < 5:
-                print(json.dumps({"error": "User ID, Qube ID, and password required"}), file=sys.stderr)
+            if len(sys.argv) < 4:
+                print(json.dumps({"error": "User ID and Qube ID required"}), file=sys.stderr)
                 sys.exit(1)
 
             user_id = sys.argv[2]
             # SECURITY: Validate qube_id
             qube_id = validate_qube_id(sys.argv[3])
-            password = sys.argv[4]
+            password = get_secret("password")
 
             # Optional pagination parameters (default: 100 blocks, offset 0)
-            limit = int(sys.argv[5]) if len(sys.argv) > 5 else 100
-            offset = int(sys.argv[6]) if len(sys.argv) > 6 else 0
+            # Note: After security migration, password is via stdin so indices shifted by -1
+            limit = int(sys.argv[4]) if len(sys.argv) > 4 else 100
+            offset = int(sys.argv[5]) if len(sys.argv) > 5 else 0
 
             # Create bridge with correct user
             user_bridge = GUIBridge(user_id=user_id)
@@ -4059,15 +4267,15 @@ async def main():
             print(json.dumps(result))
 
         elif command == "generate-speech":
-            if len(sys.argv) < 6:
-                print(json.dumps({"error": "User ID, Qube ID, text, and password required"}), file=sys.stderr)
+            if len(sys.argv) < 5:
+                print(json.dumps({"error": "User ID, Qube ID, and text required"}), file=sys.stderr)
                 sys.exit(1)
 
             user_id = sys.argv[2]
             # SECURITY: Validate qube_id
             qube_id = validate_qube_id(sys.argv[3])
             text = sys.argv[4]
-            password = sys.argv[5]
+            password = get_secret("password", argv_index=5)
 
             # Create bridge with correct user
             user_bridge = GUIBridge(user_id=user_id)
@@ -4146,14 +4354,14 @@ async def main():
             print(json.dumps(result))
 
         elif command == "upload-avatar-to-ipfs":
-            if len(sys.argv) < 5:
-                print(json.dumps({"error": "User ID, Qube ID, and password required"}), file=sys.stderr)
+            if len(sys.argv) < 4:
+                print(json.dumps({"error": "User ID and Qube ID required"}), file=sys.stderr)
                 sys.exit(1)
 
             user_id = sys.argv[2]
             # SECURITY: Validate qube_id
             qube_id = validate_qube_id(sys.argv[3])
-            password = sys.argv[4]
+            password = get_secret("password", argv_index=4)
 
             # Create bridge with correct user
             user_bridge = GUIBridge(user_id=user_id)
@@ -4162,7 +4370,7 @@ async def main():
 
         elif command == "analyze-image":
             if len(sys.argv) < 6:
-                print(json.dumps({"error": "User ID, Qube ID, image base64 file path, user message, and password required"}), file=sys.stderr)
+                print(json.dumps({"error": "User ID, Qube ID, image base64 file path, and user message required"}), file=sys.stderr)
                 sys.exit(1)
 
             user_id = sys.argv[2]
@@ -4170,7 +4378,7 @@ async def main():
             qube_id = validate_qube_id(sys.argv[3])
             image_base64_file = sys.argv[4]  # Now expects file path instead of data
             user_message = sys.argv[5]
-            password = sys.argv[6] if len(sys.argv) > 6 else None
+            password = get_secret("password", argv_index=6, required=False)
 
             # Read base64 data from temporary file
             with open(image_base64_file, 'r') as f:
@@ -4182,14 +4390,14 @@ async def main():
             print(json.dumps(result))
 
         elif command == "start-multi-qube-conversation":
-            if len(sys.argv) < 6:
-                print(json.dumps({"error": "User ID, qube IDs (comma-separated), initial prompt, and password required"}), file=sys.stderr)
+            if len(sys.argv) < 5:
+                print(json.dumps({"error": "User ID, qube IDs (comma-separated), and initial prompt required"}), file=sys.stderr)
                 sys.exit(1)
 
             user_id = sys.argv[2]
             qube_ids_str = sys.argv[3]  # Comma-separated qube IDs
             initial_prompt = sys.argv[4]
-            password = sys.argv[5]
+            password = get_secret("password", argv_index=5)
             conversation_mode = sys.argv[6] if len(sys.argv) > 6 else "open_discussion"
 
             # Parse qube IDs
@@ -4216,13 +4424,13 @@ async def main():
             print(json.dumps(result))
 
         elif command == "get-next-speaker":
-            if len(sys.argv) < 5:
-                print(json.dumps({"error": "User ID, conversation ID, and password required"}), file=sys.stderr)
+            if len(sys.argv) < 4:
+                print(json.dumps({"error": "User ID and conversation ID required"}), file=sys.stderr)
                 sys.exit(1)
 
             user_id = sys.argv[2]
             conversation_id = sys.argv[3]
-            password = sys.argv[4]
+            password = get_secret("password", argv_index=4)
 
             # Create bridge with correct user
             user_bridge = GUIBridge(user_id=user_id)
@@ -4326,13 +4534,13 @@ async def main():
             print(json.dumps(result))
 
         elif command == "continue-multi-qube-conversation":
-            if len(sys.argv) < 5:
-                print(json.dumps({"error": "User ID, conversation ID, and password required"}), file=sys.stderr)
+            if len(sys.argv) < 4:
+                print(json.dumps({"error": "User ID and conversation ID required"}), file=sys.stderr)
                 sys.exit(1)
 
             user_id = sys.argv[2]
             conversation_id = sys.argv[3]
-            password = sys.argv[4]
+            password = get_secret("password", argv_index=4)
 
             # Create bridge with correct user
             user_bridge = GUIBridge(user_id=user_id)
@@ -4440,14 +4648,14 @@ async def main():
             print(json.dumps(result))
 
         elif command == "inject-multi-qube-user-message":
-            if len(sys.argv) < 6:
-                print(json.dumps({"error": "User ID, conversation ID, message, and password required"}), file=sys.stderr)
+            if len(sys.argv) < 5:
+                print(json.dumps({"error": "User ID, conversation ID, and message required"}), file=sys.stderr)
                 sys.exit(1)
 
             user_id = sys.argv[2]
             conversation_id = sys.argv[3]
             message_arg = sys.argv[4]
-            password = sys.argv[5]
+            password = get_secret("password", argv_index=5)
 
             # Check if message is a file reference
             if message_arg.startswith("@file:"):
@@ -4563,14 +4771,14 @@ async def main():
             print(json.dumps(result))
 
         elif command == "lock-in-multi-qube-response":
-            if len(sys.argv) < 6:
-                print(json.dumps({"error": "User ID, conversation ID, timestamp, and password required"}), file=sys.stderr)
+            if len(sys.argv) < 5:
+                print(json.dumps({"error": "User ID, conversation ID, and timestamp required"}), file=sys.stderr)
                 sys.exit(1)
 
             user_id = sys.argv[2]
             conversation_id = sys.argv[3]
             timestamp = int(sys.argv[4])
-            password = sys.argv[5]
+            password = get_secret("password", argv_index=5)
 
             # Create bridge with correct user
             user_bridge = GUIBridge(user_id=user_id)
@@ -4631,14 +4839,14 @@ async def main():
             print(json.dumps({"success": True, "timestamp": timestamp}))
 
         elif command == "end-multi-qube-conversation":
-            if len(sys.argv) < 6:
-                print(json.dumps({"error": "User ID, conversation ID, anchor flag, and password required"}), file=sys.stderr)
+            if len(sys.argv) < 5:
+                print(json.dumps({"error": "User ID, conversation ID, and anchor flag required"}), file=sys.stderr)
                 sys.exit(1)
 
             user_id = sys.argv[2]
             conversation_id = sys.argv[3]
             anchor = sys.argv[4].lower() == "true" if len(sys.argv) > 4 else True
-            password = sys.argv[5]
+            password = get_secret("password", argv_index=5)
 
             # Create bridge with correct user
             user_bridge = GUIBridge(user_id=user_id)
@@ -4655,12 +4863,12 @@ async def main():
             print(json.dumps(result))
 
         elif command == "get-configured-api-keys":
-            if len(sys.argv) < 4:
-                print(json.dumps({"error": "User ID and password required"}), file=sys.stderr)
+            if len(sys.argv) < 3:
+                print(json.dumps({"error": "User ID required"}), file=sys.stderr)
                 sys.exit(1)
 
             user_id = sys.argv[2]
-            password = sys.argv[3]
+            password = get_secret("password", argv_index=3)
 
             # Create bridge with correct user
             user_bridge = GUIBridge(user_id=user_id)
@@ -4678,14 +4886,14 @@ async def main():
                 print(json.dumps({"providers": []}))
 
         elif command == "save-api-key":
-            if len(sys.argv) < 6:
-                print(json.dumps({"error": "User ID, provider, API key, and password required"}), file=sys.stderr)
+            if len(sys.argv) < 4:
+                print(json.dumps({"error": "User ID and provider required"}), file=sys.stderr)
                 sys.exit(1)
 
             user_id = sys.argv[2]
             provider = sys.argv[3]
-            api_key = sys.argv[4]
-            password = sys.argv[5]
+            api_key = get_secret("api_key", argv_index=4)
+            password = get_secret("password", argv_index=5)
 
             # Create bridge with correct user
             user_bridge = GUIBridge(user_id=user_id)
@@ -4701,14 +4909,14 @@ async def main():
                 print(json.dumps({"success": False, "error": str(e)}))
 
         elif command == "validate-api-key":
-            if len(sys.argv) < 5:
-                print(json.dumps({"error": "User ID, provider, and API key required"}), file=sys.stderr)
+            if len(sys.argv) < 4:
+                print(json.dumps({"error": "User ID and provider required"}), file=sys.stderr)
                 sys.exit(1)
 
             user_id = sys.argv[2]
             provider = sys.argv[3]
-            api_key = sys.argv[4]
-            password = sys.argv[5] if len(sys.argv) > 5 else None
+            api_key = get_secret("api_key", argv_index=4)
+            password = get_secret("password", argv_index=5, required=False)
 
             # Create bridge with correct user
             user_bridge = GUIBridge(user_id=user_id)
@@ -4759,13 +4967,13 @@ async def main():
                 }))
 
         elif command == "delete-api-key":
-            if len(sys.argv) < 5:
-                print(json.dumps({"error": "User ID, provider, and password required"}), file=sys.stderr)
+            if len(sys.argv) < 4:
+                print(json.dumps({"error": "User ID and provider required"}), file=sys.stderr)
                 sys.exit(1)
 
             user_id = sys.argv[2]
             provider = sys.argv[3]
-            password = sys.argv[4]
+            password = get_secret("password", argv_index=4)
 
             # Create bridge with correct user
             user_bridge = GUIBridge(user_id=user_id)
@@ -4919,14 +5127,14 @@ async def main():
                 sys.exit(1)
 
         elif command == "get-qube-relationships":
-            if len(sys.argv) < 5:
-                print(json.dumps({"error": "User ID, Qube ID, and password required"}), file=sys.stderr)
+            if len(sys.argv) < 4:
+                print(json.dumps({"error": "User ID and Qube ID required"}), file=sys.stderr)
                 sys.exit(1)
 
             user_id = sys.argv[2]
             # SECURITY: Validate qube_id
             qube_id = validate_qube_id(sys.argv[3])
-            password = sys.argv[4]
+            password = get_secret("password", argv_index=4)
 
             # Create bridge with correct user
             user_bridge = GUIBridge(user_id=user_id)
@@ -4934,8 +5142,8 @@ async def main():
             print(json.dumps(result))
 
         elif command == "get-relationship-timeline":
-            if len(sys.argv) < 6:
-                print(json.dumps({"error": "User ID, Qube ID, Entity ID, and password required"}), file=sys.stderr)
+            if len(sys.argv) < 5:
+                print(json.dumps({"error": "User ID, Qube ID, and Entity ID required"}), file=sys.stderr)
                 sys.exit(1)
 
             user_id = sys.argv[2]
@@ -4943,7 +5151,7 @@ async def main():
             qube_id = validate_qube_id(sys.argv[3])
             # entity_id can be either a qube_id (8 hex) or human username (alphanumeric)
             entity_id = validate_user_id(sys.argv[4])  # Works for both qube IDs and human usernames
-            password = sys.argv[5] if sys.argv[5] else None
+            password = get_secret("password", argv_index=5, required=False)
 
             # Create bridge with correct user
             user_bridge = GUIBridge(user_id=user_id)
@@ -4951,14 +5159,14 @@ async def main():
             print(json.dumps(result))
 
         elif command == "reset-qube-relationships":
-            if len(sys.argv) < 5:
-                print(json.dumps({"error": "User ID, Qube ID, and password required"}), file=sys.stderr)
+            if len(sys.argv) < 4:
+                print(json.dumps({"error": "User ID and Qube ID required"}), file=sys.stderr)
                 sys.exit(1)
 
             user_id = sys.argv[2]
             # SECURITY: Validate qube_id
             qube_id = validate_qube_id(sys.argv[3])
-            password = sys.argv[4]
+            password = get_secret("password", argv_index=4)
 
             # Create bridge with correct user
             user_bridge = GUIBridge(user_id=user_id)
@@ -5350,6 +5558,9 @@ async def main():
 
             args = parser.parse_args()
 
+            # Use stdin secret if available, fall back to argparse
+            password = get_secret("password", required=False) or args.password
+
             # Create bridge with correct user
             user_bridge = GUIBridge(user_id=user_id)
             result = await user_bridge.prepare_qube_for_minting(
@@ -5359,7 +5570,7 @@ async def main():
                 ai_model=args.ai_model,
                 voice_model=args.voice_model,
                 wallet_address=args.wallet_address,
-                password=args.password,
+                password=password,
                 encrypt_genesis=(args.encrypt_genesis.lower() == "true"),
                 favorite_color=args.favorite_color,
                 avatar_file=args.avatar_file,
@@ -5369,13 +5580,13 @@ async def main():
             print(json.dumps(result))
 
         elif command == "check-minting-status":
-            if len(sys.argv) < 5:
-                print(json.dumps({"error": "User ID, registration ID, and password required"}), file=sys.stderr)
+            if len(sys.argv) < 4:
+                print(json.dumps({"error": "User ID and registration ID required"}), file=sys.stderr)
                 sys.exit(1)
 
             user_id = sys.argv[2]
             registration_id = sys.argv[3]
-            password = sys.argv[4]
+            password = get_secret("password", argv_index=4)
 
             # Create bridge with correct user
             user_bridge = GUIBridge(user_id=user_id)
@@ -5423,13 +5634,13 @@ async def main():
 
         elif command == "authenticate-nft":
             # NFT-based authentication for Qube ownership
-            if len(sys.argv) < 5:
-                print(json.dumps({"error": "User ID, Qube ID, and password required"}), file=sys.stderr)
+            if len(sys.argv) < 4:
+                print(json.dumps({"error": "User ID and Qube ID required"}), file=sys.stderr)
                 sys.exit(1)
 
             user_id = sys.argv[2]
             qube_id = validate_qube_id(sys.argv[3])
-            password = sys.argv[4]
+            password = get_secret("password", argv_index=4)
 
             # Create bridge with correct user
             user_bridge = GUIBridge(user_id=user_id)
@@ -5467,15 +5678,15 @@ async def main():
 
             user_id = sys.argv[2]
             qube_id = validate_qube_id(sys.argv[3])
-            password = sys.argv[4] if len(sys.argv) > 4 else None
+            password = get_secret("password", argv_index=4, required=False)
 
             try:
                 user_bridge = GUIBridge(user_id=user_id)
                 if password:
                     user_bridge.orchestrator.set_master_key(password)
-                
+
                 qube = await user_bridge.orchestrator.load_qube(qube_id)
-                
+
                 from core.proof_of_ethic import generate_work_ethic_proof, proof_to_dict
                 proof = generate_work_ethic_proof(qube)
                 
@@ -5504,8 +5715,8 @@ async def main():
 
         elif command == "generate-introduction":
             # Generate an AI introduction message (Qube introduces itself)
-            if len(sys.argv) < 7:
-                print(json.dumps({"error": "User ID, Qube ID, to_commitment, to_name, to_description, and password required"}), file=sys.stderr)
+            if len(sys.argv) < 6:
+                print(json.dumps({"error": "User ID, Qube ID, to_commitment, and to_name required"}), file=sys.stderr)
                 sys.exit(1)
 
             user_id = sys.argv[2]
@@ -5513,7 +5724,7 @@ async def main():
             to_commitment = sys.argv[4]
             to_name = sys.argv[5]
             to_description = sys.argv[6] if len(sys.argv) > 6 else ""
-            password = sys.argv[7] if len(sys.argv) > 7 else sys.argv[6]
+            password = get_secret("password", argv_index=7, required=False) or get_secret("password", argv_index=6)
 
             user_bridge = GUIBridge(user_id=user_id)
             result = await user_bridge.generate_introduction_message(
@@ -5522,28 +5733,28 @@ async def main():
             print(json.dumps(result))
 
         elif command == "send-introduction":
-            if len(sys.argv) < 7:
-                print(json.dumps({"error": "User ID, Qube ID, to_commitment, message, and password required"}), file=sys.stderr)
+            if len(sys.argv) < 6:
+                print(json.dumps({"error": "User ID, Qube ID, to_commitment, and message required"}), file=sys.stderr)
                 sys.exit(1)
 
             user_id = sys.argv[2]
             qube_id = validate_qube_id(sys.argv[3])
             to_commitment = sys.argv[4]
             message = sys.argv[5]
-            password = sys.argv[6]
+            password = get_secret("password", argv_index=6)
 
             user_bridge = GUIBridge(user_id=user_id)
             result = await user_bridge.send_introduction(qube_id, to_commitment, message, password)
             print(json.dumps(result))
 
         elif command == "get-pending-introductions":
-            if len(sys.argv) < 5:
-                print(json.dumps({"error": "User ID, Qube ID, and password required"}), file=sys.stderr)
+            if len(sys.argv) < 4:
+                print(json.dumps({"error": "User ID and Qube ID required"}), file=sys.stderr)
                 sys.exit(1)
 
             user_id = sys.argv[2]
             qube_id = validate_qube_id(sys.argv[3])
-            password = sys.argv[4]
+            password = get_secret("password", argv_index=4)
 
             user_bridge = GUIBridge(user_id=user_id)
             result = await user_bridge.get_pending_introductions(qube_id, password)
@@ -5552,42 +5763,42 @@ async def main():
         elif command == "evaluate-introduction":
             # Have the Qube's AI evaluate an incoming introduction
             if len(sys.argv) < 6:
-                print(json.dumps({"error": "User ID, Qube ID, from_name, intro_message, and password required"}), file=sys.stderr)
+                print(json.dumps({"error": "User ID, Qube ID, from_name, and intro_message required"}), file=sys.stderr)
                 sys.exit(1)
 
             user_id = sys.argv[2]
             qube_id = validate_qube_id(sys.argv[3])
             from_name = sys.argv[4]
             intro_message = sys.argv[5]
-            password = sys.argv[6]
+            password = get_secret("password", argv_index=6)
 
             user_bridge = GUIBridge(user_id=user_id)
             result = await user_bridge.evaluate_introduction(qube_id, from_name, intro_message, password)
             print(json.dumps(result))
 
         elif command == "accept-introduction":
-            if len(sys.argv) < 6:
-                print(json.dumps({"error": "User ID, Qube ID, relay_id, and password required"}), file=sys.stderr)
+            if len(sys.argv) < 5:
+                print(json.dumps({"error": "User ID, Qube ID, and relay_id required"}), file=sys.stderr)
                 sys.exit(1)
 
             user_id = sys.argv[2]
             qube_id = validate_qube_id(sys.argv[3])
             relay_id = sys.argv[4]
-            password = sys.argv[5]
+            password = get_secret("password", argv_index=5)
 
             user_bridge = GUIBridge(user_id=user_id)
             result = await user_bridge.accept_introduction(qube_id, relay_id, password)
             print(json.dumps(result))
 
         elif command == "reject-introduction":
-            if len(sys.argv) < 6:
-                print(json.dumps({"error": "User ID, Qube ID, relay_id, and password required"}), file=sys.stderr)
+            if len(sys.argv) < 5:
+                print(json.dumps({"error": "User ID, Qube ID, and relay_id required"}), file=sys.stderr)
                 sys.exit(1)
 
             user_id = sys.argv[2]
             qube_id = validate_qube_id(sys.argv[3])
             relay_id = sys.argv[4]
-            password = sys.argv[5]
+            password = get_secret("password", argv_index=5)
 
             user_bridge = GUIBridge(user_id=user_id)
             result = await user_bridge.reject_introduction(qube_id, relay_id, password)
@@ -5615,6 +5826,9 @@ async def main():
 
             args = parser.parse_args()
 
+            # Use stdin secret if available, fall back to argparse
+            password = get_secret("password", required=False) or args.password
+
             # Parse context from JSON
             try:
                 context = json.loads(args.context)
@@ -5628,7 +5842,7 @@ async def main():
                 args.from_commitment,
                 args.message,
                 context,
-                args.password
+                password
             )
             print(json.dumps(result))
 
@@ -5664,6 +5878,9 @@ async def main():
 
             args = parser.parse_args()
 
+            # Use stdin secret if available, fall back to argparse
+            password = get_secret("password", required=False) or args.password
+
             local_qube_ids = [q.strip() for q in args.local_qubes.split(",") if q.strip()]
             remote_commitments = [c.strip() for c in args.remote_commitments.split(",") if c.strip()]
 
@@ -5673,18 +5890,18 @@ async def main():
                 local_qube_ids,
                 remote_commitments,
                 args.topic,
-                args.password
+                password
             )
             print(json.dumps(result))
 
         elif command == "get-p2p-sessions":
-            if len(sys.argv) < 5:
-                print(json.dumps({"error": "User ID, Qube ID, and password required"}), file=sys.stderr)
+            if len(sys.argv) < 4:
+                print(json.dumps({"error": "User ID and Qube ID required"}), file=sys.stderr)
                 sys.exit(1)
 
             user_id = sys.argv[2]
             qube_id = validate_qube_id(sys.argv[3])
-            password = sys.argv[4]
+            password = get_secret("password", argv_index=4)
 
             user_bridge = GUIBridge(user_id=user_id)
             result = await user_bridge.get_p2p_sessions(qube_id, password)
@@ -5710,6 +5927,9 @@ async def main():
 
             args = parser.parse_args()
 
+            # Use stdin secret if available, fall back to argparse
+            password = get_secret("password", required=False) or args.password
+
             local_qube_ids = [q.strip() for q in args.local_qubes.split(",") if q.strip()]
             remote_connections = json.loads(args.remote_connections)
 
@@ -5719,7 +5939,7 @@ async def main():
                 remote_connections,
                 args.session_id,
                 args.initial_prompt,
-                args.password
+                password
             )
             print(json.dumps(result))
 
@@ -5743,6 +5963,9 @@ async def main():
 
             args = parser.parse_args()
 
+            # Use stdin secret if available, fall back to argparse
+            password = get_secret("password", required=False) or args.password
+
             local_qube_ids = [q.strip() for q in args.local_qubes.split(",") if q.strip()]
             remote_connections = json.loads(args.remote_connections)
 
@@ -5752,7 +5975,7 @@ async def main():
                 args.session_id,
                 local_qube_ids,
                 remote_connections,
-                args.password
+                password
             )
             print(json.dumps(result))
 
@@ -5778,6 +6001,9 @@ async def main():
 
             args = parser.parse_args()
 
+            # Use stdin secret if available, fall back to argparse
+            password = get_secret("password", required=False) or args.password
+
             local_qube_ids = [q.strip() for q in args.local_qubes.split(",") if q.strip()]
             remote_connections = json.loads(args.remote_connections)
             block_data = json.loads(args.block_data)
@@ -5790,7 +6016,7 @@ async def main():
                 args.from_commitment,
                 local_qube_ids,
                 remote_connections,
-                args.password
+                password
             )
             print(json.dumps(result))
 
@@ -5815,6 +6041,9 @@ async def main():
 
             args = parser.parse_args()
 
+            # Use stdin secret if available, fall back to argparse
+            password = get_secret("password", required=False) or args.password
+
             local_qube_ids = [q.strip() for q in args.local_qubes.split(",") if q.strip()]
             remote_connections = json.loads(args.remote_connections)
 
@@ -5825,7 +6054,7 @@ async def main():
                 args.message,
                 local_qube_ids,
                 remote_connections,
-                args.password
+                password
             )
             print(json.dumps(result))
 
@@ -5857,9 +6086,12 @@ async def main():
 
             args = parser.parse_args()
 
+            # Use stdin secret if available, fall back to argparse
+            password = get_secret("password", required=False) or args.password
+
             # Create bridge with correct user
             user_bridge = GUIBridge(user_id=user_id)
-            user_bridge.orchestrator.set_master_key(args.password)
+            user_bridge.orchestrator.set_master_key(password)
 
             try:
                 # Create the qube (without minting - we'll do that through server)
@@ -5870,7 +6102,7 @@ async def main():
                     ai_model=args.ai_model,
                     voice_model="",  # No voice by default
                     wallet_address="",  # Will be set during minting
-                    password=args.password,
+                    password=password,
                     favorite_color=args.favorite_color,
                     generate_avatar=False,  # Use placeholder
                 )
@@ -5895,19 +6127,18 @@ async def main():
 
         elif command == "save-api-keys":
             # Save API keys to secure settings
-            if len(sys.argv) < 4:
-                print(json.dumps({"success": False, "error": "User ID and password required"}), file=sys.stderr)
+            if len(sys.argv) < 3:
+                print(json.dumps({"success": False, "error": "User ID required"}), file=sys.stderr)
                 sys.exit(1)
 
             user_id = sys.argv[2]
-            password = sys.argv[3]
+            password = get_secret("password", argv_index=3)
 
             # Parse API keys from remaining args
             import argparse
             parser = argparse.ArgumentParser()
             parser.add_argument("command")
             parser.add_argument("user_id")
-            parser.add_argument("password")
             parser.add_argument("--openai", default="")
             parser.add_argument("--anthropic", default="")
             parser.add_argument("--google", default="")
@@ -5959,9 +6190,12 @@ async def main():
 
             args = parser.parse_args()
 
+            # Use stdin secret if available, fall back to argparse
+            password = get_secret("password", required=False) or args.password
+
             # Create bridge and update qube
             user_bridge = GUIBridge(user_id=user_id)
-            user_bridge.orchestrator.set_master_key(args.password)
+            user_bridge.orchestrator.set_master_key(password)
 
             # Load qube
             if args.qube_id not in user_bridge.orchestrator.qubes:
@@ -6000,10 +6234,13 @@ async def main():
 
             args = parser.parse_args()
 
+            # Use stdin secret if available, fall back to argparse
+            password = get_secret("password", required=False) or args.password
+
             user_bridge = GUIBridge(user_id=user_id)
             result = await user_bridge.sync_to_chain(
                 qube_id=args.qube_id,
-                master_password=args.password
+                master_password=password
             )
             print(json.dumps(result))
 
@@ -6027,13 +6264,17 @@ async def main():
 
             args = parser.parse_args()
 
+            # Use stdin secrets if available, fall back to argparse
+            password = get_secret("password", required=False) or args.password
+            wallet_wif = get_secret("wallet_wif", required=False) or args.wallet_wif
+
             user_bridge = GUIBridge(user_id=user_id)
             result = await user_bridge.transfer_qube(
                 qube_id=args.qube_id,
                 recipient_address=args.recipient_address,
                 recipient_public_key=args.recipient_public_key,
-                wallet_wif=args.wallet_wif,
-                master_password=args.password
+                wallet_wif=wallet_wif,
+                master_password=password
             )
             print(json.dumps(result))
 
@@ -6055,11 +6296,15 @@ async def main():
 
             args = parser.parse_args()
 
+            # Use stdin secrets if available, fall back to argparse
+            password = get_secret("password", required=False) or args.password
+            wallet_wif = get_secret("wallet_wif", required=False) or args.wallet_wif
+
             user_bridge = GUIBridge(user_id=user_id)
             result = await user_bridge.import_from_wallet(
-                wallet_wif=args.wallet_wif,
+                wallet_wif=wallet_wif,
                 category_id=args.category_id,
-                master_password=args.password
+                master_password=password
             )
             print(json.dumps(result))
 

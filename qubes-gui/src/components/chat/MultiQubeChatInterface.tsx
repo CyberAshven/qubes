@@ -495,16 +495,50 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
     }
   };
 
+  // Helper function to convert local file path to asset:// URL for Tauri
+  const convertToAssetUrl = (path: string): string => {
+    // Normalize backslashes to forward slashes
+    let normalizedPath = path.replace(/\\/g, '/');
+
+    // Handle relative paths (legacy - new images use absolute paths)
+    if (normalizedPath.startsWith('data/')) {
+      // For relative paths, resolve to absolute
+      normalizedPath = `C:/Users/bit_f/Projects/Qubes/${normalizedPath}`;
+    }
+
+    // URL encode the path components (but keep forward slashes and colon for drive letter)
+    const encodedPath = normalizedPath
+      .split('/')
+      .map((segment, index) => {
+        // Don't encode the drive letter part (e.g., "C:")
+        if (index === 0 && segment.match(/^[A-Za-z]:$/)) {
+          return segment;
+        }
+        return encodeURIComponent(segment);
+      })
+      .join('/');
+
+    // Format: http://asset.localhost/{path}
+    const assetUrl = `http://asset.localhost/${encodedPath}`;
+    console.log(`[Asset URL] Converting path: ${path} -> ${assetUrl}`);
+    return assetUrl;
+  };
+
   // Helper function to clean content by removing image URLs
   const cleanContentForDisplay = (content: string): string => {
     // Regular expression to detect image URLs (including DALL-E Azure Blob Storage URLs)
     const imageUrlRegex = /(https?:\/\/[^\s\)]+?(?:\.(?:png|jpg|jpeg|gif|webp)|blob\.core\.windows\.net\/[^\s\)]+))/gi;
+    // Regular expression to detect local Windows file paths to images (both absolute and relative)
+    const localPathRegex = /([A-Za-z]:\\[^\s\)]+\.(?:png|jpg|jpeg|gif|webp)|data[\\\/][^\s\)]+\.(?:png|jpg|jpeg|gif|webp))/gi;
 
     // Remove complete markdown image syntax ![...](url)
     let cleaned = content.replace(/!\[([^\]]*)\]\([^\)]+\)/gi, '');
 
     // Remove any remaining image URLs (standalone)
     cleaned = cleaned.replace(imageUrlRegex, '');
+
+    // Remove any local file paths
+    cleaned = cleaned.replace(localPathRegex, '');
 
     // Remove any standalone markdown image syntax ![...]
     cleaned = cleaned.replace(/!\[([^\]]*)\]/g, '');
@@ -522,11 +556,20 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
   const renderMessageContent = (content: string, speakerId: string) => {
     // Regular expression to detect image URLs (including DALL-E Azure Blob Storage URLs)
     const imageUrlRegex = /(https?:\/\/[^\s\)]+?(?:\.(?:png|jpg|jpeg|gif|webp)|blob\.core\.windows\.net\/[^\s\)]+))/gi;
+    // Regular expression to detect local Windows file paths to images (both absolute and relative)
+    const localPathRegex = /([A-Za-z]:\\[^\s\)]+\.(?:png|jpg|jpeg|gif|webp)|data[\\\/][^\s\)]+\.(?:png|jpg|jpeg|gif|webp))/gi;
     // Regular expression to detect any URLs
     const anyUrlRegex = /(https?:\/\/[^\s\)]+)/gi;
 
     // Extract all image URLs first
     const imageUrls = content.match(imageUrlRegex) || [];
+
+    // Extract local file paths and convert to asset:// URLs
+    const localPaths = content.match(localPathRegex) || [];
+    const localAssetUrls = localPaths.map(convertToAssetUrl);
+
+    // Combine remote URLs and local asset URLs
+    const allImageUrls = [...imageUrls, ...localAssetUrls];
 
     // Get cleaned text content (without image URLs)
     let textContent = cleanContentForDisplay(content);
@@ -555,7 +598,7 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
     // Return images FIRST, then text content
     return (
       <>
-        {imageUrls.map((url, index) => (
+        {allImageUrls.map((url, index) => (
           <img
             key={`img-${index}`}
             src={url}
@@ -563,8 +606,10 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
             className="max-w-full rounded-lg mb-3 block"
             style={{ maxHeight: '400px', objectFit: 'contain' }}
             onLoad={() => {
-              // Save image to disk in the speaker's qube folder
-              saveImageToDisk(url, speakerId);
+              // Only save remote URLs to disk (local paths are already saved)
+              if (url.startsWith('http')) {
+                saveImageToDisk(url, speakerId);
+              }
               // Scroll when image finishes loading
               scrollToBottom();
             }}
@@ -2286,25 +2331,52 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
                     <div className="whitespace-pre-wrap break-words">
                       {!isUser && messageId === activeTypewriterMessageId ? (
                         <>
-                          {/* Render images first (non-typewriter) */}
+                          {/* Render images first (non-typewriter) - both HTTP URLs and local paths */}
                           {(() => {
                             const imageUrlRegex = /(https?:\/\/[^\s\)]+?(?:\.(?:png|jpg|jpeg|gif|webp)|blob\.core\.windows\.net\/[^\s\)]+))/gi;
+                            const localPathRegex = /([A-Za-z]:\\[^\s\)]+\.(?:png|jpg|jpeg|gif|webp)|data[\\\/][^\s\)]+\.(?:png|jpg|jpeg|gif|webp))/gi;
                             const imageUrls = msg.message.match(imageUrlRegex) || [];
-                            return imageUrls.map((url, index) => (
+                            const localPaths = msg.message.match(localPathRegex) || [];
+
+                            // Render HTTP URLs
+                            const httpImages = imageUrls.map((url, index) => (
                               <img
-                                key={`img-${index}`}
+                                key={`http-img-${index}`}
                                 src={url}
                                 alt="Generated image"
                                 className="max-w-full rounded-lg mb-3 block"
                                 style={{ maxHeight: '400px', objectFit: 'contain' }}
                                 onLoad={() => {
-                                  // Save image to disk in the speaker's qube folder
                                   saveImageToDisk(url, msg.speaker_id);
-                                  // Scroll when image finishes loading
                                   scrollToBottom();
                                 }}
                               />
                             ));
+
+                            // Render local paths (convert to asset URLs)
+                            const localImages = localPaths.map((path, index) => {
+                              const assetUrl = convertToAssetUrl(path);
+                              console.log(`[Typewriter] Rendering local image: ${path} as ${assetUrl}`);
+                              return (
+                                <img
+                                  key={`local-img-${index}`}
+                                  src={assetUrl}
+                                  alt="Generated image"
+                                  className="max-w-full rounded-lg mb-3 block"
+                                  style={{ maxHeight: '400px', objectFit: 'contain' }}
+                                  onLoad={() => {
+                                    console.log(`[Typewriter] Image loaded successfully: ${assetUrl}`);
+                                    scrollToBottom();
+                                  }}
+                                  onError={(e) => {
+                                    console.error(`[Typewriter] Image failed to load: ${assetUrl}`, e);
+                                    console.error(`[Typewriter] Original path: ${path}`);
+                                  }}
+                                />
+                              );
+                            });
+
+                            return [...httpImages, ...localImages];
                           })()}
                           {/* Then typewriter effect for cleaned text (without URLs) */}
                           <TypewriterText

@@ -7,6 +7,7 @@ Implements the parsable NFT format with automatic sync to web server.
 
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 from typing import Dict, Any, List, Optional

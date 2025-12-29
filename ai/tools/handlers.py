@@ -707,15 +707,20 @@ async def image_generation_handler(qube, params: Dict[str, Any]) -> Dict[str, An
     OpenAI rate limiting when multiple qubes try to generate images simultaneously.
     Includes retry logic for transient server errors.
 
+    Downloads and saves the image immediately to prevent URL expiration issues.
+
     Args:
         params: {"prompt": str, "size": str, "quality": str}
 
     Returns:
-        {"url": str, "prompt": str, "success": bool}
+        {"url": str, "local_path": str, "prompt": str, "success": bool}
     """
     # Acquire lock to prevent concurrent image generation (prevents rate limiting)
     async with _image_generation_lock:
         from openai import AsyncOpenAI
+        import aiohttp
+        from pathlib import Path
+        import time
 
         # Validate prompt length (DALL-E 3 limit is 4000 chars)
         prompt = params["prompt"]
@@ -750,8 +755,51 @@ async def image_generation_handler(qube, params: Dict[str, Any]) -> Dict[str, An
                     n=1
                 )
 
+                image_url = response.data[0].url
+                local_path = None
+
+                # Download and save image immediately (DALL-E URLs expire after ~1 hour)
+                try:
+                    qube_data_dir = getattr(qube, 'data_dir', None)
+                    if qube_data_dir:
+                        images_dir = Path(qube_data_dir) / "images"
+                        images_dir.mkdir(parents=True, exist_ok=True)
+
+                        # Generate unique filename with timestamp
+                        timestamp = int(time.time())
+                        filename = f"generated_{timestamp}.png"
+                        local_file_path = images_dir / filename
+
+                        # Download image
+                        async with aiohttp.ClientSession() as session:
+                            async with session.get(image_url) as resp:
+                                if resp.status == 200:
+                                    image_data = await resp.read()
+                                    with open(local_file_path, "wb") as f:
+                                        f.write(image_data)
+                                    # Use absolute path for reliable frontend display
+                                    local_path = str(local_file_path.resolve())
+                                    logger.info(
+                                        "image_downloaded_immediately",
+                                        path=local_path,
+                                        size=len(image_data)
+                                    )
+                                else:
+                                    logger.warning(
+                                        "image_download_failed",
+                                        status=resp.status,
+                                        url=image_url[:50] + "..."
+                                    )
+                except Exception as download_err:
+                    # Log but don't fail - we still have the URL
+                    logger.warning(
+                        "image_immediate_download_failed",
+                        error=str(download_err)
+                    )
+
                 return {
-                    "url": response.data[0].url,
+                    "url": image_url,
+                    "local_path": local_path,
                     "revised_prompt": response.data[0].revised_prompt,
                     "prompt": params["prompt"],
                     "success": True

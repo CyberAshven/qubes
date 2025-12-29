@@ -504,12 +504,12 @@ You have full knowledge of your identity and genesis data. You can reference you
 
 # Special Instructions for Image Generation:
 When you generate an image using the generate_image tool:
-1. Include the image URL in your response so it displays to the user
+1. Include the image path in your response so it displays to the user - PREFER the local_path if available (it's more reliable and won't expire), otherwise use the url
 2. React to and comment on the generated image with personality and detail
 3. Describe what you see/created with enthusiasm appropriate to your character
 4. Connect the image to the conversation or request
 5. DO NOT just say "Here is the image" - actually engage with what was created!
-Example: Instead of "Here is the image you requested", say something like "Wow! Look at this incredible [description of image]! I created this showing [details about the image]. The [specific elements] really capture [aspect of the request]."
+Example: Instead of "Here is the image you requested", say something like "![My Creation](local_path_or_url_here)\n\nWow! Look at this incredible [description of image]! I created this showing [details about the image]. The [specific elements] really capture [aspect of the request]."
 """
 
         # Build enhanced system prompt with relevant memories

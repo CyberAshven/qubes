@@ -1,10 +1,26 @@
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::path::PathBuf;
+use std::io::Write;
+use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
+
+/// Generate a secure temporary file path with random suffix
+fn secure_temp_path(prefix: &str) -> PathBuf {
+    let temp_dir = std::env::temp_dir();
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let pid = std::process::id();
+    // Combine PID, timestamp, and a portion of memory address for uniqueness
+    let random_suffix = format!("{}_{:x}_{:x}", pid, timestamp, &temp_dir as *const _ as usize);
+    temp_dir.join(format!("qubes_{}_{}.tmp", prefix, random_suffix))
+}
 
 // Input validation function to prevent path traversal and command injection
 fn validate_identifier(input: &str, field_name: &str) -> Result<(), String> {
@@ -705,40 +721,75 @@ fn prepare_backend_command() -> Result<Command, String> {
     Ok(cmd)
 }
 
+/// Execute a backend command with secrets passed via stdin instead of command line arguments.
+/// This prevents secrets from appearing in process listings (ps, tasklist, etc.).
+///
+/// # Arguments
+/// * `cmd` - The prepared Command (from prepare_backend_command)
+/// * `secrets` - HashMap of secret names to values (e.g., {"password": "...", "api_key": "..."})
+///
+/// # Returns
+/// * Ok((stdout, stderr)) on success
+/// * Err(error_message) on failure
+fn execute_with_secrets(
+    mut cmd: Command,
+    secrets: HashMap<&str, &str>,
+) -> Result<(String, String), String> {
+    // Configure stdin as piped so we can write secrets
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    // Spawn the process
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to spawn Python process: {}", e))?;
+
+    // Write secrets as JSON to stdin
+    if let Some(mut stdin) = child.stdin.take() {
+        let secrets_json = serde_json::to_string(&secrets)
+            .map_err(|e| format!("Failed to serialize secrets: {}", e))?;
+
+        // Write JSON followed by newline
+        stdin
+            .write_all(secrets_json.as_bytes())
+            .map_err(|e| format!("Failed to write secrets to stdin: {}", e))?;
+        stdin
+            .write_all(b"\n")
+            .map_err(|e| format!("Failed to write newline to stdin: {}", e))?;
+
+        // stdin is dropped here, closing the pipe
+    }
+
+    // Wait for the process to complete and get output
+    let output = child
+        .wait_with_output()
+        .map_err(|e| format!("Failed to wait for Python process: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    if !output.status.success() {
+        return Err(format!("Python process failed: {}", stderr));
+    }
+
+    Ok((stdout, stderr))
+}
+
 #[tauri::command]
 async fn authenticate(username: String, password: String) -> Result<AuthResponse, String> {
     // Validate inputs
     validate_identifier(&username, "username")?;
 
-    let bridge_path = get_python_bridge_path();
-    let is_bundled = is_bundled_distribution();
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("authenticate").arg(&username);
 
-    if !is_bundled && !bridge_path.exists() {
-        return Err(format!("Python bridge not found at: {}", bridge_path.display()));
-    }
+    // Pass password via stdin instead of CLI argument (security)
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
 
-    let project_root = get_python_project_path();
-    let (mut cmd, skip_bridge_arg) = create_backend_command();
-    cmd.current_dir(&project_root);
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
 
-    // Only add bridge path in development mode
-    if !skip_bridge_arg {
-        cmd.arg(&bridge_path);
-    }
-
-    let output = cmd
-        .arg("authenticate")
-        .arg(&username)
-        .arg(&password)
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
-
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
     let auth_response: AuthResponse = serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
 
@@ -819,8 +870,6 @@ async fn create_qube(
         .arg(&voice_model)
         .arg("--wallet-address")
         .arg(&wallet_address)
-        .arg("--password")
-        .arg(&password)
         .arg("--encrypt-genesis")
         .arg(if encrypt_genesis { "true" } else { "false" })
         .arg("--favorite-color")
@@ -836,16 +885,12 @@ async fn create_qube(
         }
     }
 
-    let output = command
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+    // Pass password via stdin (security)
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
-    }
+    let (stdout, _stderr) = execute_with_secrets(command, secrets)?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
     let qube: Qube = serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
 
@@ -887,8 +932,6 @@ async fn prepare_qube_for_minting(
         .arg(&voice_model)
         .arg("--wallet-address")
         .arg(&wallet_address)
-        .arg("--password")
-        .arg(&password)
         .arg("--encrypt-genesis")
         .arg(if encrypt_genesis { "true" } else { "false" })
         .arg("--favorite-color")
@@ -904,16 +947,12 @@ async fn prepare_qube_for_minting(
         }
     }
 
-    let output = command
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+    // Pass password via stdin (security)
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
-    }
+    let (stdout, _stderr) = execute_with_secrets(command, secrets)?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
     let result: serde_json::Value = serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
 
@@ -933,19 +972,14 @@ async fn check_minting_status(
     command
         .arg("check-minting-status")
         .arg(&user_id)
-        .arg(&registration_id)
-        .arg(&password);
+        .arg(&registration_id);
 
-    let output = command
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+    // Pass password via stdin (security)
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
-    }
+    let (stdout, _stderr) = execute_with_secrets(command, secrets)?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
     let result: serde_json::Value = serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
 
@@ -1051,80 +1085,62 @@ async fn send_message(user_id: String, qube_id: String, message: String, passwor
     validate_identifier(&qube_id, "qube_id")?;
 
     // If message is too long for command line, use a temp file
-    if message.len() > 7000 {
-        // Write message to a temporary file to avoid command-line length limits
-        let temp_dir = std::env::temp_dir();
-        let temp_file = temp_dir.join(format!("qubes_temp_message_{}.txt", std::process::id()));
-
+    let stdout = if message.len() > 7000 {
+        // Write message to a secure temporary file with unpredictable name
+        let temp_file = secure_temp_path("message");
         fs::write(&temp_file, &message)
             .map_err(|e| format!("Failed to write temp file: {}", e))?;
 
         let mut cmd = prepare_backend_command()?;
-        let output = cmd
-            .arg("send-message")
+        cmd.arg("send-message")
             .arg(&user_id)
             .arg(&qube_id)
-            .arg(format!("@file:{}", temp_file.to_str().unwrap()))
-            .arg(&password)
-            .output()
-            .map_err(|e| format!("Failed to execute backend: {}", e))?;
+            .arg(format!("@file:{}", temp_file.to_str().unwrap()));
 
-        // Clean up temp file
+        // Pass password via stdin for security
+        let mut secrets = HashMap::new();
+        secrets.insert("password", password.as_str());
+
+        let result = execute_with_secrets(cmd, secrets);
+
+        // Always clean up temp file
         let _ = fs::remove_file(&temp_file);
 
-        if !output.status.success() {
-            let error = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("Python bridge error: {}", error));
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let chat_response: ChatResponse = serde_json::from_str(&stdout)
-            .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
-
-        Ok(chat_response)
+        result?.0
     } else {
         // Short message - use command line directly
         let mut cmd = prepare_backend_command()?;
-        let output = cmd
-            .arg("send-message")
+        cmd.arg("send-message")
             .arg(&user_id)
             .arg(&qube_id)
-            .arg(&message)
-            .arg(&password)
-            .output()
-            .map_err(|e| format!("Failed to execute backend: {}", e))?;
+            .arg(&message);
 
-        if !output.status.success() {
-            let error = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("Python bridge error: {}", error));
-        }
+        // Pass password via stdin for security
+        let mut secrets = HashMap::new();
+        secrets.insert("password", password.as_str());
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let chat_response: ChatResponse = serde_json::from_str(&stdout)
-            .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+        execute_with_secrets(cmd, secrets)?.0
+    };
 
-        Ok(chat_response)
-    }
+    let chat_response: ChatResponse = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(chat_response)
 }
 
 #[tauri::command]
 async fn generate_speech(user_id: String, qube_id: String, text: String, password: String) -> Result<SpeechResponse, String> {
     let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("generate-speech")
+    cmd.arg("generate-speech")
         .arg(&user_id)
         .arg(&qube_id)
-        .arg(&text)
-        .arg(&password)
-        .output()
-        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+        .arg(&text);
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
-    }
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let (stdout, _) = execute_with_secrets(cmd, secrets)?;
+
     let speech_response: SpeechResponse = serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
 
@@ -1166,20 +1182,15 @@ async fn check_sessions(user_id: String, qube_id: String) -> Result<serde_json::
 #[tauri::command]
 async fn anchor_session(user_id: String, qube_id: String, password: String) -> Result<serde_json::Value, String> {
     let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("anchor-session")
+    cmd.arg("anchor-session")
         .arg(&user_id)
-        .arg(&qube_id)
-        .arg(&password)
-        .output()
-        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+        .arg(&qube_id);
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
-    }
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let (stdout, _) = execute_with_secrets(cmd, secrets)?;
+
     let response: serde_json::Value = serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
 
@@ -1189,20 +1200,15 @@ async fn anchor_session(user_id: String, qube_id: String, password: String) -> R
 #[tauri::command]
 async fn discard_session(user_id: String, qube_id: String, password: String) -> Result<serde_json::Value, String> {
     let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("discard-session")
+    cmd.arg("discard-session")
         .arg(&user_id)
-        .arg(&qube_id)
-        .arg(&password)
-        .output()
-        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+        .arg(&qube_id);
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
-    }
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let (stdout, _) = execute_with_secrets(cmd, secrets)?;
+
     let response: serde_json::Value = serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
 
@@ -1212,21 +1218,16 @@ async fn discard_session(user_id: String, qube_id: String, password: String) -> 
 #[tauri::command]
 async fn delete_session_block(user_id: String, qube_id: String, block_number: i32, password: String) -> Result<serde_json::Value, String> {
     let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("delete-session-block")
+    cmd.arg("delete-session-block")
         .arg(&user_id)
         .arg(&qube_id)
-        .arg(block_number.to_string())
-        .arg(&password)
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+        .arg(block_number.to_string());
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
-    }
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let (stdout, _) = execute_with_secrets(cmd, secrets)?;
+
     let response: serde_json::Value = serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
 
@@ -1287,22 +1288,16 @@ async fn get_qube_blocks(
     let offset_val = offset.unwrap_or(0);
 
     let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("get-qube-blocks")
+    cmd.arg("get-qube-blocks")
         .arg(&user_id)
         .arg(&qube_id)
-        .arg(&password)
         .arg(limit_val.to_string())
-        .arg(offset_val.to_string())
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+        .arg(offset_val.to_string());
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
-    }
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let (stdout, _) = execute_with_secrets(cmd, secrets)?;
 
     let response: serde_json::Value = serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
@@ -1406,20 +1401,16 @@ async fn upload_avatar_to_ipfs(user_id: String, qube_id: String, password: Strin
     validate_identifier(&qube_id, "qube_id")?;
 
     let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("upload-avatar-to-ipfs")
+    cmd.arg("upload-avatar-to-ipfs")
         .arg(&user_id)
-        .arg(&qube_id)
-        .arg(&password)
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+        .arg(&qube_id);
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
-    }
+    // Pass password via stdin (security)
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+
     let response: UploadAvatarToIpfsResponse = serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
 
@@ -1430,33 +1421,30 @@ async fn upload_avatar_to_ipfs(user_id: String, qube_id: String, password: Strin
 async fn analyze_image(user_id: String, qube_id: String, image_base64: String, user_message: String, password: String) -> Result<AnalyzeImageResponse, String> {
     use std::fs;
 
-    // Write image data to a temporary file to avoid command-line length limits
-    let temp_dir = std::env::temp_dir();
-    let temp_file = temp_dir.join(format!("qubes_temp_image_{}.b64", std::process::id()));
+    // Write image data to a secure temporary file with unpredictable name
+    let temp_file = secure_temp_path("image");
 
     fs::write(&temp_file, &image_base64)
         .map_err(|e| format!("Failed to write temp file: {}", e))?;
 
     let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("analyze-image")
+    cmd.arg("analyze-image")
         .arg(&user_id)
         .arg(&qube_id)
         .arg(temp_file.to_str().unwrap())
-        .arg(&user_message)
-        .arg(&password)
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+        .arg(&user_message);
 
-    // Clean up temp file
+    // Pass password via stdin (security)
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
+
+    let result = execute_with_secrets(cmd, secrets);
+
+    // Always clean up temp file, even on error
     let _ = fs::remove_file(&temp_file);
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
-    }
+    let (stdout, _stderr) = result?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
     let analyze_response: AnalyzeImageResponse = serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
 
@@ -1475,22 +1463,18 @@ async fn start_multi_qube_conversation(
     validate_identifier(&user_id, "user_id")?;
 
     let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("start-multi-qube-conversation")
+    cmd.arg("start-multi-qube-conversation")
         .arg(&user_id)
         .arg(&qube_ids_str)
         .arg(&initial_prompt)
-        .arg(&password)
-        .arg(&conversation_mode)
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+        .arg(&conversation_mode);
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
-    }
+    // Pass password via stdin (security)
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+
     let response: serde_json::Value = serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
 
@@ -1504,20 +1488,16 @@ async fn get_next_speaker(
     password: String,
 ) -> Result<serde_json::Value, String> {
     let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("get-next-speaker")
+    cmd.arg("get-next-speaker")
         .arg(&user_id)
-        .arg(&conversation_id)
-        .arg(&password)
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+        .arg(&conversation_id);
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
-    }
+    // Pass password via stdin (security)
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+
     let response: serde_json::Value = serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
 
@@ -1531,20 +1511,16 @@ async fn continue_multi_qube_conversation(
     password: String,
 ) -> Result<serde_json::Value, String> {
     let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("continue-multi-qube-conversation")
+    cmd.arg("continue-multi-qube-conversation")
         .arg(&user_id)
-        .arg(&conversation_id)
-        .arg(&password)  // Now passing password
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+        .arg(&conversation_id);
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
-    }
+    // Pass password via stdin (security)
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+
     let response: serde_json::Value = serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
 
@@ -1560,33 +1536,31 @@ async fn inject_multi_qube_user_message(
 ) -> Result<serde_json::Value, String> {
     use std::fs;
 
+    // Pass password via stdin (security)
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
+
     // If message is too long for command line, use a temp file
     if message.len() > 7000 {
-        let temp_dir = std::env::temp_dir();
-        let temp_file = temp_dir.join(format!("qubes_temp_multi_message_{}.txt", std::process::id()));
+        // Use secure temporary file with unpredictable name
+        let temp_file = secure_temp_path("multi_message");
 
         fs::write(&temp_file, &message)
             .map_err(|e| format!("Failed to write temp file: {}", e))?;
 
         let mut cmd = prepare_backend_command()?;
-        let output = cmd
-            .arg("inject-multi-qube-user-message")
+        cmd.arg("inject-multi-qube-user-message")
             .arg(&user_id)
             .arg(&conversation_id)
-            .arg(format!("@file:{}", temp_file.to_str().unwrap()))
-            .arg(&password)
-            .output()
-            .map_err(|e| format!("Failed to execute backend: {}", e))?;
+            .arg(format!("@file:{}", temp_file.to_str().unwrap()));
 
-        // Clean up temp file
+        let result = execute_with_secrets(cmd, secrets);
+
+        // Always clean up temp file, even on error
         let _ = fs::remove_file(&temp_file);
 
-        if !output.status.success() {
-            let error = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("Python bridge error: {}", error));
-        }
+        let (stdout, _stderr) = result?;
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
         let response: serde_json::Value = serde_json::from_str(&stdout)
             .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
 
@@ -1594,21 +1568,13 @@ async fn inject_multi_qube_user_message(
     } else {
         // Short message - use command line directly
         let mut cmd = prepare_backend_command()?;
-        let output = cmd
-            .arg("inject-multi-qube-user-message")
+        cmd.arg("inject-multi-qube-user-message")
             .arg(&user_id)
             .arg(&conversation_id)
-            .arg(&message)
-            .arg(&password)
-            .output()
-            .map_err(|e| format!("Failed to execute backend: {}", e))?;
+            .arg(&message);
 
-        if !output.status.success() {
-            let error = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("Python bridge error: {}", error));
-        }
+        let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
         let response: serde_json::Value = serde_json::from_str(&stdout)
             .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
 
@@ -1624,21 +1590,17 @@ async fn lock_in_multi_qube_response(
     password: String,
 ) -> Result<serde_json::Value, String> {
     let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("lock-in-multi-qube-response")
+    cmd.arg("lock-in-multi-qube-response")
         .arg(&user_id)
         .arg(&conversation_id)
-        .arg(timestamp.to_string())
-        .arg(&password)
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+        .arg(timestamp.to_string());
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
-    }
+    // Pass password via stdin (security)
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+
     let response: serde_json::Value = serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
 
@@ -1653,21 +1615,17 @@ async fn end_multi_qube_conversation(
     password: String,
 ) -> Result<serde_json::Value, String> {
     let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("end-multi-qube-conversation")
+    cmd.arg("end-multi-qube-conversation")
         .arg(&user_id)
         .arg(&conversation_id)
-        .arg(if anchor { "true" } else { "false" })
-        .arg(&password)  // Password is now argument 5
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+        .arg(if anchor { "true" } else { "false" });
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
-    }
+    // Pass password via stdin (security)
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+
     let response: serde_json::Value = serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
 
@@ -1679,32 +1637,16 @@ async fn get_configured_api_keys(user_id: String, password: String) -> Result<Co
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
 
-    let bridge_path = get_python_bridge_path();
-    let project_root = get_python_project_path();
-    let (mut cmd, skip_bridge_arg) = create_backend_command();
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("get-configured-api-keys")
+        .arg(&user_id);
 
-    cmd.current_dir(&project_root);
+    // Pass password via stdin (security)
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
 
-    if !skip_bridge_arg {
-        if !bridge_path.exists() {
-            return Err(format!("Python bridge not found at: {}", bridge_path.display()));
-        }
-        cmd.arg(&bridge_path);
-    }
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
 
-    let output = cmd
-        .arg("get-configured-api-keys")
-        .arg(&user_id)
-        .arg(&password)
-        .output()
-        .map_err(|e| format!("Failed to execute backend: {}", e))?;
-
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
     let response: ConfiguredKeysResponse = serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
 
@@ -1716,34 +1658,18 @@ async fn save_api_key(user_id: String, provider: String, api_key: String, passwo
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
 
-    let bridge_path = get_python_bridge_path();
-    let project_root = get_python_project_path();
-    let (mut cmd, skip_bridge_arg) = create_backend_command();
-
-    cmd.current_dir(&project_root);
-
-    if !skip_bridge_arg {
-        if !bridge_path.exists() {
-            return Err(format!("Python bridge not found at: {}", bridge_path.display()));
-        }
-        cmd.arg(&bridge_path);
-    }
-
-    let output = cmd
-        .arg("save-api-key")
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("save-api-key")
         .arg(&user_id)
-        .arg(&provider)
-        .arg(&api_key)
-        .arg(&password)
-        .output()
-        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+        .arg(&provider);
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
-    }
+    // Pass api_key and password via stdin (security)
+    let mut secrets = HashMap::new();
+    secrets.insert("api_key", api_key.as_str());
+    secrets.insert("password", password.as_str());
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+
     let response: APIKeyResponse = serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
 
@@ -1755,38 +1681,20 @@ async fn validate_api_key(user_id: String, provider: String, api_key: String, pa
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
 
-    let bridge_path = get_python_bridge_path();
-    let project_root = get_python_project_path();
-    let (mut cmd, skip_bridge_arg) = create_backend_command();
-
-    cmd.current_dir(&project_root);
-
-    if !skip_bridge_arg {
-        if !bridge_path.exists() {
-            return Err(format!("Python bridge not found at: {}", bridge_path.display()));
-        }
-        cmd.arg(&bridge_path);
-    }
-
+    let mut cmd = prepare_backend_command()?;
     cmd.arg("validate-api-key")
         .arg(&user_id)
-        .arg(&provider)
-        .arg(&api_key);
+        .arg(&provider);
 
-    // Add password if provided (for testing saved keys)
-    if let Some(pw) = password {
-        cmd.arg(&pw);
+    // Pass api_key and optional password via stdin (security)
+    let mut secrets = HashMap::new();
+    secrets.insert("api_key", api_key.as_str());
+    if let Some(ref pw) = password {
+        secrets.insert("password", pw.as_str());
     }
 
-    let output = cmd.output()
-        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
     let response: ValidationResponse = serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
 
@@ -1798,33 +1706,17 @@ async fn delete_api_key(user_id: String, provider: String, password: String) -> 
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
 
-    let bridge_path = get_python_bridge_path();
-    let project_root = get_python_project_path();
-    let (mut cmd, skip_bridge_arg) = create_backend_command();
-
-    cmd.current_dir(&project_root);
-
-    if !skip_bridge_arg {
-        if !bridge_path.exists() {
-            return Err(format!("Python bridge not found at: {}", bridge_path.display()));
-        }
-        cmd.arg(&bridge_path);
-    }
-
-    let output = cmd
-        .arg("delete-api-key")
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("delete-api-key")
         .arg(&user_id)
-        .arg(&provider)
-        .arg(&password)
-        .output()
-        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+        .arg(&provider);
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
-    }
+    // Pass password via stdin (security)
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+
     let response: APIKeyResponse = serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
 
@@ -2573,20 +2465,15 @@ async fn authenticate_nft(
     validate_identifier(&qube_id, "qube_id")?;
 
     let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("authenticate-nft")
+    cmd.arg("authenticate-nft")
         .arg(&user_id)
-        .arg(&qube_id)
-        .arg(&password)
-        .output()
-        .map_err(|e| format!("Failed to execute Python: {}", e))?;
+        .arg(&qube_id);
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    // Pass password via stdin (security)
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        return Err(format!("NFT authentication failed: {}", stderr));
-    }
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
 
     serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse NFT auth response: {}. Output: {}", e, stdout))
@@ -2596,18 +2483,13 @@ async fn authenticate_nft(
 #[tauri::command]
 async fn refresh_auth_token(token: String) -> Result<TokenRefreshResponse, String> {
     let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("refresh-auth-token")
-        .arg(&token)
-        .output()
-        .map_err(|e| format!("Failed to execute Python: {}", e))?;
+    cmd.arg("refresh-auth-token");
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    // Pass token via stdin (security - tokens are secrets)
+    let mut secrets = HashMap::new();
+    secrets.insert("token", token.as_str());
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        return Err(format!("Token refresh failed: {}", stderr));
-    }
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
 
     serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse token refresh response: {}. Output: {}", e, stdout))
@@ -2676,23 +2558,18 @@ async fn generate_introduction(
     validate_identifier(&qube_id, "qube_id")?;
 
     let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("generate-introduction")
+    cmd.arg("generate-introduction")
         .arg(&user_id)
         .arg(&qube_id)
         .arg(&to_commitment)
         .arg(&to_name)
-        .arg(&to_description)
-        .arg(&password)
-        .output()
-        .map_err(|e| format!("Failed to execute Python: {}", e))?;
+        .arg(&to_description);
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    // Pass password via stdin (security)
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        return Err(format!("Generate introduction failed: {}", stderr));
-    }
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
 
     serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse response: {}. Output: {}", e, stdout))
@@ -2711,22 +2588,17 @@ async fn evaluate_introduction(
     validate_identifier(&qube_id, "qube_id")?;
 
     let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("evaluate-introduction")
+    cmd.arg("evaluate-introduction")
         .arg(&user_id)
         .arg(&qube_id)
         .arg(&from_name)
-        .arg(&intro_message)
-        .arg(&password)
-        .output()
-        .map_err(|e| format!("Failed to execute Python: {}", e))?;
+        .arg(&intro_message);
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    // Pass password via stdin (security)
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        return Err(format!("Evaluate introduction failed: {}", stderr));
-    }
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
 
     serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse response: {}. Output: {}", e, stdout))
@@ -2747,8 +2619,7 @@ async fn process_p2p_message(
     validate_identifier(&qube_id, "qube_id")?;
 
     let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("process-p2p-message")
+    cmd.arg("process-p2p-message")
         .arg(&user_id)
         .arg(&qube_id)
         .arg("--from-name")
@@ -2758,18 +2629,13 @@ async fn process_p2p_message(
         .arg("--message")
         .arg(&message)
         .arg("--context")
-        .arg(&context)
-        .arg("--password")
-        .arg(&password)
-        .output()
-        .map_err(|e| format!("Failed to execute Python: {}", e))?;
+        .arg(&context);
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    // Pass password via stdin (security)
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        return Err(format!("Process P2P message failed: {}", stderr));
-    }
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
 
     serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse response: {}. Output: {}", e, stdout))
@@ -2788,22 +2654,17 @@ async fn send_introduction(
     validate_identifier(&qube_id, "qube_id")?;
 
     let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("send-introduction")
+    cmd.arg("send-introduction")
         .arg(&user_id)
         .arg(&qube_id)
         .arg(&to_commitment)
-        .arg(&message)
-        .arg(&password)
-        .output()
-        .map_err(|e| format!("Failed to execute Python: {}", e))?;
+        .arg(&message);
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    // Pass password via stdin (security)
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        return Err(format!("Send introduction failed: {}", stderr));
-    }
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
 
     serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse response: {}. Output: {}", e, stdout))
@@ -2820,20 +2681,15 @@ async fn get_pending_introductions(
     validate_identifier(&qube_id, "qube_id")?;
 
     let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("get-pending-introductions")
+    cmd.arg("get-pending-introductions")
         .arg(&user_id)
-        .arg(&qube_id)
-        .arg(&password)
-        .output()
-        .map_err(|e| format!("Failed to execute Python: {}", e))?;
+        .arg(&qube_id);
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    // Pass password via stdin (security)
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        return Err(format!("Get pending introductions failed: {}", stderr));
-    }
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
 
     serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse response: {}. Output: {}", e, stdout))
@@ -2851,21 +2707,16 @@ async fn accept_introduction(
     validate_identifier(&qube_id, "qube_id")?;
 
     let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("accept-introduction")
+    cmd.arg("accept-introduction")
         .arg(&user_id)
         .arg(&qube_id)
-        .arg(&relay_id)
-        .arg(&password)
-        .output()
-        .map_err(|e| format!("Failed to execute Python: {}", e))?;
+        .arg(&relay_id);
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    // Pass password via stdin (security)
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        return Err(format!("Accept introduction failed: {}", stderr));
-    }
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
 
     serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse response: {}. Output: {}", e, stdout))
@@ -2883,21 +2734,16 @@ async fn reject_introduction(
     validate_identifier(&qube_id, "qube_id")?;
 
     let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("reject-introduction")
+    cmd.arg("reject-introduction")
         .arg(&user_id)
         .arg(&qube_id)
-        .arg(&relay_id)
-        .arg(&password)
-        .output()
-        .map_err(|e| format!("Failed to execute Python: {}", e))?;
+        .arg(&relay_id);
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    // Pass password via stdin (security)
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        return Err(format!("Reject introduction failed: {}", stderr));
-    }
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
 
     serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse response: {}. Output: {}", e, stdout))
@@ -2945,8 +2791,7 @@ async fn create_p2p_session(
     validate_identifier(&qube_id, "qube_id")?;
 
     let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("create-p2p-session")
+    cmd.arg("create-p2p-session")
         .arg(&user_id)
         .arg(&qube_id)
         .arg("--local-qubes")
@@ -2954,18 +2799,13 @@ async fn create_p2p_session(
         .arg("--remote-commitments")
         .arg(&remote_commitments)
         .arg("--topic")
-        .arg(&topic)
-        .arg("--password")
-        .arg(&password)
-        .output()
-        .map_err(|e| format!("Failed to execute Python: {}", e))?;
+        .arg(&topic);
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    // Pass password via stdin (security)
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        return Err(format!("Create P2P session failed: {}", stderr));
-    }
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
 
     serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse response: {}. Output: {}", e, stdout))
@@ -2982,20 +2822,15 @@ async fn get_p2p_sessions(
     validate_identifier(&qube_id, "qube_id")?;
 
     let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("get-p2p-sessions")
+    cmd.arg("get-p2p-sessions")
         .arg(&user_id)
-        .arg(&qube_id)
-        .arg(&password)
-        .output()
-        .map_err(|e| format!("Failed to execute Python: {}", e))?;
+        .arg(&qube_id);
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    // Pass password via stdin (security)
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        return Err(format!("Get P2P sessions failed: {}", stderr));
-    }
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
 
     serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse response: {}. Output: {}", e, stdout))
@@ -3014,8 +2849,7 @@ async fn start_p2p_conversation(
     validate_identifier(&user_id, "user_id")?;
 
     let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("start-p2p-conversation")
+    cmd.arg("start-p2p-conversation")
         .arg(&user_id)
         .arg("--local-qubes")
         .arg(&local_qubes)
@@ -3024,18 +2858,13 @@ async fn start_p2p_conversation(
         .arg("--session-id")
         .arg(&session_id)
         .arg("--initial-prompt")
-        .arg(&initial_prompt)
-        .arg("--password")
-        .arg(&password)
-        .output()
-        .map_err(|e| format!("Failed to execute Python: {}", e))?;
+        .arg(&initial_prompt);
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    // Pass password via stdin (security)
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        return Err(format!("Start P2P conversation failed: {}", stderr));
-    }
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
 
     serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse response: {}. Output: {}", e, stdout))
@@ -3054,8 +2883,7 @@ async fn continue_p2p_conversation(
     validate_identifier(&user_id, "user_id")?;
 
     let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("continue-p2p-conversation")
+    cmd.arg("continue-p2p-conversation")
         .arg(&user_id)
         .arg("--conversation-id")
         .arg(&conversation_id)
@@ -3064,18 +2892,13 @@ async fn continue_p2p_conversation(
         .arg("--local-qubes")
         .arg(&local_qubes)
         .arg("--remote-connections")
-        .arg(&remote_connections)
-        .arg("--password")
-        .arg(&password)
-        .output()
-        .map_err(|e| format!("Failed to execute Python: {}", e))?;
+        .arg(&remote_connections);
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    // Pass password via stdin (security)
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        return Err(format!("Continue P2P conversation failed: {}", stderr));
-    }
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
 
     serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse response: {}. Output: {}", e, stdout))
@@ -3096,8 +2919,7 @@ async fn inject_p2p_block(
     validate_identifier(&user_id, "user_id")?;
 
     let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("inject-p2p-block")
+    cmd.arg("inject-p2p-block")
         .arg(&user_id)
         .arg("--conversation-id")
         .arg(&conversation_id)
@@ -3110,18 +2932,13 @@ async fn inject_p2p_block(
         .arg("--local-qubes")
         .arg(&local_qubes)
         .arg("--remote-connections")
-        .arg(&remote_connections)
-        .arg("--password")
-        .arg(&password)
-        .output()
-        .map_err(|e| format!("Failed to execute Python: {}", e))?;
+        .arg(&remote_connections);
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    // Pass password via stdin (security)
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        return Err(format!("Inject P2P block failed: {}", stderr));
-    }
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
 
     serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse response: {}. Output: {}", e, stdout))
@@ -3141,8 +2958,7 @@ async fn send_p2p_user_message(
     validate_identifier(&user_id, "user_id")?;
 
     let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("send-p2p-user-message")
+    cmd.arg("send-p2p-user-message")
         .arg(&user_id)
         .arg("--conversation-id")
         .arg(&conversation_id)
@@ -3153,18 +2969,13 @@ async fn send_p2p_user_message(
         .arg("--local-qubes")
         .arg(&local_qubes)
         .arg("--remote-connections")
-        .arg(&remote_connections)
-        .arg("--password")
-        .arg(&password)
-        .output()
-        .map_err(|e| format!("Failed to execute Python: {}", e))?;
+        .arg(&remote_connections);
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    // Pass password via stdin (security)
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        return Err(format!("Send P2P user message failed: {}", stderr));
-    }
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
 
     serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse response: {}. Output: {}", e, stdout))
@@ -3259,37 +3070,30 @@ async fn check_first_run() -> Result<FirstRunResponse, String> {
 async fn create_user_account(user_id: String, password: String) -> Result<CreateAccountResponse, String> {
     validate_identifier(&user_id, "user_id")?;
 
-    let bridge_path = get_python_bridge_path();
-    let project_root = get_python_project_path();
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("create-user-account")
+        .arg(&user_id);
 
-    let (mut cmd, skip_bridge_arg) = create_backend_command();
-    cmd.current_dir(&project_root);
+    // Pass password via stdin (security)
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
 
-    if !skip_bridge_arg {
-        cmd.arg(&bridge_path);
+    let result = execute_with_secrets(cmd, secrets);
+
+    match result {
+        Ok((stdout, _stderr)) => {
+            serde_json::from_str(&stdout.trim())
+                .map_err(|e| format!("Failed to parse response: {}. Output: {}", e, stdout))
+        }
+        Err(e) => {
+            Ok(CreateAccountResponse {
+                success: false,
+                user_id: None,
+                data_dir: None,
+                error: Some(format!("Failed to create account: {}", e)),
+            })
+        }
     }
-
-    let output = cmd
-        .arg("create-user-account")
-        .arg(&user_id)
-        .arg(&password)  // Positional argument, not --password flag
-        .output()
-        .map_err(|e| format!("Failed to execute Python: {}", e))?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        return Ok(CreateAccountResponse {
-            success: false,
-            user_id: None,
-            data_dir: None,
-            error: Some(format!("Failed to create account: {}", stderr)),
-        });
-    }
-
-    serde_json::from_str(&stdout.trim())
-        .map_err(|e| format!("Failed to parse response: {}. Output: {}", e, stdout))
 }
 
 /// Check Ollama status
@@ -3396,18 +3200,8 @@ async fn create_qube_for_minting(
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_name, "qube_name")?;
 
-    let bridge_path = get_python_bridge_path();
-    let project_root = get_python_project_path();
-
-    let (mut cmd, skip_bridge_arg) = create_backend_command();
-    cmd.current_dir(&project_root);
-
-    if !skip_bridge_arg {
-        cmd.arg(&bridge_path);
-    }
-
-    let output = cmd
-        .arg("create-qube-for-minting")
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("create-qube-for-minting")
         .arg(&user_id)
         .arg("--name")
         .arg(&qube_name)
@@ -3420,28 +3214,30 @@ async fn create_qube_for_minting(
         .arg("--ai-model")
         .arg(&ai_model)
         .arg("--evaluation-model")
-        .arg(&evaluation_model)
-        .arg("--password")
-        .arg(&password)
-        .output()
-        .map_err(|e| format!("Failed to execute Python: {}", e))?;
+        .arg(&evaluation_model);
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    // Pass password via stdin (security)
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        return Ok(CreateQubeForMintingResponse {
-            success: false,
-            qube_id: None,
-            public_key: None,
-            genesis_block_hash: None,
-            recipient_address: None,
-            error: Some(format!("Failed to create qube: {}", stderr)),
-        });
+    let result = execute_with_secrets(cmd, secrets);
+
+    match result {
+        Ok((stdout, _stderr)) => {
+            serde_json::from_str(&stdout)
+                .map_err(|e| format!("Failed to parse response: {}. Output: {}", e, stdout))
+        }
+        Err(e) => {
+            Ok(CreateQubeForMintingResponse {
+                success: false,
+                qube_id: None,
+                public_key: None,
+                genesis_block_hash: None,
+                recipient_address: None,
+                error: Some(format!("Failed to create qube: {}", e)),
+            })
+        }
     }
-
-    serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse response: {}. Output: {}", e, stdout))
 }
 
 /// Pre-register Qube with minting server
@@ -3548,37 +3344,22 @@ async fn check_registration_status(registration_id: String) -> Result<Registrati
     }
 }
 
-/// Open external URL in default browser
+/// Open external URL in default browser (using safe opener plugin)
 #[tauri::command]
 async fn open_external_url(url: String) -> Result<bool, String> {
-    // Basic URL validation
+    // Strict URL validation
     if !url.starts_with("http://") && !url.starts_with("https://") {
         return Err("Invalid URL: must start with http:// or https://".to_string());
     }
 
-    #[cfg(target_os = "windows")]
-    {
-        Command::new("cmd")
-            .args(["/C", "start", "", &url])
-            .spawn()
-            .map_err(|e| format!("Failed to open URL: {}", e))?;
+    // Block URLs with suspicious characters that could be used for injection
+    if url.contains('&') || url.contains('|') || url.contains(';') || url.contains('`') || url.contains('$') || url.contains('\n') || url.contains('\r') {
+        return Err("Invalid URL: contains potentially dangerous characters".to_string());
     }
 
-    #[cfg(target_os = "macos")]
-    {
-        Command::new("open")
-            .arg(&url)
-            .spawn()
-            .map_err(|e| format!("Failed to open URL: {}", e))?;
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        Command::new("xdg-open")
-            .arg(&url)
-            .spawn()
-            .map_err(|e| format!("Failed to open URL: {}", e))?;
-    }
+    // Use the safe opener plugin instead of shell commands
+    tauri_plugin_opener::open_url(&url, None::<&str>)
+        .map_err(|e| format!("Failed to open URL: {}", e))?;
 
     Ok(true)
 }
@@ -3593,31 +3374,18 @@ async fn sync_to_chain(
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let project_root = get_python_project_path();
-    let (mut cmd, skip_bridge_arg) = create_backend_command();
-    cmd.current_dir(&project_root);
-
-    if !skip_bridge_arg {
-        let bridge_path = get_python_bridge_path();
-        cmd.arg(&bridge_path);
-    }
-
-    let output = cmd
-        .arg("sync-to-chain")
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("sync-to-chain")
         .arg(&user_id)
         .arg("--qube-id")
-        .arg(&qube_id)
-        .arg("--password")
-        .arg(&password)
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+        .arg(&qube_id);
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
-    }
+    // Pass password via stdin (security)
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+
     let response: SyncToChainResponse = serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
 
@@ -3637,37 +3405,23 @@ async fn transfer_qube(
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let project_root = get_python_project_path();
-    let (mut cmd, skip_bridge_arg) = create_backend_command();
-    cmd.current_dir(&project_root);
-
-    if !skip_bridge_arg {
-        let bridge_path = get_python_bridge_path();
-        cmd.arg(&bridge_path);
-    }
-
-    let output = cmd
-        .arg("transfer-qube")
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("transfer-qube")
         .arg(&user_id)
         .arg("--qube-id")
         .arg(&qube_id)
         .arg("--recipient-address")
         .arg(&recipient_address)
         .arg("--recipient-public-key")
-        .arg(&recipient_public_key)
-        .arg("--wallet-wif")
-        .arg(&wallet_wif)
-        .arg("--password")
-        .arg(&password)
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+        .arg(&recipient_public_key);
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
-    }
+    // Pass wallet_wif and password via stdin (security)
+    let mut secrets = HashMap::new();
+    secrets.insert("wallet_wif", wallet_wif.as_str());
+    secrets.insert("password", password.as_str());
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+
     let response: TransferQubeResponse = serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
 
@@ -3684,33 +3438,19 @@ async fn import_from_wallet(
 ) -> Result<ImportFromWalletResponse, String> {
     validate_identifier(&user_id, "user_id")?;
 
-    let project_root = get_python_project_path();
-    let (mut cmd, skip_bridge_arg) = create_backend_command();
-    cmd.current_dir(&project_root);
-
-    if !skip_bridge_arg {
-        let bridge_path = get_python_bridge_path();
-        cmd.arg(&bridge_path);
-    }
-
-    let output = cmd
-        .arg("import-from-wallet")
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("import-from-wallet")
         .arg(&user_id)
-        .arg("--wallet-wif")
-        .arg(&wallet_wif)
         .arg("--category-id")
-        .arg(&category_id)
-        .arg("--password")
-        .arg(&password)
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+        .arg(&category_id);
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
-    }
+    // Pass wallet_wif and password via stdin (security)
+    let mut secrets = HashMap::new();
+    secrets.insert("wallet_wif", wallet_wif.as_str());
+    secrets.insert("password", password.as_str());
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+
     let response: ImportFromWalletResponse = serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
 

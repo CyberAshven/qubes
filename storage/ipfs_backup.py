@@ -283,12 +283,12 @@ class QubeBackup:
         # Generate salt
         salt = os.urandom(32)
 
-        # Derive key from password using PBKDF2
+        # Derive key from password using PBKDF2 (600K iterations per OWASP 2025)
         kdf = PBKDF2HMAC(
             algorithm=hashes.SHA256(),
             length=32,
             salt=salt,
-            iterations=100000,
+            iterations=600000,
             backend=default_backend()
         )
         key = kdf.derive(password.encode('utf-8'))
@@ -328,12 +328,12 @@ class QubeBackup:
         salt = encrypted_data[:32]
         encrypted_payload = encrypted_data[32:]
 
-        # Derive key from password + salt
+        # Derive key from password + salt (600K iterations per OWASP 2025)
         kdf = PBKDF2HMAC(
             algorithm=hashes.SHA256(),
             length=32,
             salt=salt,
-            iterations=100000,
+            iterations=600000,
             backend=default_backend()
         )
         key = kdf.derive(password.encode('utf-8'))
