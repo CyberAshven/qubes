@@ -11,222 +11,130 @@
             box-sizing: border-box;
         }
 
+        html, body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #000000;
+        }
+
         body {
-            width: 100vw;
-            height: 100vh;
             display: flex;
             align-items: center;
             justify-content: center;
-            background: linear-gradient(135deg, #0a0a0f 0%, #0d0d18 50%, #0a0a12 100%);
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            overflow: hidden;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         }
 
-        /* Subtle background grid */
-        body::before {
-            content: '';
-            position: absolute;
-            inset: 0;
-            background-image:
-                linear-gradient(rgba(167, 139, 250, 0.03) 1px, transparent 1px),
-                linear-gradient(90deg, rgba(167, 139, 250, 0.03) 1px, transparent 1px);
-            background-size: 40px 40px;
-            pointer-events: none;
-        }
-
-        .splash-container {
+        .splash {
             display: flex;
             flex-direction: column;
             align-items: center;
             justify-content: center;
-            gap: 2rem;
-            width: 100%;
             height: 100%;
-            padding: 1rem;
-            position: relative;
-            z-index: 1;
+            width: 100%;
+            gap: 32px;
+            padding: 24px;
         }
 
         .logo {
-            width: 280px;
-            max-width: 75%;
+            max-width: 420px;
+            max-height: 260px;
+            width: auto;
             height: auto;
+            object-fit: contain;
             animation: logoFloat 3s ease-in-out infinite, fadeIn 0.8s ease-out;
-            filter: drop-shadow(0 0 30px rgba(167, 139, 250, 0.3));
         }
 
-        /* Chain container */
-        .chain-loader {
+        .loader {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .chain {
             display: flex;
             align-items: center;
-            gap: 0;
-            height: 40px;
+            height: 36px;
         }
 
-        /* Individual block */
         .block {
             width: 28px;
             height: 28px;
-            background: linear-gradient(135deg, rgba(167, 139, 250, 0.2) 0%, rgba(6, 182, 212, 0.2) 100%);
-            border: 2px solid;
-            border-image: linear-gradient(135deg, #a78bfa, #06b6d4) 1;
+            background: rgba(167, 139, 250, 0.15);
+            border: 2px solid #a78bfa;
             border-radius: 4px;
-            position: relative;
             opacity: 0;
-            transform: scale(0.5) rotateY(90deg);
             animation: blockAppear 2.4s ease-in-out infinite;
-            box-shadow:
-                0 0 15px rgba(167, 139, 250, 0.3),
-                inset 0 0 10px rgba(167, 139, 250, 0.1);
+            box-shadow: 0 0 12px rgba(167, 139, 250, 0.3);
         }
 
-        .block::before {
-            content: '';
-            position: absolute;
-            inset: 4px;
-            background: linear-gradient(135deg, rgba(167, 139, 250, 0.4), rgba(6, 182, 212, 0.4));
-            border-radius: 2px;
-            opacity: 0;
-            animation: blockGlow 2.4s ease-in-out infinite;
-        }
-
-        /* Chain link between blocks */
-        .chain-link {
-            width: 16px;
-            height: 3px;
+        .link {
+            width: 14px;
+            height: 2px;
             background: linear-gradient(90deg, #a78bfa, #06b6d4);
-            border-radius: 2px;
             opacity: 0;
-            transform: scaleX(0);
-            animation: linkConnect 2.4s ease-in-out infinite;
-            box-shadow: 0 0 8px rgba(6, 182, 212, 0.5);
+            animation: linkAppear 2.4s ease-in-out infinite;
         }
 
-        /* Stagger the animations */
         .block:nth-child(1) { animation-delay: 0s; }
-        .chain-link:nth-child(2) { animation-delay: 0.2s; }
+        .link:nth-child(2) { animation-delay: 0.2s; }
         .block:nth-child(3) { animation-delay: 0.4s; }
-        .chain-link:nth-child(4) { animation-delay: 0.6s; }
+        .link:nth-child(4) { animation-delay: 0.6s; }
         .block:nth-child(5) { animation-delay: 0.8s; }
-        .chain-link:nth-child(6) { animation-delay: 1.0s; }
+        .link:nth-child(6) { animation-delay: 1.0s; }
         .block:nth-child(7) { animation-delay: 1.2s; }
 
-        .block:nth-child(1)::before { animation-delay: 0s; }
-        .block:nth-child(3)::before { animation-delay: 0.4s; }
-        .block:nth-child(5)::before { animation-delay: 0.8s; }
-        .block:nth-child(7)::before { animation-delay: 1.2s; }
-
-        .loading-text {
-            color: rgba(167, 139, 250, 0.9);
-            font-size: 0.75rem;
+        .text {
+            color: rgba(167, 139, 250, 0.85);
+            font-size: 12px;
             font-weight: 500;
-            letter-spacing: 0.25em;
+            letter-spacing: 0.2em;
             text-transform: uppercase;
-            animation: textPulse 2s ease-in-out infinite;
-        }
-
-        /* Hash display - simulates memory chain */
-        .hash-display {
-            font-family: 'SF Mono', 'Fira Code', monospace;
-            font-size: 0.6rem;
-            color: rgba(6, 182, 212, 0.6);
-            letter-spacing: 0.1em;
-            animation: hashScroll 3s linear infinite;
-            overflow: hidden;
-            width: 200px;
-            text-align: center;
+            animation: pulse 2s ease-in-out infinite;
         }
 
         @keyframes fadeIn {
-            from {
-                opacity: 0;
-                transform: translateY(-10px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
         }
 
         @keyframes logoFloat {
-            0%, 100% {
-                transform: translateY(0);
-            }
-            50% {
-                transform: translateY(-5px);
-            }
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-5px); }
         }
 
         @keyframes blockAppear {
-            0%, 100% {
-                opacity: 0;
-                transform: scale(0.5) rotateY(90deg);
-            }
-            20%, 80% {
-                opacity: 1;
-                transform: scale(1) rotateY(0deg);
-            }
+            0%, 100% { opacity: 0; transform: scale(0.5); }
+            20%, 80% { opacity: 1; transform: scale(1); }
         }
 
-        @keyframes blockGlow {
-            0%, 100% {
-                opacity: 0;
-            }
-            30%, 70% {
-                opacity: 1;
-            }
+        @keyframes linkAppear {
+            0%, 100% { opacity: 0; transform: scaleX(0); }
+            25%, 75% { opacity: 1; transform: scaleX(1); }
         }
 
-        @keyframes linkConnect {
-            0%, 100% {
-                opacity: 0;
-                transform: scaleX(0);
-            }
-            25%, 75% {
-                opacity: 1;
-                transform: scaleX(1);
-            }
-        }
-
-        @keyframes textPulse {
-            0%, 100% {
-                opacity: 0.9;
-            }
-            50% {
-                opacity: 0.5;
-            }
-        }
-
-        @keyframes hashScroll {
-            0% {
-                opacity: 0.3;
-            }
-            50% {
-                opacity: 0.7;
-            }
-            100% {
-                opacity: 0.3;
-            }
+        @keyframes pulse {
+            0%, 100% { opacity: 0.85; }
+            50% { opacity: 0.5; }
         }
     </style>
 </head>
 <body>
-    <div class="splash-container">
+    <div class="splash">
         <img src="/qubes_banner.png" alt="Qubes" class="logo" />
-
-        <!-- Animated block chain -->
-        <div class="chain-loader">
-            <div class="block"></div>
-            <div class="chain-link"></div>
-            <div class="block"></div>
-            <div class="chain-link"></div>
-            <div class="block"></div>
-            <div class="chain-link"></div>
-            <div class="block"></div>
+        <div class="loader">
+            <div class="chain">
+                <div class="block"></div>
+                <div class="link"></div>
+                <div class="block"></div>
+                <div class="link"></div>
+                <div class="block"></div>
+                <div class="link"></div>
+                <div class="block"></div>
+            </div>
+            <div class="text">Building Memory Chain</div>
         </div>
-
-        <div class="loading-text">Building Memory Chain</div>
-        <div class="hash-display">a7f3b2...c4d8e1</div>
     </div>
 </body>
 </html>
