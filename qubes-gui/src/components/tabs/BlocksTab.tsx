@@ -63,6 +63,7 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
   const [relationshipExpanded, setRelationshipExpanded] = useState(false);
   const [tokenUsageExpanded, setTokenUsageExpanded] = useState(false);
   const [relationshipDeltasExpanded, setRelationshipDeltasExpanded] = useState(false);
+  const [skillsExpanded, setSkillsExpanded] = useState(false);
 
   // Pagination state
   const [sessionBlocksToShow, setSessionBlocksToShow] = useState(10);
@@ -76,6 +77,7 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
     setContentExpanded(false);
     setTokenUsageExpanded(false);
     setRelationshipDeltasExpanded(false);
+    setSkillsExpanded(false);
   }, [selectedBlock?.block_number]);
 
   // Helper function to truncate hash
@@ -1009,6 +1011,87 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                     )}
                   </div>
                 )}
+              </GlassCard>
+            )}
+
+            {/* Skills Progression Card - Only for SUMMARY blocks */}
+            {selectedBlock.block_type === 'SUMMARY' && decryptedContent?.skill_detections && decryptedContent.skill_detections.length > 0 && (
+              <GlassCard className="p-6 mb-4">
+                <button
+                  onClick={() => setSkillsExpanded(!skillsExpanded)}
+                  className="w-full flex items-center justify-between text-lg font-display text-accent-primary hover:text-accent-primary/80 transition-colors mb-4"
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="text-2xl">⭐</span>
+                    <span>Skills Progression</span>
+                    <span className="text-sm text-text-tertiary">
+                      (+{decryptedContent.skill_detections.reduce((sum: number, d: any) => sum + (d.xp_amount || 0), 0)} XP)
+                    </span>
+                  </div>
+                  <span className="text-2xl">{skillsExpanded ? '▼' : '▶'}</span>
+                </button>
+
+                {skillsExpanded && (() => {
+                  // Group skill detections by skill_id
+                  const groupedSkills: Record<string, { total_xp: number; detections: any[] }> = {};
+                  decryptedContent.skill_detections.forEach((detection: any) => {
+                    const skillId = detection.skill_id || 'unknown';
+                    if (!groupedSkills[skillId]) {
+                      groupedSkills[skillId] = { total_xp: 0, detections: [] };
+                    }
+                    groupedSkills[skillId].total_xp += detection.xp_amount || 0;
+                    groupedSkills[skillId].detections.push(detection);
+                  });
+
+                  return (
+                    <div className="space-y-3">
+                      {Object.entries(groupedSkills).map(([skillId, data]) => (
+                        <div key={skillId} className="border border-glass-border/50 rounded-lg p-4 bg-glass-light/30">
+                          {/* Skill Header */}
+                          <div className="flex items-center justify-between mb-2">
+                            <div className="flex items-center gap-2">
+                              <span className="text-accent-secondary font-semibold capitalize">
+                                {skillId.replace(/_/g, ' ')}
+                              </span>
+                            </div>
+                            <span className="text-green-400 font-bold">+{data.total_xp} XP</span>
+                          </div>
+
+                          {/* Individual detections */}
+                          <div className="space-y-2">
+                            {data.detections.map((detection: any, idx: number) => (
+                              <div key={idx} className="text-xs bg-bg-tertiary/50 p-2 rounded">
+                                <div className="flex items-center justify-between mb-1">
+                                  <span className="text-text-tertiary">
+                                    🔧 {detection.tool_used || 'Unknown tool'}
+                                  </span>
+                                  <span className="text-green-400">+{detection.xp_amount} XP</span>
+                                </div>
+                                <div className="text-text-secondary">{detection.evidence}</div>
+                                {detection.tool_details && (
+                                  <div className="mt-1 text-text-tertiary text-xs">
+                                    {detection.tool_details.query && (
+                                      <div>Query: "{detection.tool_details.query.slice(0, 50)}..."</div>
+                                    )}
+                                    {detection.tool_details.url && (
+                                      <div>URL: {detection.tool_details.url.slice(0, 50)}...</div>
+                                    )}
+                                    {detection.tool_details.prompt && (
+                                      <div>Prompt: "{detection.tool_details.prompt.slice(0, 50)}..."</div>
+                                    )}
+                                    {detection.tool_details.topic && (
+                                      <div>Topic: {detection.tool_details.topic}</div>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
               </GlassCard>
             )}
 

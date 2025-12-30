@@ -435,6 +435,11 @@ class Session:
                         summary_block.content["self_evaluation"] = self_evaluation
                         logger.debug("self_evaluation_stored_in_summary")
 
+                    # Store skill detections in SUMMARY block content
+                    if summary_block.content and skill_detections:
+                        summary_block.content["skill_detections"] = skill_detections
+                        logger.debug("skill_detections_stored_in_summary", count=len(skill_detections))
+
                     # Encrypt summary block content (just like MESSAGE blocks)
                     if summary_block.content:
                         encrypted_content = self.qube.encrypt_block_content(summary_block.content)
