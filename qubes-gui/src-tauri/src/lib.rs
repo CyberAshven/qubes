@@ -4,10 +4,151 @@ use std::io::Write;
 use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::sync::Mutex;
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
+// =============================================================================
+// RATE LIMITER
+// =============================================================================
+
+/// Rate limiter to prevent command spam from frontend
+static RATE_LIMITER: Mutex<Option<HashMap<String, Instant>>> = Mutex::new(None);
+
+/// Rate limit configuration (command -> minimum interval in milliseconds)
+fn get_rate_limit_ms(command: &str) -> Option<u64> {
+    match command {
+        "send_message" => Some(500),
+        "generate_speech" => Some(1000),
+        "create_qube" => Some(5000),
+        "anchor_session" => Some(2000),
+        "analyze_image" => Some(1000),
+        "mint_qube" | "prepare_qube_for_minting" => Some(5000),
+        "save_api_key" => Some(1000),
+        _ => None, // No rate limit for other commands
+    }
+}
+
+/// Check if a command is rate limited. Returns Ok(()) if allowed, Err with message if blocked.
+fn check_rate_limit(command: &str) -> Result<(), String> {
+    let min_interval_ms = match get_rate_limit_ms(command) {
+        Some(ms) => ms,
+        None => return Ok(()), // No rate limit configured
+    };
+
+    let mut limiter_guard = RATE_LIMITER.lock().map_err(|_| "Rate limiter lock poisoned")?;
+    let limiter = limiter_guard.get_or_insert_with(HashMap::new);
+
+    let now = Instant::now();
+
+    if let Some(last_call) = limiter.get(command) {
+        let elapsed = now.duration_since(*last_call);
+        if elapsed < Duration::from_millis(min_interval_ms) {
+            let wait_ms = min_interval_ms - elapsed.as_millis() as u64;
+            return Err(format!(
+                "Please wait {} ms before retrying this action",
+                wait_ms
+            ));
+        }
+    }
+
+    limiter.insert(command.to_string(), now);
+    Ok(())
+}
+
+// =============================================================================
+// ERROR SANITIZATION
+// =============================================================================
+
+/// Sanitize backend error messages to avoid leaking internal details to the frontend.
+/// Logs the full error for debugging while returning a user-friendly message.
+fn sanitize_backend_error(raw_error: &str, context: &str) -> String {
+    // Log full error for debugging (will appear in Tauri console/logs)
+    eprintln!("[BACKEND ERROR] {}: {}", context, raw_error);
+
+    let error_lower = raw_error.to_lowercase();
+
+    // Authentication errors - pass through (user needs to know)
+    if error_lower.contains("invalid password")
+        || error_lower.contains("authentication failed")
+        || error_lower.contains("wrong password")
+    {
+        return "Invalid password".to_string();
+    }
+
+    // Not found errors - make generic but informative
+    if error_lower.contains("not found") {
+        if error_lower.contains("qube") {
+            return "Qube not found".to_string();
+        }
+        if error_lower.contains("user") {
+            return "User not found".to_string();
+        }
+        if error_lower.contains("file") || error_lower.contains("path") {
+            return "File not found".to_string();
+        }
+        return format!("{} not found", context);
+    }
+
+    // Timeout errors
+    if error_lower.contains("timeout") || error_lower.contains("timed out") {
+        return "Operation timed out. Please try again.".to_string();
+    }
+
+    // API/Network errors
+    if error_lower.contains("api")
+        && (error_lower.contains("error") || error_lower.contains("failed"))
+    {
+        return "API request failed. Please check your connection and try again.".to_string();
+    }
+
+    if error_lower.contains("connection") || error_lower.contains("network") {
+        return "Network error. Please check your connection.".to_string();
+    }
+
+    // Rate limit from external APIs
+    if error_lower.contains("rate limit") || error_lower.contains("too many requests") {
+        return "Rate limited by API. Please wait a moment and try again.".to_string();
+    }
+
+    // Permission errors
+    if error_lower.contains("permission") || error_lower.contains("access denied") {
+        return "Permission denied".to_string();
+    }
+
+    // Validation errors - these are often user-facing already
+    if error_lower.contains("invalid") || error_lower.contains("validation") {
+        // Extract the first line which is usually the user-facing message
+        if let Some(first_line) = raw_error.lines().next() {
+            if first_line.len() < 200 {
+                return first_line.to_string();
+            }
+        }
+        return "Invalid input. Please check your data and try again.".to_string();
+    }
+
+    // Blockchain/minting specific errors - can pass through
+    if error_lower.contains("insufficient") || error_lower.contains("balance") {
+        return "Insufficient funds for this operation".to_string();
+    }
+
+    if error_lower.contains("already minted") || error_lower.contains("already registered") {
+        return raw_error
+            .lines()
+            .next()
+            .unwrap_or("Already registered")
+            .to_string();
+    }
+
+    // Generic fallback - don't expose internal details
+    format!(
+        "{} failed. Please try again or check the logs for details.",
+        context
+    )
+}
+
+
 
 /// Generate a secure temporary file path with random suffix
 fn secure_temp_path(prefix: &str) -> PathBuf {
@@ -770,7 +911,7 @@ fn execute_with_secrets(
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
     if !output.status.success() {
-        return Err(format!("Python process failed: {}", stderr));
+        return Err(sanitize_backend_error(&stderr, "Backend"));
     }
 
     Ok((stdout, stderr))
@@ -824,7 +965,7 @@ async fn list_qubes(user_id: String) -> Result<Vec<Qube>, String> {
 
     if !output.status.success() {
         let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
+        return Err(sanitize_backend_error(&error, "Operation"));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -851,6 +992,9 @@ async fn create_qube(
     generate_avatar: bool,
     avatar_style: Option<String>,
 ) -> Result<Qube, String> {
+    // Rate limit check
+    check_rate_limit("create_qube")?;
+    
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
 
@@ -1008,7 +1152,7 @@ async fn submit_payment_txid(
 
     if !output.status.success() {
         let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
+        return Err(sanitize_backend_error(&error, "Operation"));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1038,7 +1182,7 @@ async fn cancel_pending_minting(
 
     if !output.status.success() {
         let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
+        return Err(sanitize_backend_error(&error, "Operation"));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1066,7 +1210,7 @@ async fn list_pending_registrations(
 
     if !output.status.success() {
         let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
+        return Err(sanitize_backend_error(&error, "Operation"));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1079,6 +1223,9 @@ async fn list_pending_registrations(
 #[tauri::command]
 async fn send_message(user_id: String, qube_id: String, message: String, password: String) -> Result<ChatResponse, String> {
     use std::fs;
+    
+    // Rate limit check
+    check_rate_limit("send_message")?;
 
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
@@ -1130,6 +1277,9 @@ async fn send_message(user_id: String, qube_id: String, message: String, passwor
 
 #[tauri::command]
 async fn generate_speech(user_id: String, qube_id: String, text: String, password: String) -> Result<SpeechResponse, String> {
+    // Rate limit check
+    check_rate_limit("generate_speech")?;
+    
     let mut cmd = prepare_backend_command()?;
     cmd.arg("generate-speech")
         .arg(&user_id)
@@ -1169,7 +1319,7 @@ async fn check_sessions(user_id: String, qube_id: String) -> Result<serde_json::
 
     if !output.status.success() {
         let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
+        return Err(sanitize_backend_error(&error, "Operation"));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1181,6 +1331,9 @@ async fn check_sessions(user_id: String, qube_id: String) -> Result<serde_json::
 
 #[tauri::command]
 async fn anchor_session(user_id: String, qube_id: String, password: String) -> Result<serde_json::Value, String> {
+    // Rate limit check
+    check_rate_limit("anchor_session")?;
+    
     let mut cmd = prepare_backend_command()?;
     cmd.arg("anchor-session")
         .arg(&user_id)
@@ -1335,7 +1488,7 @@ async fn update_qube_config(
 
     if !output.status.success() {
         let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
+        return Err(sanitize_backend_error(&error, "Operation"));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1361,7 +1514,7 @@ async fn delete_qube(user_id: String, qube_id: String) -> Result<DeleteResponse,
 
     if !output.status.success() {
         let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
+        return Err(sanitize_backend_error(&error, "Operation"));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1384,7 +1537,7 @@ async fn save_image(user_id: String, qube_id: String, image_url: String) -> Resu
 
     if !output.status.success() {
         let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
+        return Err(sanitize_backend_error(&error, "Operation"));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1420,6 +1573,9 @@ async fn upload_avatar_to_ipfs(user_id: String, qube_id: String, password: Strin
 #[tauri::command]
 async fn analyze_image(user_id: String, qube_id: String, image_base64: String, user_message: String, password: String) -> Result<AnalyzeImageResponse, String> {
     use std::fs;
+    
+    // Rate limit check
+    check_rate_limit("analyze_image")?;
 
     // Write image data to a secure temporary file with unpredictable name
     let temp_file = secure_temp_path("image");
@@ -1655,6 +1811,9 @@ async fn get_configured_api_keys(user_id: String, password: String) -> Result<Co
 
 #[tauri::command]
 async fn save_api_key(user_id: String, provider: String, api_key: String, password: String) -> Result<APIKeyResponse, String> {
+    // Rate limit check
+    check_rate_limit("save_api_key")?;
+    
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
 
@@ -1737,7 +1896,7 @@ async fn get_block_preferences(user_id: String) -> Result<BlockPreferencesRespon
 
     if !output.status.success() {
         let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
+        return Err(sanitize_backend_error(&error, "Operation"));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1782,7 +1941,7 @@ async fn update_block_preferences(
 
     if !output.status.success() {
         let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
+        return Err(sanitize_backend_error(&error, "Operation"));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1806,7 +1965,7 @@ async fn get_relationship_difficulty(user_id: String) -> Result<RelationshipSett
 
     if !output.status.success() {
         let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
+        return Err(sanitize_backend_error(&error, "Operation"));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1839,7 +1998,7 @@ async fn set_relationship_difficulty(
 
     if !output.status.success() {
         let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
+        return Err(sanitize_backend_error(&error, "Operation"));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1863,7 +2022,7 @@ async fn get_decision_config(user_id: String) -> Result<serde_json::Value, Strin
 
     if !output.status.success() {
         let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
+        return Err(sanitize_backend_error(&error, "Operation"));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1891,7 +2050,7 @@ async fn update_decision_config(
 
     if !output.status.success() {
         let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
+        return Err(sanitize_backend_error(&error, "Operation"));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1911,7 +2070,7 @@ async fn get_difficulty_presets() -> Result<std::collections::HashMap<String, Di
 
     if !output.status.success() {
         let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
+        return Err(sanitize_backend_error(&error, "Operation"));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1943,7 +2102,7 @@ async fn get_qube_relationships(
 
     if !output.status.success() {
         let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
+        return Err(sanitize_backend_error(&error, "Operation"));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1978,7 +2137,7 @@ async fn get_relationship_timeline(
 
     if !output.status.success() {
         let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
+        return Err(sanitize_backend_error(&error, "Operation"));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -2002,7 +2161,7 @@ async fn get_google_tts_path(user_id: String) -> Result<GoogleTTSPathResponse, S
 
     if !output.status.success() {
         let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
+        return Err(sanitize_backend_error(&error, "Operation"));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -2027,7 +2186,7 @@ async fn set_google_tts_path(user_id: String, path: String) -> Result<SetPathRes
 
     if !output.status.success() {
         let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
+        return Err(sanitize_backend_error(&error, "Operation"));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -2053,7 +2212,7 @@ async fn get_qube_skills(user_id: String, qube_id: String) -> Result<SkillsRespo
 
     if !output.status.success() {
         let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
+        return Err(sanitize_backend_error(&error, "Operation"));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -2080,7 +2239,7 @@ async fn save_qube_skills(user_id: String, qube_id: String, skills_json: String)
 
     if !output.status.success() {
         let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
+        return Err(sanitize_backend_error(&error, "Operation"));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -2119,7 +2278,7 @@ async fn add_skill_xp(
 
     if !output.status.success() {
         let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
+        return Err(sanitize_backend_error(&error, "Operation"));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -2146,7 +2305,7 @@ async fn unlock_skill(user_id: String, qube_id: String, skill_id: String) -> Res
 
     if !output.status.success() {
         let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
+        return Err(sanitize_backend_error(&error, "Operation"));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -2172,7 +2331,7 @@ async fn get_visualizer_settings(user_id: String, qube_id: String) -> Result<Vis
 
     if !output.status.success() {
         let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
+        return Err(sanitize_backend_error(&error, "Operation"));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -2203,7 +2362,7 @@ async fn save_visualizer_settings(
 
     if !output.status.success() {
         let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
+        return Err(sanitize_backend_error(&error, "Operation"));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -2229,7 +2388,7 @@ async fn get_trust_personality(user_id: String, qube_id: String) -> Result<Trust
 
     if !output.status.success() {
         let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
+        return Err(sanitize_backend_error(&error, "Operation"));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -2265,7 +2424,7 @@ async fn update_trust_personality(
 
     if !output.status.success() {
         let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
+        return Err(sanitize_backend_error(&error, "Operation"));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -3484,7 +3643,7 @@ async fn scan_wallet(
 
     if !output.status.success() {
         let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
+        return Err(sanitize_backend_error(&error, "Operation"));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -3521,7 +3680,7 @@ async fn resolve_public_key(
 
     if !output.status.success() {
         let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Python bridge error: {}", error));
+        return Err(sanitize_backend_error(&error, "Operation"));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);

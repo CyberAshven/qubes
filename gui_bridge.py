@@ -4067,7 +4067,7 @@ async def main():
             parser.add_argument("--ai-model", required=True)
             parser.add_argument("--voice-model", default="openai:alloy")
             parser.add_argument("--wallet-address", required=True)
-            parser.add_argument("--password", required=True)
+            parser.add_argument("--password", default="")  # Password comes from stdin
             parser.add_argument("--encrypt-genesis", default="false")
             parser.add_argument("--favorite-color", default="#00ff88")
             parser.add_argument("--avatar-file", default=None)
@@ -5549,7 +5549,7 @@ async def main():
             parser.add_argument("--ai-model", required=True)
             parser.add_argument("--voice-model", default="openai:alloy")
             parser.add_argument("--wallet-address", required=True)
-            parser.add_argument("--password", required=True)
+            parser.add_argument("--password", default="")  # Password comes from stdin
             parser.add_argument("--encrypt-genesis", default="false")
             parser.add_argument("--favorite-color", default="#00ff88")
             parser.add_argument("--avatar-file", default=None)

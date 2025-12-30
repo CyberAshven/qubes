@@ -232,6 +232,14 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
     setLoading(true);
     setPaymentError(null);
 
+    // Debug: Log what we're sending
+    console.log('🔍 handleStartMinting - formData:', {
+      avatarFile: formData.avatarFile,
+      generateAvatar: formData.generateAvatar,
+      avatarStyle: formData.avatarStyle,
+    });
+    console.log('🔍 handleStartMinting - password length:', password?.length, 'userId:', userId);
+
     try {
       const result = await invoke<PendingMintingResult>('prepare_qube_for_minting', {
         userId,
@@ -961,9 +969,11 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
                 <div>
                   <span className="text-text-tertiary text-sm">Avatar:</span>
                   <p className="text-text-primary">
-                    {formData.generateAvatar
-                      ? `Generate (${formData.avatarStyle})`
-                      : 'Default'}
+                    {formData.avatarFile
+                      ? 'Uploaded'
+                      : formData.generateAvatar
+                        ? `Generate (${formData.avatarStyle})`
+                        : 'None'}
                   </p>
                 </div>
               </div>
