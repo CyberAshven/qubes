@@ -47,7 +47,7 @@ export interface Qube {
   network?: string;  // mainnet or testnet
 }
 
-export type Tab = 'dashboard' | 'blocks' | 'qubes' | 'relationships' | 'skills' | 'economy' | 'settings';
+export type Tab = 'dashboard' | 'blocks' | 'qubes' | 'relationships' | 'skills' | 'economy' | 'settings' | 'connections';
 
 export interface QubeSelectionState {
   activeQubeId: string | null;
@@ -79,7 +79,7 @@ export interface Skill {
   unlocked: boolean;
   prerequisite?: string;  // Skill ID of required skill
   toolCallReward?: string;  // Tool call unlocked when skill is maxed
-  evidence: string[];  // Block IDs that contributed to this skill
+  evidence: (string | { block_id: string; description?: string; xp_gained?: number })[];  // Block IDs or detailed evidence objects
   parentSkill?: string;  // For planets/moons, the parent skill ID
   icon?: string;  // Emoji/icon for planets and moons
 }

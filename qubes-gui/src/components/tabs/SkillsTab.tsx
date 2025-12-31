@@ -263,8 +263,8 @@ export const SkillsTab: React.FC<SkillsTabProps> = ({ qubes }) => {
   const [typeDropdownOpen, setTypeDropdownOpen] = useState(false);
   const [sortDropdownOpen, setSortDropdownOpen] = useState(false);
 
-  const [nodes, setNodes, onNodesChange] = useNodesState([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
 
   // Helper function to get avatar URL (IPFS or local file via convertFileSrc)
   const getAvatarUrl = useCallback((qube: Qube): string | undefined => {
@@ -330,7 +330,7 @@ export const SkillsTab: React.FC<SkillsTabProps> = ({ qubes }) => {
         case 'level':
           return (b.level || 0) - (a.level || 0);
         case 'xp':
-          return (b.currentXp || 0) - (a.currentXp || 0);
+          return (b.xp || 0) - (a.xp || 0);
         case 'category':
           return a.category.localeCompare(b.category);
         default:
@@ -544,12 +544,13 @@ export const SkillsTab: React.FC<SkillsTabProps> = ({ qubes }) => {
                 maskColor="rgba(10, 14, 39, 0.7)"
                 nodeColor={(node) => {
                   if (node.type === 'avatar') return '#00ff88';
+                  const nodeData = node.data as { category?: string };
                   if (node.type === 'sun') {
-                    const category = SKILL_CATEGORIES.find((c) => c.id === node.data.category?.id);
+                    const category = SKILL_CATEGORIES.find((c) => c.id === nodeData.category);
                     return category?.color || '#888';
                   }
                   if (node.type === 'planet') {
-                    const category = SKILL_CATEGORIES.find((c) => c.id === node.data.category?.id);
+                    const category = SKILL_CATEGORIES.find((c) => c.id === nodeData.category);
                     return category?.color || '#666';
                   }
                   return '#444';
@@ -826,7 +827,7 @@ export const SkillsTab: React.FC<SkillsTabProps> = ({ qubes }) => {
                     {filteredAndSortedSkills.map((skill, index) => {
                       const category = SKILL_CATEGORIES.find((c) => c.id === skill.category);
                       const parentSkill = skill.parentSkill ? skills.find((s) => s.id === skill.parentSkill) : null;
-                      const xpProgress = skill.xpToNextLevel ? ((skill.currentXp || 0) / skill.xpToNextLevel) * 100 : 0;
+                      const xpProgress = skill.maxXP ? ((skill.xp || 0) / skill.maxXP) * 100 : 0;
                       const isSelected = selectedSkillId === skill.id;
 
                       // Check if we need a divider based on sort type
@@ -879,7 +880,6 @@ export const SkillsTab: React.FC<SkillsTabProps> = ({ qubes }) => {
                               boxShadow: isSelected
                                 ? `0 0 40px ${category?.color}80, 0 0 80px ${category?.color}40, inset 0 0 20px ${category?.color}20`
                                 : undefined,
-                              ringColor: category?.color || '#888',
                             }}
                             onClick={() => setSelectedSkillId(skill.id)}
                           >
@@ -942,7 +942,7 @@ export const SkillsTab: React.FC<SkillsTabProps> = ({ qubes }) => {
                                       Level {skill.level || 0}
                                     </span>
                                     <span className="text-text-secondary text-xs">
-                                      {skill.currentXp || 0} / {skill.xpToNextLevel || 0} XP
+                                      {skill.xp || 0} / {skill.maxXP || 0} XP
                                     </span>
                                   </div>
                                   <div className="w-full h-2 bg-glass-light rounded-full overflow-hidden">

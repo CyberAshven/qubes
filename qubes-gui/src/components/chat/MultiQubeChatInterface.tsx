@@ -8,7 +8,7 @@ import { useAuth } from '../../hooks/useAuth';
 import { useAudio } from '../../contexts/AudioContext';
 import { TypewriterText } from './TypewriterText';
 import { useChatMessages } from '../../hooks/useChatMessages';
-import EmojiPicker, { EmojiClickData } from 'emoji-picker-react';
+import EmojiPicker, { EmojiClickData, Theme } from 'emoji-picker-react';
 import { Connection } from '../connections';
 
 // P2P remote participant info
@@ -368,10 +368,8 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
         const fileData = {
           name: fileName,
           path: filePath,
-          content: content,
-          type: fileName.endsWith('.txt') ? 'text' :
-                fileName.endsWith('.json') ? 'json' :
-                fileName.endsWith('.md') ? 'markdown' : 'unknown'
+          data: content,
+          type: 'text' as const
         };
 
         // Add to group chat's uploaded files
@@ -831,7 +829,7 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
     if (filesToProcess.length > 0) {
       let fileContent = '';
       for (const file of filesToProcess) {
-        fileContent += `\n\n---FILE: ${file.name}---\n${file.content}\n---END FILE---\n`;
+        fileContent += `\n\n---FILE: ${file.name}---\n${file.data}\n---END FILE---\n`;
       }
       userPrompt = (inputValue ? inputValue + '\n' : '') + fileContent;
     }
@@ -987,7 +985,7 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
     if (filesToProcess.length > 0) {
       let fileContent = '';
       for (const file of filesToProcess) {
-        fileContent += `\n\n---FILE: ${file.name}---\n${file.content}\n---END FILE---\n`;
+        fileContent += `\n\n---FILE: ${file.name}---\n${file.data}\n---END FILE---\n`;
       }
       userMessage = (inputValue ? inputValue + '\n' : '') + fileContent;
     }
@@ -1956,6 +1954,10 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
       !processingMessageRef.current
     ) {
       (async () => {
+        // Capture qubeResponse early to satisfy TypeScript
+        const qubeResponse = pendingUserMessage.qubeResponse;
+        if (!qubeResponse) return;
+
         console.log('✅ Speaker finished - displaying user message and Qube response');
 
         // Add user message to history
@@ -1978,21 +1980,18 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
         // Now show the qube's "ready to respond" indicator
         setNextResponseStatus({
           stage: 'ready',
-          qubeId: pendingUserMessage.qubeResponse.speaker_id,
-          qubeName: pendingUserMessage.qubeResponse.speaker_name
+          qubeId: qubeResponse.speaker_id,
+          qubeName: qubeResponse.speaker_name
         });
 
         // Update last processed turn
-        lastProcessedTurnRef.current = pendingUserMessage.qubeResponse.turn_number;
+        lastProcessedTurnRef.current = qubeResponse.turn_number;
 
         // Clear waiting flag
         waitingForUserResponseRef.current = false;
 
         // CRITICAL: Clear prefetch cancelled flag to allow prefetch to resume
         prefetchCancelledRef.current = false;
-
-        // Capture the qubeResponse before clearing pendingUserMessage
-        const qubeResponseToPlay = pendingUserMessage.qubeResponse;
 
         // Clear pending user message
         setPendingUserMessage(null);
@@ -2013,7 +2012,7 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
         }
 
         // Now it's safe to start the new TTS/typewriter
-        setPendingTTSMessage(qubeResponseToPlay);
+        setPendingTTSMessage(qubeResponse);
       })();
     }
   }, [pendingUserMessage, activeTypewriterMessageId, pendingTTSMessage]);
@@ -2055,7 +2054,7 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
         name: qube.name,
         color: qube.favorite_color || '#00d4ff',
         avatarUrl: qube.avatar_url || qube.avatar_local_path,
-        model: qube.model,
+        model: qube.ai_model,
         isConnection: false,
       });
     });
@@ -2072,7 +2071,7 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
             name: localQube.name,
             color: localQube.favorite_color || '#00d4ff',
             avatarUrl: localQube.avatar_url || localQube.avatar_local_path,
-            model: localQube.model,
+            model: localQube.ai_model,
             isConnection: true,
           });
         } else {
@@ -2799,7 +2798,7 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
               >
                 <span className="text-sm text-text-primary">{file.name}</span>
                 <button
-                  onClick={() => removeUploadedFile(`group_${selectedQubes.map(q => q.qube_id).join('_')}`, index)}
+                  onClick={() => removeUploadedFile(`group_${selectedQubes.map(q => q.qube_id).join('_')}`, file.name)}
                   className="text-accent-danger hover:text-accent-danger/80 transition-colors"
                 >
                   ✕
@@ -2848,7 +2847,7 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
             <div className="absolute bottom-20 left-24 z-50" ref={emojiPickerRef}>
               <EmojiPicker
                 onEmojiClick={handleEmojiClick}
-                theme="dark"
+                theme={Theme.DARK}
                 width={300}
                 height={400}
               />

@@ -36,6 +36,23 @@ class AudioPreferences:
 
 
 @dataclass
+class OnboardingPreferences:
+    """Track tutorial completion per tab."""
+
+    # Tutorial seen flags for each tab
+    qubes_tutorial_seen: bool = False
+    dashboard_tutorial_seen: bool = False
+    blocks_tutorial_seen: bool = False
+    relationships_tutorial_seen: bool = False
+    skills_tutorial_seen: bool = False
+    economy_tutorial_seen: bool = False
+    settings_tutorial_seen: bool = False
+
+    # Master toggle for showing tutorials
+    show_tutorials: bool = True
+
+
+@dataclass
 class DecisionConfig:
     """User-configurable decision intelligence settings."""
 
@@ -71,18 +88,21 @@ class UserPreferences:
     blocks: BlockPreferences
     audio: AudioPreferences
     decision: DecisionConfig
+    onboarding: OnboardingPreferences
 
     def __init__(self):
         self.blocks = BlockPreferences()
         self.audio = AudioPreferences()
         self.decision = DecisionConfig()
+        self.onboarding = OnboardingPreferences()
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert preferences to dictionary."""
         return {
             'blocks': asdict(self.blocks),
             'audio': asdict(self.audio),
-            'decision': asdict(self.decision)
+            'decision': asdict(self.decision),
+            'onboarding': asdict(self.onboarding)
         }
 
     @classmethod
@@ -98,6 +118,9 @@ class UserPreferences:
 
         if 'decision' in data:
             prefs.decision = DecisionConfig(**data['decision'])
+
+        if 'onboarding' in data:
+            prefs.onboarding = OnboardingPreferences(**data['onboarding'])
 
         return prefs
 
@@ -240,5 +263,73 @@ class UserPreferencesManager:
     def reset_to_defaults(self) -> UserPreferences:
         """Reset all preferences to defaults."""
         prefs = UserPreferences()
+        self.save_preferences(prefs)
+        return prefs
+
+    # =========================================================================
+    # ONBOARDING PREFERENCES
+    # =========================================================================
+
+    def get_onboarding_preferences(self) -> OnboardingPreferences:
+        """Get onboarding tutorial preferences."""
+        return self.load_preferences().onboarding
+
+    def mark_tutorial_seen(self, tab_name: str) -> UserPreferences:
+        """
+        Mark a specific tab's tutorial as seen.
+
+        Args:
+            tab_name: Tab identifier (qubes, dashboard, blocks, etc.)
+
+        Returns:
+            Updated UserPreferences object
+        """
+        prefs = self.load_preferences()
+        field_name = f"{tab_name}_tutorial_seen"
+
+        if hasattr(prefs.onboarding, field_name):
+            setattr(prefs.onboarding, field_name, True)
+            self.save_preferences(prefs)
+
+        return prefs
+
+    def reset_tutorial(self, tab_name: str) -> UserPreferences:
+        """
+        Reset a specific tab's tutorial to unseen.
+
+        Args:
+            tab_name: Tab identifier (qubes, dashboard, blocks, etc.)
+
+        Returns:
+            Updated UserPreferences object
+        """
+        prefs = self.load_preferences()
+        field_name = f"{tab_name}_tutorial_seen"
+
+        if hasattr(prefs.onboarding, field_name):
+            setattr(prefs.onboarding, field_name, False)
+            self.save_preferences(prefs)
+
+        return prefs
+
+    def reset_all_tutorials(self) -> UserPreferences:
+        """Reset all tutorials to unseen."""
+        prefs = self.load_preferences()
+        prefs.onboarding = OnboardingPreferences()  # Reset to defaults (all False)
+        self.save_preferences(prefs)
+        return prefs
+
+    def update_show_tutorials(self, show: bool) -> UserPreferences:
+        """
+        Update the master toggle for showing tutorials.
+
+        Args:
+            show: Whether to show tutorial prompts
+
+        Returns:
+            Updated UserPreferences object
+        """
+        prefs = self.load_preferences()
+        prefs.onboarding.show_tutorials = show
         self.save_preferences(prefs)
         return prefs

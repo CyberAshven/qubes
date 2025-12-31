@@ -77,17 +77,23 @@ export async function downloadAndInstallUpdate(
 
     console.log(`Downloading update ${update.version}...`);
 
+    // Track download progress
+    let totalSize = 0;
+    let downloadedSize = 0;
+
     // Download the update with progress tracking
     await update.downloadAndInstall((event) => {
       switch (event.event) {
         case 'Started':
-          console.log(`Download started, total size: ${event.data.contentLength} bytes`);
+          totalSize = (event.data as { contentLength?: number }).contentLength || 0;
+          console.log(`Download started, total size: ${totalSize} bytes`);
           break;
         case 'Progress':
-          if (onProgress && event.data.contentLength) {
+          downloadedSize += event.data.chunkLength;
+          if (onProgress && totalSize > 0) {
             onProgress({
-              downloaded: event.data.chunkLength,
-              total: event.data.contentLength,
+              downloaded: downloadedSize,
+              total: totalSize,
             });
           }
           break;

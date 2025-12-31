@@ -5280,6 +5280,135 @@ async def main():
                 print(json.dumps({"success": False, "error": str(e)}), file=sys.stderr)
                 sys.exit(1)
 
+        # =====================================================================
+        # Onboarding Tutorial Commands
+        # =====================================================================
+
+        elif command == "get-onboarding-preferences":
+            if len(sys.argv) < 3:
+                print(json.dumps({"error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            try:
+                from config.user_preferences import UserPreferencesManager
+                from dataclasses import asdict
+
+                data_dir = Path("data") / "users" / user_id
+                prefs_manager = UserPreferencesManager(data_dir)
+
+                onboarding = prefs_manager.get_onboarding_preferences()
+
+                print(json.dumps({
+                    "success": True,
+                    "onboarding": asdict(onboarding)
+                }))
+            except Exception as e:
+                logger.error(f"Failed to get onboarding preferences: {e}", exc_info=True)
+                print(json.dumps({"success": False, "error": str(e)}), file=sys.stderr)
+                sys.exit(1)
+
+        elif command == "mark-tutorial-seen":
+            if len(sys.argv) < 4:
+                print(json.dumps({"error": "User ID and tab name required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            tab_name = sys.argv[3]
+
+            try:
+                from config.user_preferences import UserPreferencesManager
+
+                data_dir = Path("data") / "users" / user_id
+                prefs_manager = UserPreferencesManager(data_dir)
+
+                prefs_manager.mark_tutorial_seen(tab_name)
+
+                print(json.dumps({
+                    "success": True,
+                    "message": f"Tutorial for {tab_name} marked as seen"
+                }))
+            except Exception as e:
+                logger.error(f"Failed to mark tutorial seen: {e}", exc_info=True)
+                print(json.dumps({"success": False, "error": str(e)}), file=sys.stderr)
+                sys.exit(1)
+
+        elif command == "reset-tutorial":
+            if len(sys.argv) < 4:
+                print(json.dumps({"error": "User ID and tab name required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            tab_name = sys.argv[3]
+
+            try:
+                from config.user_preferences import UserPreferencesManager
+
+                data_dir = Path("data") / "users" / user_id
+                prefs_manager = UserPreferencesManager(data_dir)
+
+                prefs_manager.reset_tutorial(tab_name)
+
+                print(json.dumps({
+                    "success": True,
+                    "message": f"Tutorial for {tab_name} reset"
+                }))
+            except Exception as e:
+                logger.error(f"Failed to reset tutorial: {e}", exc_info=True)
+                print(json.dumps({"success": False, "error": str(e)}), file=sys.stderr)
+                sys.exit(1)
+
+        elif command == "reset-all-tutorials":
+            if len(sys.argv) < 3:
+                print(json.dumps({"error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            try:
+                from config.user_preferences import UserPreferencesManager
+
+                data_dir = Path("data") / "users" / user_id
+                prefs_manager = UserPreferencesManager(data_dir)
+
+                prefs_manager.reset_all_tutorials()
+
+                print(json.dumps({
+                    "success": True,
+                    "message": "All tutorials reset"
+                }))
+            except Exception as e:
+                logger.error(f"Failed to reset all tutorials: {e}", exc_info=True)
+                print(json.dumps({"success": False, "error": str(e)}), file=sys.stderr)
+                sys.exit(1)
+
+        elif command == "update-show-tutorials":
+            if len(sys.argv) < 4:
+                print(json.dumps({"error": "User ID and show value required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            show = sys.argv[3].lower() == "true"
+
+            try:
+                from config.user_preferences import UserPreferencesManager
+
+                data_dir = Path("data") / "users" / user_id
+                prefs_manager = UserPreferencesManager(data_dir)
+
+                prefs_manager.update_show_tutorials(show)
+
+                print(json.dumps({
+                    "success": True,
+                    "message": f"Show tutorials set to {show}"
+                }))
+            except Exception as e:
+                logger.error(f"Failed to update show tutorials: {e}", exc_info=True)
+                print(json.dumps({"success": False, "error": str(e)}), file=sys.stderr)
+                sys.exit(1)
+
+
         elif command == "get-qube-skills":
             if len(sys.argv) < 4:
                 print(json.dumps({"success": False, "error": "User ID and Qube ID required"}), file=sys.stderr)
@@ -5668,35 +5797,6 @@ async def main():
 
             result = await bridge.get_auth_status(qube_id)
             print(json.dumps(result))
-
-
-        elif command == "get-work-ethic-proof":
-            # Generate work ethic proof for a Qube
-            if len(sys.argv) < 4:
-                print(json.dumps({"error": "User ID and Qube ID required"}), file=sys.stderr)
-                sys.exit(1)
-
-            user_id = sys.argv[2]
-            qube_id = validate_qube_id(sys.argv[3])
-            password = get_secret("password", argv_index=4, required=False)
-
-            try:
-                user_bridge = GUIBridge(user_id=user_id)
-                if password:
-                    user_bridge.orchestrator.set_master_key(password)
-
-                qube = await user_bridge.orchestrator.load_qube(qube_id)
-
-                from core.proof_of_ethic import generate_work_ethic_proof, proof_to_dict
-                proof = generate_work_ethic_proof(qube)
-                
-                print(json.dumps({
-                    "success": True,
-                    "proof": proof_to_dict(proof)
-                }))
-            except Exception as e:
-                logger.error(f"Failed to generate work ethic proof: {e}", exc_info=True)
-                print(json.dumps({"success": False, "error": str(e)}))
 
 
         # =====================================================================
@@ -6351,6 +6451,42 @@ async def main():
                 recipient_address=args.address
             )
             print(json.dumps(result))
+
+        elif command == "get-debug-prompt":
+            # Get the last AI prompt sent for a qube (dev debugging)
+            if len(sys.argv) < 3:
+                print(json.dumps({"success": False, "error": "Qube ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            qube_id = sys.argv[2]
+
+            try:
+                from ai.reasoner import get_debug_prompt, get_all_debug_prompts
+
+                if qube_id == "all":
+                    # Return all cached prompts
+                    all_prompts = get_all_debug_prompts()
+                    print(json.dumps({
+                        "success": True,
+                        "prompts": all_prompts
+                    }))
+                else:
+                    # Return prompt for specific qube
+                    prompt_info = get_debug_prompt(qube_id)
+                    if prompt_info:
+                        print(json.dumps({
+                            "success": True,
+                            "prompt": prompt_info
+                        }))
+                    else:
+                        print(json.dumps({
+                            "success": False,
+                            "error": f"No cached prompt for qube {qube_id}"
+                        }))
+            except Exception as e:
+                logger.error(f"Failed to get debug prompt: {e}", exc_info=True)
+                print(json.dumps({"success": False, "error": str(e)}), file=sys.stderr)
+                sys.exit(1)
 
         else:
             print(json.dumps({"error": f"Unknown command: {command}"}), file=sys.stderr)

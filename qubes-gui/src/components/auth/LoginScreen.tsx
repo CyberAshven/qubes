@@ -54,6 +54,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, error }) => {
             value={username}
             onChange={(e) => setUsername(e.target.value)}
             disabled={isLoading}
+            autoFocus
           />
 
           <GlassInput

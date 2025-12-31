@@ -9,6 +9,7 @@ interface GlassButtonProps {
   loading?: boolean;
   className?: string;
   type?: 'button' | 'submit' | 'reset';
+  title?: string;
 }
 
 export const GlassButton: React.FC<GlassButtonProps> = ({
@@ -20,6 +21,7 @@ export const GlassButton: React.FC<GlassButtonProps> = ({
   loading = false,
   className = '',
   type = 'button',
+  title,
 }) => {
   const variantClasses = {
     primary: 'glass-button-primary',
@@ -47,6 +49,7 @@ export const GlassButton: React.FC<GlassButtonProps> = ({
       className={classes}
       onClick={onClick}
       disabled={disabled || loading}
+      title={title}
     >
       {loading ? (
         <span className="flex items-center gap-2">

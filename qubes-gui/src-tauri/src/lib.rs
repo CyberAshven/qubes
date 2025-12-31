@@ -2060,6 +2060,128 @@ async fn update_decision_config(
     Ok(response)
 }
 
+// =============================================================================
+// ONBOARDING TUTORIAL COMMANDS
+// =============================================================================
+
+#[tauri::command]
+async fn get_onboarding_preferences(user_id: String) -> Result<serde_json::Value, String> {
+    validate_identifier(&user_id, "user_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("get-onboarding-preferences")
+        .arg(&user_id)
+        .output()
+        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Operation"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn mark_tutorial_seen(user_id: String, tab_name: String) -> Result<serde_json::Value, String> {
+    validate_identifier(&user_id, "user_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("mark-tutorial-seen")
+        .arg(&user_id)
+        .arg(&tab_name)
+        .output()
+        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Operation"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn reset_tutorial(user_id: String, tab_name: String) -> Result<serde_json::Value, String> {
+    validate_identifier(&user_id, "user_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("reset-tutorial")
+        .arg(&user_id)
+        .arg(&tab_name)
+        .output()
+        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Operation"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn reset_all_tutorials(user_id: String) -> Result<serde_json::Value, String> {
+    validate_identifier(&user_id, "user_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("reset-all-tutorials")
+        .arg(&user_id)
+        .output()
+        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Operation"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn update_show_tutorials(user_id: String, show: bool) -> Result<serde_json::Value, String> {
+    validate_identifier(&user_id, "user_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("update-show-tutorials")
+        .arg(&user_id)
+        .arg(if show { "true" } else { "false" })
+        .output()
+        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Operation"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
 #[tauri::command]
 async fn get_difficulty_presets() -> Result<std::collections::HashMap<String, DifficultyPreset>, String> {
     let mut cmd = prepare_backend_command()?;
@@ -3690,6 +3812,27 @@ async fn resolve_public_key(
     Ok(response)
 }
 
+#[tauri::command]
+async fn get_debug_prompt(qube_id: String) -> Result<serde_json::Value, String> {
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("get-debug-prompt")
+        .arg(&qube_id)
+        .output()
+        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Operation"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -3740,6 +3883,11 @@ pub fn run() {
             get_difficulty_presets,
             get_decision_config,
             update_decision_config,
+            get_onboarding_preferences,
+            mark_tutorial_seen,
+            reset_tutorial,
+            reset_all_tutorials,
+            update_show_tutorials,
             get_qube_relationships,
             get_relationship_timeline,
             get_google_tts_path,
@@ -3790,7 +3938,9 @@ pub fn run() {
             transfer_qube,
             import_from_wallet,
             scan_wallet,
-            resolve_public_key
+            resolve_public_key,
+            // Dev debugging
+            get_debug_prompt
         ])
         .setup(|app| {
             // Get the main and splash windows

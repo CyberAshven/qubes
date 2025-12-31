@@ -12,7 +12,7 @@ import { useAudio } from '../../contexts/AudioContext';
 import { useChatMessages, Message } from '../../hooks/useChatMessages';
 import { TypewriterText } from './TypewriterText';
 import { formatModelName } from '../../utils/modelFormatter';
-import EmojiPicker, { EmojiClickData } from 'emoji-picker-react';
+import EmojiPicker, { EmojiClickData, Theme } from 'emoji-picker-react';
 import { WaveformOverlay } from '../visualizer/WaveformOverlay';
 import type { WaveformStyle, ColorTheme, GradientStyle, AnimationSmoothness } from '../../types';
 
@@ -1481,7 +1481,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes }) =
             <div className="absolute bottom-20 left-24 z-50" ref={emojiPickerRef}>
               <EmojiPicker
                 onEmojiClick={handleEmojiClick}
-                theme="dark"
+                theme={Theme.DARK}
                 width={350}
                 height={450}
                 searchPlaceHolder="Search emoji..."

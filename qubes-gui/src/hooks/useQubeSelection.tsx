@@ -28,7 +28,8 @@ export const useQubeSelection = create<QubeSelectionStore>((set, get) => ({
     relationships: null,
     skills: null,
     economy: null,
-    settings: null
+    settings: null,
+    connections: null
   },
   selectionByTab: {
     dashboard: [],
@@ -37,7 +38,8 @@ export const useQubeSelection = create<QubeSelectionStore>((set, get) => ({
     relationships: [],
     skills: [],
     economy: [],
-    settings: []
+    settings: [],
+    connections: []
   },
   currentTab: 'qubes',
 

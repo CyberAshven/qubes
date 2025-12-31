@@ -26,6 +26,7 @@ export interface Connection {
   accepted_at: string;
   qube_id?: string;
   is_online?: boolean;
+  public_key?: string;
 }
 
 type TabType = 'connections' | 'pending' | 'discover';

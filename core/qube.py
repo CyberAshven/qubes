@@ -1776,19 +1776,6 @@ class Qube:
         )
 
         return relationship_state
-    def generate_work_ethic_proof(self) -> "WorkEthicProof":
-        """
-        Generate a cryptographic proof of this Qube's work ethic.
-
-        The proof demonstrates sustained engagement, relationship building,
-        and character development over time - things that can't be faked
-        or bought.
-
-        Returns:
-            WorkEthicProof with scores, grade, titles, and cryptographic hash
-        """
-        from core.proof_of_ethic import generate_work_ethic_proof, WorkEthicProof
-        return generate_work_ethic_proof(self)
 
     def close(self) -> None:
         """Close storage and cleanup"""

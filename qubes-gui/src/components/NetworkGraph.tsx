@@ -88,8 +88,8 @@ const NetworkGraphInner: React.FC<NetworkGraphProps> = ({
   onNodeClick,
 }) => {
   const reactFlowInstance = useReactFlow();
-  const [nodes, setNodes, onNodesChange] = useNodesState([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [hoveredNode, setHoveredNode] = useState<string | null>(null);
   const [hoveredEdge, setHoveredEdge] = useState<string | null>(null);
   const [isInitialized, setIsInitialized] = useState(false);

@@ -60,6 +60,7 @@ interface DecisionConfig {
 
 export const SettingsTab: React.FC = () => {
   const { userId, password } = useAuth();
+
   const {
     updateAvailable,
     updateStatus,

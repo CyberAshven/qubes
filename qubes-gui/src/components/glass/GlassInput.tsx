@@ -9,6 +9,7 @@ interface GlassInputProps {
   error?: string;
   disabled?: boolean;
   className?: string;
+  autoFocus?: boolean;
 }
 
 export const GlassInput: React.FC<GlassInputProps> = ({
@@ -20,6 +21,7 @@ export const GlassInput: React.FC<GlassInputProps> = ({
   error,
   disabled = false,
   className = '',
+  autoFocus = false,
 }) => {
   return (
     <div className={`flex flex-col gap-2 ${className}`}>
@@ -34,6 +36,7 @@ export const GlassInput: React.FC<GlassInputProps> = ({
         onChange={onChange}
         placeholder={placeholder}
         disabled={disabled}
+        autoFocus={autoFocus}
         className={`
           glass-input
           ${error ? 'border-accent-danger focus:ring-accent-danger' : ''}

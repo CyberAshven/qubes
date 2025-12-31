@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
+import { emit } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-shell';
 import { readTextFile } from '@tauri-apps/plugin-fs';
-import { Qube } from '../../types';
+import { Qube, Tab } from '../../types';
 import { GlassCard, GlassButton } from '../glass';
 import { useAuth } from '../../hooks/useAuth';
 import { useQubeOrder } from '../../hooks/useQubeOrder';
@@ -593,7 +594,7 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
             {/* Grid View */}
             {viewMode === 'grid' && (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                {filteredQubes.map((qube) => (
+                {filteredQubes.map((qube, index) => (
                   <SortableQubeCard
                     key={qube.qube_id}
                     qube={qube}
@@ -859,7 +860,7 @@ interface QubeCardProps {
   onUpdateConfig: (qubeId: string, updates: { ai_model?: string; voice_model?: string; favorite_color?: string; tts_enabled?: boolean; evaluation_model?: string }) => Promise<void>;
   getAvatarPath: (qube: Qube) => string;
   dragHandleProps?: React.HTMLAttributes<HTMLDivElement>;
-  setCurrentTab: (tab: string) => void;
+  setCurrentTab: (tab: Tab) => void;
   toggleSelection: (qubeId: string, isCtrl: boolean, isShift: boolean) => void;
   isSelected?: boolean;
 }

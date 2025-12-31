@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { QubeRoster } from './components/roster/QubeRoster';
@@ -6,10 +6,14 @@ import { TabBar } from './components/tabs/TabBar';
 import { TabContent } from './components/tabs/TabContent';
 import { LoginScreen } from './components/auth/LoginScreen';
 import { ExitConfirmDialog } from './components/dialogs/ExitConfirmDialog';
+import { PromptDebugModal } from './components/dialogs/PromptDebugModal';
 import { SetupWizard } from './components/wizard';
 import { useAuth } from './hooks/useAuth';
 import { AudioProvider } from './contexts/AudioContext';
 import { Qube } from './types';
+
+// Check if we're in dev mode
+const isDev = import.meta.env.DEV;
 
 interface AuthResponse {
   success: boolean;
@@ -33,6 +37,22 @@ function App() {
   const [allowClose, setAllowClose] = useState(false);
   const [isFirstRun, setIsFirstRun] = useState<boolean | null>(null);
   const [checkingFirstRun, setCheckingFirstRun] = useState(true);
+  const [showDebugPrompt, setShowDebugPrompt] = useState(false);
+
+  // Dev-only keyboard shortcut for debug prompt modal (Ctrl+Shift+D)
+  const handleKeyDown = useCallback((e: KeyboardEvent) => {
+    if (isDev && e.ctrlKey && e.shiftKey && e.key === 'D') {
+      e.preventDefault();
+      setShowDebugPrompt(prev => !prev);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (isDev && isAuthenticated) {
+      window.addEventListener('keydown', handleKeyDown);
+      return () => window.removeEventListener('keydown', handleKeyDown);
+    }
+  }, [isDev, isAuthenticated, handleKeyDown]);
 
   // Check for first run on mount
   useEffect(() => {
@@ -322,6 +342,14 @@ function App() {
             qubes={qubes}
             onComplete={handleExitComplete}
             onCancel={handleExitCancel}
+          />
+        )}
+
+        {/* Dev-only: AI Prompt Debug Modal (Ctrl+Shift+D) */}
+        {isDev && (
+          <PromptDebugModal
+            isOpen={showDebugPrompt}
+            onClose={() => setShowDebugPrompt(false)}
           />
         )}
       </div>

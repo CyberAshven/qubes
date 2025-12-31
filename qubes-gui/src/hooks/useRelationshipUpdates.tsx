@@ -36,7 +36,7 @@ export const useRelationshipUpdates = (options: UseRelationshipUpdatesOptions = 
   } = options;
 
   const wsRef = useRef<WebSocket | null>(null);
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const [lastUpdate, setLastUpdate] = useState<RelationshipUpdate | null>(null);
 

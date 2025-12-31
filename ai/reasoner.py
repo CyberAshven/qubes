@@ -24,6 +24,77 @@ logger = get_logger(__name__)
 # This includes both session blocks and permanent blocks
 SHORT_TERM_MEMORY_LIMIT = 15
 
+# Debug prompt storage - file-based for persistence across process invocations
+import tempfile
+import os
+from pathlib import Path
+
+_DEBUG_PROMPT_DIR = Path(tempfile.gettempdir()) / "qubes_debug_prompts"
+
+
+def _get_debug_prompt_file(qube_id: str) -> Path:
+    """Get the debug prompt file path for a qube."""
+    _DEBUG_PROMPT_DIR.mkdir(parents=True, exist_ok=True)
+    return _DEBUG_PROMPT_DIR / f"{qube_id}.json"
+
+
+def save_debug_prompt(qube_id: str, prompt_info: Dict[str, Any]) -> None:
+    """
+    Save debug prompt info to file for persistence.
+
+    Args:
+        qube_id: The qube ID
+        prompt_info: The prompt information to save
+    """
+    try:
+        file_path = _get_debug_prompt_file(qube_id)
+        with open(file_path, 'w', encoding='utf-8') as f:
+            json.dump(prompt_info, f, indent=2, default=str)
+    except Exception as e:
+        logger.warning(f"Failed to save debug prompt: {e}")
+
+
+def get_debug_prompt(qube_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Get the last debug prompt info for a qube.
+
+    Args:
+        qube_id: The qube ID to get prompt for
+
+    Returns:
+        Dict with prompt info or None if not found
+    """
+    try:
+        file_path = _get_debug_prompt_file(qube_id)
+        if file_path.exists():
+            with open(file_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+    except Exception as e:
+        logger.warning(f"Failed to load debug prompt: {e}")
+    return None
+
+
+def get_all_debug_prompts() -> Dict[str, Dict[str, Any]]:
+    """
+    Get all cached debug prompts.
+
+    Returns:
+        Dict of all cached prompts keyed by qube_id
+    """
+    result = {}
+    try:
+        if _DEBUG_PROMPT_DIR.exists():
+            for file_path in _DEBUG_PROMPT_DIR.glob("*.json"):
+                qube_id = file_path.stem
+                try:
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        result[qube_id] = json.load(f)
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.warning(f"Failed to load all debug prompts: {e}")
+    return result
+
 
 class QubeReasoner:
     """
@@ -234,6 +305,21 @@ class QubeReasoner:
                 qube_id=self.qube.qube_id
             )
 
+            # Store debug prompt (for development inspection) - save initial info
+            debug_prompt_info = {
+                "qube_id": self.qube.qube_id,
+                "qube_name": self.qube.name,
+                "messages": context_messages.copy(),
+                "model": model_to_use,
+                "provider": provider,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "input_tokens": None,
+                "output_tokens": None,
+                "total_tokens": None,
+                "response": None,
+            }
+            save_debug_prompt(self.qube.qube_id, debug_prompt_info)
+
             # Reasoning loop with tool calling
             tool_call_history = []  # Track tool calls to detect loops
 
@@ -376,6 +462,17 @@ class QubeReasoner:
                         cost=estimated_cost,
                         qube_id=self.qube.qube_id
                     )
+
+                    # Update debug prompt with token info and response
+                    existing_debug = get_debug_prompt(self.qube.qube_id)
+                    if existing_debug:
+                        existing_debug.update({
+                            "input_tokens": response.usage.get("input_tokens") or response.usage.get("prompt_tokens"),
+                            "output_tokens": response.usage.get("output_tokens") or response.usage.get("completion_tokens"),
+                            "total_tokens": total_tokens,
+                            "response": final_response[:2000] if final_response else None,  # Truncate for storage
+                        })
+                        save_debug_prompt(self.qube.qube_id, existing_debug)
 
                 # NOTE: THOUGHT blocks removed - they were redundant metadata
                 # Real THOUGHT blocks should only be created for:

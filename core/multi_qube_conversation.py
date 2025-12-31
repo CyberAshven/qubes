@@ -1242,26 +1242,34 @@ class MultiQubeConversation:
             participant_names = ", ".join([line.replace("**", "") for line in participant_info_lines])
             participant_section = f"You are in a group conversation with: {participant_names}"
 
+        # Get speaker's avatar description for self-awareness
+        speaker_avatar = speaker.chain_state.get_avatar_description()
+        speaker_appearance = f"\n**Your Appearance:** {speaker_avatar}" if speaker_avatar else ""
+
         prompt = f"""# MULTI-QUBE CONVERSATION MODE
+
+**IMPORTANT: You are {speaker.name}.** Respond as {speaker.name} with YOUR unique personality, voice, and perspective.
+Do NOT adopt the speaking style or personality of other participants in this conversation.{speaker_appearance}
 
 {participant_section}
 
 ## Recent Conversation:
 {conversation_context}
 
-## Your Turn:
+## Your Turn ({speaker.name}):
 It's now your turn to respond. Consider what's been said and add unique value.
 
 Guidelines:
+- **Stay in character as {speaker.name}** - use YOUR voice and personality, not anyone else's
 - Don't repeat what others have already said
 - Build on previous responses naturally
 - Add your unique perspective or expertise
 - You can reference participants' appearances naturally in conversation if relevant
 - If the question is answered, add context, ask follow-up, or share related insights
-- Be conversational and let your personality shine
+- Be conversational and let YOUR personality shine
 - Keep responses concise (2-4 sentences unless more detail is needed)
 
-Now respond naturally to continue the conversation:"""
+Now respond as {speaker.name}:"""
 
         return prompt
 
