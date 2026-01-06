@@ -182,21 +182,21 @@ Change URLs from GitHub to qube.cash:
 
 ```bash
 # Create version directory
-ssh bit_faced@YOUR_SERVER_IP "sudo mkdir -p /var/www/your-domain/releases/v0.2.7"
+ssh user@your-server "sudo mkdir -p /var/www/your-domain/releases/v0.2.7"
 
 # Upload files (use /tmp for permission handling)
-scp latest.json bit_faced@YOUR_SERVER_IP:/tmp/
-scp Qubes-Windows-setup.exe bit_faced@YOUR_SERVER_IP:/tmp/
-scp Qubes-macOS-ARM.app.tar.gz bit_faced@YOUR_SERVER_IP:/tmp/
-scp Qubes-Linux.AppImage.tar.gz bit_faced@YOUR_SERVER_IP:/tmp/
+scp latest.json user@your-server:/tmp/
+scp Qubes-Windows-setup.exe user@your-server:/tmp/
+scp Qubes-macOS-ARM.app.tar.gz user@your-server:/tmp/
+scp Qubes-Linux.AppImage.tar.gz user@your-server:/tmp/
 
 # Move to final location
-ssh bit_faced@YOUR_SERVER_IP "sudo mv /tmp/latest.json /var/www/your-domain/releases/v0.2.7/"
-ssh bit_faced@YOUR_SERVER_IP "sudo mv /tmp/Qubes-*.exe /var/www/your-domain/releases/v0.2.7/"
-ssh bit_faced@YOUR_SERVER_IP "sudo mv /tmp/Qubes-*.tar.gz /var/www/your-domain/releases/v0.2.7/"
+ssh user@your-server "sudo mv /tmp/latest.json /var/www/your-domain/releases/v0.2.7/"
+ssh user@your-server "sudo mv /tmp/Qubes-*.exe /var/www/your-domain/releases/v0.2.7/"
+ssh user@your-server "sudo mv /tmp/Qubes-*.tar.gz /var/www/your-domain/releases/v0.2.7/"
 
 # Copy latest.json to root releases folder
-ssh bit_faced@YOUR_SERVER_IP "sudo cp /var/www/your-domain/releases/v0.2.7/latest.json /var/www/your-domain/releases/"
+ssh user@your-server "sudo cp /var/www/your-domain/releases/v0.2.7/latest.json /var/www/your-domain/releases/"
 ```
 
 ### 4. Update Releases Page

@@ -99,13 +99,13 @@ def _get_chess():
 **Server Deployment Commands**:
 ```bash
 # Create directory on server
-ssh bit_faced@YOUR_SERVER_IP "sudo mkdir -p /var/www/your-domain/releases/v0.2.7"
+ssh user@your-server "sudo mkdir -p /var/www/your-domain/releases/v0.2.7"
 
 # Upload files (via /tmp for permissions)
-scp latest.json bit_faced@YOUR_SERVER_IP:/tmp/
-scp Qubes-Windows-setup.exe bit_faced@YOUR_SERVER_IP:/tmp/
-ssh bit_faced@YOUR_SERVER_IP "sudo mv /tmp/latest.json /var/www/your-domain/releases/v0.2.7/"
-ssh bit_faced@YOUR_SERVER_IP "sudo mv /tmp/Qubes-*.exe /var/www/your-domain/releases/v0.2.7/"
+scp latest.json user@your-server:/tmp/
+scp Qubes-Windows-setup.exe user@your-server:/tmp/
+ssh user@your-server "sudo mv /tmp/latest.json /var/www/your-domain/releases/v0.2.7/"
+ssh user@your-server "sudo mv /tmp/Qubes-*.exe /var/www/your-domain/releases/v0.2.7/"
 ```
 
 ### Lessons Learned
