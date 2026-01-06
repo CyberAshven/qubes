@@ -14,7 +14,7 @@ const TABS: TabConfig[] = [
   { id: 'relationships', label: 'Relationships' },
   { id: 'skills', label: 'Skills' },
   { id: 'games', label: 'Games' },
-  { id: 'economy', label: 'Earnings' },
+  { id: 'economy', label: 'Wallets' },
   { id: 'settings', label: 'Settings' },
 ];
 

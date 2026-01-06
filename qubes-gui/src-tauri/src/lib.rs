@@ -680,6 +680,11 @@ struct Qube {
     avatar_local_path: Option<String>,
     network: Option<String>,
     block_breakdown: Option<serde_json::Value>,
+    // Wallet fields (P2SH co-signing wallet)
+    wallet_address: Option<String>,
+    wallet_owner_pubkey: Option<String>,
+    wallet_qube_pubkey: Option<String>,
+    wallet_owner_q_address: Option<String>,  // Owner's 'q' address (standard BCH)
 }
 
 // Check if we're running as a bundled distribution (has qubes-backend sidecar)
@@ -984,7 +989,7 @@ async fn create_qube(
     ai_provider: String,
     ai_model: String,
     voice_model: String,
-    wallet_address: String,
+    owner_pubkey: String,  // NFT address derived from this by backend
     password: String,
     encrypt_genesis: bool,
     favorite_color: String,
@@ -994,7 +999,7 @@ async fn create_qube(
 ) -> Result<Qube, String> {
     // Rate limit check
     check_rate_limit("create_qube")?;
-    
+
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
 
@@ -1012,8 +1017,8 @@ async fn create_qube(
         .arg(&ai_model)
         .arg("--voice-model")
         .arg(&voice_model)
-        .arg("--wallet-address")
-        .arg(&wallet_address)
+        .arg("--owner-pubkey")
+        .arg(&owner_pubkey)  // Backend derives NFT address from this
         .arg("--encrypt-genesis")
         .arg(if encrypt_genesis { "true" } else { "false" })
         .arg("--favorite-color")
@@ -1049,7 +1054,7 @@ async fn prepare_qube_for_minting(
     ai_provider: String,
     ai_model: String,
     voice_model: String,
-    wallet_address: String,
+    owner_pubkey: String,  // NFT address derived from this by backend
     password: String,
     encrypt_genesis: bool,
     favorite_color: String,
@@ -1074,8 +1079,8 @@ async fn prepare_qube_for_minting(
         .arg(&ai_model)
         .arg("--voice-model")
         .arg(&voice_model)
-        .arg("--wallet-address")
-        .arg(&wallet_address)
+        .arg("--owner-pubkey")
+        .arg(&owner_pubkey)  // Backend derives NFT address from this
         .arg("--encrypt-genesis")
         .arg(if encrypt_genesis { "true" } else { "false" })
         .arg("--favorite-color")
@@ -4184,6 +4189,191 @@ async fn respond_to_draw(
     Ok(response)
 }
 
+// =============================================================================
+// Wallet Commands
+// =============================================================================
+
+#[tauri::command]
+async fn get_wallet_info(
+    user_id: String,
+    qube_id: String,
+    password: String,
+) -> Result<serde_json::Value, String> {
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("get-wallet-info")
+        .arg(&user_id)
+        .arg("--qube-id")
+        .arg(&qube_id);
+
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
+
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn propose_wallet_transaction(
+    user_id: String,
+    qube_id: String,
+    to_address: String,
+    amount: u64,
+    memo: String,
+    password: String,
+) -> Result<serde_json::Value, String> {
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("propose-wallet-tx")
+        .arg(&user_id)
+        .arg("--qube-id")
+        .arg(&qube_id)
+        .arg("--to-address")
+        .arg(&to_address)
+        .arg("--amount")
+        .arg(amount.to_string())
+        .arg("--memo")
+        .arg(&memo);
+
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
+
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn approve_wallet_transaction(
+    user_id: String,
+    qube_id: String,
+    tx_id: String,
+    owner_wif: String,
+    password: String,
+) -> Result<serde_json::Value, String> {
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("approve-wallet-tx")
+        .arg(&user_id)
+        .arg("--qube-id")
+        .arg(&qube_id)
+        .arg("--tx-id")
+        .arg(&tx_id);
+
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
+    secrets.insert("owner_wif", owner_wif.as_str());
+
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn reject_wallet_transaction(
+    user_id: String,
+    qube_id: String,
+    tx_id: String,
+    password: String,
+) -> Result<serde_json::Value, String> {
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("reject-wallet-tx")
+        .arg(&user_id)
+        .arg("--qube-id")
+        .arg(&qube_id)
+        .arg("--tx-id")
+        .arg(&tx_id);
+
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
+
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn owner_withdraw_from_wallet(
+    user_id: String,
+    qube_id: String,
+    to_address: String,
+    amount: u64,
+    owner_wif: String,
+    password: String,
+) -> Result<serde_json::Value, String> {
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("owner-withdraw")
+        .arg(&user_id)
+        .arg("--qube-id")
+        .arg(&qube_id)
+        .arg("--to-address")
+        .arg(&to_address)
+        .arg("--amount")
+        .arg(amount.to_string());
+
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
+    secrets.insert("owner_wif", owner_wif.as_str());
+
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn get_wallet_transactions(
+    user_id: String,
+    qube_id: String,
+    password: String,
+) -> Result<serde_json::Value, String> {
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("get-wallet-transactions")
+        .arg(&user_id)
+        .arg("--qube-id")
+        .arg(&qube_id);
+
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
+
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -4303,7 +4493,14 @@ pub fn run() {
             request_qube_move,
             resign_game,
             offer_draw,
-            respond_to_draw
+            respond_to_draw,
+            // Wallet Commands
+            get_wallet_info,
+            propose_wallet_transaction,
+            approve_wallet_transaction,
+            reject_wallet_transaction,
+            owner_withdraw_from_wallet,
+            get_wallet_transactions
         ])
         .setup(|app| {
             // Get the main and splash windows

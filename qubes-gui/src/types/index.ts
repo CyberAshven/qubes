@@ -45,6 +45,11 @@ export interface Qube {
   bcmr_uri?: string;  // IPFS URI for BCMR metadata
   avatar_ipfs_cid?: string;  // IPFS CID for avatar
   network?: string;  // mainnet or testnet
+  // Wallet fields (P2SH co-signing wallet)
+  wallet_address?: string;  // P2SH address (bitcoincash:p...)
+  wallet_owner_pubkey?: string;  // Owner's public key (hex)
+  wallet_qube_pubkey?: string;  // Qube's public key for wallet (hex)
+  wallet_owner_q_address?: string;  // Owner's 'q' address (standard BCH)
 }
 
 export type Tab = 'dashboard' | 'blocks' | 'qubes' | 'relationships' | 'skills' | 'economy' | 'settings' | 'connections' | 'games';

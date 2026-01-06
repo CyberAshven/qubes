@@ -417,6 +417,11 @@ class GUIBridge:
                     "avatar_ipfs_cid": qube.get("avatar_ipfs_cid"),
                     "avatar_local_path": qube.get("avatar_local_path"),  # For frontend convertFileSrc()
                     "network": qube.get("network"),
+                    # Wallet fields (from genesis block content)
+                    "wallet_address": qube.get("wallet_address"),
+                    "wallet_owner_pubkey": qube.get("wallet_owner_pubkey"),
+                    "wallet_qube_pubkey": qube.get("wallet_qube_pubkey"),
+                    "wallet_owner_q_address": qube.get("wallet_owner_q_address"),
                 }
 
                 gui_qubes.append(gui_qube)
@@ -433,7 +438,7 @@ class GUIBridge:
         ai_provider: str,
         ai_model: str,
         voice_model: str,
-        wallet_address: str,
+        owner_pubkey: str,  # NFT address derived from this by orchestrator
         password: str,
         encrypt_genesis: bool = False,
         favorite_color: str = "#00ff88",
@@ -441,19 +446,20 @@ class GUIBridge:
         generate_avatar: bool = False,
         avatar_style: str = "cyberpunk"
     ) -> Dict[str, Any]:
-        """Create a new qube"""
+        """Create a new qube with mandatory wallet and NFT."""
         try:
             # Set master key from password before creating qube
             self.orchestrator.set_master_key(password)
 
             # Prepare config for UserOrchestrator
+            # Note: wallet_address (NFT recipient) is derived from owner_pubkey
             config = {
                 "name": name,
                 "genesis_prompt": genesis_prompt,
                 "ai_provider": ai_provider,
                 "ai_model": ai_model,
                 "voice_model": voice_model,
-                "wallet_address": wallet_address,
+                "owner_pubkey": owner_pubkey,  # NFT address derived from this
                 "encrypt_genesis": encrypt_genesis,
                 "favorite_color": favorite_color,
                 "generate_avatar": generate_avatar,
@@ -498,7 +504,7 @@ class GUIBridge:
         ai_provider: str,
         ai_model: str,
         voice_model: str,
-        wallet_address: str,
+        owner_pubkey: str,  # NFT address derived from this by orchestrator
         password: str,
         encrypt_genesis: bool = False,
         favorite_color: str = "#00ff88",
@@ -511,19 +517,22 @@ class GUIBridge:
 
         Returns payment details for the user to complete the BCH payment.
         After payment, use check_minting_status to poll for completion.
+
+        The NFT recipient address is automatically derived from owner_pubkey.
         """
         try:
             # Set master key from password before creating qube
             self.orchestrator.set_master_key(password)
 
             # Prepare config for UserOrchestrator
+            # Note: wallet_address is derived from owner_pubkey by orchestrator
             config = {
                 "name": name,
                 "genesis_prompt": genesis_prompt,
                 "ai_provider": ai_provider,
                 "ai_model": ai_model,
                 "voice_model": voice_model,
-                "wallet_address": wallet_address,
+                "owner_pubkey": owner_pubkey,  # NFT address derived from this
                 "encrypt_genesis": encrypt_genesis,
                 "favorite_color": favorite_color,
                 "generate_avatar": generate_avatar,
@@ -542,6 +551,7 @@ class GUIBridge:
                 "success": True,
                 "qube_id": pending.qube_id,
                 "registration_id": pending.registration_id,
+                "qube_wallet_address": getattr(pending, 'qube_wallet_address', None),
                 "payment": {
                     "address": pending.payment_address,
                     "amount_bch": pending.payment_amount_bch,
@@ -4837,6 +4847,462 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
             logger.error(f"Failed to request qube move: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
 
+    # =========================================================================
+    # Wallet Management Methods
+    # =========================================================================
+
+    def _get_wallet_info_from_genesis(self, genesis_block) -> Optional[Dict[str, Any]]:
+        """
+        Extract wallet info from genesis block, handling both SimpleNamespace and Block objects.
+
+        Args:
+            genesis_block: Genesis block (can be SimpleNamespace or Block object)
+
+        Returns:
+            Wallet info dict or None if not found
+        """
+        if not genesis_block:
+            return None
+
+        # Try different access patterns
+        wallet_info = None
+
+        # Pattern 1: Block object with content dict
+        if hasattr(genesis_block, 'content') and isinstance(genesis_block.content, dict):
+            wallet_info = genesis_block.content.get("wallet")
+        # Pattern 2: SimpleNamespace with wallet attribute
+        elif hasattr(genesis_block, 'wallet'):
+            wallet_info = genesis_block.wallet
+
+        if wallet_info is None:
+            return None
+
+        # Convert SimpleNamespace to dict if needed
+        if hasattr(wallet_info, '__dict__') and not isinstance(wallet_info, dict):
+            wallet_info = vars(wallet_info)
+
+        return wallet_info if isinstance(wallet_info, dict) else None
+
+    async def get_qube_wallet_info(
+        self,
+        qube_id: str,
+        password: str
+    ) -> Dict[str, Any]:
+        """
+        Get wallet address, balance, and pending transactions for a Qube.
+
+        Args:
+            qube_id: Qube ID
+            password: User's master password
+
+        Returns:
+            Dict with wallet info including address, balance, pending_txs
+        """
+        from blockchain.wallet_tx import WalletTransactionManager
+
+        try:
+            self.orchestrator.set_master_key(password)
+            qube = await self.orchestrator.load_qube(qube_id)
+
+            if not qube:
+                return {"success": False, "error": f"Qube {qube_id} not found"}
+
+            # Check if wallet is initialized
+            wallet_info = self._get_wallet_info_from_genesis(qube.genesis_block)
+            if not wallet_info:
+                return {"success": False, "error": "Qube does not have a wallet configured"}
+
+            p2sh_address = wallet_info.get("p2sh_address")
+            if not p2sh_address:
+                return {"success": False, "error": "Wallet address not found in genesis block"}
+
+            # Initialize wallet transaction manager
+            wallet_manager = WalletTransactionManager(qube, self.orchestrator.data_dir)
+            pending_txs = wallet_manager.get_pending_transactions()
+
+            # Get owner pubkey and derive NFT address
+            owner_pubkey = wallet_info.get("owner_pubkey")
+            nft_address = None
+            if owner_pubkey:
+                from crypto.bch_script import pubkey_to_token_address
+                nft_address = pubkey_to_token_address(owner_pubkey, "mainnet")
+
+            # Fetch both balances in parallel for speed
+            import aiohttp
+            import asyncio
+
+            async def fetch_p2sh_balance():
+                try:
+                    return await asyncio.wait_for(
+                        wallet_manager.wallet.get_balance(),
+                        timeout=10.0
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("P2SH balance fetch timed out")
+                    return 0
+                except Exception as e:
+                    logger.warning(f"P2SH balance fetch failed: {e}")
+                    return 0
+
+            async def fetch_nft_balance():
+                if not nft_address:
+                    return 0
+                try:
+                    # Use Blockchair API (same as wallet uses) - need to use q address
+                    # since z and q share the same pubkey hash
+                    from crypto.bch_script import pubkey_to_p2pkh_address
+                    q_address = pubkey_to_p2pkh_address(owner_pubkey, "mainnet", token_aware=False)
+
+                    timeout = aiohttp.ClientTimeout(total=10)
+                    async with aiohttp.ClientSession(timeout=timeout) as session:
+                        url = f"https://api.blockchair.com/bitcoin-cash/dashboards/address/{q_address}"
+                        async with session.get(url) as resp:
+                            if resp.status == 200:
+                                data = await resp.json()
+                                if "data" in data and q_address in data["data"]:
+                                    return data["data"][q_address]["address"]["balance"]
+                    return 0
+                except Exception as e:
+                    logger.warning(f"NFT balance fetch failed: {e}")
+                    return 0
+
+            # Run both fetches in parallel
+            p2sh_balance, nft_balance = await asyncio.gather(
+                fetch_p2sh_balance(),
+                fetch_nft_balance()
+            )
+
+            return {
+                "success": True,
+                "qube_id": qube_id,
+                "wallet_address": p2sh_address,
+                "nft_address": nft_address,  # Owner's 'z' address
+                "owner_pubkey": wallet_info.get("owner_pubkey"),
+                "qube_pubkey": wallet_info.get("qube_pubkey"),
+                "balance_sats": p2sh_balance,  # P2SH wallet balance
+                "balance_bch": p2sh_balance / 100_000_000,
+                "nft_balance_sats": nft_balance,  # Owner's NFT address balance
+                "nft_balance_bch": nft_balance / 100_000_000,
+                "pending_transactions": [
+                    {
+                        "tx_id": tx.tx_id,
+                        "outputs": tx.outputs,
+                        "total_amount": tx.total_amount,
+                        "fee": tx.fee,
+                        "status": tx.status,
+                        "created_at": datetime.fromtimestamp(tx.created_at).isoformat(),
+                        "expires_at": datetime.fromtimestamp(tx.expires_at).isoformat() if tx.expires_at else None,
+                        "memo": tx.memo
+                    }
+                    for tx in pending_txs
+                ]
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to get wallet info: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def propose_wallet_transaction(
+        self,
+        qube_id: str,
+        to_address: str,
+        amount_satoshis: int,
+        memo: str,
+        password: str
+    ) -> Dict[str, Any]:
+        """
+        Qube proposes a wallet transaction that requires owner approval.
+
+        Args:
+            qube_id: Qube ID
+            to_address: BCH address to send to
+            amount_satoshis: Amount in satoshis
+            memo: Transaction memo/reason
+            password: User's master password
+
+        Returns:
+            Dict with pending transaction info
+        """
+        from blockchain.wallet_tx import WalletTransactionManager
+
+        try:
+            self.orchestrator.set_master_key(password)
+            qube = await self.orchestrator.load_qube(qube_id)
+
+            if not qube:
+                return {"success": False, "error": f"Qube {qube_id} not found"}
+
+            # Check if wallet is initialized
+            wallet_info = self._get_wallet_info_from_genesis(qube.genesis_block)
+            if not wallet_info:
+                return {"success": False, "error": "Qube does not have a wallet configured"}
+
+            # Initialize wallet transaction manager
+            wallet_manager = WalletTransactionManager(qube, self.orchestrator.data_dir)
+
+            # Propose the transaction (Qube signs, waits for owner approval)
+            pending_tx = await wallet_manager.propose_send(to_address, amount_satoshis, memo)
+
+            return {
+                "success": True,
+                "pending_tx": {
+                    "tx_id": pending_tx.tx_id,
+                    "outputs": pending_tx.outputs,
+                    "total_amount": pending_tx.total_amount,
+                    "fee": pending_tx.fee,
+                    "status": pending_tx.status,
+                    "created_at": datetime.fromtimestamp(pending_tx.created_at).isoformat(),
+                    "expires_at": datetime.fromtimestamp(pending_tx.expires_at).isoformat() if pending_tx.expires_at else None,
+                    "memo": pending_tx.memo
+                }
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to propose wallet transaction: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def approve_wallet_transaction(
+        self,
+        qube_id: str,
+        pending_tx_id: str,
+        owner_wif: str,
+        password: str
+    ) -> Dict[str, Any]:
+        """
+        Owner approves a pending Qube wallet transaction by co-signing.
+
+        Args:
+            qube_id: Qube ID
+            pending_tx_id: ID of the pending transaction to approve
+            owner_wif: Owner's WIF private key for signing
+            password: User's master password
+
+        Returns:
+            Dict with broadcast transaction ID
+        """
+        from blockchain.wallet_tx import WalletTransactionManager
+
+        try:
+            self.orchestrator.set_master_key(password)
+            qube = await self.orchestrator.load_qube(qube_id)
+
+            if not qube:
+                return {"success": False, "error": f"Qube {qube_id} not found"}
+
+            # Check if wallet is initialized
+            wallet_info = self._get_wallet_info_from_genesis(qube.genesis_block)
+            if not wallet_info:
+                return {"success": False, "error": "Qube does not have a wallet configured"}
+
+            # Initialize wallet transaction manager
+            wallet_manager = WalletTransactionManager(qube, self.orchestrator.data_dir)
+
+            # Approve and broadcast (owner co-signs)
+            txid = await wallet_manager.owner_approve(pending_tx_id, owner_wif)
+
+            return {
+                "success": True,
+                "txid": txid,
+                "message": f"Transaction broadcast successfully"
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to approve wallet transaction: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def reject_wallet_transaction(
+        self,
+        qube_id: str,
+        pending_tx_id: str,
+        password: str
+    ) -> Dict[str, Any]:
+        """
+        Owner rejects a pending Qube wallet transaction.
+
+        Args:
+            qube_id: Qube ID
+            pending_tx_id: ID of the pending transaction to reject
+            password: User's master password
+
+        Returns:
+            Dict with success status
+        """
+        from blockchain.wallet_tx import WalletTransactionManager
+
+        try:
+            self.orchestrator.set_master_key(password)
+            qube = await self.orchestrator.load_qube(qube_id)
+
+            if not qube:
+                return {"success": False, "error": f"Qube {qube_id} not found"}
+
+            # Check if wallet is initialized
+            wallet_info = self._get_wallet_info_from_genesis(qube.genesis_block)
+            if not wallet_info:
+                return {"success": False, "error": "Qube does not have a wallet configured"}
+
+            # Initialize wallet transaction manager
+            wallet_manager = WalletTransactionManager(qube, self.orchestrator.data_dir)
+
+            # Reject the transaction
+            wallet_manager.owner_reject(pending_tx_id)
+
+            return {
+                "success": True,
+                "message": f"Transaction {pending_tx_id} rejected"
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to reject wallet transaction: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def owner_withdraw_from_wallet(
+        self,
+        qube_id: str,
+        to_address: str,
+        amount_satoshis: int,
+        owner_wif: str,
+        password: str
+    ) -> Dict[str, Any]:
+        """
+        Owner withdraws funds directly from Qube wallet (owner-only path).
+
+        This uses the IF branch of the P2SH script, allowing the owner
+        to spend without Qube involvement.
+
+        Args:
+            qube_id: Qube ID
+            to_address: BCH address to send to
+            amount_satoshis: Amount in satoshis (0 for all)
+            owner_wif: Owner's WIF private key
+            password: User's master password
+
+        Returns:
+            Dict with broadcast transaction ID
+        """
+        from blockchain.wallet_tx import WalletTransactionManager
+
+        try:
+            self.orchestrator.set_master_key(password)
+            qube = await self.orchestrator.load_qube(qube_id)
+
+            if not qube:
+                return {"success": False, "error": f"Qube {qube_id} not found"}
+
+            # Check if wallet is initialized
+            wallet_info = self._get_wallet_info_from_genesis(qube.genesis_block)
+            if not wallet_info:
+                return {"success": False, "error": "Qube does not have a wallet configured"}
+
+            # Initialize wallet transaction manager
+            wallet_manager = WalletTransactionManager(qube, self.orchestrator.data_dir)
+
+            # Owner withdraw (uses IF branch - owner alone)
+            if amount_satoshis == 0:
+                # Withdraw all
+                txid = await wallet_manager.owner_withdraw_all(to_address, owner_wif)
+            else:
+                txid = await wallet_manager.owner_withdraw(to_address, amount_satoshis, owner_wif)
+
+            return {
+                "success": True,
+                "txid": txid,
+                "message": f"Withdrawal broadcast successfully"
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to withdraw from wallet: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def get_wallet_transactions(
+        self,
+        qube_id: str,
+        password: str
+    ) -> Dict[str, Any]:
+        """
+        Get transaction history for a Qube's wallet.
+
+        Args:
+            qube_id: Qube ID
+            password: User's master password
+
+        Returns:
+            Dict with transaction history
+        """
+        from blockchain.wallet_tx import WalletTransactionManager
+
+        try:
+            self.orchestrator.set_master_key(password)
+            qube = await self.orchestrator.load_qube(qube_id)
+
+            if not qube:
+                return {"success": False, "error": f"Qube {qube_id} not found"}
+
+            # Check if wallet is initialized
+            wallet_info = self._get_wallet_info_from_genesis(qube.genesis_block)
+            if not wallet_info:
+                return {"success": False, "error": "Qube does not have a wallet configured"}
+
+            p2sh_address = wallet_info.get("p2sh_address")
+
+            # Initialize wallet transaction manager
+            wallet_manager = WalletTransactionManager(qube, self.orchestrator.data_dir)
+
+            # Get transaction history (both pending and completed)
+            pending_txs = wallet_manager.get_pending_transactions()
+            completed_txs = wallet_manager.get_completed_transactions()
+
+            # Also try to fetch on-chain history via the wallet
+            try:
+                utxos = await wallet_manager.wallet.get_utxos()
+                utxo_info = [
+                    {
+                        "txid": utxo["txid"],
+                        "vout": utxo["vout"],
+                        "value_sats": utxo["value"]
+                    }
+                    for utxo in utxos
+                ]
+            except Exception as e:
+                logger.warning(f"Could not fetch UTXOs: {e}")
+                utxo_info = []
+
+            return {
+                "success": True,
+                "wallet_address": p2sh_address,
+                "pending_transactions": [
+                    {
+                        "tx_id": tx.tx_id,
+                        "outputs": tx.outputs,
+                        "total_amount": tx.total_amount,
+                        "fee": tx.fee,
+                        "status": tx.status,
+                        "created_at": datetime.fromtimestamp(tx.created_at).isoformat(),
+                        "expires_at": datetime.fromtimestamp(tx.expires_at).isoformat() if tx.expires_at else None,
+                        "memo": tx.memo
+                    }
+                    for tx in pending_txs
+                ],
+                "completed_transactions": [
+                    {
+                        "tx_id": tx.tx_id,
+                        "txid": tx.broadcast_txid,
+                        "outputs": tx.outputs,
+                        "total_amount": tx.total_amount,
+                        "fee": tx.fee,
+                        "status": tx.status,
+                        "created_at": datetime.fromtimestamp(tx.created_at).isoformat(),
+                        "memo": tx.memo
+                    }
+                    for tx in completed_txs
+                ],
+                "utxos": utxo_info
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to get wallet transactions: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
 
 async def main():
     """Main CLI entry point"""
@@ -5027,7 +5493,7 @@ async def main():
             parser.add_argument("--ai-provider", required=True)
             parser.add_argument("--ai-model", required=True)
             parser.add_argument("--voice-model", default="openai:alloy")
-            parser.add_argument("--wallet-address", required=True)
+            parser.add_argument("--owner-pubkey", required=True)  # NFT address derived from this
             parser.add_argument("--password", default="")  # Password comes from stdin
             parser.add_argument("--encrypt-genesis", default="false")
             parser.add_argument("--favorite-color", default="#00ff88")
@@ -5048,7 +5514,7 @@ async def main():
                 ai_provider=args.ai_provider,
                 ai_model=args.ai_model,
                 voice_model=args.voice_model,
-                wallet_address=args.wallet_address,
+                owner_pubkey=args.owner_pubkey,  # NFT address derived from this
                 password=password,
                 encrypt_genesis=(args.encrypt_genesis.lower() == "true"),
                 favorite_color=args.favorite_color,
@@ -6638,7 +7104,7 @@ async def main():
             parser.add_argument("--ai-provider", required=True)
             parser.add_argument("--ai-model", required=True)
             parser.add_argument("--voice-model", default="openai:alloy")
-            parser.add_argument("--wallet-address", required=True)
+            parser.add_argument("--owner-pubkey", required=True)  # NFT address derived from this
             parser.add_argument("--password", default="")  # Password comes from stdin
             parser.add_argument("--encrypt-genesis", default="false")
             parser.add_argument("--favorite-color", default="#00ff88")
@@ -6659,7 +7125,7 @@ async def main():
                 ai_provider=args.ai_provider,
                 ai_model=args.ai_model,
                 voice_model=args.voice_model,
-                wallet_address=args.wallet_address,
+                owner_pubkey=args.owner_pubkey,  # NFT address derived from this
                 password=password,
                 encrypt_genesis=(args.encrypt_genesis.lower() == "true"),
                 favorite_color=args.favorite_color,
@@ -7754,6 +8220,178 @@ async def main():
                 password=password,
                 accepting=args.accepting,
                 responding_player=args.responding_player
+            )
+            print(json.dumps(result))
+
+        # =====================================================================
+        # Wallet Commands
+        # =====================================================================
+
+        elif command == "get-wallet-info":
+            # Get wallet info for a Qube
+            if len(sys.argv) < 3:
+                print(json.dumps({"success": False, "error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("command")
+            parser.add_argument("user_id")
+            parser.add_argument("--qube-id", required=True)
+            parser.add_argument("--password", default=None)
+
+            args = parser.parse_args()
+            password = get_secret("password", required=False) or args.password
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.get_qube_wallet_info(
+                qube_id=args.qube_id,
+                password=password
+            )
+            print(json.dumps(result))
+
+        elif command == "propose-wallet-tx":
+            # Qube proposes a wallet transaction
+            if len(sys.argv) < 3:
+                print(json.dumps({"success": False, "error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("command")
+            parser.add_argument("user_id")
+            parser.add_argument("--qube-id", required=True)
+            parser.add_argument("--to-address", required=True)
+            parser.add_argument("--amount", required=True, type=int, help="Amount in satoshis")
+            parser.add_argument("--memo", default="")
+            parser.add_argument("--password", default=None)
+
+            args = parser.parse_args()
+            password = get_secret("password", required=False) or args.password
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.propose_wallet_transaction(
+                qube_id=args.qube_id,
+                to_address=args.to_address,
+                amount_satoshis=args.amount,
+                memo=args.memo,
+                password=password
+            )
+            print(json.dumps(result))
+
+        elif command == "approve-wallet-tx":
+            # Owner approves a pending wallet transaction
+            if len(sys.argv) < 3:
+                print(json.dumps({"success": False, "error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("command")
+            parser.add_argument("user_id")
+            parser.add_argument("--qube-id", required=True)
+            parser.add_argument("--tx-id", required=True)
+            parser.add_argument("--password", default=None)
+
+            args = parser.parse_args()
+            password = get_secret("password", required=False) or args.password
+            owner_wif = get_secret("owner_wif", required=True)
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.approve_wallet_transaction(
+                qube_id=args.qube_id,
+                pending_tx_id=args.tx_id,
+                owner_wif=owner_wif,
+                password=password
+            )
+            print(json.dumps(result))
+
+        elif command == "reject-wallet-tx":
+            # Owner rejects a pending wallet transaction
+            if len(sys.argv) < 3:
+                print(json.dumps({"success": False, "error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("command")
+            parser.add_argument("user_id")
+            parser.add_argument("--qube-id", required=True)
+            parser.add_argument("--tx-id", required=True)
+            parser.add_argument("--password", default=None)
+
+            args = parser.parse_args()
+            password = get_secret("password", required=False) or args.password
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.reject_wallet_transaction(
+                qube_id=args.qube_id,
+                pending_tx_id=args.tx_id,
+                password=password
+            )
+            print(json.dumps(result))
+
+        elif command == "owner-withdraw":
+            # Owner withdraws directly from Qube wallet (IF branch)
+            if len(sys.argv) < 3:
+                print(json.dumps({"success": False, "error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("command")
+            parser.add_argument("user_id")
+            parser.add_argument("--qube-id", required=True)
+            parser.add_argument("--to-address", required=True)
+            parser.add_argument("--amount", required=True, type=int, help="Amount in satoshis (0 for all)")
+            parser.add_argument("--password", default=None)
+
+            args = parser.parse_args()
+            password = get_secret("password", required=False) or args.password
+            owner_wif = get_secret("owner_wif", required=True)
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.owner_withdraw_from_wallet(
+                qube_id=args.qube_id,
+                to_address=args.to_address,
+                amount_satoshis=args.amount,
+                owner_wif=owner_wif,
+                password=password
+            )
+            print(json.dumps(result))
+
+        elif command == "get-wallet-transactions":
+            # Get wallet transaction history
+            if len(sys.argv) < 3:
+                print(json.dumps({"success": False, "error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("command")
+            parser.add_argument("user_id")
+            parser.add_argument("--qube-id", required=True)
+            parser.add_argument("--password", default=None)
+
+            args = parser.parse_args()
+            password = get_secret("password", required=False) or args.password
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.get_wallet_transactions(
+                qube_id=args.qube_id,
+                password=password
             )
             print(json.dumps(result))
 

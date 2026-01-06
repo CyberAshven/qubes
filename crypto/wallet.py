@@ -1,0 +1,795 @@
+"""
+Qube Wallet Module
+
+Provides the QubeWallet class for asymmetric multi-sig BCH wallets.
+
+Each Qube has a wallet with two spending paths:
+- Owner alone (IF branch): Emergency withdrawal, full control
+- Owner + Qube together (ELSE branch): Normal operation with approval
+
+Usage:
+    from crypto.wallet import QubeWallet
+
+    # Create wallet from Qube's private key and owner's public key
+    wallet = QubeWallet(qube_private_key_bytes, owner_pubkey_hex)
+
+    # Get wallet address (for deposits)
+    print(wallet.p2sh_address)
+
+    # Check balance
+    balance = await wallet.get_balance()
+
+    # Qube proposes a transaction (needs owner approval)
+    unsigned_tx, qube_sig = wallet.propose_transaction(outputs)
+
+    # Owner approves and co-signs
+    txid = await wallet.approve_and_broadcast(unsigned_tx, qube_sig, owner_privkey)
+
+    # OR owner withdraws directly (no Qube involvement)
+    txid = await wallet.owner_withdraw(outputs, owner_privkey)
+"""
+
+import asyncio
+import aiohttp
+from typing import List, Optional, Tuple, Dict, Any
+from dataclasses import dataclass
+
+from crypto.bch_script import (
+    create_wallet_address,
+    pubkey_from_privkey,
+    address_to_script_pubkey,
+    calculate_sighash_forkid,
+    sign_sighash,
+    build_p2sh_spending_tx,
+    estimate_tx_size,
+    UTXO,
+    TxOutput,
+    push_data,
+    var_int,
+    serialize_outpoint,
+    serialize_output,
+    OP_0,
+    OP_TRUE,
+    OP_FALSE,
+    double_sha256,
+)
+import struct
+
+from utils.logging import get_logger
+
+logger = get_logger(__name__)
+
+
+# =============================================================================
+# CONSTANTS
+# =============================================================================
+
+BLOCKCHAIR_API = "https://api.blockchair.com/bitcoin-cash"
+DUST_LIMIT = 546  # Minimum output value in satoshis
+DEFAULT_FEE_PER_BYTE = 1  # 1 sat/byte is sufficient for BCH
+
+
+# =============================================================================
+# DATA STRUCTURES
+# =============================================================================
+
+@dataclass
+class UnsignedTransaction:
+    """Represents an unsigned transaction ready for signing"""
+    utxos: List[UTXO]
+    outputs: List[TxOutput]
+    redeem_script: bytes
+    fee: int
+
+    def total_input(self) -> int:
+        return sum(u.value for u in self.utxos)
+
+    def total_output(self) -> int:
+        return sum(o.value for o in self.outputs)
+
+
+@dataclass
+class ProposedTransaction:
+    """A transaction proposed by the Qube, awaiting owner approval"""
+    tx_id: str                    # Internal tracking ID
+    unsigned_tx: UnsignedTransaction
+    qube_signature: bytes         # Qube's signature
+    created_at: float             # Unix timestamp
+    memo: Optional[str] = None    # Qube's reason for the transaction
+
+    def to_dict(self) -> dict:
+        return {
+            "tx_id": self.tx_id,
+            "outputs": [{"address": o.address, "value": o.value} for o in self.unsigned_tx.outputs],
+            "fee": self.unsigned_tx.fee,
+            "total_input": self.unsigned_tx.total_input(),
+            "total_output": self.unsigned_tx.total_output(),
+            "qube_signature": self.qube_signature.hex(),
+            "created_at": self.created_at,
+            "memo": self.memo,
+        }
+
+
+# =============================================================================
+# QUBE WALLET CLASS
+# =============================================================================
+
+class QubeWallet:
+    """
+    Asymmetric multi-sig wallet for Qube BCH transactions.
+
+    The wallet is controlled by a P2SH script with two spending paths:
+    - IF branch: Owner can spend alone (full control)
+    - ELSE branch: Requires both owner and Qube signatures (2-of-2)
+
+    This ensures the Qube can never spend without owner approval,
+    while the owner retains emergency withdrawal capability.
+    """
+
+    def __init__(
+        self,
+        qube_private_key: bytes,
+        owner_pubkey_hex: str,
+        network: str = "mainnet"
+    ):
+        """
+        Initialize Qube wallet.
+
+        Args:
+            qube_private_key: 32-byte private key (from Qube's keypair)
+            owner_pubkey_hex: Owner's compressed public key (hex string, 02.../03...)
+            network: "mainnet" or "testnet"
+        """
+        if len(qube_private_key) != 32:
+            raise ValueError(f"Private key must be 32 bytes, got {len(qube_private_key)}")
+
+        if not owner_pubkey_hex or len(owner_pubkey_hex) != 66:
+            raise ValueError("Owner pubkey must be 66 hex chars (33 bytes compressed)")
+
+        if not owner_pubkey_hex.startswith(('02', '03')):
+            raise ValueError("Owner pubkey must start with 02 or 03 (compressed format)")
+
+        self._qube_privkey = qube_private_key
+        self._qube_pubkey = pubkey_from_privkey(qube_private_key)
+        self._owner_pubkey = bytes.fromhex(owner_pubkey_hex)
+        self._network = network
+
+        # Build wallet
+        wallet_info = create_wallet_address(
+            owner_pubkey_hex=owner_pubkey_hex,
+            qube_pubkey_hex=self._qube_pubkey.hex(),
+            network=network
+        )
+
+        self._p2sh_address = wallet_info["p2sh_address"]
+        self._redeem_script = wallet_info["redeem_script"]
+        self._script_hash = wallet_info["script_hash"]
+
+        logger.debug(
+            "qube_wallet_initialized",
+            p2sh_address=self._p2sh_address,
+            network=network
+        )
+
+    # =========================================================================
+    # PROPERTIES
+    # =========================================================================
+
+    @property
+    def p2sh_address(self) -> str:
+        """The P2SH wallet address (CashAddr format)"""
+        return self._p2sh_address
+
+    @property
+    def redeem_script(self) -> bytes:
+        """The redeem script (needed for spending)"""
+        return self._redeem_script
+
+    @property
+    def redeem_script_hex(self) -> str:
+        """Redeem script as hex string"""
+        return self._redeem_script.hex()
+
+    @property
+    def script_hash(self) -> str:
+        """HASH160 of redeem script (for verification)"""
+        return self._script_hash
+
+    @property
+    def qube_pubkey(self) -> bytes:
+        """Qube's public key"""
+        return self._qube_pubkey
+
+    @property
+    def qube_pubkey_hex(self) -> str:
+        """Qube's public key as hex"""
+        return self._qube_pubkey.hex()
+
+    @property
+    def owner_pubkey(self) -> bytes:
+        """Owner's public key"""
+        return self._owner_pubkey
+
+    @property
+    def owner_pubkey_hex(self) -> str:
+        """Owner's public key as hex"""
+        return self._owner_pubkey.hex()
+
+    @property
+    def network(self) -> str:
+        """Network (mainnet/testnet)"""
+        return self._network
+
+    # =========================================================================
+    # BALANCE & UTXO QUERIES
+    # =========================================================================
+
+    async def get_balance(self) -> int:
+        """
+        Get wallet balance in satoshis.
+
+        Returns:
+            Balance in satoshis
+        """
+        try:
+            async with aiohttp.ClientSession() as session:
+                url = f"{BLOCKCHAIR_API}/dashboards/address/{self._p2sh_address}"
+                async with session.get(url) as resp:
+                    data = await resp.json()
+
+                    if "data" in data and self._p2sh_address in data["data"]:
+                        return data["data"][self._p2sh_address]["address"]["balance"]
+                    return 0
+        except Exception as e:
+            logger.error("get_balance_failed", error=str(e))
+            return 0
+
+    async def get_utxos(self) -> List[UTXO]:
+        """
+        Get unspent transaction outputs.
+
+        Returns:
+            List of UTXOs
+        """
+        try:
+            async with aiohttp.ClientSession() as session:
+                url = f"{BLOCKCHAIR_API}/dashboards/address/{self._p2sh_address}"
+                async with session.get(url) as resp:
+                    data = await resp.json()
+
+                    if "data" not in data or self._p2sh_address not in data["data"]:
+                        return []
+
+                    utxo_list = data["data"][self._p2sh_address].get("utxo", [])
+                    script_pubkey = address_to_script_pubkey(self._p2sh_address)
+
+                    return [
+                        UTXO(
+                            txid=u["transaction_hash"],
+                            vout=u["index"],
+                            value=u["value"],
+                            script_pubkey=script_pubkey
+                        )
+                        for u in utxo_list
+                    ]
+        except Exception as e:
+            logger.error("get_utxos_failed", error=str(e))
+            return []
+
+    async def get_wallet_info(self) -> Dict[str, Any]:
+        """
+        Get comprehensive wallet information.
+
+        Returns:
+            Dict with address, balance, utxos, etc.
+        """
+        balance = await self.get_balance()
+        utxos = await self.get_utxos()
+
+        return {
+            "p2sh_address": self._p2sh_address,
+            "balance_sats": balance,
+            "balance_bch": balance / 100_000_000,
+            "utxo_count": len(utxos),
+            "utxos": [
+                {"txid": u.txid, "vout": u.vout, "value": u.value}
+                for u in utxos
+            ],
+            "network": self._network,
+            "qube_pubkey": self.qube_pubkey_hex,
+            "owner_pubkey": self.owner_pubkey_hex,
+        }
+
+    # =========================================================================
+    # TRANSACTION CREATION
+    # =========================================================================
+
+    def _select_utxos(
+        self,
+        utxos: List[UTXO],
+        target_amount: int,
+        fee_per_byte: int = DEFAULT_FEE_PER_BYTE
+    ) -> Tuple[List[UTXO], int]:
+        """
+        Select UTXOs to cover target amount plus fees.
+
+        Simple algorithm: sort by value descending, take until covered.
+
+        Returns:
+            (selected_utxos, estimated_fee)
+        """
+        # Sort by value descending (prefer larger UTXOs)
+        sorted_utxos = sorted(utxos, key=lambda u: u.value, reverse=True)
+
+        selected = []
+        total = 0
+
+        for utxo in sorted_utxos:
+            selected.append(utxo)
+            total += utxo.value
+
+            # Estimate fee with current selection
+            tx_size = estimate_tx_size(len(selected), 2, "multisig")  # 2 outputs (send + change)
+            fee = tx_size * fee_per_byte
+
+            if total >= target_amount + fee:
+                return selected, fee
+
+        # Not enough funds
+        raise ValueError(
+            f"Insufficient funds. Have {total} sats, need {target_amount} + fee"
+        )
+
+    def create_unsigned_transaction(
+        self,
+        outputs: List[TxOutput],
+        fee_per_byte: int = DEFAULT_FEE_PER_BYTE,
+        utxos: Optional[List[UTXO]] = None
+    ) -> UnsignedTransaction:
+        """
+        Create an unsigned transaction.
+
+        Args:
+            outputs: List of outputs (address, value)
+            fee_per_byte: Fee rate in sats/byte
+            utxos: UTXOs to spend (if None, must call with await and use get_utxos)
+
+        Returns:
+            UnsignedTransaction ready for signing
+        """
+        if not utxos:
+            raise ValueError("UTXOs must be provided (use create_unsigned_transaction_async for auto-fetch)")
+
+        # Validate outputs
+        total_output = sum(o.value for o in outputs)
+        for out in outputs:
+            if out.value < DUST_LIMIT:
+                raise ValueError(f"Output {out.value} sats is below dust limit ({DUST_LIMIT})")
+
+        # Select UTXOs
+        selected_utxos, fee = self._select_utxos(utxos, total_output, fee_per_byte)
+        total_input = sum(u.value for u in selected_utxos)
+
+        # Add change output if needed
+        change = total_input - total_output - fee
+        final_outputs = list(outputs)
+
+        if change > DUST_LIMIT:
+            final_outputs.append(TxOutput(address=self._p2sh_address, value=change))
+        elif change > 0:
+            # Change too small, add to fee
+            fee += change
+
+        return UnsignedTransaction(
+            utxos=selected_utxos,
+            outputs=final_outputs,
+            redeem_script=self._redeem_script,
+            fee=fee
+        )
+
+    async def create_unsigned_transaction_async(
+        self,
+        outputs: List[TxOutput],
+        fee_per_byte: int = DEFAULT_FEE_PER_BYTE
+    ) -> UnsignedTransaction:
+        """
+        Create an unsigned transaction, fetching UTXOs automatically.
+        """
+        utxos = await self.get_utxos()
+        if not utxos:
+            raise ValueError("No UTXOs available")
+
+        return self.create_unsigned_transaction(outputs, fee_per_byte, utxos)
+
+    # =========================================================================
+    # SIGNING (QUBE)
+    # =========================================================================
+
+    def sign_as_qube(self, unsigned_tx: UnsignedTransaction) -> bytes:
+        """
+        Sign transaction as Qube (for 2-of-2 multisig path).
+
+        The Qube signs first, then the owner must co-sign to broadcast.
+
+        Args:
+            unsigned_tx: The unsigned transaction
+
+        Returns:
+            Qube's signature (DER + sighash byte)
+        """
+        if len(unsigned_tx.utxos) != 1:
+            raise ValueError("Currently only single-input transactions supported")
+
+        utxo = unsigned_tx.utxos[0]
+
+        # Prepare for sighash
+        inputs = [(utxo.txid, utxo.vout, utxo.value, utxo.script_pubkey)]
+        output_data = [
+            (out.value, address_to_script_pubkey(out.address))
+            for out in unsigned_tx.outputs
+        ]
+
+        # Calculate sighash
+        sighash = calculate_sighash_forkid(
+            tx_version=2,
+            inputs=inputs,
+            outputs=output_data,
+            input_idx=0,
+            redeem_script=self._redeem_script
+        )
+
+        # Sign with Qube's key
+        return sign_sighash(sighash, self._qube_privkey)
+
+    def propose_transaction(
+        self,
+        outputs: List[TxOutput],
+        utxos: List[UTXO],
+        memo: Optional[str] = None
+    ) -> ProposedTransaction:
+        """
+        Propose a transaction (Qube signs, awaits owner approval).
+
+        Args:
+            outputs: Where to send funds
+            utxos: Available UTXOs
+            memo: Reason for the transaction
+
+        Returns:
+            ProposedTransaction with Qube's signature
+        """
+        import time
+        import hashlib
+
+        unsigned_tx = self.create_unsigned_transaction(outputs, utxos=utxos)
+        qube_sig = self.sign_as_qube(unsigned_tx)
+
+        # Generate unique ID
+        tx_id = hashlib.sha256(
+            f"{time.time()}{qube_sig.hex()}".encode()
+        ).hexdigest()[:16]
+
+        return ProposedTransaction(
+            tx_id=tx_id,
+            unsigned_tx=unsigned_tx,
+            qube_signature=qube_sig,
+            created_at=time.time(),
+            memo=memo
+        )
+
+    # =========================================================================
+    # SIGNING (OWNER) & BROADCASTING
+    # =========================================================================
+
+    def finalize_multisig(
+        self,
+        unsigned_tx: UnsignedTransaction,
+        qube_signature: bytes,
+        owner_privkey: bytes
+    ) -> str:
+        """
+        Finalize 2-of-2 multisig transaction (owner co-signs).
+
+        Args:
+            unsigned_tx: The unsigned transaction
+            qube_signature: Qube's signature
+            owner_privkey: Owner's 32-byte private key
+
+        Returns:
+            Signed transaction hex
+        """
+        if len(unsigned_tx.utxos) != 1:
+            raise ValueError("Currently only single-input transactions supported")
+
+        utxo = unsigned_tx.utxos[0]
+
+        # Prepare for sighash
+        inputs = [(utxo.txid, utxo.vout, utxo.value, utxo.script_pubkey)]
+        output_data = [
+            (out.value, address_to_script_pubkey(out.address))
+            for out in unsigned_tx.outputs
+        ]
+
+        # Calculate sighash (same as Qube used)
+        sighash = calculate_sighash_forkid(
+            tx_version=2,
+            inputs=inputs,
+            outputs=output_data,
+            input_idx=0,
+            redeem_script=self._redeem_script
+        )
+
+        # Owner signs
+        owner_sig = sign_sighash(sighash, owner_privkey)
+
+        # Build final transaction
+        return build_p2sh_spending_tx(
+            utxos=unsigned_tx.utxos,
+            outputs=unsigned_tx.outputs,
+            redeem_script=self._redeem_script,
+            signatures=[owner_sig, qube_signature],
+            spending_path="multisig"
+        ).hex()
+
+    def spend_owner_only(
+        self,
+        unsigned_tx: UnsignedTransaction,
+        owner_privkey: bytes
+    ) -> str:
+        """
+        Spend using owner-only path (IF branch).
+
+        Owner can withdraw without Qube involvement.
+
+        Args:
+            unsigned_tx: The unsigned transaction
+            owner_privkey: Owner's 32-byte private key
+
+        Returns:
+            Signed transaction hex
+        """
+        if len(unsigned_tx.utxos) != 1:
+            raise ValueError("Currently only single-input transactions supported")
+
+        utxo = unsigned_tx.utxos[0]
+
+        # Prepare for sighash
+        inputs = [(utxo.txid, utxo.vout, utxo.value, utxo.script_pubkey)]
+        output_data = [
+            (out.value, address_to_script_pubkey(out.address))
+            for out in unsigned_tx.outputs
+        ]
+
+        # Calculate sighash
+        sighash = calculate_sighash_forkid(
+            tx_version=2,
+            inputs=inputs,
+            outputs=output_data,
+            input_idx=0,
+            redeem_script=self._redeem_script
+        )
+
+        # Owner signs
+        owner_sig = sign_sighash(sighash, owner_privkey)
+
+        # Build transaction with owner-only path
+        return build_p2sh_spending_tx(
+            utxos=unsigned_tx.utxos,
+            outputs=unsigned_tx.outputs,
+            redeem_script=self._redeem_script,
+            signatures=[owner_sig],
+            spending_path="owner_only"
+        ).hex()
+
+    # =========================================================================
+    # BROADCAST
+    # =========================================================================
+
+    async def broadcast(self, tx_hex: str) -> str:
+        """
+        Broadcast signed transaction to the network.
+
+        Args:
+            tx_hex: Signed transaction in hex
+
+        Returns:
+            Transaction ID (txid)
+
+        Raises:
+            Exception: If broadcast fails
+        """
+        async with aiohttp.ClientSession() as session:
+            url = f"{BLOCKCHAIR_API}/push/transaction"
+            async with session.post(url, data={"data": tx_hex}) as resp:
+                result = await resp.json()
+
+                if result.get("context", {}).get("code") == 200:
+                    txid = result["data"]["transaction_hash"]
+                    logger.info("transaction_broadcast", txid=txid)
+                    return txid
+                else:
+                    error = result.get("context", {}).get("error", "Unknown error")
+                    logger.error("broadcast_failed", error=error)
+                    raise Exception(f"Broadcast failed: {error}")
+
+    # =========================================================================
+    # HIGH-LEVEL OPERATIONS
+    # =========================================================================
+
+    async def approve_and_broadcast(
+        self,
+        proposed_tx: ProposedTransaction,
+        owner_privkey: bytes
+    ) -> str:
+        """
+        Owner approves a Qube-proposed transaction and broadcasts.
+
+        Args:
+            proposed_tx: Transaction proposed by Qube
+            owner_privkey: Owner's private key
+
+        Returns:
+            Transaction ID
+        """
+        tx_hex = self.finalize_multisig(
+            proposed_tx.unsigned_tx,
+            proposed_tx.qube_signature,
+            owner_privkey
+        )
+
+        return await self.broadcast(tx_hex)
+
+    async def owner_withdraw(
+        self,
+        to_address: str,
+        amount_sats: int,
+        owner_privkey: bytes
+    ) -> str:
+        """
+        Owner withdraws directly (no Qube involvement).
+
+        Uses the IF branch (owner-only spending path).
+
+        Args:
+            to_address: Destination address
+            amount_sats: Amount in satoshis
+            owner_privkey: Owner's private key
+
+        Returns:
+            Transaction ID
+        """
+        outputs = [TxOutput(address=to_address, value=amount_sats)]
+        unsigned_tx = await self.create_unsigned_transaction_async(outputs)
+        tx_hex = self.spend_owner_only(unsigned_tx, owner_privkey)
+
+        return await self.broadcast(tx_hex)
+
+    async def owner_withdraw_all(
+        self,
+        to_address: str,
+        owner_privkey: bytes
+    ) -> str:
+        """
+        Owner withdraws entire balance.
+
+        Args:
+            to_address: Destination address
+            owner_privkey: Owner's private key
+
+        Returns:
+            Transaction ID
+        """
+        utxos = await self.get_utxos()
+        if not utxos:
+            raise ValueError("No funds to withdraw")
+
+        total = sum(u.value for u in utxos)
+
+        # Estimate fee for owner-only tx
+        tx_size = estimate_tx_size(len(utxos), 1, "owner_only")
+        fee = tx_size * DEFAULT_FEE_PER_BYTE
+
+        send_amount = total - fee
+        if send_amount < DUST_LIMIT:
+            raise ValueError(f"Balance too low to withdraw (after fees)")
+
+        outputs = [TxOutput(address=to_address, value=send_amount)]
+        unsigned_tx = UnsignedTransaction(
+            utxos=utxos,
+            outputs=outputs,
+            redeem_script=self._redeem_script,
+            fee=fee
+        )
+
+        tx_hex = self.spend_owner_only(unsigned_tx, owner_privkey)
+        return await self.broadcast(tx_hex)
+
+    # =========================================================================
+    # SERIALIZATION
+    # =========================================================================
+
+    def to_dict(self) -> dict:
+        """Serialize wallet info (no private keys!)"""
+        return {
+            "p2sh_address": self._p2sh_address,
+            "redeem_script_hex": self.redeem_script_hex,
+            "script_hash": self._script_hash,
+            "qube_pubkey": self.qube_pubkey_hex,
+            "owner_pubkey": self.owner_pubkey_hex,
+            "network": self._network,
+        }
+
+    @classmethod
+    def from_qube(cls, qube, owner_pubkey_hex: str, network: str = "mainnet") -> "QubeWallet":
+        """
+        Create wallet from a Qube instance.
+
+        Args:
+            qube: Qube instance with private_key attribute
+            owner_pubkey_hex: Owner's public key
+            network: Network name
+
+        Returns:
+            QubeWallet instance
+        """
+        # Extract raw private key bytes from Qube's cryptography key
+        private_key = qube.private_key
+
+        # Handle cryptography library's EllipticCurvePrivateKey
+        if hasattr(private_key, 'private_numbers'):
+            # cryptography library key
+            private_value = private_key.private_numbers().private_value
+            privkey_bytes = private_value.to_bytes(32, 'big')
+        elif hasattr(private_key, 'secret'):
+            # ecdsa library key
+            privkey_bytes = private_key.secret
+        elif isinstance(private_key, bytes) and len(private_key) == 32:
+            # Already raw bytes
+            privkey_bytes = private_key
+        else:
+            raise ValueError(f"Unsupported private key type: {type(private_key)}")
+
+        return cls(privkey_bytes, owner_pubkey_hex, network)
+
+
+# =============================================================================
+# UTILITY FUNCTIONS
+# =============================================================================
+
+def validate_pubkey(pubkey_hex: str) -> bool:
+    """
+    Validate a compressed public key.
+
+    Args:
+        pubkey_hex: Public key in hex format
+
+    Returns:
+        True if valid compressed pubkey
+    """
+    if not pubkey_hex or len(pubkey_hex) != 66:
+        return False
+    if not pubkey_hex.startswith(('02', '03')):
+        return False
+    try:
+        bytes.fromhex(pubkey_hex)
+        return True
+    except ValueError:
+        return False
+
+
+def validate_address(address: str) -> bool:
+    """
+    Validate a CashAddr address.
+
+    Args:
+        address: CashAddr string
+
+    Returns:
+        True if valid
+    """
+    from crypto.bch_script import decode_cashaddr
+    try:
+        decode_cashaddr(address)
+        return True
+    except Exception:
+        return False

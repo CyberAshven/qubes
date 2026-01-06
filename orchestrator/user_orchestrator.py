@@ -43,6 +43,7 @@ class PendingQubeCreation:
     expires_in_seconds: int
     op_return_data: str = ""
     op_return_hex: str = ""
+    qube_wallet_address: str = ""  # P2SH wallet address for Qube earnings
 
 
 class UserOrchestrator:
@@ -172,14 +173,26 @@ class UserOrchestrator:
         try:
             logger.info("creating_qube", name=config.get("name"))
 
-            # Validate required fields (including wallet for NFT minting)
-            required_fields = ["name", "genesis_prompt", "ai_model", "wallet_address"]
+            # Validate required fields
+            required_fields = ["name", "genesis_prompt", "ai_model", "owner_pubkey"]
             for field in required_fields:
                 if field not in config:
                     raise QubesError(
-                        f"Missing required field: {field}. All qubes must have a blockchain identity (NFT).",
+                        f"Missing required field: {field}. All qubes must have a blockchain identity (NFT) and wallet.",
                         context={"config": config}
                     )
+
+            # Validate owner_pubkey format (compressed secp256k1 public key)
+            owner_pubkey = config["owner_pubkey"]
+            if not owner_pubkey.startswith(('02', '03')) or len(owner_pubkey) != 66:
+                raise QubesError(
+                    "Invalid owner_pubkey format. Must be compressed public key (02.../03... + 64 hex chars)",
+                    context={"owner_pubkey": owner_pubkey[:20] + "..."}
+                )
+
+            # Derive token-aware 'z' address from owner's public key (for NFT recipient)
+            from crypto.bch_script import pubkey_to_token_address
+            config["wallet_address"] = pubkey_to_token_address(owner_pubkey, network="mainnet")
 
             # Generate cryptographic keys
             private_key, public_key = generate_key_pair()
@@ -354,7 +367,7 @@ class UserOrchestrator:
             logger.info("preparing_qube_for_minting", name=config.get("name"))
 
             # Validate required fields
-            required_fields = ["name", "genesis_prompt", "ai_model", "wallet_address"]
+            required_fields = ["name", "genesis_prompt", "ai_model", "owner_pubkey"]
             for field in required_fields:
                 if field not in config:
                     raise QubesError(
@@ -362,11 +375,48 @@ class UserOrchestrator:
                         context={"config": config}
                     )
 
+            # Validate owner_pubkey format (compressed secp256k1 public key)
+            owner_pubkey = config["owner_pubkey"]
+            if not owner_pubkey.startswith(('02', '03')) or len(owner_pubkey) != 66:
+                raise QubesError(
+                    "Invalid owner_pubkey format. Must be compressed public key (02.../03... + 64 hex chars)",
+                    context={"owner_pubkey": owner_pubkey[:20] + "..."}
+                )
+
+            # Derive token-aware 'z' address from owner's public key (for NFT recipient)
+            from crypto.bch_script import pubkey_to_token_address
+            token_address = pubkey_to_token_address(owner_pubkey, network="mainnet")
+            config["wallet_address"] = token_address
+
+            logger.info(
+                "nft_recipient_derived",
+                owner_pubkey=owner_pubkey[:16] + "...",
+                token_address=token_address
+            )
+
             # Generate cryptographic keys
             private_key, public_key = generate_key_pair()
             qube_id = derive_qube_id(public_key)
 
             logger.debug("qube_keys_generated", qube_id=qube_id[:16] + "...")
+
+            # Extract raw 32-byte private key for wallet (not PEM format)
+            from crypto.keys import get_raw_private_key_bytes
+            raw_private_key = get_raw_private_key_bytes(private_key)
+
+            # Create P2SH wallet with owner's public key (mandatory)
+            from crypto.wallet import QubeWallet
+            qube_wallet = QubeWallet(
+                qube_private_key=raw_private_key,
+                owner_pubkey_hex=owner_pubkey,
+                network="mainnet"
+            )
+
+            logger.info(
+                "qube_wallet_created",
+                qube_id=qube_id[:8],
+                p2sh_address=qube_wallet.p2sh_address
+            )
 
             # Handle avatar (upload or generate)
             avatar_data = await self._handle_avatar_creation(config, qube_id)
@@ -415,6 +465,13 @@ class UserOrchestrator:
                 "temporary": False,
                 "merkle_root": None,
                 "previous_hash": "0" * 64,
+                # Qube wallet (P2SH multi-sig with asymmetric control)
+                "wallet": {
+                    "owner_pubkey": owner_pubkey,
+                    "p2sh_address": qube_wallet.p2sh_address,
+                    "redeem_script_hash": qube_wallet.script_hash,
+                    "qube_pubkey": qube_wallet.qube_pubkey_hex
+                },
                 # Mark as pending minting
                 "nft_category_id": "pending_minting",
                 "mint_txid": None,
@@ -491,7 +548,8 @@ class UserOrchestrator:
                 expires_at=registration.expires_at,
                 expires_in_seconds=registration.expires_in_seconds,
                 op_return_data=registration.payment.op_return_data,
-                op_return_hex=registration.payment.op_return_hex
+                op_return_hex=registration.payment.op_return_hex,
+                qube_wallet_address=qube_wallet.p2sh_address
             )
 
             # Track pending minting
@@ -1124,6 +1182,12 @@ class UserOrchestrator:
                             "bcmr_uri": genesis.get("bcmr_uri"),
                             "avatar_ipfs_cid": nft_metadata.get("avatar_ipfs_cid") or avatar_info.get("ipfs_cid"),
                             "avatar_local_path": avatar_local_path,  # For frontend to use with convertFileSrc()
+                            # Wallet fields (from genesis block wallet object)
+                            "wallet_address": genesis.get("wallet", {}).get("p2sh_address"),
+                            "wallet_owner_pubkey": genesis.get("wallet", {}).get("owner_pubkey"),
+                            "wallet_qube_pubkey": genesis.get("wallet", {}).get("qube_pubkey"),
+                            # Derive owner's 'q' address from pubkey
+                            "wallet_owner_q_address": self._derive_q_address(genesis.get("wallet", {}).get("owner_pubkey")),
                         })
 
         logger.debug("qubes_listed", count=len(qube_list))
@@ -1726,6 +1790,24 @@ class UserOrchestrator:
     # =============================================================================
     # Private Helper Methods
     # =============================================================================
+
+    def _derive_q_address(self, owner_pubkey: Optional[str]) -> Optional[str]:
+        """
+        Derive the owner's 'q' address (standard P2PKH) from their public key.
+
+        Args:
+            owner_pubkey: Compressed public key hex string (66 chars)
+
+        Returns:
+            BCH address with 'q' prefix, or None if pubkey is invalid
+        """
+        if not owner_pubkey:
+            return None
+        try:
+            from crypto.bch_script import pubkey_to_p2pkh_address
+            return pubkey_to_p2pkh_address(owner_pubkey, "mainnet", token_aware=False)
+        except Exception:
+            return None
 
     def _default_voice_for_model(self, ai_model: str) -> str:
         """

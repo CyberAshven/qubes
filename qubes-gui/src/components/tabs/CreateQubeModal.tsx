@@ -19,7 +19,8 @@ export interface CreateQubeData {
   aiProvider: string;
   aiModel: string;
   voiceModel?: string;
-  walletAddress: string;
+  ownerPubkey: string;  // Compressed public key - NFT address derived automatically
+  walletAddress?: string;  // Optional - derived from ownerPubkey by backend
   encryptGenesis?: boolean;
   favoriteColor: string;
   avatarFile?: string;
@@ -92,7 +93,7 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
     aiProvider: 'openai',
     aiModel: 'gpt-4',
     voiceModel: 'google:en-US-Neural2-A',  // Default to Google Cloud TTS Neural2!
-    walletAddress: '',
+    ownerPubkey: '',  // NFT address derived automatically from this
     encryptGenesis: false,
     favoriteColor: '#00ff88',
     generateAvatar: true,
@@ -248,7 +249,7 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
         aiProvider: formData.aiProvider,
         aiModel: formData.aiModel,
         voiceModel: formData.voiceModel,
-        walletAddress: formData.walletAddress,
+        ownerPubkey: formData.ownerPubkey,  // NFT address derived from this by backend
         password,
         encryptGenesis: formData.encryptGenesis || false,
         favoriteColor: formData.favoriteColor,
@@ -352,7 +353,7 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
       aiProvider: 'openai',
       aiModel: 'gpt-5-turbo',
       voiceModel: 'google:en-US-Neural2-A',  // Default to Google Cloud TTS Neural2!
-      walletAddress: '',
+      ownerPubkey: '',  // NFT address derived automatically from this
       encryptGenesis: false,
       favoriteColor: '#00ff88',
       generateAvatar: true,
@@ -388,10 +389,11 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
     }
 
     if (currentStep === 3) {
-      if (!formData.walletAddress.trim()) {
-        newErrors.walletAddress = 'Bitcoin Cash wallet address is required for NFT minting';
-      } else if (!formData.walletAddress.startsWith('bitcoincash:')) {
-        newErrors.walletAddress = 'Must be a valid Bitcoin Cash address (starts with bitcoincash:)';
+      // Only ownerPubkey is required - NFT address is derived automatically
+      if (!formData.ownerPubkey.trim()) {
+        newErrors.ownerPubkey = 'BCH public key is required for Qube wallet and NFT minting';
+      } else if (!/^(02|03)[a-fA-F0-9]{64}$/.test(formData.ownerPubkey.trim())) {
+        newErrors.ownerPubkey = 'Must be compressed public key (02... or 03... + 64 hex chars)';
       }
     }
 
@@ -736,27 +738,42 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
               </p>
             </div>
 
+            {/* Owner Public Key - NFT address derived automatically */}
             <div>
               <label className="block text-sm font-medium text-text-secondary mb-2">
-                Bitcoin Cash Wallet Address *
+                Your BCH Public Key *
               </label>
               <input
                 type="text"
-                placeholder="bitcoincash:qp..."
-                value={formData.walletAddress}
-                onChange={(e) => setFormData({ ...formData, walletAddress: e.target.value })}
+                placeholder="02abc123... or 03def456..."
+                value={formData.ownerPubkey}
+                onChange={(e) => setFormData({ ...formData, ownerPubkey: e.target.value })}
                 className={`w-full px-4 py-2 bg-glass-bg backdrop-blur-glass border rounded-lg text-text-primary font-mono text-sm placeholder-text-tertiary focus:outline-none focus:ring-2 ${
-                  errors.walletAddress
+                  errors.ownerPubkey
                     ? 'border-accent-danger focus:ring-accent-danger'
                     : 'border-glass-border focus:ring-accent-primary/50'
                 }`}
               />
-              {errors.walletAddress && (
-                <span className="text-sm text-accent-danger">{errors.walletAddress}</span>
+              {errors.ownerPubkey && (
+                <span className="text-sm text-accent-danger">{errors.ownerPubkey}</span>
               )}
               <p className="text-xs text-text-tertiary mt-1">
-                ⚠️ This address must support CashTokens for NFT minting. The Qube's genesis NFT will be sent here.
+                Your compressed public key (66 hex characters starting with 02 or 03).
+                <br />
+                <strong>In Electron Cash:</strong> Addresses tab → Right-click address → Details → Public key
               </p>
+
+              {/* Show what this pubkey does */}
+              {formData.ownerPubkey && /^(02|03)[a-fA-F0-9]{64}$/.test(formData.ownerPubkey.trim()) && (
+                <div className="mt-3 p-3 bg-accent-primary/10 border border-accent-primary/30 rounded-lg">
+                  <p className="text-xs text-accent-primary font-medium mb-1">This public key will:</p>
+                  <ul className="text-xs text-text-secondary space-y-1">
+                    <li>• Receive the Qube's NFT (token-aware address derived automatically)</li>
+                    <li>• Control the Qube's wallet (owner can withdraw without Qube approval)</li>
+                    <li>• Co-sign any spending the Qube proposes</li>
+                  </ul>
+                </div>
+              )}
             </div>
 
             <div>
@@ -955,8 +972,9 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
                   <p className="text-text-primary font-medium">{formData.voiceModel}</p>
                 </div>
                 <div>
-                  <span className="text-text-tertiary text-sm">Wallet Address:</span>
-                  <p className="text-text-primary font-mono text-xs break-all">{formData.walletAddress}</p>
+                  <span className="text-text-tertiary text-sm">Owner Public Key:</span>
+                  <p className="text-text-primary font-mono text-xs break-all">{formData.ownerPubkey}</p>
+                  <p className="text-text-tertiary text-xs mt-1">NFT address will be derived automatically</p>
                 </div>
                 <div>
                   <span className="text-text-tertiary text-sm">Encrypt Genesis:</span>

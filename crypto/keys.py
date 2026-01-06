@@ -93,6 +93,21 @@ def serialize_private_key(private_key: ec.EllipticCurvePrivateKey) -> bytes:
     )
 
 
+def get_raw_private_key_bytes(private_key: ec.EllipticCurvePrivateKey) -> bytes:
+    """
+    Get raw 32-byte private key scalar.
+
+    Args:
+        private_key: ECDSA private key
+
+    Returns:
+        32-byte raw private key (for use with BCH wallet scripts)
+    """
+    # Get the private key as an integer and convert to 32 bytes
+    private_numbers = private_key.private_numbers()
+    return private_numbers.private_value.to_bytes(32, byteorder='big')
+
+
 def serialize_public_key(public_key: ec.EllipticCurvePublicKey) -> str:
     """
     Serialize public key to compressed hex format (33 bytes)

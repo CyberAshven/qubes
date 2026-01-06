@@ -13,6 +13,7 @@ import { RelationshipsTab } from './RelationshipsTab';
 import { SkillsTab } from './SkillsTab';
 import { GamesTab } from './GamesTab';
 import { SettingsTab } from './SettingsTab';
+import { EarningsTab } from './EarningsTab';
 import { Connection } from '../connections';
 
 type ChatMode = 'local' | 'p2p';
@@ -38,6 +39,7 @@ export const TabContent: React.FC<TabContentProps> = ({ qubes, setQubes, onQubes
 
   // Get selection for current tab
   const selectedQubeIds = useQubeSelection((state) => state.selectionByTab[state.currentTab] ?? EMPTY_ARRAY);
+  const toggleSelection = useQubeSelection((state) => state.toggleSelection);
 
   // Get Dashboard selection specifically (for chat interfaces that should persist)
   const dashboardSelection = useQubeSelection((state) => state.selectionByTab['dashboard'] ?? EMPTY_ARRAY);
@@ -295,27 +297,11 @@ export const TabContent: React.FC<TabContentProps> = ({ qubes, setQubes, onQubes
             currentTab === 'economy' ? 'z-10 opacity-100' : 'z-0 opacity-0 pointer-events-none'
           }`}
         >
-          <div className="p-6">
-            <GlassCard className="p-6">
-              <p className="text-text-secondary mb-4">
-                Cost tracking and metrics will go here
-              </p>
-              {selectedQubeIds.length > 0 ? (
-                <div>
-                  <p className="text-text-primary">
-                    Showing costs for {selectedQubeIds.length} qube(s)
-                  </p>
-                  <p className="text-sm text-text-tertiary mt-2">
-                    Multi-select: <span className="text-accent-success">Enabled</span>
-                  </p>
-                </div>
-              ) : (
-                <p className="text-text-tertiary">
-                  Showing aggregate costs for all qubes
-                </p>
-              )}
-            </GlassCard>
-          </div>
+          <EarningsTab
+            qubes={qubes}
+            selectedQubeIds={selectedQubeIds}
+            onQubeSelect={(qubeId) => toggleSelection(qubeId, false, false)}
+          />
         </div>
 
         {/* Settings Tab */}

@@ -977,6 +977,69 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, onEdit, onDelete, onSelect, o
     return inferProvider(evalModel);
   });
 
+  // Wallet balance state
+  const [walletBalance, setWalletBalance] = useState<number | null>(null);  // P2SH wallet
+  const [nftBalance, setNftBalance] = useState<number | null>(null);  // NFT address ('z')
+  const [walletBalanceLoading, setWalletBalanceLoading] = useState(false);
+  const [walletBalanceError, setWalletBalanceError] = useState<string | null>(null);
+
+  // Get master password from auth
+  const { password: masterPassword } = useAuth();
+
+  // Format BCH amount for display (always show 8 decimal places)
+  const formatBCH = (sats: number) => {
+    const bch = sats / 100_000_000;
+    return bch.toFixed(8);
+  };
+
+  // Fetch wallet balance when flipping to blockchain side
+  useEffect(() => {
+    const fetchWalletBalance = async () => {
+      // Only fetch if:
+      // 1. We're on the blockchain side (flipState === 1)
+      // 2. Qube has a wallet address
+      // 3. We haven't already loaded the balance
+      // 4. We have credentials
+      if (flipState !== 1 || !qube.wallet_address || walletBalance !== null || !userId || !masterPassword) {
+        return;
+      }
+
+      setWalletBalanceLoading(true);
+      setWalletBalanceError(null);
+
+      try {
+        const result = await invoke<{
+          success: boolean;
+          balance_sats?: number;
+          nft_balance_sats?: number;
+          error?: string;
+        }>('get_wallet_info', {
+          userId,
+          qubeId: qube.qube_id,
+          password: masterPassword,
+        });
+
+        if (result.success) {
+          if (result.balance_sats !== undefined) {
+            setWalletBalance(result.balance_sats);
+          }
+          if (result.nft_balance_sats !== undefined) {
+            setNftBalance(result.nft_balance_sats);
+          }
+        } else {
+          setWalletBalanceError(result.error || 'Failed to fetch balance');
+        }
+      } catch (error) {
+        console.error('Failed to fetch wallet balance:', error);
+        setWalletBalanceError('Failed to fetch balance');
+      } finally {
+        setWalletBalanceLoading(false);
+      }
+    };
+
+    fetchWalletBalance();
+  }, [flipState, qube.wallet_address, qube.qube_id, userId, masterPassword, walletBalance]);
+
   const handleFlip = () => {
     const newFlipState = (flipState + 1) % 3;
     setFlipState(newFlipState);
@@ -1983,138 +2046,197 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, onEdit, onDelete, onSelect, o
             </button>
 
             {/* Header */}
-            <div className="text-center mb-4">
-              <h3 className="text-2xl font-bold text-text-primary mb-1">{qube.name}</h3>
-              <p className="text-xs text-text-tertiary">Blockchain Stats</p>
+            <div className="text-center mb-3">
+              <h3 className="text-xl font-bold text-text-primary">{qube.name}</h3>
+              <p className="text-xs text-text-tertiary">Blockchain Data</p>
             </div>
 
-            {/* Blockchain Stats Section */}
-            <div className="flex-1 overflow-y-auto">
-              <div className="mb-2 pb-2 border-b border-glass-border">
-                <h4 className="text-base font-semibold text-accent-primary flex items-center gap-2">
-                  ⛓️ Blockchain Data
-                </h4>
-              </div>
-              <div className="space-y-2 text-xs">
-                {qube.home_blockchain && (
-                  <div className="flex justify-between items-center py-0.5">
-                    <span className="text-text-tertiary">Blockchain:</span>
-                    <span className="text-text-primary font-medium">
-                      {qube.home_blockchain === 'bitcoincash' ? 'Bitcoin Cash' : qube.home_blockchain}
-                    </span>
-                  </div>
-                )}
-                {qube.birth_timestamp && (
-                  <div className="flex justify-between items-center py-0.5">
-                    <span className="text-text-tertiary">Birth:</span>
-                    <span className="text-text-primary font-mono">
-                      {new Date(qube.birth_timestamp * 1000).toLocaleString(undefined, {
-                        month: 'short',
-                        day: 'numeric',
-                        year: 'numeric',
-                        hour: '2-digit',
-                        minute: '2-digit'
-                      })}
-                    </span>
-                  </div>
-                )}
-                {qube.nft_category_id && (
-                  <div className="flex justify-between items-center py-0.5">
-                    <span className="text-text-tertiary whitespace-nowrap">Category ID:</span>
-                    <BlockchainLink value={qube.nft_category_id} type="hash" network={qube.network} />
-                  </div>
-                )}
-                {qube.mint_txid && (
-                  <div className="flex justify-between items-center py-0.5">
-                    <span className="text-text-tertiary whitespace-nowrap">Mint TX:</span>
-                    <BlockchainLink value={qube.mint_txid} type="transaction" network={qube.network} />
-                  </div>
-                )}
-                {qube.recipient_address && (
-                  <div className="flex justify-between items-center py-0.5">
-                    <span className="text-text-tertiary whitespace-nowrap">Owner Address:</span>
-                    <BlockchainLink value={qube.recipient_address} type="address" network={qube.network} />
-                  </div>
-                )}
-                {qube.genesis_block_hash && (
-                  <div className="flex justify-between items-center py-0.5">
-                    <span className="text-text-tertiary whitespace-nowrap">Genesis Hash:</span>
-                    <BlockchainLink value={qube.genesis_block_hash} type="hash" network={qube.network} />
-                  </div>
-                )}
-                {qube.commitment && (
-                  <div className="flex justify-between items-center py-0.5">
-                    <span className="text-text-tertiary whitespace-nowrap">Commitment:</span>
-                    <BlockchainLink value={qube.commitment} type="hash" network={qube.network} />
-                  </div>
-                )}
-                {qube.public_key && (
-                  <div className="flex justify-between items-center py-0.5">
-                    <span className="text-text-tertiary whitespace-nowrap">Public Key:</span>
-                    <BlockchainLink value={qube.public_key} type="other" network={qube.network} />
-                  </div>
-                )}
-                {qube.avatar_ipfs_cid ? (
-                  <div className="flex justify-between items-center py-0.5">
-                    <span className="text-text-tertiary whitespace-nowrap">Avatar CID:</span>
-                    <BlockchainLink value={qube.avatar_ipfs_cid} type="ipfs" />
-                  </div>
-                ) : qube.avatar_local_path ? (
-                  <div className="flex justify-between items-center py-0.5">
-                    <span className="text-text-tertiary whitespace-nowrap">Avatar CID:</span>
-                    <button
-                      onClick={async (e) => {
-                        e.stopPropagation();
-                        const { password } = useAuth.getState();
-                        const { userId } = useAuth.getState();
-                        if (!password || !userId) {
-                          alert('Please log in to upload avatar');
-                          return;
-                        }
-                        try {
-                          const result = await invoke<{ success: boolean; avatar_ipfs_cid?: string; error?: string }>('upload_avatar_to_ipfs', {
-                            userId,
-                            qubeId: qube.qube_id,
-                            password,
-                          });
-                          if (result.success && result.avatar_ipfs_cid) {
-                            alert(`Avatar uploaded to IPFS!\nCID: ${result.avatar_ipfs_cid}`);
-                            // Trigger a refresh of the qube list
-                            window.location.reload();
-                          } else {
-                            alert(`Failed to upload: ${result.error || 'Unknown error'}`);
-                          }
-                        } catch (err) {
-                          alert(`Error: ${err}`);
-                        }
-                      }}
-                      className="text-xs text-accent-warning hover:text-accent-primary transition-colors underline"
+            {/* Wallet Balances - Enhanced Three columns with glow */}
+            {qube.wallet_address && (
+              <div className="flex gap-2 mb-3">
+                {/* NFT Balance */}
+                <div
+                  className="flex-1 p-2 rounded-lg text-center relative overflow-hidden"
+                  style={{
+                    backgroundColor: `${qube.favorite_color}15`,
+                    border: `1px solid ${qube.favorite_color}40`,
+                    boxShadow: `0 0 15px ${qube.favorite_color}20`
+                  }}
+                >
+                  <span className="text-text-tertiary text-[10px] block mb-0.5 uppercase tracking-wide">NFT</span>
+                  {walletBalanceLoading ? (
+                    <span className="text-text-tertiary text-sm animate-pulse">...</span>
+                  ) : (
+                    <span
+                      className="font-mono text-sm font-bold block"
+                      style={{ color: qube.favorite_color, textShadow: `0 0 10px ${qube.favorite_color}60` }}
                     >
-                      Upload to IPFS
-                    </button>
-                  </div>
-                ) : null}
-                {qube.bcmr_uri && (
-                  <div className="flex justify-between items-center py-0.5">
-                    <span className="text-text-tertiary whitespace-nowrap">BCMR URI:</span>
-                    <BlockchainLink value={qube.bcmr_uri} type="ipfs" />
-                  </div>
-                )}
-                <div className="flex justify-between items-center py-0.5">
-                  <span className="text-text-tertiary">Network:</span>
-                  <span className="flex items-center gap-2">
-                    <div className={`w-2 h-2 rounded-full ${qube.status === 'active' ? 'bg-green-500' : 'bg-red-500'}`} />
-                    <span className="text-text-primary font-medium capitalize">
-                      {qube.status === 'active' ? 'Connected' : 'Disconnected'}
+                      {formatBCH(nftBalance || 0)}
                     </span>
-                  </span>
+                  )}
+                </div>
+                {/* BCH Balance */}
+                <div
+                  className="flex-1 p-2 rounded-lg text-center relative overflow-hidden"
+                  style={{
+                    backgroundColor: 'rgba(34, 197, 94, 0.1)',
+                    border: '1px solid rgba(34, 197, 94, 0.4)',
+                    boxShadow: '0 0 15px rgba(34, 197, 94, 0.2)'
+                  }}
+                >
+                  <span className="text-text-tertiary text-[10px] block mb-0.5 uppercase tracking-wide">BCH</span>
+                  {walletBalanceLoading ? (
+                    <span className="text-text-tertiary text-sm animate-pulse">...</span>
+                  ) : (
+                    <span
+                      className="font-mono text-sm font-bold block"
+                      style={{ color: '#22c55e', textShadow: '0 0 10px rgba(34, 197, 94, 0.6)' }}
+                    >
+                      {formatBCH(nftBalance || 0)}
+                    </span>
+                  )}
+                </div>
+                {/* Qube Wallet Balance */}
+                <div
+                  className="flex-1 p-2 rounded-lg text-center relative overflow-hidden"
+                  style={{
+                    backgroundColor: 'rgba(180, 124, 255, 0.1)',
+                    border: '1px solid rgba(180, 124, 255, 0.4)',
+                    boxShadow: '0 0 15px rgba(180, 124, 255, 0.2)'
+                  }}
+                >
+                  <span className="text-text-tertiary text-[10px] block mb-0.5 uppercase tracking-wide">Wallet</span>
+                  {walletBalanceLoading ? (
+                    <span className="text-text-tertiary text-sm animate-pulse">...</span>
+                  ) : (
+                    <span
+                      className="font-mono text-sm font-bold block text-accent-secondary"
+                      style={{ textShadow: '0 0 10px rgba(180, 124, 255, 0.6)' }}
+                    >
+                      {formatBCH(walletBalance || 0)}
+                    </span>
+                  )}
                 </div>
               </div>
+            )}
+
+            {/* Blockchain Data - Compact Two-Column Grid */}
+            <div className="flex-1 overflow-y-auto pr-1 custom-scrollbar">
+              {/* Basic Info Row */}
+              <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs mb-2">
+                {qube.home_blockchain && (
+                  <>
+                    <span className="text-text-tertiary">Chain:</span>
+                    <span className="text-text-primary font-medium text-right">
+                      {qube.home_blockchain === 'bitcoincash' ? 'BCH' : qube.home_blockchain}
+                    </span>
+                  </>
+                )}
+                {qube.birth_timestamp && (
+                  <>
+                    <span className="text-text-tertiary">Born:</span>
+                    <span className="text-text-primary font-mono text-right">
+                      {new Date(qube.birth_timestamp * 1000).toLocaleDateString(undefined, {
+                        month: 'short',
+                        day: 'numeric',
+                        year: '2-digit'
+                      })}
+                    </span>
+                  </>
+                )}
+              </div>
+
+              {/* Addresses Section */}
+              {(qube.recipient_address || qube.wallet_owner_q_address || qube.wallet_address) && (
+                <div className="mb-2 pt-2 border-t border-glass-border/30">
+                  <div className="text-[10px] text-text-tertiary uppercase tracking-wider mb-1 flex items-center gap-1">
+                    <span>📍</span> Addresses
+                  </div>
+                  <div className="space-y-0.5 text-xs">
+                    {qube.recipient_address && (
+                      <div className="flex justify-between items-center">
+                        <span className="text-text-tertiary">NFT (z):</span>
+                        <BlockchainLink value={qube.recipient_address} type="address" network={qube.network} />
+                      </div>
+                    )}
+                    {qube.wallet_owner_q_address && (
+                      <div className="flex justify-between items-center">
+                        <span className="text-text-tertiary">BCH (q):</span>
+                        <BlockchainLink value={qube.wallet_owner_q_address} type="address" network={qube.network} />
+                      </div>
+                    )}
+                    {qube.wallet_address && (
+                      <div className="flex justify-between items-center">
+                        <span className="text-text-tertiary">Wallet (p):</span>
+                        <BlockchainLink value={qube.wallet_address} type="address" network={qube.network} />
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* NFT Identity Section */}
+              {(qube.nft_category_id || qube.mint_txid || qube.commitment || qube.public_key) && (
+                <div className="mb-2 pt-2 border-t border-glass-border/30">
+                  <div className="text-[10px] text-text-tertiary uppercase tracking-wider mb-1 flex items-center gap-1">
+                    <span>🎫</span> NFT Identity
+                  </div>
+                  <div className="space-y-0.5 text-xs">
+                    {qube.nft_category_id && (
+                      <div className="flex justify-between items-center">
+                        <span className="text-text-tertiary">Category:</span>
+                        <BlockchainLink value={qube.nft_category_id} type="hash" network={qube.network} />
+                      </div>
+                    )}
+                    {qube.mint_txid && (
+                      <div className="flex justify-between items-center">
+                        <span className="text-text-tertiary">Mint TX:</span>
+                        <BlockchainLink value={qube.mint_txid} type="transaction" network={qube.network} />
+                      </div>
+                    )}
+                    {qube.commitment && (
+                      <div className="flex justify-between items-center">
+                        <span className="text-text-tertiary">Commit:</span>
+                        <BlockchainLink value={qube.commitment} type="hash" network={qube.network} />
+                      </div>
+                    )}
+                    {qube.public_key && (
+                      <div className="flex justify-between items-center">
+                        <span className="text-text-tertiary">Pubkey:</span>
+                        <BlockchainLink value={qube.public_key} type="other" network={qube.network} />
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* IPFS Section */}
+              {(qube.avatar_ipfs_cid || qube.bcmr_uri) && (
+                <div className="pt-2 border-t border-glass-border/30">
+                  <div className="text-[10px] text-text-tertiary uppercase tracking-wider mb-1 flex items-center gap-1">
+                    <span>🌐</span> IPFS
+                  </div>
+                  <div className="space-y-0.5 text-xs">
+                    {qube.avatar_ipfs_cid && (
+                      <div className="flex justify-between items-center">
+                        <span className="text-text-tertiary">Avatar:</span>
+                        <BlockchainLink value={qube.avatar_ipfs_cid} type="ipfs" />
+                      </div>
+                    )}
+                    {qube.bcmr_uri && (
+                      <div className="flex justify-between items-center">
+                        <span className="text-text-tertiary">BCMR:</span>
+                        <BlockchainLink value={qube.bcmr_uri} type="ipfs" />
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Flip hint */}
-            <div className="text-center pt-2 border-t border-glass-border flex-shrink-0">
-              <p className="text-[9px] text-text-tertiary">
+            <div className="text-center pt-2 border-t border-glass-border/50 flex-shrink-0">
+              <p className="text-[10px] text-text-tertiary">
                 Click 🔄 to see relationships
               </p>
             </div>
