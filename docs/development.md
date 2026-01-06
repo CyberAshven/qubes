@@ -262,15 +262,61 @@ test: Add tests for relationship decay
 
 1. Update version in:
    - `qubes-gui/src-tauri/tauri.conf.json`
+   - `qubes-gui/src-tauri/Cargo.toml`
    - `qubes-gui/package.json`
 
-2. Update changelog
+2. Commit and push changes
 
 3. Create tag: `git tag v0.x.x`
 
 4. Push tag: `git push origin v0.x.x`
 
 5. GitHub Actions builds and publishes release
+
+6. Download artifacts from GitHub Actions
+
+7. Update `latest.json` URLs to point to qube.cash
+
+8. Deploy to production server (see `qubes-gui/UPDATER_SETUP.md`)
+
+9. Update releases page at qube.cash/releases/
+
+## PyInstaller Considerations
+
+The Python backend is bundled with PyInstaller. Keep these in mind:
+
+### Hidden Imports
+PyInstaller may miss dynamically imported modules. Use lazy loading for optional dependencies:
+
+```python
+# BAD: Top-level import - crashes if module not in bundle
+import chess
+
+# GOOD: Lazy loading - only fails when actually used
+_chess = None
+def _get_chess():
+    global _chess
+    if _chess is None:
+        import chess
+        _chess = chess
+    return _chess
+```
+
+### Testing Bundled App
+Always test the installed (non-dev) version before releasing:
+
+1. Build the release: `npm run tauri build`
+2. Install the built app
+3. Test all features, especially new functionality
+4. Check for import errors by running backend manually:
+   ```bash
+   ./qubes-backend.exe check-first-run
+   ```
+
+### Common Issues
+- **Backend crash shows tutorial screen**: The Rust frontend defaults to `is_first_run: true` when backend fails
+- **Missing modules**: Add to PyInstaller hidden imports or use lazy loading
+- **Data is safe**: User data in `AppData/Local/Qubes/` is not affected by backend crashes
 
 ## Debugging
 

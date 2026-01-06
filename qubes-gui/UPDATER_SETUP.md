@@ -144,12 +144,73 @@ Add these secrets to your GitHub repository:
 - `TAURI_SIGNING_PRIVATE_KEY` - Contents of your private key file
 - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` - Your key password
 
+## Step 6: Deploy to Production Server (qube.cash)
+
+For production releases, we host files on qube.cash instead of GitHub for faster downloads:
+
+### 1. Download GitHub Actions Artifacts
+
+After the build completes, download the release artifacts from GitHub Actions.
+
+### 2. Update latest.json URLs
+
+Change URLs from GitHub to qube.cash:
+
+```json
+{
+  "version": "0.2.7",
+  "notes": "Qubes v0.2.7 release",
+  "pub_date": "2026-01-06T09:14:18Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "CONTENTS_OF_.sig_FILE",
+      "url": "https://qube.cash/releases/v0.2.7/Qubes-Windows-setup.exe"
+    },
+    "darwin-aarch64": {
+      "signature": "CONTENTS_OF_.sig_FILE",
+      "url": "https://qube.cash/releases/v0.2.7/Qubes-macOS-ARM.app.tar.gz"
+    },
+    "linux-x86_64": {
+      "signature": "CONTENTS_OF_.sig_FILE",
+      "url": "https://qube.cash/releases/v0.2.7/Qubes-Linux.AppImage.tar.gz"
+    }
+  }
+}
+```
+
+### 3. Upload to Server
+
+```bash
+# Create version directory
+ssh bit_faced@YOUR_SERVER_IP "sudo mkdir -p /var/www/your-domain/releases/v0.2.7"
+
+# Upload files (use /tmp for permission handling)
+scp latest.json bit_faced@YOUR_SERVER_IP:/tmp/
+scp Qubes-Windows-setup.exe bit_faced@YOUR_SERVER_IP:/tmp/
+scp Qubes-macOS-ARM.app.tar.gz bit_faced@YOUR_SERVER_IP:/tmp/
+scp Qubes-Linux.AppImage.tar.gz bit_faced@YOUR_SERVER_IP:/tmp/
+
+# Move to final location
+ssh bit_faced@YOUR_SERVER_IP "sudo mv /tmp/latest.json /var/www/your-domain/releases/v0.2.7/"
+ssh bit_faced@YOUR_SERVER_IP "sudo mv /tmp/Qubes-*.exe /var/www/your-domain/releases/v0.2.7/"
+ssh bit_faced@YOUR_SERVER_IP "sudo mv /tmp/Qubes-*.tar.gz /var/www/your-domain/releases/v0.2.7/"
+
+# Copy latest.json to root releases folder
+ssh bit_faced@YOUR_SERVER_IP "sudo cp /var/www/your-domain/releases/v0.2.7/latest.json /var/www/your-domain/releases/"
+```
+
+### 4. Update Releases Page
+
+Edit `/var/www/your-domain/releases/index.html` to add the new version card.
+
 ## Testing
 
 1. Build version 0.1.0 and install it
 2. Build version 0.2.0 and create a GitHub release
 3. Open Settings in the app and click "Check for Updates"
 4. The update should be detected and installable
+
+**Important**: Always test auto-updates on an installed (non-dev) version before announcing the release.
 
 ## Troubleshooting
 
@@ -167,3 +228,33 @@ Add these secrets to your GitHub repository:
 - On Windows, ensure the app isn't running from a protected directory
 - Check Windows Defender isn't blocking the update
 - Try running the app as administrator
+
+### App shows tutorial/onboarding screen after update
+This indicates the Python backend is crashing on startup.
+
+**Diagnosis**:
+1. Navigate to the installed app directory (e.g., `C:\Program Files\Qubes\`)
+2. Run the backend manually: `./qubes-backend.exe check-first-run`
+3. Look for import errors or missing modules
+
+**Common Cause**: Missing module in PyInstaller bundle
+- If a Python module was added but not included in PyInstaller's hidden imports
+- Solution: Use lazy loading for optional modules
+
+```python
+# Bad: Top-level import crashes if module missing
+import some_optional_module
+
+# Good: Lazy load when actually needed
+_module = None
+def _get_module():
+    global _module
+    if _module is None:
+        import some_optional_module
+        _module = some_optional_module
+    return _module
+```
+
+**User Data Location**: User data is safe at:
+- Windows: `C:\Users\<user>\AppData\Local\Qubes\data\users\`
+- The tutorial screen is just the frontend; data is not lost

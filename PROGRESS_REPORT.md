@@ -1,10 +1,154 @@
 # Qubes Implementation Progress Report
-**Date:** November 11, 2025
-**Session:** Skills System Enhancement - Detailed Tracking & Social Intelligence
+**Date:** January 6, 2026
+**Session:** v0.2.7 Release & Critical Bug Fix
 
 ---
 
-## Latest Session: Skills System Enhancement (November 11, 2025 - Later Session)
+## Latest Session: v0.2.7 Release & Bug Fixes (January 6, 2026)
+
+### What Was Accomplished
+
+#### 1. **v0.2.6 Release Deployment** ✅
+- Built and deployed v0.2.6 release to production
+- Uploaded artifacts to `qube.cash/releases/v0.2.6/`:
+  - `Qubes-Windows-setup.exe`
+  - `Qubes-macOS-ARM.app.tar.gz`
+  - `Qubes-Linux.AppImage.tar.gz`
+- Updated `latest.json` with qube.cash URLs (instead of GitHub)
+- Updated `index.html` releases page
+
+#### 2. **Critical Bug Fix: Backend Crash on Update** ✅
+- **Problem**: After updating from v0.2.5 to v0.2.6, app showed tutorial/onboarding screen instead of login
+- **Root Cause**: `core/game_manager.py` had top-level `import chess` which wasn't included in PyInstaller bundle
+- **Impact**: Backend crashed on startup, Rust code defaulted to `is_first_run: true`
+- **Solution**: Implemented lazy loading for chess module
+- **Files Modified**:
+  - `core/game_manager.py`: Added `_get_chess()` lazy loader function
+
+```python
+# Before (caused crash)
+import chess
+import chess.pgn
+
+# After (lazy loading)
+_chess = None
+_chess_pgn = None
+
+def _get_chess():
+    """Lazy load chess module when needed"""
+    global _chess, _chess_pgn
+    if _chess is None:
+        import chess
+        import chess.pgn
+        _chess = chess
+        _chess_pgn = chess.pgn
+    return _chess, _chess_pgn
+```
+
+#### 3. **v0.2.7 Release** ✅
+- Bumped version to 0.2.7 in:
+  - `qubes-gui/package.json`
+  - `qubes-gui/src-tauri/tauri.conf.json`
+  - `qubes-gui/src-tauri/Cargo.toml`
+- Created git tag `v0.2.7`
+- GitHub Actions built releases automatically
+- Deployed to `qube.cash/releases/v0.2.7/`
+- Updated `latest.json` and `index.html`
+
+#### 4. **UI Fix: "Wallet" → "Qube" Label** ✅
+- Fixed duplicate "Wallet" label on Qube Card (Blockchain Data side)
+- Changed to "Qube" in two places in `QubeManagerTab.tsx`:
+  - Line 2108: Balance card label
+  - Line 2170: Address label "Wallet (p):" → "Qube (p):"
+- Committed for future v0.2.8 release
+
+#### 5. **Wallets Tab UX Improvement** ✅
+- **Problem**: When switching qubes, the entire Wallets tab waited for balance API call (2-3 seconds)
+- **Solution**: Made addresses load immediately while only balances show loading state
+- **Changes**:
+  - Clear `walletInfo` when qube changes so fallback addresses render instantly
+  - Moved address displays outside loading conditionals in balance cards
+  - Deposit QR code and address now update immediately
+- **Files Modified**:
+  - `qubes-gui/src/components/tabs/EarningsTab.tsx`
+
+#### 6. **Codebase Cleanup for Backup** ✅
+- Deleted build artifacts to reduce backup size:
+  - `releases/` (~443MB)
+  - `qubes-gui/src-tauri/dist/` (~202MB)
+  - `qubes-gui/src-tauri/build/` (~245MB)
+  - `qubes-gui/src-tauri/target/` (~5.3GB)
+  - `qubes-gui/dist/` (~3MB)
+  - `qubes-gui/node_modules/` (~157MB)
+  - `__pycache__/` directories (16 dirs)
+  - `logs/` (~24MB)
+- Final codebase size: ~520MB
+
+### Release Process Documentation
+
+**Full Release Workflow**:
+1. Bump version in `package.json`, `tauri.conf.json`, `Cargo.toml`
+2. Commit and push changes
+3. Create git tag: `git tag v0.x.x && git push origin v0.x.x`
+4. Wait for GitHub Actions to build releases
+5. Download artifacts from GitHub Actions
+6. Update `latest.json` URLs from GitHub to qube.cash
+7. Upload files to server: `scp` to `/var/www/your-domain/releases/vX.X.X/`
+8. Update `index.html` releases page
+
+**Server Deployment Commands**:
+```bash
+# Create directory on server
+ssh bit_faced@YOUR_SERVER_IP "sudo mkdir -p /var/www/your-domain/releases/v0.2.7"
+
+# Upload files (via /tmp for permissions)
+scp latest.json bit_faced@YOUR_SERVER_IP:/tmp/
+scp Qubes-Windows-setup.exe bit_faced@YOUR_SERVER_IP:/tmp/
+ssh bit_faced@YOUR_SERVER_IP "sudo mv /tmp/latest.json /var/www/your-domain/releases/v0.2.7/"
+ssh bit_faced@YOUR_SERVER_IP "sudo mv /tmp/Qubes-*.exe /var/www/your-domain/releases/v0.2.7/"
+```
+
+### Lessons Learned
+
+1. **PyInstaller Hidden Imports**: Always use lazy loading for optional modules that may not be in the PyInstaller bundle
+2. **Test Updates**: Always test auto-update on installed (non-dev) version before releasing
+3. **Backend Crashes**: When backend fails, Rust defaults may cause unexpected behavior (like showing tutorial)
+4. **UX Loading States**: Separate loading states for different data to avoid blocking the entire UI
+
+### Technical Details
+
+**Lazy Import Pattern for PyInstaller**:
+```python
+# Global module references
+_module = None
+
+def _get_module():
+    """Lazy load module when actually needed"""
+    global _module
+    if _module is None:
+        import some_module
+        _module = some_module
+    return _module
+
+# Usage in methods
+def some_method(self):
+    module = _get_module()
+    module.do_something()
+```
+
+**React Loading State Pattern**:
+```tsx
+// Bad: Everything waits for loading
+{loading ? <Loading /> : <Content data={data} />}
+
+// Good: Static content renders immediately
+{loading ? <Loading /> : <DynamicContent data={data} />}
+<StaticContent fallback={selectedItem.value} />
+```
+
+---
+
+## Previous Session: Skills System Enhancement (November 11, 2025 - Later Session)
 
 ### What Was Accomplished
 
