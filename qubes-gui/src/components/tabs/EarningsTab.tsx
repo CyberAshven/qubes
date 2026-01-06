@@ -100,6 +100,7 @@ export const EarningsTab: React.FC<EarningsTabProps> = ({
 
       setLoading(true);
       setError(null);
+      setWalletInfo(null);  // Clear old data so selectedQube addresses show immediately
 
       try {
         const result = await invoke<{
@@ -303,23 +304,23 @@ export const EarningsTab: React.FC<EarningsTabProps> = ({
                 <div className="text-text-tertiary text-xs">
                   {(walletInfo?.nft_balance_sats || 0).toLocaleString()} sats
                 </div>
-                {walletInfo?.nft_address && (
-                  <div className="mt-3 pt-3 border-t border-glass-border">
-                    <div className="flex items-center justify-center gap-1">
-                      <span className="text-text-tertiary text-[10px] font-mono break-all text-center leading-tight">
-                        {walletInfo.nft_address}
-                      </span>
-                      <button
-                        onClick={() => handleCopyAddress(walletInfo.nft_address)}
-                        className="text-text-tertiary hover:text-text-primary transition-colors p-1 hover:bg-white/10 rounded flex-shrink-0"
-                        title="Copy address"
-                      >
-                        {copiedAddress === walletInfo.nft_address ? '✓' : '📋'}
-                      </button>
-                    </div>
-                  </div>
-                )}
               </>
+            )}
+            {(walletInfo?.nft_address || selectedQube.nft_address) && (
+              <div className="mt-3 pt-3 border-t border-glass-border">
+                <div className="flex items-center justify-center gap-1">
+                  <span className="text-text-tertiary text-[10px] font-mono break-all text-center leading-tight">
+                    {walletInfo?.nft_address || selectedQube.nft_address}
+                  </span>
+                  <button
+                    onClick={() => handleCopyAddress(walletInfo?.nft_address || selectedQube.nft_address)}
+                    className="text-text-tertiary hover:text-text-primary transition-colors p-1 hover:bg-white/10 rounded flex-shrink-0"
+                    title="Copy address"
+                  >
+                    {copiedAddress === (walletInfo?.nft_address || selectedQube.nft_address) ? '✓' : '📋'}
+                  </button>
+                </div>
+              </div>
             )}
           </div>
         </GlassCard>
@@ -356,23 +357,23 @@ export const EarningsTab: React.FC<EarningsTabProps> = ({
                 <div className="text-text-tertiary text-xs">
                   {(walletInfo?.nft_balance_sats || 0).toLocaleString()} sats
                 </div>
-                {selectedQube.wallet_owner_q_address && (
-                  <div className="mt-3 pt-3 border-t border-glass-border">
-                    <div className="flex items-center justify-center gap-1">
-                      <span className="text-text-tertiary text-[10px] font-mono break-all text-center leading-tight">
-                        {selectedQube.wallet_owner_q_address}
-                      </span>
-                      <button
-                        onClick={() => handleCopyAddress(selectedQube.wallet_owner_q_address)}
-                        className="text-text-tertiary hover:text-text-primary transition-colors p-1 hover:bg-white/10 rounded flex-shrink-0"
-                        title="Copy address"
-                      >
-                        {copiedAddress === selectedQube.wallet_owner_q_address ? '✓' : '📋'}
-                      </button>
-                    </div>
-                  </div>
-                )}
               </>
+            )}
+            {selectedQube.wallet_owner_q_address && (
+              <div className="mt-3 pt-3 border-t border-glass-border">
+                <div className="flex items-center justify-center gap-1">
+                  <span className="text-text-tertiary text-[10px] font-mono break-all text-center leading-tight">
+                    {selectedQube.wallet_owner_q_address}
+                  </span>
+                  <button
+                    onClick={() => handleCopyAddress(selectedQube.wallet_owner_q_address)}
+                    className="text-text-tertiary hover:text-text-primary transition-colors p-1 hover:bg-white/10 rounded flex-shrink-0"
+                    title="Copy address"
+                  >
+                    {copiedAddress === selectedQube.wallet_owner_q_address ? '✓' : '📋'}
+                  </button>
+                </div>
+              </div>
             )}
           </div>
         </GlassCard>
@@ -406,22 +407,22 @@ export const EarningsTab: React.FC<EarningsTabProps> = ({
                 <div className="text-text-tertiary text-xs">
                   {(walletInfo?.balance_sats || 0).toLocaleString()} sats
                 </div>
-                <div className="mt-3 pt-3 border-t border-glass-border">
-                  <div className="flex items-center justify-center gap-1">
-                    <span className="text-text-tertiary text-[10px] font-mono break-all text-center leading-tight">
-                      {walletInfo?.wallet_address || selectedQube.wallet_address || ''}
-                    </span>
-                    <button
-                      onClick={() => handleCopyAddress(walletInfo?.wallet_address || selectedQube.wallet_address)}
-                      className="text-text-tertiary hover:text-text-primary transition-colors p-1 hover:bg-white/10 rounded flex-shrink-0"
-                      title="Copy address"
-                    >
-                      {copiedAddress === (walletInfo?.wallet_address || selectedQube.wallet_address) ? '✓' : '📋'}
-                    </button>
-                  </div>
-                </div>
               </>
             )}
+            <div className="mt-3 pt-3 border-t border-glass-border">
+              <div className="flex items-center justify-center gap-1">
+                <span className="text-text-tertiary text-[10px] font-mono break-all text-center leading-tight">
+                  {walletInfo?.wallet_address || selectedQube.wallet_address || ''}
+                </span>
+                <button
+                  onClick={() => handleCopyAddress(walletInfo?.wallet_address || selectedQube.wallet_address)}
+                  className="text-text-tertiary hover:text-text-primary transition-colors p-1 hover:bg-white/10 rounded flex-shrink-0"
+                  title="Copy address"
+                >
+                  {copiedAddress === (walletInfo?.wallet_address || selectedQube.wallet_address) ? '✓' : '📋'}
+                </button>
+              </div>
+            </div>
           </div>
         </GlassCard>
       </div>
