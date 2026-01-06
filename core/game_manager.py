@@ -15,14 +15,25 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
-
-import chess
-import chess.pgn
 from io import StringIO
 
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+# Lazy-loaded chess module (not available in PyInstaller bundle)
+_chess = None
+_chess_pgn = None
+
+def _get_chess():
+    """Lazy load chess module when needed"""
+    global _chess, _chess_pgn
+    if _chess is None:
+        import chess
+        import chess.pgn
+        _chess = chess
+        _chess_pgn = chess.pgn
+    return _chess, _chess_pgn
 
 
 @dataclass
@@ -390,6 +401,7 @@ class GameManager:
             black_player = {"id": self.qube.qube_id, "type": "qube"}
 
         # Create initial chess position
+        chess, _ = _get_chess()
         board = chess.Board()
 
         self.active_game = GameState(
@@ -445,6 +457,8 @@ class GameManager:
 
         if self.active_game.status != "in_progress":
             return {"success": False, "error": "Game is not in progress"}
+
+        chess, _ = _get_chess()
 
         # Load current position
         board = chess.Board(self.active_game.fen)
@@ -600,7 +614,8 @@ class GameManager:
         if not self.active_game:
             return ""
 
-        game = chess.pgn.Game()
+        chess, chess_pgn = _get_chess()
+        game = chess_pgn.Game()
 
         # Set headers
         game.headers["Event"] = "Qubes Game"
@@ -632,7 +647,7 @@ class GameManager:
             board.push(move)
 
         # Generate PGN string
-        exporter = chess.pgn.StringExporter(headers=True, variations=False, comments=False)
+        exporter = chess_pgn.StringExporter(headers=True, variations=False, comments=False)
         return game.accept(exporter)
 
     def _extract_key_moments(self) -> List[Dict[str, Any]]:
@@ -977,6 +992,7 @@ class GameManager:
         if not self.active_game:
             return None
 
+        chess, _ = _get_chess()
         board = chess.Board(self.active_game.fen)
 
         # Build move history in algebraic notation
