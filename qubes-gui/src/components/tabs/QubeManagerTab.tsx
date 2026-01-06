@@ -2105,7 +2105,7 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, onEdit, onDelete, onSelect, o
                     boxShadow: '0 0 15px rgba(180, 124, 255, 0.2)'
                   }}
                 >
-                  <span className="text-text-tertiary text-[10px] block mb-0.5 uppercase tracking-wide">Wallet</span>
+                  <span className="text-text-tertiary text-[10px] block mb-0.5 uppercase tracking-wide">Qube</span>
                   {walletBalanceLoading ? (
                     <span className="text-text-tertiary text-sm animate-pulse">...</span>
                   ) : (
@@ -2167,7 +2167,7 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, onEdit, onDelete, onSelect, o
                     )}
                     {qube.wallet_address && (
                       <div className="flex justify-between items-center">
-                        <span className="text-text-tertiary">Wallet (p):</span>
+                        <span className="text-text-tertiary">Qube (p):</span>
                         <BlockchainLink value={qube.wallet_address} type="address" network={qube.network} />
                       </div>
                     )}
