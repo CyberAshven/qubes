@@ -29,7 +29,8 @@ export const useQubeSelection = create<QubeSelectionStore>((set, get) => ({
     skills: null,
     economy: null,
     settings: null,
-    connections: null
+    connections: null,
+    games: null
   },
   selectionByTab: {
     dashboard: [],
@@ -39,7 +40,8 @@ export const useQubeSelection = create<QubeSelectionStore>((set, get) => ({
     skills: [],
     economy: [],
     settings: [],
-    connections: []
+    connections: [],
+    games: []
   },
   currentTab: 'qubes',
 
@@ -122,6 +124,6 @@ export const useQubeSelection = create<QubeSelectionStore>((set, get) => ({
 
   isMultiSelectAllowed: () => {
     const { currentTab } = get();
-    return currentTab === 'dashboard' || currentTab === 'economy';
+    return currentTab === 'dashboard' || currentTab === 'economy' || currentTab === 'games';
   },
 }));

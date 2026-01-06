@@ -50,7 +50,6 @@ async def test_session_recovery():
     print("=" * 70)
 
     # Load Qube (simplified - would need full initialization in production)
-    from storage.lmdb_storage import LMDBStorage
     from core.block import Block
     from crypto.keys import generate_key_pair, derive_qube_id
 

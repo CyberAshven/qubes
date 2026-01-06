@@ -153,6 +153,20 @@ class MemoryChain:
         filename = self.block_index[block_number]
         block_file = self.permanent_dir / filename
 
+        # Check if file exists - if not, clean up orphaned index entry
+        if not block_file.exists():
+            logger.warning(
+                "orphaned_block_index_entry",
+                block_number=block_number,
+                filename=filename,
+                action="removing from index"
+            )
+            del self.block_index[block_number]
+            raise BlockNotFoundError(
+                f"Block {block_number} file missing (orphaned index entry cleaned)",
+                context={"block_number": block_number, "filename": filename}
+            )
+
         try:
             with open(block_file, 'r') as f:
                 block_data = json.load(f)

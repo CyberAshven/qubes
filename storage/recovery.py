@@ -29,15 +29,24 @@ class DatabaseRecovery:
             qube_data_dir: Path to Qube's data directory (e.g., data/qubes/Alph_A4DE5430)
         """
         self.qube_data_dir = Path(qube_data_dir)
-        self.lmdb_dir = self.qube_data_dir / "lmdb"
         self.backup_dir = self.qube_data_dir / "backups"
         self.backup_dir.mkdir(parents=True, exist_ok=True)
+        self.backup_items = [
+            "blocks",
+            "chain",
+            "relationships",
+            "skills",
+            "shared_memory",
+            "snapshots",
+            "audio",
+            "images",
+        ]
 
         logger.info("recovery_manager_initialized", qube_dir=str(qube_data_dir))
 
     def create_backup(self, backup_name: Optional[str] = None) -> Path:
         """
-        Create a backup of the LMDB database
+        Create a backup of JSON-based Qube storage
 
         Args:
             backup_name: Optional custom backup name. If None, uses timestamp.
@@ -66,40 +75,36 @@ class DatabaseRecovery:
             # Create backup directory
             backup_path.mkdir(parents=True, exist_ok=True)
 
-            # Use LMDB's built-in backup (hot backup while DB is open)
-            if self.lmdb_dir.exists():
-                logger.info("creating_lmdb_backup", backup_name=backup_name)
-
-                # Copy LMDB files
-                backup_lmdb = backup_path / "lmdb"
-                shutil.copytree(self.lmdb_dir, backup_lmdb)
-
-                # Create metadata file
-                metadata = {
-                    "backup_name": backup_name,
-                    "backup_timestamp": datetime.now(timezone.utc).isoformat(),
-                    "qube_data_dir": str(self.qube_data_dir),
-                    "lmdb_size_bytes": self._get_dir_size(self.lmdb_dir)
-                }
-
-                metadata_file = backup_path / "backup_metadata.json"
-                with open(metadata_file, 'w') as f:
-                    json.dump(metadata, f, indent=2)
-
-                logger.info(
-                    "backup_created",
-                    backup_name=backup_name,
-                    backup_path=str(backup_path),
-                    size_mb=round(metadata["lmdb_size_bytes"] / (1024**2), 2)
-                )
-
-                return backup_path
-
-            else:
+            item_sizes = self._copy_existing_items(self.qube_data_dir, backup_path)
+            if not item_sizes:
                 raise StorageError(
-                    f"LMDB directory not found: {self.lmdb_dir}",
-                    context={"lmdb_dir": str(self.lmdb_dir)}
+                    "No Qube data directories found to back up",
+                    context={"qube_data_dir": str(self.qube_data_dir)}
                 )
+
+            # Create metadata file
+            total_size = sum(item_sizes.values())
+            metadata = {
+                "backup_name": backup_name,
+                "backup_timestamp": datetime.now(timezone.utc).isoformat(),
+                "qube_data_dir": str(self.qube_data_dir),
+                "data_size_bytes": total_size,
+                "item_sizes_bytes": item_sizes,
+                "items": sorted(item_sizes.keys())
+            }
+
+            metadata_file = backup_path / "backup_metadata.json"
+            with open(metadata_file, 'w') as f:
+                json.dump(metadata, f, indent=2)
+
+            logger.info(
+                "backup_created",
+                backup_name=backup_name,
+                backup_path=str(backup_path),
+                size_mb=round(total_size / (1024**2), 2)
+            )
+
+            return backup_path
 
         except Exception as e:
             logger.error("backup_failed", backup_name=backup_name, exc_info=True)
@@ -135,20 +140,18 @@ class DatabaseRecovery:
             if verify:
                 self.verify_backup(backup_name)
 
-            # Create temporary backup of current database
-            if self.lmdb_dir.exists():
-                temp_backup_name = f"temp_pre_restore_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
-                temp_backup_path = self.backup_dir / temp_backup_name
-                shutil.copytree(self.lmdb_dir, temp_backup_path / "lmdb")
+            # Create temporary backup of current data
+            temp_backup_name = f"temp_pre_restore_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
+            temp_backup_path = self.backup_dir / temp_backup_name
+            temp_item_sizes = self._copy_existing_items(self.qube_data_dir, temp_backup_path)
+            if temp_item_sizes:
                 logger.info("temp_backup_created", temp_backup=temp_backup_name)
 
-            # Remove current database
-            if self.lmdb_dir.exists():
-                shutil.rmtree(self.lmdb_dir)
+            # Remove current data directories
+            self._remove_existing_items(self.qube_data_dir)
 
             # Restore from backup
-            backup_lmdb = backup_path / "lmdb"
-            shutil.copytree(backup_lmdb, self.lmdb_dir)
+            self._copy_existing_items(backup_path, self.qube_data_dir)
 
             logger.info("backup_restored", backup_name=backup_name)
 
@@ -345,6 +348,34 @@ class DatabaseRecovery:
                 if os.path.exists(filepath):
                     total_size += os.path.getsize(filepath)
         return total_size
+
+    def _copy_existing_items(self, src_root: Path, dest_root: Path) -> Dict[str, int]:
+        """Copy configured data directories from src_root to dest_root."""
+        item_sizes: Dict[str, int] = {}
+        for name in self.backup_items:
+            src_path = src_root / name
+            if not src_path.exists():
+                continue
+            dest_path = dest_root / name
+            if src_path.is_dir():
+                shutil.copytree(src_path, dest_path)
+                item_sizes[name] = self._get_dir_size(src_path)
+            else:
+                dest_root.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src_path, dest_path)
+                item_sizes[name] = src_path.stat().st_size
+        return item_sizes
+
+    def _remove_existing_items(self, root: Path) -> None:
+        """Remove configured data directories from root."""
+        for name in self.backup_items:
+            path = root / name
+            if not path.exists():
+                continue
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
 
 
 def recover_from_corruption(qube_data_dir: Path) -> bool:

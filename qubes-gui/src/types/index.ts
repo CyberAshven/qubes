@@ -47,7 +47,70 @@ export interface Qube {
   network?: string;  // mainnet or testnet
 }
 
-export type Tab = 'dashboard' | 'blocks' | 'qubes' | 'relationships' | 'skills' | 'economy' | 'settings' | 'connections';
+export type Tab = 'dashboard' | 'blocks' | 'qubes' | 'relationships' | 'skills' | 'economy' | 'settings' | 'connections' | 'games';
+
+// Games Types
+export interface GamePlayer {
+  type: 'human' | 'qube';
+  id?: string;       // Player ID (qube_id for Qubes, user_id for humans)
+  qube_id?: string;  // Legacy field, prefer 'id'
+  name: string;
+}
+
+export interface MoveRecord {
+  move_number: number;
+  player: 'white' | 'black';
+  player_id: string;
+  uci: string;
+  san: string;
+  fen_before: string;
+  fen_after: string;
+  timestamp: number;
+}
+
+export interface GameChatMessage {
+  sender_id: string;
+  sender_type: 'human' | 'qube';
+  message: string;
+  timestamp: number;
+  trigger?: string;
+  move_number?: number;
+}
+
+export interface GameState {
+  game_id: string;
+  game_type: string;
+  fen: string;
+  moves: MoveRecord[];
+  white_player: GamePlayer;
+  black_player: GamePlayer;
+  status: 'active' | 'completed' | 'abandoned';
+  current_turn: 'white' | 'black';
+  total_moves: number;
+  chat_messages: GameChatMessage[];
+  start_time: string;
+  your_color?: 'white' | 'black';
+  pending_draw_offer?: {
+    offered_by: 'white' | 'black';
+    timestamp: number;
+  } | null;
+}
+
+export interface MoveResult {
+  success: boolean;
+  move_made?: string;
+  move_uci?: string;
+  fen?: string;
+  move_number?: number;
+  is_check?: boolean;
+  is_checkmate?: boolean;
+  is_stalemate?: boolean;
+  is_draw?: boolean;
+  game_over?: boolean;
+  result?: string;
+  termination?: string;
+  error?: string;
+}
 
 export interface QubeSelectionState {
   activeQubeId: string | null;

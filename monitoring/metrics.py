@@ -222,7 +222,7 @@ storage_operation_latency = Histogram(
 storage_cache_hits = Counter(
     "qubes_storage_cache_hits_total",
     "Total number of storage cache hits",
-    ["cache_type"],  # cache_type: lmdb, faiss
+    ["cache_type"],  # cache_type: file, faiss
     registry=registry,
 )
 

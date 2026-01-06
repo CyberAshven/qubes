@@ -68,7 +68,7 @@ async def test_backup_recovery():
     for i, backup in enumerate(backups, 1):
         print(f"  {i}. {backup['backup_name']}")
         print(f"     Created: {backup.get('backup_timestamp', 'unknown')}")
-        print(f"     Size: {backup.get('lmdb_size_bytes', 0) / (1024**2):.2f} MB")
+        print(f"     Size: {backup.get('data_size_bytes', 0) / (1024**2):.2f} MB")
         print()
 
     # Test 3: Verify backup

@@ -18,7 +18,7 @@ ecdsa>=0.19.0            # ECDSA secp256k1 signatures (updated from 0.18.0)
 # STORAGE
 # ============================================================================
 # Storage is now JSON-based (individual .json files per block)
-# LMDB and msgpack removed in favor of native JSON serialization
+# Legacy storage dependencies removed in favor of native JSON serialization
 
 # ============================================================================
 # LOGGING & OBSERVABILITY
@@ -95,6 +95,11 @@ aiohttp>=3.11.11         # Async HTTP for Chaingraph GraphQL queries (updated fr
 # Health Checks & Orchestrator (Phase 1)
 fastapi>=0.119.1         # Health check endpoints (updated from 0.115.0)
 uvicorn>=0.34.0          # ASGI server for health API (updated from 0.32.0)
+
+# ============================================================================
+# GAMES (Games Tab)
+# ============================================================================
+chess>=1.10.0               # Python chess library for move validation and PGN generation
 
 # ============================================================================
 # AUDIO INTEGRATION (Phase 7 - Week 19)

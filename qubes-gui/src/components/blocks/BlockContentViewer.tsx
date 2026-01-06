@@ -73,6 +73,8 @@ export const BlockContentViewer: React.FC<BlockContentViewerProps> = memo(({ blo
         return <GenesisBlockContent content={content} />;
       case 'SUMMARY':
         return <SummaryBlockContent content={content} />;
+      case 'GAME':
+        return <GameBlockContent content={content} />;
       case 'MEMORY_ANCHOR':
       case 'COLLABORATIVE_MEMORY':
       default:
@@ -472,6 +474,145 @@ const SummaryBlockContent: React.FC<{ content: any }> = memo(({ content }) => {
             ))}
           </ul>
         </div>
+      )}
+    </div>
+  );
+});
+
+const GameBlockContent: React.FC<{ content: any }> = memo(({ content }) => {
+  const gameType = content.game_type || 'unknown';
+  const whitePlayer = content.white_player || { id: 'Unknown', type: 'unknown' };
+  const blackPlayer = content.black_player || { id: 'Unknown', type: 'unknown' };
+  const result = content.result || '?';
+  const termination = content.termination || 'unknown';
+  const totalMoves = content.total_moves || 0;
+  const durationSeconds = content.duration_seconds || 0;
+  const xpEarned = content.xp_earned || 0;
+  const pgn = content.pgn || '';
+  const chatLog = content.chat_log || [];
+
+  // Format duration as hours:minutes:seconds
+  const formatDuration = (seconds: number) => {
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const secs = seconds % 60;
+    if (hours > 0) {
+      return `${hours}h ${minutes}m ${secs}s`;
+    } else if (minutes > 0) {
+      return `${minutes}m ${secs}s`;
+    }
+    return `${secs}s`;
+  };
+
+  // Get result description
+  const getResultDescription = () => {
+    if (result === '1-0') return `${whitePlayer.id} wins`;
+    if (result === '0-1') return `${blackPlayer.id} wins`;
+    if (result === '1/2-1/2') return 'Draw';
+    return result;
+  };
+
+  // Get player display with icon
+  const PlayerDisplay: React.FC<{ player: any; color: 'white' | 'black' }> = ({ player, color }) => {
+    const isQube = player.type === 'qube';
+    const isWinner = (color === 'white' && result === '1-0') || (color === 'black' && result === '0-1');
+
+    return (
+      <div className={`flex items-center gap-2 p-2 rounded ${isWinner ? 'bg-green-500/20 border border-green-500/40' : 'bg-bg-tertiary'}`}>
+        <span className="text-lg">{color === 'white' ? '⬜' : '⬛'}</span>
+        <div className="flex-1">
+          <div className="flex items-center gap-2">
+            <span className="font-medium text-text-primary">{player.id}</span>
+            {isQube && <span className="text-xs text-accent-primary bg-accent-primary/20 px-1.5 py-0.5 rounded">Qube</span>}
+            {player.type === 'human' && <span className="text-xs text-emerald-400 bg-emerald-400/20 px-1.5 py-0.5 rounded">Human</span>}
+          </div>
+        </div>
+        {isWinner && <span className="text-yellow-400 text-lg">👑</span>}
+      </div>
+    );
+  };
+
+  return (
+    <div className="space-y-4">
+      {/* Game Header */}
+      <div className="bg-amber-400/10 border border-amber-400/30 rounded-lg p-4">
+        <div className="flex items-center gap-3 mb-4">
+          <span className="text-3xl">♟️</span>
+          <div>
+            <div className="text-lg font-semibold text-amber-400 capitalize">{gameType} Game</div>
+            <div className="text-sm text-text-secondary">{getResultDescription()} by {termination}</div>
+          </div>
+        </div>
+
+        {/* Players */}
+        <div className="space-y-2 mb-4">
+          <PlayerDisplay player={whitePlayer} color="white" />
+          <div className="text-center text-text-tertiary text-xs">vs</div>
+          <PlayerDisplay player={blackPlayer} color="black" />
+        </div>
+
+        {/* Stats Grid */}
+        <div className="grid grid-cols-3 gap-3 text-center">
+          <div className="bg-bg-tertiary rounded-lg p-3">
+            <div className="text-2xl font-bold text-text-primary">{totalMoves}</div>
+            <div className="text-xs text-text-tertiary">Moves</div>
+          </div>
+          <div className="bg-bg-tertiary rounded-lg p-3">
+            <div className="text-2xl font-bold text-text-primary">{formatDuration(durationSeconds)}</div>
+            <div className="text-xs text-text-tertiary">Duration</div>
+          </div>
+          <div className="bg-bg-tertiary rounded-lg p-3">
+            <div className="text-2xl font-bold text-green-400">+{xpEarned}</div>
+            <div className="text-xs text-text-tertiary">XP Earned</div>
+          </div>
+        </div>
+      </div>
+
+      {/* PGN Section */}
+      {pgn && (
+        <details className="bg-bg-tertiary/50 border border-glass-border rounded-lg overflow-hidden">
+          <summary className="p-4 cursor-pointer hover:bg-bg-tertiary/70 transition-colors flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="text-lg">📋</span>
+              <span className="font-medium text-text-primary">PGN Notation</span>
+            </div>
+            <span className="text-xs text-text-tertiary">{totalMoves} moves</span>
+          </summary>
+          <div className="p-4 pt-0">
+            <pre className="text-xs text-text-secondary font-mono whitespace-pre-wrap bg-bg-tertiary p-3 rounded max-h-64 overflow-y-auto">
+              {pgn}
+            </pre>
+          </div>
+        </details>
+      )}
+
+      {/* Chat Log Section */}
+      {chatLog.length > 0 && (
+        <details className="bg-bg-tertiary/50 border border-glass-border rounded-lg overflow-hidden">
+          <summary className="p-4 cursor-pointer hover:bg-bg-tertiary/70 transition-colors flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="text-lg">💬</span>
+              <span className="font-medium text-text-primary">Game Chat</span>
+            </div>
+            <span className="text-xs text-text-tertiary">{chatLog.length} messages</span>
+          </summary>
+          <div className="p-4 pt-0 space-y-2 max-h-64 overflow-y-auto">
+            {chatLog.map((msg: any, idx: number) => (
+              <div key={idx} className="bg-bg-tertiary p-3 rounded-lg">
+                <div className="flex items-center justify-between mb-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium text-amber-400">{msg.sender_id}</span>
+                    {msg.sender_type === 'qube' && (
+                      <span className="text-xs text-accent-primary bg-accent-primary/20 px-1 py-0.5 rounded">Qube</span>
+                    )}
+                  </div>
+                  <span className="text-xs text-text-tertiary">Move {msg.move_number || '?'}</span>
+                </div>
+                <div className="text-sm text-text-primary">{msg.message}</div>
+              </div>
+            ))}
+          </div>
+        </details>
       )}
     </div>
   );

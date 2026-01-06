@@ -128,7 +128,7 @@ npm run tauri build
 Qubes/
 ├── core/               # Core data structures (Qube, Block, MemoryChain)
 ├── crypto/             # Cryptographic functions (ECDSA, AES-256-GCM, ECDH)
-├── storage/            # Storage layers (LMDB, JSON, IPFS)
+├── storage/            # Storage layers (JSON, IPFS)
 ├── ai/                 # AI model abstraction, tool registry, reasoning
 ├── p2p/                # P2P networking (libp2p, DHT, messaging)
 ├── blockchain/         # Bitcoin Cash integration (CashTokens, BCMR)
@@ -162,7 +162,7 @@ ruff check .
 - **Backend:** Python with PyInstaller bundling
 - **Local AI:** Ollama (bundled)
 - **Cryptography:** ECDSA secp256k1, AES-256-GCM, ECDH key exchange
-- **Storage:** LMDB for fast local persistence
+- **Storage:** JSON file persistence with IPFS backup support
 - **Blockchain:** Bitcoin Cash CashTokens for NFT identity
 
 ### CI/CD

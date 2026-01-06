@@ -16,6 +16,7 @@ Required environment variables:
 """
 
 import asyncio
+import json
 import os
 import sys
 from pathlib import Path
@@ -84,7 +85,6 @@ async def main():
 
     print(f"✅ Qube created: {qube.qube_id} - {qube.name}")
     print(f"   Genesis hash: {qube.genesis_block.block_hash}")
-    print(f"   Storage: {qube.storage.db_path}")
     print(f"   Chain length: {qube.memory_chain.get_chain_length()}")
 
     # Note: Genesis block is enough for testing
@@ -208,22 +208,24 @@ async def main():
     print("✓  STEP 6: Verifying restoration...")
     print("-" * 80)
 
-    # Load the restored Qube
-    from storage.lmdb_storage import LMDBStorage
-
     restored_path = Path(restore_result['restored_path'])
-    restored_storage = LMDBStorage(restored_path / "lmdb")
+    blocks_dir = restored_path / "blocks" / "permanent"
+    genesis_files = list(blocks_dir.glob("0_*.json"))
+    if not genesis_files:
+        print("   ❌ Restored genesis block not found")
+        return 1
 
-    # Read genesis block
-    restored_genesis = restored_storage.read_block(restore_result['qube_id'], 0)
+    with open(genesis_files[0], "r") as f:
+        restored_genesis = json.load(f)
 
     # Verify
     print("\n   Comparing original vs restored:")
     print(f"   - Qube ID: {original_qube_id} → {restore_result['qube_id']}")
     print(f"     Match: {'✅' if original_qube_id == restore_result['qube_id'] else '❌'}")
 
-    print(f"   - Genesis hash: {original_genesis_hash[:16]}... → {restored_genesis.block_hash[:16]}...")
-    print(f"     Match: {'✅' if original_genesis_hash == restored_genesis.block_hash else '❌'}")
+    restored_genesis_hash = restored_genesis.get("block_hash", "")
+    print(f"   - Genesis hash: {original_genesis_hash[:16]}... → {restored_genesis_hash[:16]}...")
+    print(f"     Match: {'✅' if original_genesis_hash == restored_genesis_hash else '❌'}")
 
     print(f"   - Chain length: {original_chain_length} → {restore_result['chain_length']}")
     print(f"     Match: {'✅' if original_chain_length == restore_result['chain_length'] else '❌'}")
@@ -232,15 +234,14 @@ async def main():
     print(f"\n   Verifying all {restore_result['chain_length']} blocks...")
     all_match = True
     for i in range(restore_result['chain_length']):
-        block = restored_storage.read_block(restore_result['qube_id'], i)
-        if not block:
+        block_files = list(blocks_dir.glob(f"{i}_*.json"))
+        if not block_files:
             print(f"   ❌ Block {i} missing!")
             all_match = False
 
     if all_match:
         print(f"   ✅ All blocks present and valid")
 
-    restored_storage.close()
 
     # ==========================================================================
     # STEP 7: SUMMARY
@@ -271,7 +272,7 @@ async def main():
     print(f"\n   Restored Qube:")
     print(f"   ├─ ID: {restore_result['qube_id']} {'✅' if restore_result['qube_id'] == original_qube_id else '❌'}")
     print(f"   ├─ Name: {restore_result['qube_name']}")
-    print(f"   ├─ Genesis: {restored_genesis.block_hash} {'✅' if restored_genesis.block_hash == original_genesis_hash else '❌'}")
+    print(f"   ├─ Genesis: {restored_genesis_hash} {'✅' if restored_genesis_hash == original_genesis_hash else '❌'}")
     print(f"   └─ Blocks: {restore_result['chain_length']} {'✅' if restore_result['chain_length'] == original_chain_length else '❌'}")
 
     print("\n" + "=" * 80)

@@ -24,6 +24,13 @@ interface Block {
   estimated_cost_usd?: number;
   // Relationship delta tracking
   relationship_updates?: Record<string, any>;
+  // GAME block multi-signature fields
+  participant_signatures?: Array<{
+    qube_id: string;
+    public_key: string;
+    signature: string;
+  }>;
+  content_hash?: string;
 }
 
 interface BlocksTabProps {
@@ -43,6 +50,7 @@ const getBlockTypeColor = (blockType: string): string => {
     'DECISION': 'text-pink-400 bg-pink-400/20',
     'OBSERVATION': 'text-blue-400 bg-blue-400/20',
     'MEMORY_ANCHOR': 'text-indigo-400 bg-indigo-400/20',
+    'GAME': 'text-amber-400 bg-amber-400/20',
   };
   return colors[blockType] || 'text-text-secondary bg-text-secondary/20';
 };
@@ -256,7 +264,7 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
     return matchesSearch && matchesFilter;
   });
 
-  const blockTypes = ['all', 'GENESIS', 'MESSAGE', 'THOUGHT', 'ACTION', 'SUMMARY', 'DECISION', 'OBSERVATION'];
+  const blockTypes = ['all', 'GENESIS', 'MESSAGE', 'THOUGHT', 'ACTION', 'SUMMARY', 'DECISION', 'OBSERVATION', 'GAME'];
 
   if (!selectedQube) {
     return (
@@ -645,7 +653,63 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                     </div>
                   )}
 
-                  {/* Multi-Signature Display (for group conversation blocks) */}
+                  {/* Multi-Signature Display (for GAME blocks) */}
+                  {selectedBlock.participant_signatures && selectedBlock.participant_signatures.length > 0 && (
+                    <div className="mt-4 pt-4 border-t border-amber-400/20">
+                      <div className="text-amber-400 mb-2 font-semibold flex items-center gap-2">
+                        <span>🎮</span>
+                        <span>Participant Signatures ({selectedBlock.participant_signatures.length}):</span>
+                      </div>
+                      {selectedBlock.content_hash && (
+                        <div className="mb-3">
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="text-text-tertiary text-xs">Content Hash (signed by all):</span>
+                            <button
+                              onClick={() => copyToClipboard(selectedBlock.content_hash!, 'Content Hash')}
+                              className="text-xs px-2 py-0.5 rounded bg-amber-400/20 hover:bg-amber-400/30 text-amber-400 transition-colors"
+                            >
+                              Copy
+                            </button>
+                          </div>
+                          <div className="font-mono text-xs text-text-primary break-all bg-bg-tertiary p-2 rounded">
+                            {selectedBlock.content_hash}
+                          </div>
+                        </div>
+                      )}
+                      <div className="space-y-2 max-h-64 overflow-y-auto">
+                        {selectedBlock.participant_signatures.map((sig) => (
+                          <div key={sig.qube_id} className="bg-bg-tertiary/50 p-3 rounded border border-amber-400/20">
+                            <div className="flex items-center justify-between mb-2">
+                              <span className="text-sm text-amber-400 font-semibold">Qube: {sig.qube_id}</span>
+                              <span className="text-xs text-green-400">✓ Verified</span>
+                            </div>
+                            <div className="mb-2">
+                              <div className="text-xs text-text-tertiary mb-1">Public Key:</div>
+                              <div className="font-mono text-xs text-text-primary break-all bg-bg-tertiary p-1 rounded">
+                                {sig.public_key.slice(0, 40)}...
+                              </div>
+                            </div>
+                            <div>
+                              <div className="flex items-center justify-between mb-1">
+                                <span className="text-xs text-text-tertiary">Signature:</span>
+                                <button
+                                  onClick={() => copyToClipboard(sig.signature, `Signature for ${sig.qube_id}`)}
+                                  className="text-xs px-2 py-0.5 rounded bg-amber-400/20 hover:bg-amber-400/30 text-amber-400 transition-colors"
+                                >
+                                  Copy
+                                </button>
+                              </div>
+                              <div className="font-mono text-xs text-text-primary break-all bg-bg-tertiary p-1 rounded">
+                                {sig.signature.slice(0, 60)}...
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Multi-Signature Display (for group conversation blocks - legacy format) */}
                   {selectedBlock.content?.participant_signatures && Object.keys(selectedBlock.content.participant_signatures).length > 0 && (
                     <div className="mt-4 pt-4 border-t border-accent-primary/20">
                       <div className="text-text-secondary mb-2 font-semibold">

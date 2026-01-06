@@ -223,22 +223,23 @@ class GoogleModel(AIModelInterface):
             # Extract usage data
             usage = None
             if response.usage_metadata:
+                prompt_tokens = response.usage_metadata.prompt_token_count or 0
+                completion_tokens = response.usage_metadata.candidates_token_count or 0
+                total_tokens = response.usage_metadata.total_token_count or (prompt_tokens + completion_tokens)
+
                 usage = {
-                    "prompt_tokens": response.usage_metadata.prompt_token_count,
-                    "completion_tokens": response.usage_metadata.candidates_token_count,
-                    "total_tokens": response.usage_metadata.total_token_count
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": total_tokens
                 }
-                cost = self.estimate_cost(
-                    response.usage_metadata.prompt_token_count,
-                    response.usage_metadata.candidates_token_count
-                )
+                cost = self.estimate_cost(prompt_tokens, completion_tokens)
                 MetricsRecorder.record_ai_cost(cost, "google", self.model_name)
 
             logger.debug(
                 "google_generation_complete",
                 model=self.model_name,
-                input_tokens=usage["prompt_tokens"] if usage else None,
-                output_tokens=usage["completion_tokens"] if usage else None,
+                input_tokens=usage.get("prompt_tokens") if usage else None,
+                output_tokens=usage.get("completion_tokens") if usage else None,
                 tool_calls=len(tool_calls) if tool_calls else 0
             )
 

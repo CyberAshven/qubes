@@ -23,7 +23,6 @@ setup(
         "ecdsa>=0.18.0",
 
         # Storage
-        "lmdb>=1.4.1",
         "msgpack>=1.0.7",
 
         # Logging & Observability

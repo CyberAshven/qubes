@@ -214,7 +214,7 @@ Qubes can be backed up to IPFS for cross-device portability.
 1. Export full Qube data (memory chain, chain state)
          │
          ▼
-2. Encrypt with PBKDF2 (600K iterations) + AES-256-GCM
+2. Encrypt with PBKDF2-SHA256 (600K iterations) + AES-256-GCM
          │
          ▼
 3. Upload to IPFS via Pinata
@@ -252,4 +252,4 @@ result = await backup.restore_from_ipfs(
 3. **Server Key**: Platform minting key is stored in environment variables
 4. **Payment Verification**: Server verifies payment before minting
 5. **0-Conf Risk**: Minimal (~$0.01 value), double-spend unlikely
-6. **IPFS Encryption**: Backups encrypted with PBKDF2 (600K iterations) + AES-256-GCM
+6. **IPFS Encryption**: Backups encrypted with PBKDF2-SHA256 (600K iterations) + AES-256-GCM

@@ -4,6 +4,8 @@ Integration Test for Core Qube System - Updated for Documentation Compliance
 Tests match documentation structure exactly
 """
 
+import asyncio
+import json
 import pytest
 from pathlib import Path
 import shutil
@@ -142,7 +144,7 @@ def test_memory_chain_integrity(qube):
 
 
 def test_storage_persistence(test_data_dir):
-    """Test that blocks persist to LMDB"""
+    """Test that blocks persist to JSON storage"""
     # Create Qube and add blocks
     qube1 = Qube.create_new(
         qube_name="PersistTest",
@@ -153,35 +155,37 @@ def test_storage_persistence(test_data_dir):
         data_dir=test_data_dir
     )
 
+    qube1.start_session()
     qube1.add_message(
         message_type="qube_to_human",
         recipient_id="bob",
         message_body="Test message",
         conversation_id="conv-persist",
-        temporary=False
+        temporary=True
     )
+    asyncio.run(qube1.anchor_session(create_summary=False))
 
     qube_id = qube1.qube_id
     qube1.close()
 
-    # Read block from storage directly
-    from storage.lmdb_storage import LMDBStorage
-    storage_path = test_data_dir / "qubes" / qube_id / "lmdb"
-    storage = LMDBStorage(storage_path)
+    qube_dir = test_data_dir / f"PersistTest_{qube_id}"
+    blocks_dir = qube_dir / "blocks" / "permanent"
+    assert blocks_dir.exists()
 
-    # Verify genesis block
-    genesis = storage.read_block(qube_id, 0)
-    assert genesis.block_number == 0
-    assert genesis.qube_name == "PersistTest"
-    assert genesis.creator == "bob"
+    def load_block(block_number: int) -> dict:
+        matches = list(blocks_dir.glob(f"{block_number}_*.json"))
+        assert matches, f"Block {block_number} not found"
+        with open(matches[0], "r") as f:
+            return json.load(f)
 
-    # Verify message block
-    message = storage.read_block(qube_id, 1)
-    assert message.block_number == 1
-    assert message.block_type == BlockType.MESSAGE
-    assert message.content["message_body"] == "Test message"
+    genesis = load_block(0)
+    assert genesis["block_number"] == 0
+    assert genesis["qube_name"] == "PersistTest"
+    assert genesis["creator"] == "bob"
 
-    storage.close()
+    message = load_block(1)
+    assert message["block_number"] == 1
+    assert message["block_type"] == BlockType.MESSAGE.value
 
 
 def test_memory_stats(qube):

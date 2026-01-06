@@ -11,6 +11,7 @@ import { MultiQubeChatInterface } from '../chat/MultiQubeChatInterface';
 import { BlocksTab } from './BlocksTab';
 import { RelationshipsTab } from './RelationshipsTab';
 import { SkillsTab } from './SkillsTab';
+import { GamesTab } from './GamesTab';
 import { SettingsTab } from './SettingsTab';
 import { Connection } from '../connections';
 
@@ -277,6 +278,15 @@ export const TabContent: React.FC<TabContentProps> = ({ qubes, setQubes, onQubes
           }`}
         >
           <SkillsTab qubes={qubes} />
+        </div>
+
+        {/* Games Tab */}
+        <div
+          className={`absolute inset-0 overflow-hidden ${
+            currentTab === 'games' ? 'z-10 opacity-100' : 'z-0 opacity-0 pointer-events-none'
+          }`}
+        >
+          <GamesTab qubes={qubes} />
         </div>
 
         {/* Earnings Tab */}

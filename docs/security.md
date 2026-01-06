@@ -25,8 +25,8 @@ qube_id = sha256(public_key_bytes)[:8].hex().upper()
 
 ### Key Encryption at Rest
 Private keys are encrypted using:
-- **PBKDF2**: 600,000 iterations (OWASP 2025 compliant)
-- **AES-256-GCM**: Authenticated encryption
+- **PBKDF2-SHA256**: 600,000 iterations (OWASP 2025 compliant)
+- **Fernet**: AES-128-CBC + HMAC-SHA256 (authenticated encryption)
 - **Salt**: Random 16 bytes per key
 
 ```python
@@ -37,11 +37,11 @@ kdf = PBKDF2HMAC(
     salt=salt,
     iterations=600000
 )
-encryption_key = kdf.derive(password.encode())
+encryption_key = base64.urlsafe_b64encode(kdf.derive(password.encode()))
 
-# Encryption
-cipher = AESGCM(encryption_key)
-encrypted = cipher.encrypt(nonce, private_key_bytes, None)
+# Encryption using Fernet (AES-128-CBC + HMAC-SHA256)
+cipher = Fernet(encryption_key)
+encrypted = cipher.encrypt(private_key_bytes)
 ```
 
 ## Content Encryption

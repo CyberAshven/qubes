@@ -5,8 +5,8 @@ Manages available tools for AI agents with multi-provider format conversion.
 Matches documentation in docs/09_AI_Integration_Tool_Calling.md Section 6.2
 """
 
-from typing import Dict, Any, Callable, List, Optional, Awaitable
-from dataclasses import dataclass
+from typing import Dict, Any, Callable, List, Optional, Awaitable, Set
+from dataclasses import dataclass, field
 
 from core.block import create_action_block, BlockType
 from core.exceptions import AIError
@@ -14,6 +14,26 @@ from utils.logging import get_logger
 from monitoring.metrics import MetricsRecorder
 
 logger = get_logger(__name__)
+
+# Core tools that are always available regardless of skill level
+# These are essential for basic qube functionality
+ALWAYS_AVAILABLE_TOOLS: Set[str] = {
+    # Memory operations (essential)
+    "search_memory",
+    "get_recent_memories",
+    # Basic information
+    "get_current_time",
+    "describe_my_skills",
+    "describe_my_avatar",
+    "get_relationships",
+    # Communication (essential for interaction)
+    "send_message",
+    # Web access (fundamental capability)
+    "web_search",
+    "browse_url",
+    # Games (runtime check for active game)
+    "chess_move",
+}
 
 
 @dataclass
@@ -138,12 +158,17 @@ class ToolRegistry:
         """List all registered tool names"""
         return list(self.tools.keys())
 
-    def get_tools_for_model(self, model_provider: str) -> List[Dict[str, Any]]:
+    def get_tools_for_model(
+        self,
+        model_provider: str,
+        unlocked_tools: Optional[Set[str]] = None
+    ) -> List[Dict[str, Any]]:
         """
-        Get tools in format for specific model provider
+        Get tools in format for specific model provider, filtered by skill unlocks
 
         Args:
             model_provider: Provider name (openai, anthropic, google, perplexity, ollama)
+            unlocked_tools: Set of tool names unlocked via maxed skills (from SkillsManager)
 
         Returns:
             List of tools in provider-specific format
@@ -160,7 +185,25 @@ class ToolRegistry:
             )
             return []  # No tools for Ollama - pure sovereign mode
 
-        tools_to_use = self.tools.values()
+        # Filter tools based on skill unlocks
+        if unlocked_tools is not None:
+            # Tool is available if:
+            # 1. It's in ALWAYS_AVAILABLE_TOOLS (core functionality)
+            # 2. OR it's been unlocked via a maxed skill
+            tools_to_use = [
+                tool for tool in self.tools.values()
+                if tool.name in ALWAYS_AVAILABLE_TOOLS or tool.name in unlocked_tools
+            ]
+            logger.debug(
+                "tools_filtered_by_skills",
+                total_tools=len(self.tools),
+                available_tools=len(tools_to_use),
+                unlocked_count=len(unlocked_tools),
+                qube_id=self.qube.qube_id
+            )
+        else:
+            # No skill filtering - all tools available (backward compatibility)
+            tools_to_use = list(self.tools.values())
 
         if model_provider == "openai":
             return [tool.to_openai_format() for tool in tools_to_use]

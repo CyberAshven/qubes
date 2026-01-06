@@ -25,6 +25,7 @@ class BlockType(str, Enum):
     MEMORY_ANCHOR = "MEMORY_ANCHOR"
     COLLABORATIVE_MEMORY = "COLLABORATIVE_MEMORY"
     SUMMARY = "SUMMARY"
+    GAME = "GAME"
 
 
 class Block(BaseModel):
@@ -45,7 +46,13 @@ class Block(BaseModel):
     previous_block_number: Optional[int] = None  # For session blocks (simple reference, no hash)
     previous_hash: Optional[str] = None  # For permanent blocks (cryptographic link)
     block_hash: Optional[str] = None  # Only for permanent blocks
-    signature: Optional[str] = None  # Only for permanent blocks
+    signature: Optional[str] = None  # Only for permanent blocks (single signer)
+
+    # Multi-party signatures for collaborative blocks (GAME, COLLABORATIVE_MEMORY, etc.)
+    # Each entry: {"qube_id": "...", "public_key": "...", "signature": "..."}
+    # All participants sign the content_hash (not block_hash, since chain metadata differs)
+    participant_signatures: Optional[List[Dict[str, str]]] = None
+    content_hash: Optional[str] = None  # Hash of just the content (signed by all participants)
 
     # Token usage tracking (for blocks generated with AI)
     input_tokens: Optional[int] = None
@@ -91,10 +98,67 @@ class Block(BaseModel):
         super().__init__(**data)
 
     def compute_hash(self) -> str:
-        """Compute SHA-256 hash of block"""
+        """Compute SHA-256 hash of block (excludes signature fields)"""
         # Import here to avoid circular import (crypto.signing -> core.exceptions -> core.block)
         from crypto.signing import hash_block
-        return hash_block(self.model_dump(exclude={"block_hash", "signature"}))
+        return hash_block(self.model_dump(exclude={
+            "block_hash", "signature", "participant_signatures", "content_hash"
+        }))
+
+    def compute_content_hash(self) -> str:
+        """
+        Compute hash of just the content (for multi-party signing).
+
+        This excludes chain-specific metadata (block_number, previous_hash, qube_id)
+        so all participants can sign the same content even though their chain
+        positions differ.
+
+        Used for GAME blocks and other collaborative blocks.
+        """
+        from crypto.signing import hash_block
+        if self.content is None:
+            return hash_block({})
+        # Hash just the content - this is what all participants sign
+        return hash_block(self.content)
+
+    def add_participant_signature(
+        self,
+        qube_id: str,
+        public_key_hex: str,
+        private_key
+    ) -> None:
+        """
+        Add a participant's signature to this block.
+
+        Signs the content_hash (not block_hash) so signature is valid
+        across different chains.
+
+        Args:
+            qube_id: ID of the signing Qube
+            public_key_hex: Hex-encoded public key
+            private_key: ECDSA private key for signing
+        """
+        from crypto.signing import sign_message
+
+        # Ensure content_hash is computed
+        if not self.content_hash:
+            self.content_hash = self.compute_content_hash()
+
+        # Sign the content hash (sign_message takes private_key first)
+        signature = sign_message(private_key, self.content_hash)
+
+        # Initialize list if needed
+        if self.participant_signatures is None:
+            self.participant_signatures = []
+
+        # Add signature (avoid duplicates)
+        existing_ids = [s["qube_id"] for s in self.participant_signatures]
+        if qube_id not in existing_ids:
+            self.participant_signatures.append({
+                "qube_id": qube_id,
+                "public_key": public_key_hex,
+                "signature": signature
+            })
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary"""
@@ -689,6 +753,83 @@ def create_summary_block(
         content=content,
         encrypted=True,
         temporary=False,  # Summaries are always permanent
+        previous_hash=previous_hash
+    )
+
+    block.block_hash = block.compute_hash()
+    return block
+
+
+def create_game_block(
+    qube_id: str,
+    block_number: int,
+    previous_hash: str,
+    game_id: str,
+    game_type: str,
+    white_player: Dict[str, Any],
+    black_player: Dict[str, Any],
+    result: str,
+    termination: str,
+    total_moves: int,
+    pgn: str,
+    duration_seconds: int,
+    xp_earned: int,
+    key_moments: Optional[List[Dict[str, Any]]] = None,
+    chat_log: Optional[List[Dict[str, Any]]] = None
+) -> Block:
+    """
+    Create GAME block for completed games
+
+    From docs - Games section
+    GAME blocks are permanent records of completed games.
+    Similar to SUMMARY blocks, they capture the outcome of a game session.
+
+    Args:
+        qube_id: Qube identifier
+        block_number: Block number in chain
+        previous_hash: Hash of previous block (permanent only)
+        game_id: Unique game identifier
+        game_type: Type of game (e.g., "chess")
+        white_player: {"id": "...", "type": "human|qube"}
+        black_player: {"id": "...", "type": "human|qube"}
+        result: Game result ("1-0", "0-1", "1/2-1/2", "*")
+        termination: How game ended ("checkmate", "resignation", etc.)
+        total_moves: Total number of moves played
+        pgn: Complete game in PGN format
+        duration_seconds: Game duration
+        xp_earned: XP awarded for this game
+        key_moments: Optional list of significant moves with reasoning
+        chat_log: Optional in-game chat messages
+
+    Returns:
+        GAME block (permanent, never temporary, unencrypted for verification)
+    """
+    content = {
+        "game_id": game_id,
+        "game_type": game_type,
+        "white_player": white_player,
+        "black_player": black_player,
+        "result": result,
+        "termination": termination,
+        "total_moves": total_moves,
+        "pgn": pgn,
+        "duration_seconds": duration_seconds,
+        "xp_earned": xp_earned
+    }
+
+    # Optional fields
+    if key_moments:
+        content["key_moments"] = key_moments
+    if chat_log:
+        content["chat_log"] = chat_log
+
+    block = Block(
+        block_type=BlockType.GAME,
+        qube_id=qube_id,
+        block_number=block_number,
+        content=content,
+        encrypted=False,  # GAME blocks are PUBLIC - enables signature verification by third parties
+        temporary=False,  # Games are always permanent
         previous_hash=previous_hash
     )
 

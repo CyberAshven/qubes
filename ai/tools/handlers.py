@@ -636,6 +636,27 @@ def register_default_tools(registry: ToolRegistry) -> None:
         handler=lambda params: learn_from_game_handler(qube, params)
     ))
 
+    # Chess Move Tool (always available, checks for active game at runtime)
+    registry.register(ToolDefinition(
+        name="chess_move",
+        description="Make a chess move in an active game. Use UCI notation (e.g., 'e2e4', 'g1f3') or SAN notation (e.g., 'e4', 'Nf3'). Only works when there's an active chess game in progress. Returns the updated board state after the move.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "move": {
+                    "type": "string",
+                    "description": "Chess move in UCI format (e.g., 'e2e4', 'e7e5', 'g1f3') or SAN format (e.g., 'e4', 'Nf3', 'O-O')"
+                },
+                "chat_message": {
+                    "type": "string",
+                    "description": "Optional message to send with the move (trash talk, commentary, etc.)"
+                }
+            },
+            "required": ["move"]
+        },
+        handler=lambda params: chess_move_handler(qube, params)
+    ))
+
     logger.info("default_tools_registered", tool_count=len(registry.tools), qube_id=qube.qube_id)
 
 
@@ -2612,3 +2633,182 @@ Be honest and constructive in self-assessment."""
     except Exception as e:
         logger.error("learn_from_game_failed", exc_info=True)
         return {"error": str(e), "success": False}
+
+
+# -----------------------------------------------------------------------------
+# Chess Move Tool Handler
+# -----------------------------------------------------------------------------
+
+async def chess_move_handler(qube, params: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Make a chess move in an active game
+
+    This tool is always available but checks at runtime whether there's
+    an active game. If no game is in progress, it returns an error with
+    a helpful message.
+
+    Args:
+        params: {
+            "move": str - Chess move in UCI or SAN notation
+            "chat_message": str (optional) - Message to send with the move
+        }
+
+    Returns:
+        {
+            "success": bool,
+            "move_made": str,
+            "board_fen": str,
+            "is_check": bool,
+            "is_checkmate": bool,
+            "is_stalemate": bool,
+            "game_over": bool,
+            "result": str (optional),
+            "chat_added": bool
+        }
+    """
+    logger.info(f"[CHESS TOOL] chess_move_handler called with params: {params}")
+    try:
+        move = params["move"]
+        logger.info(f"[CHESS TOOL] Attempting move: {move}")
+        chat_message = params.get("chat_message")
+
+        # Check if game_manager exists and has an active game
+        if not hasattr(qube, 'game_manager') or qube.game_manager is None:
+            return {
+                "error": "Game manager not initialized",
+                "success": False,
+                "hint": "The game system is not available for this Qube."
+            }
+
+        game_manager = qube.game_manager
+
+        # Check for active game
+        if game_manager.active_game is None:
+            return {
+                "error": "No active chess game",
+                "success": False,
+                "hint": "There is no chess game currently in progress. Start a new game first."
+            }
+
+        active_game = game_manager.active_game
+
+        # Verify this qube is a player in the game
+        # Use "id" key - that's what GameManager.create_game uses
+        qube_is_white = active_game.white_player.get("id") == qube.qube_id
+        qube_is_black = active_game.black_player.get("id") == qube.qube_id
+
+        if not qube_is_white and not qube_is_black:
+            return {
+                "error": "You are not a player in this game",
+                "success": False,
+                "hint": "This chess game is between other players."
+            }
+
+        # Check if it's this qube's turn by parsing FEN
+        # FEN format: "pieces turn castling en_passant halfmove fullmove"
+        # Turn is 'w' for white, 'b' for black
+        fen_parts = active_game.fen.split(' ')
+        is_white_turn = fen_parts[1] == 'w' if len(fen_parts) > 1 else True
+        qube_color = "white" if qube_is_white else "black"
+
+        if (is_white_turn and not qube_is_white) or (not is_white_turn and not qube_is_black):
+            return {
+                "error": "It's not your turn",
+                "success": False,
+                "hint": f"You are playing as {qube_color}. Wait for your opponent to move.",
+                "current_turn": "white" if is_white_turn else "black"
+            }
+
+        # Convert SAN notation to UCI if needed
+        # The AI often uses SAN (e.g., "e5", "Nf3") but record_move expects UCI (e.g., "e7e5", "g1f3")
+        import chess
+        board = chess.Board(active_game.fen)
+        move_uci = move
+
+        # Check if move is already in UCI format (4-5 characters like "e2e4" or "e7e8q")
+        if len(move) < 4 or not (move[0] in 'abcdefgh' and move[1] in '12345678'):
+            # Likely SAN notation, try to convert
+            try:
+                parsed_move = board.parse_san(move)
+                move_uci = parsed_move.uci()
+                logger.info(f"[CHESS TOOL] Converted SAN '{move}' to UCI '{move_uci}'")
+            except (chess.InvalidMoveError, chess.IllegalMoveError, chess.AmbiguousMoveError) as e:
+                logger.warning(f"[CHESS TOOL] Failed to parse as SAN: {e}, trying as UCI")
+                # Keep original move, let record_move handle it
+
+        # Record the move using GameManager
+        logger.info(f"[CHESS TOOL] Calling record_move with move_uci={move_uci}, player_id={qube.qube_id}")
+        move_result = game_manager.record_move(
+            move_uci=move_uci,
+            player_id=qube.qube_id
+        )
+        logger.info(f"[CHESS TOOL] record_move result: {move_result}")
+
+        if not move_result["success"]:
+            error_response = {
+                "error": move_result.get("error", "Invalid move"),
+                "success": False,
+            }
+            # If we have legal moves, include them in the hint for the AI
+            legal_moves = move_result.get("legal_moves", [])
+            if legal_moves:
+                # Show first 15 legal moves in UCI format
+                moves_str = ", ".join(legal_moves[:15])
+                if len(legal_moves) > 15:
+                    moves_str += f"... ({len(legal_moves)} total)"
+                error_response["hint"] = f"Try one of these legal moves (UCI format): {moves_str}"
+                error_response["legal_moves"] = legal_moves
+            else:
+                error_response["hint"] = "Check that your move is in valid UCI (e.g., 'e2e4') or SAN (e.g., 'e4') notation."
+            return error_response
+
+        # Add chat message if provided
+        chat_added = False
+        if chat_message:
+            game_manager.add_chat_message(
+                sender_id=qube.qube_id,
+                sender_type="qube",
+                message=chat_message
+            )
+            chat_added = True
+
+        # Build response
+        # Map record_move keys to expected response format
+        is_game_over = move_result.get("is_game_over", False)
+        termination = move_result.get("termination")
+
+        response = {
+            "success": True,
+            "move_made": move_result["san"],
+            "move_uci": move_result.get("move"),  # record_move uses "move" not "uci"
+            "board_fen": move_result["fen"],
+            "move_number": move_result["move_number"],
+            "is_check": move_result.get("is_check", False),
+            "is_checkmate": termination == "checkmate",
+            "is_stalemate": termination == "stalemate",
+            "is_draw": termination in ("stalemate", "insufficient_material", "fifty_move_rule", "threefold_repetition", "draw"),
+            "game_over": is_game_over,
+            "chat_added": chat_added
+        }
+
+        # Add result if game is over
+        if is_game_over:
+            response["result"] = move_result.get("result", "unknown")
+            response["termination"] = move_result.get("termination", "unknown")
+
+        logger.info(
+            "chess_move_made_via_tool",
+            qube_id=qube.qube_id,
+            move=move_result["san"],
+            game_id=active_game.game_id,
+            game_over=is_game_over
+        )
+
+        return response
+
+    except Exception as e:
+        logger.error("chess_move_handler_failed", qube_id=qube.qube_id, exc_info=True)
+        return {
+            "error": str(e),
+            "success": False
+        }

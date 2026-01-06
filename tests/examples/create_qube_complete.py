@@ -93,7 +93,7 @@ You are friendly, patient, and always provide accurate information with sources 
     ./data/
       └── qubes/
           └── {qube_id}/
-              ├── lmdb/          # Hot memory storage
+              ├── blocks/        # JSON block storage
               ├── keys/          # Encrypted private keys
               └── session_backups/
     """

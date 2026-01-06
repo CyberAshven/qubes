@@ -1413,7 +1413,7 @@ qubes/
 ├── p2p/                ✅ libp2p networking (21/21 tests)
 ├── core/               ✅ Memory chain, cryptography
 ├── crypto/             ✅ ECDSA, AES-256-GCM, ECDH
-├── storage/            ✅ LMDB, JSON, IPFS
+├── storage/            ✅ JSON, IPFS
 ├── orchestrator/       ✅ Multi-Qube management
 ├── monitoring/         ✅ Prometheus metrics
 ├── utils/              ✅ Logging, error handling
@@ -1450,7 +1450,7 @@ qubes/
 ### Phase 1: Core Foundation ✅ **COMPLETE**
 - [x] Memory chain (all 9 block types)
 - [x] Cryptography (ECDSA, AES-256-GCM, Merkle trees)
-- [x] Storage (LMDB hot storage)
+?   ??? permanent/         # Permanent block files
 - [x] Error handling (retry, circuit breakers, exceptions)
 - [x] Logging & observability (Structlog, Prometheus)
 - [x] Session blocks (negative indexing + FIFO)
@@ -2571,7 +2571,7 @@ qubes/
    - **Fix:** Added all 40+ missing dependencies to setup.py install_requires
    - **Added Categories:**
      - Cryptography: `cryptography>=41.0.0`, `ecdsa>=0.18.0`
-     - Storage: `lmdb>=1.4.1`, `msgpack>=1.0.7`
+     - Storage: `msgpack>=1.0.7`
      - Logging: `structlog>=24.1.0`, `opentelemetry-api>=1.22.0`, `prometheus-client>=0.19.0`
      - AI/LLM: `openai>=1.6.0`, `anthropic>=0.8.0`, `google-generativeai>=0.3.0`, `faiss-cpu>=1.7.4`, `sentence-transformers>=2.2.2`
      - Blockchain: `bitcash>=1.1.0`, `ipfshttpclient>=0.7.0`, `aiohttp>=3.8.0`
@@ -3295,7 +3295,7 @@ data/users/{user_name}/qubes/{qube_name_id}/
 ├── images/                 # Generated images (flat, no subdirectories)
 ├── blocks/
 │   └── session/            # Session blocks (flat, no subdirectories)
-├── lmdb/                   # LMDB storage
+?   ??? permanent/         # Permanent block files
 └── shared_memory/          # Shared memory (if exists)
 ```
 

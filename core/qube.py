@@ -25,6 +25,7 @@ from shared_memory import (
     SharedMemoryCache
 )
 from relationships.social import SocialDynamicsManager
+from core.game_manager import GameManager
 
 logger = get_logger(__name__)
 
@@ -205,6 +206,9 @@ class Qube:
             trust_profile=trust_profile,
             qube=self
         )
+
+        # Game management (chess, etc.)
+        self.game_manager = GameManager(self)
 
         # AI configuration
         self.current_ai_model = self.genesis_block.ai_model
@@ -1785,7 +1789,7 @@ class Qube:
             # Could prompt user here in full implementation
 
         # Note: Storage is now file-based (individual JSON files), no explicit close needed
-        # If LMDB storage exists, close it
+        # If legacy storage exists, close it
         if hasattr(self, 'storage') and self.storage:
             self.storage.close()
 

@@ -3833,6 +3833,357 @@ async fn get_debug_prompt(qube_id: String) -> Result<serde_json::Value, String> 
     Ok(response)
 }
 
+// =============================================================================
+// GAMES Commands
+// =============================================================================
+
+#[tauri::command]
+async fn start_game(
+    user_id: String,
+    qube_id: String,
+    game_type: String,
+    opponent_type: String,
+    opponent_id: Option<String>,
+    qube_color: String,
+    password: String,
+) -> Result<serde_json::Value, String> {
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("start-game")
+        .arg(&user_id)
+        .arg("--qube-id")
+        .arg(&qube_id)
+        .arg("--game-type")
+        .arg(&game_type)
+        .arg("--opponent-type")
+        .arg(&opponent_type)
+        .arg("--qube-color")
+        .arg(&qube_color);
+
+    if let Some(ref opp_id) = opponent_id {
+        cmd.arg("--opponent-id").arg(opp_id);
+    }
+
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
+
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn get_game_state(
+    user_id: String,
+    qube_id: String,
+    password: String,
+) -> Result<serde_json::Value, String> {
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("get-game-state")
+        .arg(&user_id)
+        .arg("--qube-id")
+        .arg(&qube_id);
+
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
+
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn get_game_stats(
+    user_id: String,
+    qube_id: String,
+    password: String,
+    game_type: Option<String>,
+) -> Result<serde_json::Value, String> {
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("get-game-stats")
+        .arg(&user_id)
+        .arg("--qube-id")
+        .arg(&qube_id);
+
+    if let Some(gt) = game_type {
+        cmd.arg("--game-type").arg(&gt);
+    }
+
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
+
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn make_move(
+    user_id: String,
+    qube_id: String,
+    chess_move: String,
+    player_type: String,
+    password: String,
+) -> Result<serde_json::Value, String> {
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("make-move")
+        .arg(&user_id)
+        .arg("--qube-id")
+        .arg(&qube_id)
+        .arg("--move")
+        .arg(&chess_move)
+        .arg("--player-type")
+        .arg(&player_type);
+
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
+
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn add_game_chat(
+    user_id: String,
+    qube_id: String,
+    message: String,
+    sender_type: String,
+    password: String,
+) -> Result<serde_json::Value, String> {
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("add-game-chat")
+        .arg(&user_id)
+        .arg("--qube-id")
+        .arg(&qube_id)
+        .arg("--message")
+        .arg(&message)
+        .arg("--sender-type")
+        .arg(&sender_type);
+
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
+
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn end_game(
+    user_id: String,
+    qube_id: String,
+    result: String,
+    termination: String,
+    password: String,
+) -> Result<serde_json::Value, String> {
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("end-game")
+        .arg(&user_id)
+        .arg("--qube-id")
+        .arg(&qube_id)
+        .arg("--result")
+        .arg(&result)
+        .arg("--termination")
+        .arg(&termination);
+
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
+
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn abandon_game(
+    user_id: String,
+    qube_id: String,
+    password: String,
+) -> Result<serde_json::Value, String> {
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("abandon-game")
+        .arg(&user_id)
+        .arg("--qube-id")
+        .arg(&qube_id);
+
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
+
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn request_qube_move(
+    user_id: String,
+    qube_id: String,
+    password: String,
+) -> Result<serde_json::Value, String> {
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("request-qube-move")
+        .arg(&user_id)
+        .arg("--qube-id")
+        .arg(&qube_id);
+
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
+
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn resign_game(
+    user_id: String,
+    qube_id: String,
+    resigning_player: String,
+    password: String,
+) -> Result<serde_json::Value, String> {
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    if resigning_player != "white" && resigning_player != "black" {
+        return Err("resigning_player must be 'white' or 'black'".to_string());
+    }
+
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("resign-game")
+        .arg(&user_id)
+        .arg("--qube-id")
+        .arg(&qube_id)
+        .arg("--resigning-player")
+        .arg(&resigning_player);
+
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
+
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn offer_draw(
+    user_id: String,
+    qube_id: String,
+    offering_player: String,
+    password: String,
+) -> Result<serde_json::Value, String> {
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    if offering_player != "white" && offering_player != "black" {
+        return Err("offering_player must be 'white' or 'black'".to_string());
+    }
+
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("offer-draw")
+        .arg(&user_id)
+        .arg("--qube-id")
+        .arg(&qube_id)
+        .arg("--offering-player")
+        .arg(&offering_player);
+
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
+
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn respond_to_draw(
+    user_id: String,
+    qube_id: String,
+    accepting: bool,
+    responding_player: String,
+    password: String,
+) -> Result<serde_json::Value, String> {
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    if responding_player != "white" && responding_player != "black" {
+        return Err("responding_player must be 'white' or 'black'".to_string());
+    }
+
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("respond-to-draw")
+        .arg(&user_id)
+        .arg("--qube-id")
+        .arg(&qube_id)
+        .arg("--accepting")
+        .arg(accepting.to_string())
+        .arg("--responding-player")
+        .arg(&responding_player);
+
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
+
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -3940,7 +4291,19 @@ pub fn run() {
             scan_wallet,
             resolve_public_key,
             // Dev debugging
-            get_debug_prompt
+            get_debug_prompt,
+            // Games
+            start_game,
+            get_game_state,
+            get_game_stats,
+            make_move,
+            add_game_chat,
+            end_game,
+            abandon_game,
+            request_qube_move,
+            resign_game,
+            offer_draw,
+            respond_to_draw
         ])
         .setup(|app| {
             // Get the main and splash windows

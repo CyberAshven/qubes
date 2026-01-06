@@ -281,7 +281,24 @@ class QubeReasoner:
             if not self.tool_registry:
                 raise AIError("Tool registry not initialized")
 
-            tools = self.tool_registry.get_tools_for_model(self.model.get_provider_name())
+            # Get unlocked tools from skills (for skill-gated tool access)
+            unlocked_tools = None
+            try:
+                from utils.skills_manager import SkillsManager
+                skills_manager = SkillsManager(self.qube.data_dir)
+                skill_summary = skills_manager.get_skill_summary()
+                unlocked_tools = set(skill_summary.get("unlocked_tools", []))
+            except Exception as e:
+                logger.warning(
+                    "failed_to_load_skills_for_tool_gating",
+                    error=str(e),
+                    qube_id=self.qube.qube_id
+                )
+
+            tools = self.tool_registry.get_tools_for_model(
+                self.model.get_provider_name(),
+                unlocked_tools=unlocked_tools
+            )
 
             # Record input
             MetricsRecorder.record_ai_api_call(provider, model_to_use, "started")
@@ -511,6 +528,321 @@ class QubeReasoner:
                 "error"
             )
             raise AIError(f"Reasoning failed: {str(e)}", cause=e)
+
+    async def process_game_action(
+        self,
+        game_context: Dict[str, Any],
+        user_chat: Optional[str] = None,
+        model_name: Optional[str] = None,
+        temperature: float = 0.7
+    ) -> str:
+        """
+        Lightweight reasoning for game actions (chess moves, etc.)
+
+        Unlike process_input, this method:
+        - Does NOT load all conversation history
+        - Does NOT do memory search (unless triggered)
+        - Only uses genesis prompt for personality
+        - Only enables game-related tools
+
+        This makes game moves faster, cheaper, and more robust.
+
+        Args:
+            game_context: Dict with game state (fen, qube_color, move_history, etc.)
+            user_chat: Optional recent user chat that might trigger memory search
+            model_name: AI model to use (overrides qube default)
+            temperature: Model temperature
+
+        Returns:
+            AI response (after tool execution)
+        """
+        try:
+            # Load AI model
+            model_to_use = model_name or getattr(self.qube, 'current_ai_model', 'gpt-4o-mini')
+
+            model_info = ModelRegistry.get_model_info(model_to_use)
+            if not model_info:
+                raise AIError(f"Unknown model: {model_to_use}", context={"model": model_to_use})
+
+            provider = model_info["provider"]
+            api_keys = getattr(self.qube, 'api_keys', {})
+            api_key = api_keys.get(provider)
+
+            if not api_key and provider != "ollama":
+                raise AIError(f"API key not configured for {provider}")
+
+            self.model = ModelRegistry.get_model(model_to_use, api_key)
+
+            # Get ONLY game-related tools (chess_move)
+            if self.tool_registry:
+                all_tools = self.tool_registry.get_tools_for_model(self.model.get_provider_name())
+                # Filter for chess_move - handle OpenAI, Anthropic, AND Google formats
+                game_tools = ["chess_move"]
+
+                def get_tool_name(tool: dict) -> str:
+                    """Extract tool name from various provider formats"""
+                    # OpenAI format: {"type": "function", "function": {"name": "..."}}
+                    if "function" in tool:
+                        return tool["function"].get("name", "")
+                    # Anthropic format: {"name": "..."}
+                    if "name" in tool:
+                        return tool["name"]
+                    # Google format: {"function_declarations": [{"name": "..."}]}
+                    if "function_declarations" in tool:
+                        decls = tool["function_declarations"]
+                        if decls and len(decls) > 0:
+                            return decls[0].get("name", "")
+                    return ""
+
+                tools = [t for t in all_tools if get_tool_name(t) in game_tools]
+                logger.debug(
+                    "game_tools_filtered",
+                    total_tools=len(all_tools),
+                    filtered_tools=len(tools),
+                    tool_names=[get_tool_name(t) for t in tools]
+                )
+            else:
+                tools = []
+
+            # Build MINIMAL context - just genesis for personality
+            genesis = self.qube.genesis_block
+            genesis_prompt = genesis.genesis_prompt or "You are a helpful AI assistant."
+
+            # Format birth timestamp
+            from utils.time_format import format_timestamp, get_current_timestamp_formatted
+            birth_date_str = format_timestamp(genesis.birth_timestamp)
+            current_time_str = get_current_timestamp_formatted()
+
+            system_prompt = f"""# Your Identity
+- Name: {genesis.qube_name}
+- Born: {birth_date_str}
+- Current time: {current_time_str}
+
+# Your Personality
+{genesis_prompt}
+
+# Current Activity
+You are playing chess. Use the chess_move tool to make your move.
+
+IMPORTANT: Only include a chat_message about 20% of the time - save your commentary for significant moments like captures, checks, blunders, or clever moves. Most moves should be silent (no chat_message parameter)."""
+
+            # Check for memory search triggers in user chat
+            memory_context = ""
+            if user_chat and self._should_search_memories_for_game(user_chat):
+                try:
+                    from ai.tools.memory_search import intelligent_memory_search
+                    results = await intelligent_memory_search(
+                        qube=self.qube,
+                        query=user_chat,
+                        context={"block_types": ["GAME", "MESSAGE"]},
+                        top_k=3
+                    )
+                    high_relevance = [r for r in results if r.score > 0.75]
+
+                    if high_relevance:
+                        memory_context = "\n\n# Relevant Memories:\n"
+                        for r in high_relevance:
+                            block_type = r.block.get("block_type", "?")
+                            summary = str(r.block.get("content", {}))[:200]
+                            memory_context += f"- [{block_type}] {summary}...\n"
+
+                        logger.info(
+                            "game_memory_search_triggered",
+                            trigger=user_chat[:50],
+                            results=len(high_relevance),
+                            qube_id=self.qube.qube_id
+                        )
+                except Exception as e:
+                    logger.warning("game_memory_search_failed", error=str(e))
+
+            if memory_context:
+                system_prompt += memory_context
+
+            # Build user message with game state
+            move_history = game_context.get("move_history", "none yet")
+            qube_color = game_context.get("qube_color", "unknown")
+            total_moves = game_context.get("total_moves", 0)
+            legal_moves = game_context.get("legal_moves", [])
+
+            # Format legal moves for the prompt (show first 20 to avoid huge prompts)
+            legal_moves_str = ", ".join(legal_moves[:20])
+            if len(legal_moves) > 20:
+                legal_moves_str += f"... ({len(legal_moves)} total)"
+
+            user_message = f"""It's your turn! Here's the current position:
+
+FEN: {game_context.get('fen', '')}
+Your color: {qube_color}
+Move history: {move_history}
+Total moves: {total_moves}
+
+IMPORTANT - Legal moves in UCI format: {legal_moves_str}
+
+Make your move using the chess_move tool. Use one of the legal moves listed above in UCI format (e.g., 'e2e4', not 'e4')."""
+
+            if user_chat:
+                user_message += f"\n\nYour opponent says: \"{user_chat}\""
+
+            # Build messages
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message}
+            ]
+
+            logger.info(
+                "game_action_started",
+                model=model_to_use,
+                qube_color=qube_color,
+                total_moves=total_moves,
+                has_memory_context=bool(memory_context),
+                qube_id=self.qube.qube_id
+            )
+
+            # Retry loop for move attempts (give AI chances to find legal move)
+            max_iterations = 5
+            move_succeeded = False
+            last_response_content = None
+
+            for iteration in range(max_iterations):
+                response = await self.model.generate(
+                    messages=messages,
+                    tools=tools,
+                    temperature=temperature
+                )
+
+                if response.tool_calls:
+                    # Add assistant message with tool calls
+                    messages.append({
+                        "role": "assistant",
+                        "content": response.content or "",
+                        "tool_calls": [
+                            {
+                                "id": tc["id"],
+                                "type": "function",
+                                "function": {
+                                    "name": tc["name"],
+                                    "arguments": json.dumps(tc["parameters"])
+                                }
+                            }
+                            for tc in response.tool_calls
+                        ]
+                    })
+
+                    # Execute tool(s) and track success
+                    for tool_call in response.tool_calls:
+                        tool_result = await self.tool_registry.execute_tool(
+                            tool_call["name"],
+                            tool_call["parameters"],
+                            record_blocks=False  # Don't create ACTION blocks for game moves
+                        )
+
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call["id"],
+                            "name": tool_call["name"],
+                            "content": json.dumps(tool_result)
+                        })
+
+                        # Check if this chess_move succeeded
+                        if tool_call["name"] == "chess_move" and tool_result.get("success"):
+                            move_succeeded = True
+                            logger.info(
+                                "chess_move_succeeded",
+                                iteration=iteration + 1,
+                                move=tool_call["parameters"].get("move"),
+                                qube_id=self.qube.qube_id
+                            )
+
+                    # If move succeeded, break out to get final response
+                    if move_succeeded:
+                        continue
+
+                    continue
+
+                # No more tool calls - return final response
+                last_response_content = response.content
+
+                if response.usage:
+                    total_tokens = response.usage.get("total_tokens", 0)
+                    cost_per_1k = model_info.get("cost_per_1k_tokens", 0.0)
+                    estimated_cost = (total_tokens / 1000.0) * cost_per_1k if cost_per_1k else 0.0
+
+                    self.qube.chain_state.add_tokens(
+                        model=model_to_use,
+                        tokens=total_tokens,
+                        cost=estimated_cost
+                    )
+
+                logger.info(
+                    "game_action_complete",
+                    model=model_to_use,
+                    iterations=iteration + 1,
+                    move_succeeded=move_succeeded,
+                    qube_id=self.qube.qube_id
+                )
+
+                # Return content if we have it, or indicate move status
+                if move_succeeded:
+                    return last_response_content or "Move completed"
+                else:
+                    # AI stopped making tool calls but move didn't succeed
+                    logger.warning(
+                        "game_action_no_move",
+                        iterations=iteration + 1,
+                        qube_id=self.qube.qube_id
+                    )
+                    raise AIError(
+                        "AI did not make a valid move",
+                        context={"iterations": iteration + 1, "last_response": last_response_content}
+                    )
+
+            # Exhausted all iterations without success
+            if not move_succeeded:
+                logger.error(
+                    "game_action_exhausted_iterations",
+                    max_iterations=max_iterations,
+                    qube_id=self.qube.qube_id
+                )
+                raise AIError(
+                    f"AI failed to make a valid move after {max_iterations} attempts",
+                    context={"max_iterations": max_iterations}
+                )
+
+            return last_response_content or "Move completed"
+
+        except Exception as e:
+            logger.error("game_action_failed", error=str(e), exc_info=True)
+            raise AIError(f"Game action failed: {str(e)}", cause=e)
+
+    def _should_search_memories_for_game(self, user_chat: str) -> bool:
+        """
+        Determine if user chat should trigger memory search during game.
+
+        Triggers on references to past games, lessons, or explicit memory requests.
+        """
+        if not user_chat:
+            return False
+
+        chat_lower = user_chat.lower()
+
+        # Trigger phrases that suggest memory would be helpful
+        triggers = [
+            "remember",
+            "last game",
+            "last time",
+            "before",
+            "taught you",
+            "showed you",
+            "like when",
+            "same as",
+            "that opening",
+            "that defense",
+            "you always",
+            "you never",
+            "our previous",
+        ]
+
+        return any(trigger in chat_lower for trigger in triggers)
 
     async def _build_context(self) -> List[Dict[str, str]]:
         """
@@ -1120,9 +1452,14 @@ Example: Instead of "Here is the image you requested", say something like "![My 
         blocks_to_check = []
 
         for block_num in range(start_block, chain_length):
-            block = self.qube.memory_chain.get_block(block_num)
-            if block:
-                blocks_to_check.append(block)
+            try:
+                block = self.qube.memory_chain.get_block(block_num)
+                if block:
+                    blocks_to_check.append(block)
+            except Exception as e:
+                # Skip blocks that fail to load (missing files, corruption, etc.)
+                logger.warning("block_load_failed_in_context", block_num=block_num, error=str(e))
+                continue
 
         # Find SUMMARY blocks and what they cover
         summary_blocks = []

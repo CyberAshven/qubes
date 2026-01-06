@@ -679,7 +679,10 @@ class GUIBridge:
     async def get_qube(self, qube_id: str) -> Dict[str, Any]:
         """Get a specific qube by ID"""
         try:
-            qube = await self.orchestrator.get_qube(qube_id)
+            # Load the qube if not already loaded
+            if qube_id not in self.orchestrator.qubes:
+                await self.orchestrator.load_qube(qube_id)
+            qube = self.orchestrator.qubes[qube_id]
 
             gui_qube = {
                 "qube_id": qube["qube_id"],
@@ -3876,6 +3879,964 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
             logger.error(f"Failed to resolve public key: {e}", exc_info=True)
             return {"success": False, "error": str(e), "public_key": None, "found": False}
 
+    # =========================================================================
+    # GAMES - Chess and other games
+    # =========================================================================
+
+    async def start_game(
+        self,
+        qube_id: str,
+        game_type: str,
+        opponent_type: str,
+        opponent_id: Optional[str],
+        qube_color: str,
+        password: str
+    ) -> Dict[str, Any]:
+        """
+        Start a new game for a Qube.
+
+        Args:
+            qube_id: Qube to play as
+            game_type: Type of game (currently only "chess")
+            opponent_type: "human" or "qube"
+            opponent_id: If opponent_type is "qube", the opponent's qube_id
+            qube_color: "white", "black", or "random" for qube's color
+            password: User's master password
+
+        Returns:
+            Dict with game_id, initial board state, player assignments
+        """
+        try:
+            # Unlock and load qube
+            self.orchestrator.set_master_key(password)
+            qube = await self.orchestrator.load_qube(qube_id)
+
+            if not qube:
+                return {"success": False, "error": f"Qube {qube_id} not found"}
+
+            # Ensure game manager exists
+            if not hasattr(qube, 'game_manager') or qube.game_manager is None:
+                return {"success": False, "error": "Game manager not initialized for this Qube"}
+
+            # Determine qube's color
+            import random
+            if qube_color == "random":
+                qube_plays_as = random.choice(["white", "black"])
+            else:
+                qube_plays_as = qube_color
+
+            # For qube vs qube, load opponent
+            opponent_name = self.orchestrator.user_id  # Default for human
+            opponent_qube = None
+            if opponent_type == "qube" and opponent_id:
+                opponent_qube = await self.orchestrator.load_qube(opponent_id)
+                if not opponent_qube:
+                    return {"success": False, "error": f"Opponent Qube {opponent_id} not found"}
+                opponent_name = opponent_qube.name
+
+            # Create game using GameManager (correct signature)
+            # Use actual user_id for human opponents so move validation works
+            result = qube.game_manager.create_game(
+                game_type=game_type,
+                qube_plays_as=qube_plays_as,
+                opponent_id=opponent_id if opponent_type == "qube" else self.orchestrator.user_id,
+                opponent_type=opponent_type
+            )
+
+            if not result.get("success"):
+                return result
+
+            # CRITICAL: For Qube vs Qube, ALSO create the game in the opponent's game_manager
+            # This ensures both Qubes have synchronized game state and can make moves
+            if opponent_type == "qube" and opponent_qube:
+                # Ensure opponent's game manager exists
+                if not hasattr(opponent_qube, 'game_manager') or opponent_qube.game_manager is None:
+                    return {"success": False, "error": f"Opponent Qube {opponent_id} has no game manager"}
+
+                # Opponent plays the opposite color
+                opponent_plays_as = "black" if qube_plays_as == "white" else "white"
+                opponent_result = opponent_qube.game_manager.create_game(
+                    game_type=game_type,
+                    qube_plays_as=opponent_plays_as,
+                    opponent_id=qube_id,  # Primary qube is the opponent from opponent's perspective
+                    opponent_type="qube"
+                )
+
+                if not opponent_result.get("success"):
+                    # Rollback: abandon the primary game
+                    qube.game_manager.abandon_game()
+                    return {"success": False, "error": f"Failed to create game for opponent: {opponent_result.get('error')}"}
+
+            # Build full player info with names for frontend
+            # Use 'id' key for consistency with game_manager and frontend expectations
+            if qube_plays_as == "white":
+                white_player = {
+                    "type": "qube",
+                    "id": qube.qube_id,
+                    "name": qube.name
+                }
+                black_player = {
+                    "type": opponent_type,
+                    "id": opponent_id if opponent_type == "qube" else self.orchestrator.user_id,
+                    "name": opponent_name
+                }
+            else:
+                white_player = {
+                    "type": opponent_type,
+                    "id": opponent_id if opponent_type == "qube" else self.orchestrator.user_id,
+                    "name": opponent_name
+                }
+                black_player = {
+                    "type": "qube",
+                    "id": qube.qube_id,
+                    "name": qube.name
+                }
+
+            logger.info(f"Started {game_type} game {result['game_id']} for qube {qube_id}")
+
+            return {
+                "success": True,
+                "game_id": result["game_id"],
+                "game_type": game_type,
+                "fen": result["fen"],
+                "white_player": white_player,
+                "black_player": black_player,
+                "status": "active",
+                "current_turn": "white"
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to start game: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def get_game_state(self, qube_id: str, password: str) -> Dict[str, Any]:
+        """
+        Get current game state for a Qube.
+
+        Args:
+            qube_id: Qube ID
+            password: User's master password
+
+        Returns:
+            Dict with current game state or null if no active game
+        """
+        try:
+            self.orchestrator.set_master_key(password)
+            qube = await self.orchestrator.load_qube(qube_id)
+
+            if not qube:
+                return {"success": False, "error": f"Qube {qube_id} not found"}
+
+            if not hasattr(qube, 'game_manager') or qube.game_manager is None:
+                return {"success": True, "game": None, "has_active_game": False}
+
+            game_context = qube.game_manager.get_game_context()
+
+            if game_context is None:
+                return {"success": True, "game": None, "has_active_game": False}
+
+            return {
+                "success": True,
+                "has_active_game": True,
+                "game": game_context
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to get game state: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def get_game_stats(self, qube_id: str, password: str, game_type: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Get permanent game statistics for a Qube.
+
+        Args:
+            qube_id: Qube ID
+            password: User's master password
+            game_type: Optional specific game type (e.g., "chess"), or None for all
+
+        Returns:
+            Dict with game statistics
+        """
+        try:
+            self.orchestrator.set_master_key(password)
+            qube = await self.orchestrator.load_qube(qube_id)
+
+            if not qube:
+                return {"success": False, "error": f"Qube {qube_id} not found"}
+
+            if not hasattr(qube, 'game_manager') or qube.game_manager is None:
+                return {"success": True, "stats": {}}
+
+            stats = qube.game_manager.get_game_stats(game_type)
+
+            return {
+                "success": True,
+                "stats": stats
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to get game stats: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def make_move(
+        self,
+        qube_id: str,
+        move: str,
+        player_type: str,
+        password: str
+    ) -> Dict[str, Any]:
+        """
+        Make a move in an active game.
+
+        Args:
+            qube_id: Qube whose game we're playing
+            move: Move in UCI or SAN notation
+            player_type: "human" or "qube" indicating who is making the move
+            password: User's master password
+
+        Returns:
+            Dict with move result and updated game state
+        """
+        try:
+            self.orchestrator.set_master_key(password)
+            qube = await self.orchestrator.load_qube(qube_id)
+
+            if not qube:
+                return {"success": False, "error": f"Qube {qube_id} not found"}
+
+            if not hasattr(qube, 'game_manager') or qube.game_manager is None:
+                return {"success": False, "error": "Game manager not initialized"}
+
+            if qube.game_manager.active_game is None:
+                return {"success": False, "error": "No active game"}
+
+            # Determine player_id based on player_type
+            if player_type == "human":
+                player_id = self.orchestrator.user_id
+            else:
+                player_id = qube_id
+
+            # Record the move
+            result = qube.game_manager.record_move(
+                move_uci=move,
+                player_id=player_id
+            )
+
+            if not result["success"]:
+                return result
+
+            # Build response - map record_move output to frontend expected format
+            is_game_over = result.get("is_game_over", False)
+            termination = result.get("termination", "")
+
+            response = {
+                "success": True,
+                "move_made": result["san"],
+                "move_uci": result["move"],  # record_move returns "move" not "uci"
+                "fen": result["fen"],
+                "move_number": result["move_number"],
+                "is_check": result.get("is_check", False),
+                "is_checkmate": termination == "checkmate",
+                "is_stalemate": termination == "stalemate",
+                "is_draw": termination in ["insufficient_material", "fifty_move_rule", "threefold_repetition", "draw"],
+                "game_over": is_game_over,
+                "current_turn": result.get("turn", "black" if result["fen"].split()[1] == "b" else "white")
+            }
+
+            if is_game_over:
+                response["result"] = result.get("result")
+                response["termination"] = termination
+
+            return response
+
+        except Exception as e:
+            logger.error(f"Failed to make move: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def add_game_chat(
+        self,
+        qube_id: str,
+        message: str,
+        sender_type: str,
+        password: str
+    ) -> Dict[str, Any]:
+        """
+        Add a chat message to the active game and trigger Qube response if human.
+
+        Args:
+            qube_id: Qube whose game we're chatting in
+            message: Chat message
+            sender_type: "human" or "qube"
+            password: User's master password
+
+        Returns:
+            Dict with success status and updated game state
+        """
+        try:
+            self.orchestrator.set_master_key(password)
+            qube = await self.orchestrator.load_qube(qube_id)
+
+            if not qube:
+                return {"success": False, "error": f"Qube {qube_id} not found"}
+
+            if not hasattr(qube, 'game_manager') or qube.game_manager is None:
+                return {"success": False, "error": "Game manager not initialized"}
+
+            if qube.game_manager.active_game is None:
+                return {"success": False, "error": "No active game"}
+
+            # Add human's message
+            if sender_type == "human":
+                qube.game_manager.add_chat_message(
+                    sender_id=self.orchestrator.user_id,
+                    sender_type="human",
+                    message=message
+                )
+
+                # Trigger Qube response to human's trash talk
+                if qube.reasoner is None:
+                    api_keys = self.orchestrator.get_api_keys()
+                    qube.init_ai(api_keys.to_dict())
+
+                # Get game context for the response
+                game_context = qube.game_manager.get_game_context()
+
+                # Ask Qube to respond to the trash talk
+                prompt = f"""The human player just sent you a message during your chess game:
+
+"{message}"
+
+Current position: {game_context.get('fen', 'unknown')}
+Your color: {game_context.get('qube_color', 'unknown')}
+Move count: {game_context.get('total_moves', 0)}
+
+Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or competitive based on your personality. Don't make a chess move, just respond to their message. Keep your response brief (1-3 sentences)."""
+
+                try:
+                    response = await qube.reasoner.process_input(
+                        input_message=prompt,
+                        sender_id=self.orchestrator.user_id
+                    )
+
+                    # Extract just the text response (strip any tool use artifacts)
+                    if response:
+                        # Add Qube's response to chat
+                        qube.game_manager.add_chat_message(
+                            sender_id=qube_id,
+                            sender_type="qube",
+                            message=response.strip()
+                        )
+                except Exception as ai_err:
+                    logger.warning(f"Failed to generate Qube chat response: {ai_err}")
+            else:
+                # Qube message (from move handler)
+                qube.game_manager.add_chat_message(
+                    sender_id=qube_id,
+                    sender_type="qube",
+                    message=message
+                )
+
+            # Return updated game state
+            updated_context = qube.game_manager.get_game_context()
+            return {
+                "success": True,
+                "game_state": updated_context
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to add game chat: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def end_game(
+        self,
+        qube_id: str,
+        result: str,
+        termination: str,
+        password: str
+    ) -> Dict[str, Any]:
+        """
+        End the active game and create GAME block.
+
+        Args:
+            qube_id: Qube whose game is ending
+            result: "1-0", "0-1", "1/2-1/2", or "*"
+            termination: "checkmate", "resignation", "timeout", "stalemate", etc.
+            password: User's master password
+
+        Returns:
+            Dict with game summary and block info
+        """
+        try:
+            self.orchestrator.set_master_key(password)
+            qube = await self.orchestrator.load_qube(qube_id)
+
+            if not qube:
+                return {"success": False, "error": f"Qube {qube_id} not found"}
+
+            if not hasattr(qube, 'game_manager') or qube.game_manager is None:
+                return {"success": False, "error": "Game manager not initialized"}
+
+            if qube.game_manager.active_game is None:
+                return {"success": False, "error": "No active game"}
+
+            # End game and get summary
+            # First, get the game state to find the opponent
+            active_game = qube.game_manager.active_game
+            white_player_info = active_game.white_player if active_game else None
+            black_player_info = active_game.black_player if active_game else None
+
+            end_result = qube.game_manager.end_game(
+                result=result,
+                termination=termination
+            )
+
+            if not end_result.get("success"):
+                return end_result
+
+            game_summary = end_result["game_summary"]
+            logger.info(f"Game ended: {game_summary['game_id']} with result {result}")
+
+            # CRITICAL: Also end the game for the opponent Qube if it's a Qube vs Qube game
+            # This ensures the opponent's game_manager is cleaned up and stats updated
+            if white_player_info and black_player_info:
+                opponent_info = black_player_info if white_player_info.get("id") == qube_id else white_player_info
+                if opponent_info.get("type") == "qube":
+                    opponent_qube_id = opponent_info.get("id")
+                    try:
+                        opponent_qube = await self.orchestrator.load_qube(opponent_qube_id)
+                        if opponent_qube and opponent_qube.game_manager and opponent_qube.game_manager.active_game:
+                            logger.info(f"Ending game for opponent Qube {opponent_qube_id}")
+                            opponent_qube.game_manager.end_game(
+                                result=result,
+                                termination=termination
+                            )
+                    except Exception as opp_end_e:
+                        logger.warning(f"Failed to end game for opponent Qube: {opp_end_e}")
+
+            # Create GAME blocks for ALL Qube participants with multi-party signatures
+            # Each Qube signs the content, and all signatures are included in each block
+            from core.block import create_game_block
+            from crypto.keys import serialize_public_key
+
+            # Step 1: Load all Qube participants
+            qube_participants = []  # List of (qube_id, qube_object)
+            white_player = game_summary["white_player"]
+            black_player = game_summary["black_player"]
+
+            for player in [white_player, black_player]:
+                if player.get("type") == "qube":
+                    player_id = player["id"]
+                    if player_id == qube_id:
+                        qube_participants.append((player_id, qube))
+                    else:
+                        participant_qube = await self.orchestrator.load_qube(player_id)
+                        if participant_qube:
+                            qube_participants.append((player_id, participant_qube))
+                        else:
+                            logger.warning(f"Could not load Qube {player_id} for GAME block signing")
+
+            if not qube_participants:
+                return {"success": False, "error": "No Qube participants found for GAME block"}
+
+            # Step 2: Create a template block to get the content hash (use first Qube for template)
+            first_qube_id, first_qube = qube_participants[0]
+            template_block = create_game_block(
+                qube_id=first_qube_id,  # Will be replaced per-chain
+                block_number=0,  # Will be replaced per-chain
+                previous_hash="0" * 64,  # Will be replaced per-chain
+                game_id=game_summary["game_id"],
+                game_type=game_summary["game_type"],
+                white_player=game_summary["white_player"],
+                black_player=game_summary["black_player"],
+                result=game_summary["result"],
+                termination=game_summary["termination"],
+                total_moves=game_summary["total_moves"],
+                pgn=game_summary["pgn"],
+                duration_seconds=game_summary["duration_seconds"],
+                xp_earned=game_summary["xp_earned"],
+                key_moments=game_summary.get("key_moments"),
+                chat_log=game_summary.get("chat_log")
+            )
+
+            # Step 3: Compute content hash and have ALL Qubes sign it
+            content_hash = template_block.compute_content_hash()
+            participant_signatures = []
+
+            for participant_id, participant_qube in qube_participants:
+                try:
+                    public_key_hex = serialize_public_key(participant_qube.public_key)
+                    # Use the block's method to sign
+                    template_block.add_participant_signature(
+                        qube_id=participant_id,
+                        public_key_hex=public_key_hex,
+                        private_key=participant_qube.private_key
+                    )
+                    logger.info(f"Qube {participant_id} signed GAME block content")
+                except Exception as sig_error:
+                    logger.error(f"Failed to get signature from Qube {participant_id}: {sig_error}")
+
+            # Get all signatures from template
+            all_signatures = template_block.participant_signatures or []
+            final_content_hash = template_block.content_hash
+
+            logger.info(f"Collected {len(all_signatures)} signatures for GAME block")
+
+            # Step 4: Create individual blocks for each Qube's chain with all signatures
+            blocks_created = []
+            for participant_id, participant_qube in qube_participants:
+                try:
+                    # Get chain info for this Qube (use memory_chain as source of truth)
+                    latest_block = participant_qube.memory_chain.get_latest_block()
+                    previous_hash = latest_block.block_hash if latest_block else "0" * 64
+                    # Use memory_chain length as next block number (more reliable than chain_state)
+                    next_block_number = participant_qube.memory_chain.get_chain_length()
+
+                    # Create GAME block for this Qube's chain
+                    game_block = create_game_block(
+                        qube_id=participant_qube.qube_id,
+                        block_number=next_block_number,
+                        previous_hash=previous_hash,
+                        game_id=game_summary["game_id"],
+                        game_type=game_summary["game_type"],
+                        white_player=game_summary["white_player"],
+                        black_player=game_summary["black_player"],
+                        result=game_summary["result"],
+                        termination=game_summary["termination"],
+                        total_moves=game_summary["total_moves"],
+                        pgn=game_summary["pgn"],
+                        duration_seconds=game_summary["duration_seconds"],
+                        xp_earned=game_summary["xp_earned"],
+                        key_moments=game_summary.get("key_moments"),
+                        chat_log=game_summary.get("chat_log")
+                    )
+
+                    # Copy the shared content hash and all participant signatures
+                    game_block.content_hash = final_content_hash
+                    game_block.participant_signatures = all_signatures.copy()
+
+                    # Also sign the full block (chain-specific) with this Qube's key
+                    from crypto.signing import sign_block
+                    game_block.signature = sign_block(game_block.to_dict(), participant_qube.private_key)
+
+                    # Save block to disk BEFORE adding to chain index
+                    permanent_dir = participant_qube.data_dir / "blocks" / "permanent"
+                    permanent_dir.mkdir(parents=True, exist_ok=True)
+
+                    block_type_str = game_block.block_type if isinstance(game_block.block_type, str) else game_block.block_type.value
+                    filename = f"{game_block.block_number}_{block_type_str}_{game_block.timestamp}.json"
+                    block_file = permanent_dir / filename
+
+                    with open(block_file, 'w') as f:
+                        json.dump(game_block.to_dict(), f, indent=2)
+
+                    # Add to memory chain index
+                    participant_qube.memory_chain.add_block(game_block)
+
+                    # Update chain state (these methods auto-save)
+                    participant_qube.chain_state.update_chain(
+                        chain_length=next_block_number + 1,
+                        last_block_number=next_block_number,
+                        last_block_hash=game_block.block_hash
+                    )
+                    participant_qube.chain_state.increment_block_count("GAME")
+
+                    blocks_created.append({
+                        "qube_id": participant_id,
+                        "block_number": next_block_number,
+                        "signatures": len(all_signatures)
+                    })
+
+                    logger.info(f"Created GAME block #{next_block_number} for Qube {participant_id} with {len(all_signatures)} signatures")
+
+                except Exception as block_error:
+                    logger.error(f"Failed to create GAME block for Qube {participant_id}: {block_error}")
+
+            # Use the primary qube's block number for the response
+            next_block_number = blocks_created[0]["block_number"] if blocks_created else 0
+            logger.info(f"Game {game_summary['game_id']} ended - created {len(blocks_created)} multi-signed GAME blocks")
+
+            # Award XP to chess skill for all Qube participants
+            from utils.skills_manager import SkillsManager
+            for participant_id, participant_qube_obj in qube_participants:
+                try:
+                    skills_manager = SkillsManager(participant_qube_obj.data_dir)
+                    xp_result = skills_manager.add_xp(
+                        skill_id="chess",
+                        xp_amount=game_summary["xp_earned"],
+                        evidence_description=f"Completed chess game: {result} in {game_summary['total_moves']} moves"
+                    )
+                    logger.info(f"Awarded {game_summary['xp_earned']} XP to chess skill for {participant_id}: {xp_result}")
+                except Exception as xp_error:
+                    logger.warning(f"Failed to award XP to {participant_id}: {xp_error}")
+
+            return {
+                "success": True,
+                "game_summary": game_summary,
+                "block_number": next_block_number,
+                "blocks_created": blocks_created,  # All GAME blocks created
+                "xp_earned": game_summary["xp_earned"]
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to end game: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def abandon_game(self, qube_id: str, password: str) -> Dict[str, Any]:
+        """
+        Abandon the active game without creating a GAME block.
+
+        Args:
+            qube_id: Qube whose game to abandon
+            password: User's master password
+
+        Returns:
+            Dict with success status
+        """
+        try:
+            self.orchestrator.set_master_key(password)
+            qube = await self.orchestrator.load_qube(qube_id)
+
+            if not qube:
+                return {"success": False, "error": f"Qube {qube_id} not found"}
+
+            if not hasattr(qube, 'game_manager') or qube.game_manager is None:
+                return {"success": False, "error": "Game manager not initialized"}
+
+            if qube.game_manager.active_game is None:
+                return {"success": True, "message": "No active game to abandon"}
+
+            # Get opponent info before abandoning
+            active_game = qube.game_manager.active_game
+            white_player_info = active_game.white_player if active_game else None
+            black_player_info = active_game.black_player if active_game else None
+
+            qube.game_manager.abandon_game()
+
+            logger.info(f"Abandoned game for qube {qube_id}")
+
+            # Also abandon the opponent's game if it's a Qube vs Qube game
+            if white_player_info and black_player_info:
+                opponent_info = black_player_info if white_player_info.get("id") == qube_id else white_player_info
+                if opponent_info.get("type") == "qube":
+                    opponent_qube_id = opponent_info.get("id")
+                    try:
+                        opponent_qube = await self.orchestrator.load_qube(opponent_qube_id)
+                        if opponent_qube and opponent_qube.game_manager and opponent_qube.game_manager.active_game:
+                            logger.info(f"Abandoning game for opponent Qube {opponent_qube_id}")
+                            opponent_qube.game_manager.abandon_game()
+                    except Exception as opp_abandon_e:
+                        logger.warning(f"Failed to abandon game for opponent Qube: {opp_abandon_e}")
+
+            return {"success": True, "message": "Game abandoned"}
+
+        except Exception as e:
+            logger.error(f"Failed to abandon game: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def resign_game(self, qube_id: str, password: str, resigning_player: str) -> Dict[str, Any]:
+        """
+        Resign the current game (counts as a loss for the resigning player).
+
+        Args:
+            qube_id: Qube whose game to resign
+            password: User's master password
+            resigning_player: 'white' or 'black'
+
+        Returns:
+            Dict with success status and game summary
+        """
+        try:
+            self.orchestrator.set_master_key(password)
+            qube = await self.orchestrator.load_qube(qube_id)
+
+            if not qube:
+                return {"success": False, "error": f"Qube {qube_id} not found"}
+
+            if not hasattr(qube, 'game_manager') or qube.game_manager is None:
+                return {"success": False, "error": "Game manager not initialized"}
+
+            if qube.game_manager.active_game is None:
+                return {"success": False, "error": "No active game to resign"}
+
+            result = qube.game_manager.resign_game(resigning_player)
+
+            if result.get("success"):
+                logger.info(f"Game resigned by {resigning_player} for qube {qube_id}")
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Failed to resign game: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def offer_draw(self, qube_id: str, password: str, offering_player: str) -> Dict[str, Any]:
+        """
+        Offer a draw in the current game.
+
+        Args:
+            qube_id: Qube whose game to offer draw in
+            password: User's master password
+            offering_player: 'white' or 'black'
+
+        Returns:
+            Dict with success status
+        """
+        try:
+            self.orchestrator.set_master_key(password)
+            qube = await self.orchestrator.load_qube(qube_id)
+
+            if not qube:
+                return {"success": False, "error": f"Qube {qube_id} not found"}
+
+            if not hasattr(qube, 'game_manager') or qube.game_manager is None:
+                return {"success": False, "error": "Game manager not initialized"}
+
+            if qube.game_manager.active_game is None:
+                return {"success": False, "error": "No active game"}
+
+            result = qube.game_manager.offer_draw(offering_player)
+            return result
+
+        except Exception as e:
+            logger.error(f"Failed to offer draw: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def respond_to_draw(self, qube_id: str, password: str, accepting: bool, responding_player: str) -> Dict[str, Any]:
+        """
+        Respond to a draw offer.
+
+        Args:
+            qube_id: Qube whose game to respond to draw in
+            password: User's master password
+            accepting: True to accept, False to decline
+            responding_player: 'white' or 'black'
+
+        Returns:
+            Dict with success status (and game summary if accepted)
+        """
+        try:
+            self.orchestrator.set_master_key(password)
+            qube = await self.orchestrator.load_qube(qube_id)
+
+            if not qube:
+                return {"success": False, "error": f"Qube {qube_id} not found"}
+
+            if not hasattr(qube, 'game_manager') or qube.game_manager is None:
+                return {"success": False, "error": "Game manager not initialized"}
+
+            if qube.game_manager.active_game is None:
+                return {"success": False, "error": "No active game"}
+
+            result = qube.game_manager.respond_to_draw(accepting, responding_player)
+
+            if result.get("success") and accepting:
+                logger.info(f"Draw accepted for qube {qube_id}")
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Failed to respond to draw: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    def _calculate_trash_talk_chance(self, game_context: Dict[str, Any], last_move_info: Optional[Dict] = None) -> tuple:
+        """
+        Calculate probability of trash talk based on game events.
+
+        Returns:
+            tuple: (should_talk: bool, context_hint: str)
+        """
+        import random
+
+        base_chance = 0.25  # 25% base chance for normal moves
+        context_hint = ""
+
+        # Check game state
+        is_check = game_context.get("is_check", False)
+        total_moves = game_context.get("total_moves", 0)
+
+        # Calculate material from FEN
+        fen = game_context.get("fen", "")
+        piece_values = {'p': 1, 'n': 3, 'b': 3, 'r': 5, 'q': 9}
+        white_material = 0
+        black_material = 0
+
+        if fen:
+            board_part = fen.split(' ')[0]
+            for char in board_part:
+                if char.lower() in piece_values:
+                    if char.isupper():
+                        white_material += piece_values[char.lower()]
+                    else:
+                        black_material += piece_values[char]
+
+        qube_color = game_context.get("qube_color", "white")
+        qube_material = white_material if qube_color == "white" else black_material
+        opp_material = black_material if qube_color == "white" else white_material
+        material_diff = qube_material - opp_material
+
+        # Adjust chance based on events
+        if is_check:
+            base_chance += 0.40  # +40% if opponent is in check
+            context_hint = "You just put your opponent in check!"
+
+        if material_diff >= 3:
+            base_chance += 0.25  # +25% if winning by 3+ material
+            context_hint = "You're ahead in material - feeling confident!"
+        elif material_diff <= -3:
+            base_chance += 0.20  # +20% if losing (excuses/determination)
+            context_hint = "You're behind but fighting back!"
+
+        # Opening phase commentary (moves 1-6)
+        if total_moves <= 6:
+            base_chance += 0.15
+            if not context_hint:
+                context_hint = "Opening phase - establish your style!"
+
+        # Check for pending human chat messages to respond to (always respond)
+        chat_messages = game_context.get("chat_messages", [])
+        if chat_messages:
+            last_msg = chat_messages[-1]
+            if last_msg.get("sender_type") == "human":
+                return True, f"The human just said: \"{last_msg.get('message', '')[:100]}\" - respond to them!"
+
+        # Cap at 90%
+        final_chance = min(0.90, base_chance)
+
+        should_talk = random.random() < final_chance
+        return should_talk, context_hint
+
+    async def request_qube_move(
+        self,
+        qube_id: str,
+        password: str
+    ) -> Dict[str, Any]:
+        """
+        Request a Qube to make a chess move in the active game.
+
+        This sends a message to the Qube asking it to analyze the position
+        and make its move using the chess_move tool.
+
+        Args:
+            qube_id: Qube to request move from
+            password: User's master password
+
+        Returns:
+            Dict with move result from Qube
+        """
+        try:
+            self.orchestrator.set_master_key(password)
+            qube = await self.orchestrator.load_qube(qube_id)
+
+            if not qube:
+                return {"success": False, "error": f"Qube {qube_id} not found"}
+
+            if not hasattr(qube, 'game_manager') or qube.game_manager is None:
+                return {"success": False, "error": "Game manager not initialized"}
+
+            if qube.game_manager.active_game is None:
+                return {"success": False, "error": "No active game"}
+
+            # Get game context for the prompt
+            game_context = qube.game_manager.get_game_context()
+            if not game_context:
+                return {"success": False, "error": "Could not get game context"}
+
+            # Ensure AI is initialized
+            if qube.reasoner is None:
+                api_keys = self.orchestrator.get_api_keys()
+                qube.init_ai(api_keys.to_dict())
+
+            # Get recent chat messages to check for memory triggers
+            recent_chat = None
+            chat_messages = game_context.get("chat_messages", [])
+            if chat_messages:
+                # Get most recent human message
+                human_messages = [m for m in chat_messages if m.get("sender_type") == "human"]
+                if human_messages:
+                    recent_chat = human_messages[-1].get("message")
+
+            # Get game state BEFORE the move for comparison
+            context_before = qube.game_manager.get_game_context()
+            fen_before = context_before.get("fen") if context_before else None
+            logger.info(f"[CHESS DEBUG] FEN before AI call: {fen_before}")
+
+            # Use lightweight game action processing (no memory search unless triggered)
+            response = None
+            ai_error = None
+            try:
+                response = await qube.reasoner.process_game_action(
+                    game_context=game_context,
+                    user_chat=recent_chat  # Will trigger memory search only if needed
+                )
+                logger.info(f"[CHESS DEBUG] AI response: {response[:500] if response else 'None'}")
+            except Exception as ai_e:
+                # AI processing failed, but the chess move might still have succeeded
+                logger.warning(f"[CHESS DEBUG] AI processing error (may be ok if move succeeded): {ai_e}")
+                ai_error = str(ai_e)
+
+            # Get updated game state after the move
+            updated_context = qube.game_manager.get_game_context()
+            fen_after = updated_context.get("fen") if updated_context else None
+            logger.info(f"[CHESS DEBUG] FEN after AI call: {fen_after}")
+            logger.info(f"[CHESS DEBUG] FEN changed: {fen_before != fen_after}")
+
+            # If the FEN changed, the move was successful even if AI had issues
+            if fen_before != fen_after:
+                logger.info("[CHESS DEBUG] Move succeeded (FEN changed), returning success")
+
+                # CRITICAL: Sync move to opponent's game_manager for Qube vs Qube mode
+                # This ensures both Qubes have synchronized game state
+                active_game = qube.game_manager.active_game
+                if active_game:
+                    # Check if opponent is a Qube
+                    white_player = active_game.white_player
+                    black_player = active_game.black_player
+
+                    # Determine which player is the opponent
+                    if white_player.get("id") == qube.qube_id:
+                        opponent_info = black_player
+                    else:
+                        opponent_info = white_player
+
+                    # If opponent is a Qube, sync the game state
+                    if opponent_info.get("type") == "qube":
+                        opponent_qube_id = opponent_info.get("id")
+                        logger.info(f"[CHESS DEBUG] Syncing move to opponent Qube: {opponent_qube_id}")
+                        try:
+                            opponent_qube = await self.orchestrator.load_qube(opponent_qube_id)
+                            if opponent_qube and opponent_qube.game_manager and opponent_qube.game_manager.active_game:
+                                # Sync the FEN, moves, and chat messages
+                                opponent_game = opponent_qube.game_manager.active_game
+                                opponent_game.fen = active_game.fen
+                                opponent_game.moves = active_game.moves.copy()
+                                opponent_game.chat_messages = active_game.chat_messages.copy()
+                                opponent_game.last_move_at = active_game.last_move_at
+                                opponent_qube.game_manager._save_game_state()
+                                logger.info(f"[CHESS DEBUG] Synced game state to opponent Qube {opponent_qube_id}")
+                        except Exception as sync_e:
+                            logger.warning(f"[CHESS DEBUG] Failed to sync to opponent: {sync_e}")
+
+                return {
+                    "success": True,
+                    "qube_response": response or "Move completed",
+                    "game_state": updated_context,
+                    "ai_warning": ai_error  # Include warning if there was one
+                }
+            elif ai_error:
+                # FEN didn't change AND there was an error - actual failure
+                return {"success": False, "error": ai_error}
+            else:
+                # No error but FEN didn't change - shouldn't happen
+                return {
+                    "success": True,
+                    "qube_response": response,
+                    "game_state": updated_context
+                }
+
+        except Exception as e:
+            logger.error(f"Failed to request qube move: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
 
 async def main():
     """Main CLI entry point"""
@@ -6487,6 +7448,314 @@ async def main():
                 logger.error(f"Failed to get debug prompt: {e}", exc_info=True)
                 print(json.dumps({"success": False, "error": str(e)}), file=sys.stderr)
                 sys.exit(1)
+
+        # =====================================================================
+        # GAMES Commands
+        # =====================================================================
+        elif command == "start-game":
+            # Start a new game
+            if len(sys.argv) < 3:
+                print(json.dumps({"success": False, "error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("command")
+            parser.add_argument("user_id")
+            parser.add_argument("--qube-id", required=True)
+            parser.add_argument("--game-type", default="chess")
+            parser.add_argument("--opponent-type", required=True, choices=["human", "qube"])
+            parser.add_argument("--opponent-id", default=None)
+            parser.add_argument("--qube-color", default="random", choices=["white", "black", "random"])
+            parser.add_argument("--password", default=None)
+
+            args = parser.parse_args()
+            password = get_secret("password", required=False) or args.password
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.start_game(
+                qube_id=args.qube_id,
+                game_type=args.game_type,
+                opponent_type=args.opponent_type,
+                opponent_id=args.opponent_id,
+                qube_color=args.qube_color,
+                password=password
+            )
+            print(json.dumps(result))
+
+        elif command == "get-game-state":
+            # Get current game state
+            if len(sys.argv) < 3:
+                print(json.dumps({"success": False, "error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("command")
+            parser.add_argument("user_id")
+            parser.add_argument("--qube-id", required=True)
+            parser.add_argument("--password", default=None)
+
+            args = parser.parse_args()
+            password = get_secret("password", required=False) or args.password
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.get_game_state(
+                qube_id=args.qube_id,
+                password=password
+            )
+            print(json.dumps(result))
+
+        elif command == "get-game-stats":
+            # Get permanent game statistics
+            if len(sys.argv) < 3:
+                print(json.dumps({"success": False, "error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("command")
+            parser.add_argument("user_id")
+            parser.add_argument("--qube-id", required=True)
+            parser.add_argument("--game-type", default=None)
+            parser.add_argument("--password", default=None)
+
+            args = parser.parse_args()
+            password = get_secret("password", required=False) or args.password
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.get_game_stats(
+                qube_id=args.qube_id,
+                password=password,
+                game_type=args.game_type
+            )
+            print(json.dumps(result))
+
+        elif command == "make-move":
+            # Make a move in active game
+            if len(sys.argv) < 3:
+                print(json.dumps({"success": False, "error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("command")
+            parser.add_argument("user_id")
+            parser.add_argument("--qube-id", required=True)
+            parser.add_argument("--move", required=True)
+            parser.add_argument("--player-type", required=True, choices=["human", "qube"])
+            parser.add_argument("--password", default=None)
+
+            args = parser.parse_args()
+            password = get_secret("password", required=False) or args.password
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.make_move(
+                qube_id=args.qube_id,
+                move=args.move,
+                player_type=args.player_type,
+                password=password
+            )
+            print(json.dumps(result))
+
+        elif command == "add-game-chat":
+            # Add chat message to game
+            if len(sys.argv) < 3:
+                print(json.dumps({"success": False, "error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("command")
+            parser.add_argument("user_id")
+            parser.add_argument("--qube-id", required=True)
+            parser.add_argument("--message", required=True)
+            parser.add_argument("--sender-type", required=True, choices=["human", "qube"])
+            parser.add_argument("--password", default=None)
+
+            args = parser.parse_args()
+            password = get_secret("password", required=False) or args.password
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.add_game_chat(
+                qube_id=args.qube_id,
+                message=args.message,
+                sender_type=args.sender_type,
+                password=password
+            )
+            print(json.dumps(result))
+
+        elif command == "end-game":
+            # End game and create GAME block
+            if len(sys.argv) < 3:
+                print(json.dumps({"success": False, "error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("command")
+            parser.add_argument("user_id")
+            parser.add_argument("--qube-id", required=True)
+            parser.add_argument("--result", required=True, choices=["1-0", "0-1", "1/2-1/2", "*"])
+            parser.add_argument("--termination", required=True)
+            parser.add_argument("--password", default=None)
+
+            args = parser.parse_args()
+            password = get_secret("password", required=False) or args.password
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.end_game(
+                qube_id=args.qube_id,
+                result=args.result,
+                termination=args.termination,
+                password=password
+            )
+            print(json.dumps(result))
+
+        elif command == "abandon-game":
+            # Abandon game without creating block
+            if len(sys.argv) < 3:
+                print(json.dumps({"success": False, "error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("command")
+            parser.add_argument("user_id")
+            parser.add_argument("--qube-id", required=True)
+            parser.add_argument("--password", default=None)
+
+            args = parser.parse_args()
+            password = get_secret("password", required=False) or args.password
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.abandon_game(
+                qube_id=args.qube_id,
+                password=password
+            )
+            print(json.dumps(result))
+
+        elif command == "request-qube-move":
+            # Request Qube to make a move (AI)
+            if len(sys.argv) < 3:
+                print(json.dumps({"success": False, "error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("command")
+            parser.add_argument("user_id")
+            parser.add_argument("--qube-id", required=True)
+            parser.add_argument("--password", default=None)
+
+            args = parser.parse_args()
+            password = get_secret("password", required=False) or args.password
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.request_qube_move(
+                qube_id=args.qube_id,
+                password=password
+            )
+            print(json.dumps(result))
+
+        elif command == "resign-game":
+            # Resign the current game
+            if len(sys.argv) < 3:
+                print(json.dumps({"success": False, "error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("command")
+            parser.add_argument("user_id")
+            parser.add_argument("--qube-id", required=True)
+            parser.add_argument("--resigning-player", required=True)
+            parser.add_argument("--password", default=None)
+
+            args = parser.parse_args()
+            password = get_secret("password", required=False) or args.password
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.resign_game(
+                qube_id=args.qube_id,
+                password=password,
+                resigning_player=args.resigning_player
+            )
+            print(json.dumps(result))
+
+        elif command == "offer-draw":
+            # Offer a draw in the current game
+            if len(sys.argv) < 3:
+                print(json.dumps({"success": False, "error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("command")
+            parser.add_argument("user_id")
+            parser.add_argument("--qube-id", required=True)
+            parser.add_argument("--offering-player", required=True)
+            parser.add_argument("--password", default=None)
+
+            args = parser.parse_args()
+            password = get_secret("password", required=False) or args.password
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.offer_draw(
+                qube_id=args.qube_id,
+                password=password,
+                offering_player=args.offering_player
+            )
+            print(json.dumps(result))
+
+        elif command == "respond-to-draw":
+            # Respond to a draw offer
+            if len(sys.argv) < 3:
+                print(json.dumps({"success": False, "error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("command")
+            parser.add_argument("user_id")
+            parser.add_argument("--qube-id", required=True)
+            parser.add_argument("--accepting", required=True, type=lambda x: x.lower() == 'true')
+            parser.add_argument("--responding-player", required=True)
+            parser.add_argument("--password", default=None)
+
+            args = parser.parse_args()
+            password = get_secret("password", required=False) or args.password
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.respond_to_draw(
+                qube_id=args.qube_id,
+                password=password,
+                accepting=args.accepting,
+                responding_player=args.responding_player
+            )
+            print(json.dumps(result))
 
         else:
             print(json.dumps({"error": f"Unknown command: {command}"}), file=sys.stderr)

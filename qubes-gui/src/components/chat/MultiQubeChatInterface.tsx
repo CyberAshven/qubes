@@ -544,10 +544,36 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
     // Remove empty parentheses that might be left over
     cleaned = cleaned.replace(/\(\s*\)/g, '');
 
-    // Clean up extra whitespace and newlines
-    cleaned = cleaned.replace(/\n\n+/g, '\n\n').trim();
-
     return cleaned;
+  };
+
+  // Helper function to truncate text for TTS (OpenAI has 4096 char limit)
+  const truncateForTTS = (text: string, maxLength: number = 4000): string => {
+    // First, shorten long hexadecimal strings (BCH addresses, transaction IDs, etc.)
+    // Pattern: Any hex string longer than 20 characters
+    let processedText = text.replace(/\b([a-fA-F0-9]{20,})\b/g, (match) => {
+      // Keep first 8 and last 8 characters
+      return `${match.substring(0, 8)}...${match.substring(match.length - 8)}`;
+    });
+
+    // Also handle BCH addresses that start with specific prefixes
+    processedText = processedText.replace(/\b(bitcoincash:[a-z0-9]{20,})\b/gi, (match) => {
+      const parts = match.split(':');
+      if (parts.length === 2 && parts[1].length > 20) {
+        return `${parts[0]}:${parts[1].substring(0, 8)}...${parts[1].substring(parts[1].length - 8)}`;
+      }
+      return match;
+    });
+
+    // Now check overall length and truncate if needed
+    if (processedText.length <= maxLength) {
+      return processedText;
+    }
+
+    // Truncate at word boundary and add ellipsis
+    const truncated = processedText.substring(0, maxLength);
+    const lastSpace = truncated.lastIndexOf(' ');
+    return truncated.substring(0, lastSpace) + '... (response truncated for audio)';
   };
 
   // Helper function to detect and render images in message content
@@ -1323,7 +1349,8 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
         }
 
         // Clean the message content to remove image URLs before TTS
-        const cleanedMessage = cleanContentForDisplay(pendingTTSMessage.message);
+        // Then truncate hex strings (addresses, tx hashes) for better TTS readability
+        const cleanedMessage = truncateForTTS(cleanContentForDisplay(pendingTTSMessage.message));
 
         if (hasPrefetchedTTS && nextTTSPrefetch) {
           // Use prefetched TTS audio - instant playback!
@@ -1550,7 +1577,8 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
                   });
 
                   // Clean the message content to remove image URLs before TTS
-                  const cleanedMessage = cleanContentForDisplay(nextResponse.message);
+                  // Then truncate hex strings (addresses, tx hashes) for better TTS readability
+                  const cleanedMessage = truncateForTTS(cleanContentForDisplay(nextResponse.message));
                   const prefetchedAudio = await prefetchTTS(userId, nextQube.qube_id, cleanedMessage, password);
 
                   // CHECK AGAIN: Was prefetch cancelled while we were generating TTS?
