@@ -144,9 +144,9 @@ Add these secrets to your GitHub repository:
 - `TAURI_SIGNING_PRIVATE_KEY` - Contents of your private key file
 - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` - Your key password
 
-## Step 6: Deploy to Production Server (qube.cash)
+## Step 6: Deploy to Production Server (Optional)
 
-For production releases, we host files on qube.cash instead of GitHub for faster downloads:
+For production releases, you may want to host files on your own server instead of GitHub for faster downloads:
 
 ### 1. Download GitHub Actions Artifacts
 
@@ -154,7 +154,7 @@ After the build completes, download the release artifacts from GitHub Actions.
 
 ### 2. Update latest.json URLs
 
-Change URLs from GitHub to qube.cash:
+Change URLs from GitHub to your production server:
 
 ```json
 {
@@ -164,15 +164,15 @@ Change URLs from GitHub to qube.cash:
   "platforms": {
     "windows-x86_64": {
       "signature": "CONTENTS_OF_.sig_FILE",
-      "url": "https://qube.cash/releases/v0.2.7/Qubes-Windows-setup.exe"
+      "url": "https://your-domain.com/releases/v0.2.7/Qubes-Windows-setup.exe"
     },
     "darwin-aarch64": {
       "signature": "CONTENTS_OF_.sig_FILE",
-      "url": "https://qube.cash/releases/v0.2.7/Qubes-macOS-ARM.app.tar.gz"
+      "url": "https://your-domain.com/releases/v0.2.7/Qubes-macOS-ARM.app.tar.gz"
     },
     "linux-x86_64": {
       "signature": "CONTENTS_OF_.sig_FILE",
-      "url": "https://qube.cash/releases/v0.2.7/Qubes-Linux.AppImage.tar.gz"
+      "url": "https://your-domain.com/releases/v0.2.7/Qubes-Linux.AppImage.tar.gz"
     }
   }
 }
@@ -180,28 +180,11 @@ Change URLs from GitHub to qube.cash:
 
 ### 3. Upload to Server
 
-```bash
-# Create version directory
-ssh user@your-server "sudo mkdir -p /var/www/your-domain/releases/v0.2.7"
-
-# Upload files (use /tmp for permission handling)
-scp latest.json user@your-server:/tmp/
-scp Qubes-Windows-setup.exe user@your-server:/tmp/
-scp Qubes-macOS-ARM.app.tar.gz user@your-server:/tmp/
-scp Qubes-Linux.AppImage.tar.gz user@your-server:/tmp/
-
-# Move to final location
-ssh user@your-server "sudo mv /tmp/latest.json /var/www/your-domain/releases/v0.2.7/"
-ssh user@your-server "sudo mv /tmp/Qubes-*.exe /var/www/your-domain/releases/v0.2.7/"
-ssh user@your-server "sudo mv /tmp/Qubes-*.tar.gz /var/www/your-domain/releases/v0.2.7/"
-
-# Copy latest.json to root releases folder
-ssh user@your-server "sudo cp /var/www/your-domain/releases/v0.2.7/latest.json /var/www/your-domain/releases/"
-```
+Upload the release files to your production server via SCP, SFTP, or your preferred method.
 
 ### 4. Update Releases Page
 
-Edit `/var/www/your-domain/releases/index.html` to add the new version card.
+Update your releases page to include the new version.
 
 ## Testing
 

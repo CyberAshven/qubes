@@ -9,13 +9,13 @@
 ### What Was Accomplished
 
 #### 1. **v0.2.6 Release Deployment** ✅
-- Built and deployed v0.2.6 release to production
-- Uploaded artifacts to `qube.cash/releases/v0.2.6/`:
+- Built and deployed v0.2.6 release to production server
+- Uploaded artifacts:
   - `Qubes-Windows-setup.exe`
   - `Qubes-macOS-ARM.app.tar.gz`
   - `Qubes-Linux.AppImage.tar.gz`
-- Updated `latest.json` with qube.cash URLs (instead of GitHub)
-- Updated `index.html` releases page
+- Updated `latest.json` with production URLs
+- Updated releases page
 
 #### 2. **Critical Bug Fix: Backend Crash on Update** ✅
 - **Problem**: After updating from v0.2.5 to v0.2.6, app showed tutorial/onboarding screen instead of login
@@ -52,8 +52,8 @@ def _get_chess():
   - `qubes-gui/src-tauri/Cargo.toml`
 - Created git tag `v0.2.7`
 - GitHub Actions built releases automatically
-- Deployed to `qube.cash/releases/v0.2.7/`
-- Updated `latest.json` and `index.html`
+- Deployed to production server
+- Updated `latest.json` and releases page
 
 #### 4. **UI Fix: "Wallet" → "Qube" Label** ✅
 - Fixed duplicate "Wallet" label on Qube Card (Blockchain Data side)
@@ -92,21 +92,9 @@ def _get_chess():
 3. Create git tag: `git tag v0.x.x && git push origin v0.x.x`
 4. Wait for GitHub Actions to build releases
 5. Download artifacts from GitHub Actions
-6. Update `latest.json` URLs from GitHub to qube.cash
-7. Upload files to server: `scp` to `/var/www/your-domain/releases/vX.X.X/`
-8. Update `index.html` releases page
-
-**Server Deployment Commands**:
-```bash
-# Create directory on server
-ssh user@your-server "sudo mkdir -p /var/www/your-domain/releases/v0.2.7"
-
-# Upload files (via /tmp for permissions)
-scp latest.json user@your-server:/tmp/
-scp Qubes-Windows-setup.exe user@your-server:/tmp/
-ssh user@your-server "sudo mv /tmp/latest.json /var/www/your-domain/releases/v0.2.7/"
-ssh user@your-server "sudo mv /tmp/Qubes-*.exe /var/www/your-domain/releases/v0.2.7/"
-```
+6. Update `latest.json` URLs to point to production server
+7. Upload files to production server
+8. Update releases page
 
 ### Lessons Learned
 
