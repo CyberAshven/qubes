@@ -144,48 +144,6 @@ Add these secrets to your GitHub repository:
 - `TAURI_SIGNING_PRIVATE_KEY` - Contents of your private key file
 - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` - Your key password
 
-## Step 6: Deploy to Production Server (Optional)
-
-For production releases, you may want to host files on your own server instead of GitHub for faster downloads:
-
-### 1. Download GitHub Actions Artifacts
-
-After the build completes, download the release artifacts from GitHub Actions.
-
-### 2. Update latest.json URLs
-
-Change URLs from GitHub to your production server:
-
-```json
-{
-  "version": "0.2.7",
-  "notes": "Qubes v0.2.7 release",
-  "pub_date": "2026-01-06T09:14:18Z",
-  "platforms": {
-    "windows-x86_64": {
-      "signature": "CONTENTS_OF_.sig_FILE",
-      "url": "https://your-domain.com/releases/v0.2.7/Qubes-Windows-setup.exe"
-    },
-    "darwin-aarch64": {
-      "signature": "CONTENTS_OF_.sig_FILE",
-      "url": "https://your-domain.com/releases/v0.2.7/Qubes-macOS-ARM.app.tar.gz"
-    },
-    "linux-x86_64": {
-      "signature": "CONTENTS_OF_.sig_FILE",
-      "url": "https://your-domain.com/releases/v0.2.7/Qubes-Linux.AppImage.tar.gz"
-    }
-  }
-}
-```
-
-### 3. Upload to Server
-
-Upload the release files to your production server via SCP, SFTP, or your preferred method.
-
-### 4. Update Releases Page
-
-Update your releases page to include the new version.
-
 ## Testing
 
 1. Build version 0.1.0 and install it

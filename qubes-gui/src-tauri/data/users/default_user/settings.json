@@ -1,8 +1,0 @@
-{
-  "default_ai_model": "claude-sonnet-4.5",
-  "default_voice": "openai:alloy",
-  "max_session_blocks": 50,
-  "auto_anchor_threshold": 100,
-  "network_mode": "p2p",
-  "log_level": "INFO"
-}

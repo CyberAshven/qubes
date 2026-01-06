@@ -22,11 +22,13 @@ build/
 logs/
 *.log
 
-# Data (root level only - user data storage)
+# Data (user data storage - never commit user data)
 /data/
+**/data/users/
 *.db
 *.lmdb
 *.mdb
+*.bin
 
 # Secrets
 .env
@@ -74,3 +76,4 @@ website/
 images/
 .claude/
 scripts/
+PROGRESS_REPORT.md

@@ -273,14 +273,6 @@ test: Add tests for relationship decay
 
 5. GitHub Actions builds and publishes release
 
-6. Download artifacts from GitHub Actions
-
-7. Update `latest.json` URLs to point to production server
-
-8. Deploy to production server (see `qubes-gui/UPDATER_SETUP.md`)
-
-9. Update releases page
-
 ## PyInstaller Considerations
 
 The Python backend is bundled with PyInstaller. Keep these in mind:

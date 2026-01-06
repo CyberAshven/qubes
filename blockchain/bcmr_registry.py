@@ -303,9 +303,9 @@ class BCMRRegistryManager:
 
     def sync_to_server(
         self,
-        server_host: str = "YOUR_SERVER_IP",
-        server_user: str = "root",
-        server_path: str = "/var/www/your-domain/.well-known/",
+        server_host: str = "",
+        server_user: str = "",
+        server_path: str = "",
         auto_sync: bool = True
     ) -> bool:
         """
@@ -325,6 +325,12 @@ class BCMRRegistryManager:
 
         if not self.registry_file.exists():
             logger.error("cannot_sync_registry_not_found")
+            return False
+
+        # Require all server parameters to be explicitly provided
+        if not server_host or not server_user or not server_path:
+            logger.error("sync_requires_server_parameters",
+                        msg="server_host, server_user, and server_path must all be provided")
             return False
 
         # Validate SSH parameters to prevent command injection
