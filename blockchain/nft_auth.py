@@ -240,6 +240,21 @@ class NFTAuthenticator:
 
             category_id = nft_info["category_id"]
 
+            # Validate official Qubes category - reject unofficial agents
+            from core.official_category import is_official_qube
+            if not is_official_qube(category_id):
+                logger.warning(
+                    "auth_rejected_unofficial",
+                    qube_id=challenge.qube_id,
+                    category_id=category_id[:16] + "..." if category_id else "None"
+                )
+                return AuthResult(
+                    authenticated=False,
+                    qube_id=challenge.qube_id,
+                    category_id=category_id,
+                    error="Not an official Qube - invalid category ID"
+                )
+
             # Step 3: Get public key from BCMR/commitment data
             public_key_hex = await self._get_qube_public_key(challenge.qube_id, nft_info)
 

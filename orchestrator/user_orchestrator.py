@@ -943,6 +943,22 @@ class UserOrchestrator:
                 orchestrator=self
             )
 
+            # Defense-in-depth: Validate official Qubes category
+            # This should never trigger since minting is mandatory at creation,
+            # but protects against corrupted data or tampering
+            from core.official_category import is_official_qube
+            nft_category_id = qube.genesis_block.nft_category_id if hasattr(qube.genesis_block, 'nft_category_id') else None
+            if not nft_category_id:
+                raise QubesError(
+                    f"Qube {qube_id} is not minted. Minting is required.",
+                    context={"qube_id": qube_id}
+                )
+            if not is_official_qube(nft_category_id):
+                raise QubesError(
+                    f"Qube {qube_id} has invalid category ID. Not an official Qube.",
+                    context={"qube_id": qube_id, "category_id": nft_category_id[:16] + "..."}
+                )
+
             # Initialize AI with API keys from secure settings
             api_keys = self._get_api_keys()
 

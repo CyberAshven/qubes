@@ -508,6 +508,17 @@ class QubeHandshake:
             category_id = nft_info.get("category_id")
             recipient_address = nft_info.get("recipient_address")
 
+            # Validate official Qubes category - reject unofficial agents
+            from core.official_category import is_official_qube
+            if not is_official_qube(category_id):
+                logger.warning(
+                    "p2p_handshake_rejected_unofficial",
+                    qube_id=qube_id,
+                    category_id=category_id[:16] + "..." if category_id else "None",
+                    reason="Not official Qubes category"
+                )
+                return False
+
             if category_id and recipient_address:
                 from blockchain.verifier import NFTVerifier
                 verifier = NFTVerifier()

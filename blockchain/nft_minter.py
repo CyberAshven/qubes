@@ -56,6 +56,19 @@ class OptimizedNFTMinter:
         self.minting_config = load_minting_token_config()
         self.category_id = self.minting_config["category_id"]
 
+        # Sanity check: verify minting config uses official Qubes category
+        from core.official_category import is_official_qube
+        if not is_official_qube(self.category_id):
+            logger.critical(
+                "minter_category_mismatch",
+                loaded_category=self.category_id[:16] + "...",
+                error="Minting token config does not match official Qubes category"
+            )
+            raise ValueError(
+                "CRITICAL: Minting token configuration does not match official Qubes category. "
+                "Check data/platform/minting_token.json - possible misconfiguration or compromise."
+            )
+
         logger.info(
             "nft_minter_initialized",
             category_id=self.category_id[:16] + "...",

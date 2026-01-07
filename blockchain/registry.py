@@ -98,6 +98,10 @@ class QubeNFTRegistry:
             has_multiaddr=bool(multiaddr)
         )
 
+        # Validate official Qubes category before registering
+        from core.official_category import validate_official_qube
+        validate_official_qube(category_id, context="NFT registration")
+
         entry = {
             "qube_id": qube_id,
             "category_id": category_id,

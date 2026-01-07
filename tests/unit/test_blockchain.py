@@ -18,6 +18,7 @@ from blockchain.verifier import NFTVerifier
 from blockchain.manager import BlockchainManager
 from blockchain.ipfs import IPFSUploader
 from core.block import Block
+from core.official_category import OFFICIAL_QUBES_CATEGORY
 
 
 class TestPlatformInitializer:
@@ -64,7 +65,7 @@ class TestNFTMinter:
         """Test commitment creation from Qube metadata"""
         # Create mock minting config
         minting_config = {
-            "category_id": "test_category",
+            "category_id": OFFICIAL_QUBES_CATEGORY,
             "commitment": "test_commitment"
         }
 
@@ -82,7 +83,7 @@ class TestNFTMinter:
     def test_commitment_deterministic(self, mock_qube):
         """Test that same Qube data produces same commitment"""
         minting_config = {
-            "category_id": "test_category",
+            "category_id": OFFICIAL_QUBES_CATEGORY,
             "commitment": "test_commitment"
         }
 
@@ -165,7 +166,7 @@ class TestBCMRGenerator:
         generator = BCMRGenerator()
         generator.bcmr_dir = tmp_path
 
-        category_id = "test_category_123"
+        category_id = OFFICIAL_QUBES_CATEGORY
         bcmr_metadata = {
             "$schema": "https://cashtokens.org/bcmr-v2.schema.json",
             "version": {"major": 1, "minor": 0, "patch": 0}
@@ -196,7 +197,7 @@ class TestQubeNFTRegistry:
         """Test NFT registration"""
         registry.register_nft(
             qube_id="AAAA1111",
-            category_id="cat123",
+            category_id=OFFICIAL_QUBES_CATEGORY,
             mint_txid="tx123",
             recipient_address="bitcoincash:qp...",
             commitment="abc123",
@@ -208,7 +209,7 @@ class TestQubeNFTRegistry:
 
         # Verify details
         info = registry.get_nft_info("AAAA1111")
-        assert info["category_id"] == "cat123"
+        assert info["category_id"] == OFFICIAL_QUBES_CATEGORY
         assert info["mint_txid"] == "tx123"
         assert info["network"] == "chipnet"
 
@@ -216,26 +217,26 @@ class TestQubeNFTRegistry:
         """Test getting category ID"""
         registry.register_nft(
             qube_id="AAAA1111",
-            category_id="cat123",
+            category_id=OFFICIAL_QUBES_CATEGORY,
             mint_txid="tx123",
             recipient_address="bitcoincash:qp...",
             commitment="abc123"
         )
 
         category_id = registry.get_category_id("AAAA1111")
-        assert category_id == "cat123"
+        assert category_id == OFFICIAL_QUBES_CATEGORY
 
     def test_find_by_category(self, registry):
         """Test finding Qube by category ID"""
         registry.register_nft(
             qube_id="AAAA1111",
-            category_id="cat123",
+            category_id=OFFICIAL_QUBES_CATEGORY,
             mint_txid="tx123",
             recipient_address="bitcoincash:qp...",
             commitment="abc123"
         )
 
-        info = registry.find_by_category("cat123")
+        info = registry.find_by_category(OFFICIAL_QUBES_CATEGORY)
         assert info is not None
         assert info["qube_id"] == "AAAA1111"
 
@@ -245,7 +246,7 @@ class TestQubeNFTRegistry:
         for i in range(3):
             registry.register_nft(
                 qube_id=f"QUBE_{i}",
-                category_id=f"cat_{i}",
+                category_id=OFFICIAL_QUBES_CATEGORY,
                 mint_txid=f"tx_{i}",
                 recipient_address="bitcoincash:qp...",
                 commitment=f"commit_{i}"
@@ -262,7 +263,7 @@ class TestQubeNFTRegistry:
         registry1 = QubeNFTRegistry(registry_path=str(registry_path))
         registry1.register_nft(
             qube_id="AAAA1111",
-            category_id="cat123",
+            category_id=OFFICIAL_QUBES_CATEGORY,
             mint_txid="tx123",
             recipient_address="bitcoincash:qp...",
             commitment="abc123"
@@ -271,7 +272,7 @@ class TestQubeNFTRegistry:
         # Create second instance and verify data persisted
         registry2 = QubeNFTRegistry(registry_path=str(registry_path))
         assert registry2.is_registered("AAAA1111")
-        assert registry2.get_category_id("AAAA1111") == "cat123"
+        assert registry2.get_category_id("AAAA1111") == OFFICIAL_QUBES_CATEGORY
 
 
 class TestNFTVerifier:
@@ -300,7 +301,7 @@ class TestNFTVerifier:
                 "output": [
                     {
                         "value_satoshis": 1000,
-                        "token_category": "test_category",
+                        "token_category": OFFICIAL_QUBES_CATEGORY,
                         "nft_commitment_hex": "abc123",
                         "nft_capability": None
                     }
@@ -324,7 +325,7 @@ class TestNFTVerifier:
 
         with patch('blockchain.verifier.aiohttp.ClientSession', return_value=mock_session_instance):
             with patch.object(verifier, '_address_to_locking_bytecode', return_value="mock_bytecode"):
-                is_owned = await verifier.verify_ownership("test_category", "bitcoincash:qp...")
+                is_owned = await verifier.verify_ownership(OFFICIAL_QUBES_CATEGORY, "bitcoincash:qp...")
 
                 assert is_owned is True
 
@@ -548,7 +549,7 @@ class TestMetadataUpdateWorkflow:
         # Register a test NFT
         registry.register_nft(
             qube_id="BBBB2222",
-            category_id="test_category_123",
+            category_id=OFFICIAL_QUBES_CATEGORY,
             mint_txid="txid123",
             recipient_address="bitcoincash:qp123",
             commitment="abc123",
@@ -571,11 +572,11 @@ class TestMetadataUpdateWorkflow:
                     # Create initial BCMR
                     commitment_data = {"qube_id": "BBBB2222"}
                     initial_bcmr = manager.bcmr_generator.generate_bcmr_metadata(
-                        "test_category_123",
+                        OFFICIAL_QUBES_CATEGORY,
                         mock_qube,
                         commitment_data
                     )
-                    manager.bcmr_generator.save_bcmr_locally("test_category_123", initial_bcmr)
+                    manager.bcmr_generator.save_bcmr_locally(OFFICIAL_QUBES_CATEGORY, initial_bcmr)
 
                     # Update metadata
                     updated_metadata = {
@@ -591,13 +592,13 @@ class TestMetadataUpdateWorkflow:
 
                     # Verify result
                     assert result["qube_id"] == "BBBB2222"
-                    assert result["category_id"] == "test_category_123"
+                    assert result["category_id"] == OFFICIAL_QUBES_CATEGORY
                     assert "bcmr_local_path" in result
 
                     # Verify BCMR was updated
-                    bcmr = manager.bcmr_generator.load_bcmr("test_category_123")
+                    bcmr = manager.bcmr_generator.load_bcmr(OFFICIAL_QUBES_CATEGORY)
                     assert bcmr is not None
-                    assert len(bcmr["identities"]["test_category_123"]) >= 2
+                    assert len(bcmr["identities"][OFFICIAL_QUBES_CATEGORY]) >= 2
 
     @pytest.mark.asyncio
     async def test_update_unregistered_qube_fails(self, tmp_path):
