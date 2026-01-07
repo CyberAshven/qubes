@@ -67,6 +67,7 @@ qubes-gui/src-tauri/dist/
 
 # PyInstaller
 *.spec
+!qubes-gui/src-tauri/qubes-backend.spec
 qubes-gui/src-tauri/binaries/
 
 # Website (deployed separately)
