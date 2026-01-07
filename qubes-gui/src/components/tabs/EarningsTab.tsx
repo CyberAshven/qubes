@@ -4,6 +4,7 @@ import { QRCodeSVG } from 'qrcode.react';
 import { Qube } from '../../types';
 import { GlassCard, GlassButton } from '../glass';
 import { useAuth } from '../../hooks/useAuth';
+import { TransactionHistory } from '../wallet/TransactionHistory';
 
 interface EarningsTabProps {
   qubes: Qube[];
@@ -69,6 +70,8 @@ export const EarningsTab: React.FC<EarningsTabProps> = ({
   const [copied, setCopied] = useState(false);
   const [copiedAddress, setCopiedAddress] = useState<string | null>(null);
   const [detailsExpanded, setDetailsExpanded] = useState(false);
+  const [receiveExpanded, setReceiveExpanded] = useState(false);
+  const [sendExpanded, setSendExpanded] = useState(false);
 
   // Send form state
   const [sendAddress, setSendAddress] = useState('');
@@ -427,106 +430,138 @@ export const EarningsTab: React.FC<EarningsTabProps> = ({
         </GlassCard>
       </div>
 
-      {/* Deposit & Send - Two column layout */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Deposit Section */}
-        <GlassCard className="p-6 border-l-4 border-l-accent-primary">
-          <h3 className="text-lg font-semibold text-text-primary mb-4 flex items-center gap-2">
-            <span className="text-xl">📥</span> Deposit
-          </h3>
-          <div className="flex flex-col items-center gap-4">
-            {/* QR Code */}
-            <div className="bg-white p-3 rounded-lg shadow-lg">
-              <QRCodeSVG
-                value={walletInfo?.wallet_address || selectedQube.wallet_address || ''}
-                size={120}
-                level="M"
-              />
-            </div>
-            {/* Address and Copy */}
-            <div className="w-full">
-              <p className="text-text-tertiary text-sm mb-2 text-center">Send BCH to this address:</p>
-              <div className="bg-bg-primary p-2 rounded-lg border border-glass-border">
-                <code className="text-xs break-all text-text-primary font-mono block text-center">
-                  {walletInfo?.wallet_address || selectedQube.wallet_address}
-                </code>
+      {/* Receive & Send - Two column layout */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+        {/* Receive Section - Collapsible */}
+        <GlassCard className="p-4 border-l-4 border-l-accent-primary">
+          <button
+            onClick={() => setReceiveExpanded(!receiveExpanded)}
+            className="w-full flex items-center justify-between text-left"
+          >
+            <h3 className="text-lg font-semibold text-text-primary flex items-center gap-2">
+              <span className="text-xl">📥</span> Receive
+            </h3>
+            <span
+              className="text-text-tertiary text-lg transition-transform duration-200"
+              style={{ transform: receiveExpanded ? 'rotate(180deg)' : 'rotate(0deg)' }}
+            >
+              ▼
+            </span>
+          </button>
+
+          {receiveExpanded && (
+            <div className="mt-4 pt-4 border-t border-glass-border">
+              <div className="flex flex-col items-center gap-4">
+                {/* QR Code */}
+                <div className="bg-white p-3 rounded-lg shadow-lg">
+                  <QRCodeSVG
+                    value={walletInfo?.wallet_address || selectedQube.wallet_address || ''}
+                    size={120}
+                    level="M"
+                  />
+                </div>
+                {/* Address and Copy */}
+                <div className="w-full">
+                  <p className="text-text-tertiary text-sm mb-2 text-center">Send BCH to this address:</p>
+                  <div className="bg-bg-primary p-2 rounded-lg border border-glass-border">
+                    <code className="text-xs break-all text-text-primary font-mono block text-center">
+                      {walletInfo?.wallet_address || selectedQube.wallet_address}
+                    </code>
+                  </div>
+                  <div className="mt-3 flex justify-center">
+                    <GlassButton
+                      onClick={handleCopy}
+                      variant="secondary"
+                      className="text-sm"
+                    >
+                      {copied ? '✓ Copied!' : '📋 Copy Address'}
+                    </GlassButton>
+                  </div>
+                </div>
               </div>
-              <div className="mt-3 flex justify-center">
-                <GlassButton
-                  onClick={handleCopy}
-                  variant="secondary"
-                  className="text-sm"
-                >
-                  {copied ? '✓ Copied!' : '📋 Copy Address'}
-                </GlassButton>
-              </div>
             </div>
-          </div>
+          )}
         </GlassCard>
 
-        {/* Send/Withdraw Section */}
-        <GlassCard className="p-6 border-l-4 border-l-accent-secondary">
-          <h3 className="text-lg font-semibold text-text-primary mb-4 flex items-center gap-2">
-            <span className="text-xl">📤</span> Send / Withdraw
-          </h3>
-          <div className="space-y-4">
-            <div>
-              <label className="text-xs text-text-tertiary uppercase tracking-wide block mb-1">
-                Recipient Address
-              </label>
-              <input
-                type="text"
-                value={sendAddress}
-                onChange={(e) => setSendAddress(e.target.value)}
-                placeholder="bitcoincash:q..."
-                className="w-full bg-bg-primary border border-glass-border rounded-lg px-3 py-2 text-sm text-text-primary font-mono placeholder:text-text-disabled focus:outline-none focus:border-accent-secondary"
-              />
-            </div>
-            <div>
-              <label className="text-xs text-text-tertiary uppercase tracking-wide block mb-1">
-                Amount (BCH)
-              </label>
-              <input
-                type="text"
-                value={sendAmount}
-                onChange={(e) => setSendAmount(e.target.value)}
-                placeholder="0.00000000"
-                className="w-full bg-bg-primary border border-glass-border rounded-lg px-3 py-2 text-sm text-text-primary font-mono placeholder:text-text-disabled focus:outline-none focus:border-accent-secondary"
-              />
-            </div>
-            <div>
-              <label className="text-xs text-text-tertiary uppercase tracking-wide block mb-1">
-                Owner Private Key (WIF)
-              </label>
-              <input
-                type="password"
-                value={ownerWif}
-                onChange={(e) => setOwnerWif(e.target.value)}
-                placeholder="Enter your WIF private key"
-                className="w-full bg-bg-primary border border-glass-border rounded-lg px-3 py-2 text-sm text-text-primary font-mono placeholder:text-text-disabled focus:outline-none focus:border-accent-secondary"
-              />
-            </div>
-            {sendError && (
-              <div className="text-accent-danger text-sm bg-accent-danger/10 p-2 rounded">
-                {sendError}
-              </div>
-            )}
-            {sendSuccess && (
-              <div className="text-accent-success text-sm bg-accent-success/10 p-2 rounded break-all">
-                {sendSuccess}
-              </div>
-            )}
-            <GlassButton
-              onClick={handleSend}
-              disabled={sending || !sendAddress || !sendAmount || !ownerWif}
-              className="w-full"
+        {/* Send Section - Collapsible */}
+        <GlassCard className="p-4 border-l-4 border-l-accent-secondary">
+          <button
+            onClick={() => setSendExpanded(!sendExpanded)}
+            className="w-full flex items-center justify-between text-left"
+          >
+            <h3 className="text-lg font-semibold text-text-primary flex items-center gap-2">
+              <span className="text-xl">📤</span> Send
+            </h3>
+            <span
+              className="text-text-tertiary text-lg transition-transform duration-200"
+              style={{ transform: sendExpanded ? 'rotate(180deg)' : 'rotate(0deg)' }}
             >
-              {sending ? 'Sending...' : '📤 Send Transaction'}
-            </GlassButton>
-            <p className="text-xs text-text-tertiary">
-              This uses the owner-only spending path. No Qube signature required.
-            </p>
-          </div>
+              ▼
+            </span>
+          </button>
+
+          {sendExpanded && (
+            <div className="mt-4 pt-4 border-t border-glass-border">
+              <div className="space-y-4">
+                <div>
+                  <label className="text-xs text-text-tertiary uppercase tracking-wide block mb-1">
+                    Recipient Address
+                  </label>
+                  <input
+                    type="text"
+                    value={sendAddress}
+                    onChange={(e) => setSendAddress(e.target.value)}
+                    placeholder="bitcoincash:q..."
+                    className="w-full bg-bg-primary border border-glass-border rounded-lg px-3 py-2 text-sm text-text-primary font-mono placeholder:text-text-disabled focus:outline-none focus:border-accent-secondary"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-text-tertiary uppercase tracking-wide block mb-1">
+                    Amount (BCH)
+                  </label>
+                  <input
+                    type="text"
+                    value={sendAmount}
+                    onChange={(e) => setSendAmount(e.target.value)}
+                    placeholder="0.00000000"
+                    className="w-full bg-bg-primary border border-glass-border rounded-lg px-3 py-2 text-sm text-text-primary font-mono placeholder:text-text-disabled focus:outline-none focus:border-accent-secondary"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-text-tertiary uppercase tracking-wide block mb-1">
+                    Owner Private Key (WIF)
+                  </label>
+                  <input
+                    type="password"
+                    value={ownerWif}
+                    onChange={(e) => setOwnerWif(e.target.value)}
+                    placeholder="Enter your WIF private key"
+                    className="w-full bg-bg-primary border border-glass-border rounded-lg px-3 py-2 text-sm text-text-primary font-mono placeholder:text-text-disabled focus:outline-none focus:border-accent-secondary"
+                  />
+                </div>
+                {sendError && (
+                  <div className="text-accent-danger text-sm bg-accent-danger/10 p-2 rounded">
+                    {sendError}
+                  </div>
+                )}
+                {sendSuccess && (
+                  <div className="text-accent-success text-sm bg-accent-success/10 p-2 rounded break-all">
+                    {sendSuccess}
+                  </div>
+                )}
+                <GlassButton
+                  onClick={handleSend}
+                  disabled={sending || !sendAddress || !sendAmount || !ownerWif}
+                  className="w-full"
+                >
+                  {sending ? 'Sending...' : '📤 Send Transaction'}
+                </GlassButton>
+                <p className="text-xs text-text-tertiary">
+                  This uses the owner-only spending path. No Qube signature required.
+                </p>
+              </div>
+            </div>
+          )}
         </GlassCard>
       </div>
 
@@ -568,55 +603,66 @@ export const EarningsTab: React.FC<EarningsTabProps> = ({
         </GlassCard>
       )}
 
-      {/* Wallet Details - Collapsible */}
-      <GlassCard className="p-4">
-        <button
-          onClick={() => setDetailsExpanded(!detailsExpanded)}
-          className="w-full flex items-center justify-between text-left"
-        >
-          <h3 className="text-md font-semibold text-text-primary flex items-center gap-2">
-            <span>ℹ️</span> Wallet Details
-          </h3>
-          <span className="text-text-tertiary text-lg transition-transform duration-200" style={{
-            transform: detailsExpanded ? 'rotate(180deg)' : 'rotate(0deg)'
-          }}>
-            ▼
-          </span>
-        </button>
-
-        {detailsExpanded && (
-          <div className="mt-4 pt-4 border-t border-glass-border">
-            <div className="space-y-2 text-sm">
-              <div className="flex justify-between">
-                <span className="text-text-tertiary">Type:</span>
-                <span className="text-text-primary">Asymmetric Multi-Sig (2-of-2)</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-text-tertiary">Spending Rules:</span>
-                <span className="text-text-primary">Owner + Qube required</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-text-tertiary">Owner Pubkey:</span>
-                <span className="text-text-primary font-mono text-xs">
-                  {walletInfo?.owner_pubkey?.slice(0, 10)}...{walletInfo?.owner_pubkey?.slice(-10)}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-text-tertiary">Qube Pubkey:</span>
-                <span className="text-text-primary font-mono text-xs">
-                  {walletInfo?.qube_pubkey?.slice(0, 10)}...{walletInfo?.qube_pubkey?.slice(-10)}
-                </span>
-              </div>
-            </div>
-            <div className="mt-4 p-3 bg-accent-primary/10 rounded-lg border border-accent-primary/30">
-              <p className="text-xs text-text-secondary">
-                <strong>Security Note:</strong> The Qube cannot spend funds without your approval.
-                You can withdraw funds at any time using the owner-only spending path.
-              </p>
-            </div>
-          </div>
+      {/* Transaction History & Wallet Details - Side by Side */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* Transaction History */}
+        {walletInfo && (
+          <TransactionHistory
+            qubeId={selectedQube.qube_id}
+            walletAddress={walletInfo.wallet_address}
+          />
         )}
-      </GlassCard>
+
+        {/* Wallet Details - Collapsible */}
+        <GlassCard className="p-4 h-fit">
+          <button
+            onClick={() => setDetailsExpanded(!detailsExpanded)}
+            className="w-full flex items-center justify-between text-left"
+          >
+            <h3 className="text-md font-semibold text-text-primary flex items-center gap-2">
+              <span>ℹ️</span> Wallet Details
+            </h3>
+            <span className="text-text-tertiary text-lg transition-transform duration-200" style={{
+              transform: detailsExpanded ? 'rotate(180deg)' : 'rotate(0deg)'
+            }}>
+              ▼
+            </span>
+          </button>
+
+          {detailsExpanded && (
+            <div className="mt-4 pt-4 border-t border-glass-border">
+              <div className="space-y-2 text-sm">
+                <div className="flex justify-between">
+                  <span className="text-text-tertiary">Type:</span>
+                  <span className="text-text-primary">Asymmetric Multi-Sig (2-of-2)</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-text-tertiary">Spending Rules:</span>
+                  <span className="text-text-primary">Owner + Qube required</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-text-tertiary">Owner Pubkey:</span>
+                  <span className="text-text-primary font-mono text-xs">
+                    {walletInfo?.owner_pubkey?.slice(0, 10)}...{walletInfo?.owner_pubkey?.slice(-10)}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-text-tertiary">Qube Pubkey:</span>
+                  <span className="text-text-primary font-mono text-xs">
+                    {walletInfo?.qube_pubkey?.slice(0, 10)}...{walletInfo?.qube_pubkey?.slice(-10)}
+                  </span>
+                </div>
+              </div>
+              <div className="mt-4 p-3 bg-accent-primary/10 rounded-lg border border-accent-primary/30">
+                <p className="text-xs text-text-secondary">
+                  <strong>Security Note:</strong> The Qube cannot spend funds without your approval.
+                  You can withdraw funds at any time using the owner-only spending path.
+                </p>
+              </div>
+            </div>
+          )}
+        </GlassCard>
+      </div>
     </div>
   );
 };

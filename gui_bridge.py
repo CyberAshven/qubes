@@ -5217,17 +5217,24 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
     async def get_wallet_transactions(
         self,
         qube_id: str,
-        password: str
+        password: str,
+        limit: int = 50,
+        offset: int = 0
     ) -> Dict[str, Any]:
         """
         Get transaction history for a Qube's wallet.
 
+        Fetches blockchain transaction history and merges with local metadata
+        (memos from Qube proposals).
+
         Args:
             qube_id: Qube ID
             password: User's master password
+            limit: Maximum transactions to return (default 50)
+            offset: Pagination offset (default 0)
 
         Returns:
-            Dict with transaction history
+            Dict with merged transaction history from blockchain + local data
         """
         from blockchain.wallet_tx import WalletTransactionManager
 
@@ -5248,28 +5255,28 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
             # Initialize wallet transaction manager
             wallet_manager = WalletTransactionManager(qube, self.orchestrator.data_dir)
 
-            # Get transaction history (both pending and completed)
+            # Get pending transactions
             pending_txs = wallet_manager.get_pending_transactions()
-            completed_txs = wallet_manager.get_completed_transactions()
 
-            # Also try to fetch on-chain history via the wallet
-            try:
-                utxos = await wallet_manager.wallet.get_utxos()
-                utxo_info = [
-                    {
-                        "txid": utxo["txid"],
-                        "vout": utxo["vout"],
-                        "value_sats": utxo["value"]
-                    }
-                    for utxo in utxos
-                ]
-            except Exception as e:
-                logger.warning(f"Could not fetch UTXOs: {e}")
-                utxo_info = []
+            # Get merged blockchain + local transaction history
+            history_result = await wallet_manager.get_full_transaction_history(
+                limit=limit,
+                offset=offset
+            )
+
+            # Format timestamps in transaction history for frontend
+            transactions = history_result.get("transactions", [])
+            for tx in transactions:
+                # Convert Unix timestamp to ISO format
+                if "timestamp" in tx and isinstance(tx["timestamp"], (int, float)):
+                    tx["timestamp"] = datetime.fromtimestamp(tx["timestamp"]).isoformat()
 
             return {
                 "success": True,
                 "wallet_address": p2sh_address,
+                "transactions": transactions,
+                "total_count": history_result.get("total_count", 0),
+                "has_more": history_result.get("has_more", False),
                 "pending_transactions": [
                     {
                         "tx_id": tx.tx_id,
@@ -5282,21 +5289,7 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
                         "memo": tx.memo
                     }
                     for tx in pending_txs
-                ],
-                "completed_transactions": [
-                    {
-                        "tx_id": tx.tx_id,
-                        "txid": tx.broadcast_txid,
-                        "outputs": tx.outputs,
-                        "total_amount": tx.total_amount,
-                        "fee": tx.fee,
-                        "status": tx.status,
-                        "created_at": datetime.fromtimestamp(tx.created_at).isoformat(),
-                        "memo": tx.memo
-                    }
-                    for tx in completed_txs
-                ],
-                "utxos": utxo_info
+                ]
             }
 
         except Exception as e:
@@ -8384,6 +8377,8 @@ async def main():
             parser.add_argument("user_id")
             parser.add_argument("--qube-id", required=True)
             parser.add_argument("--password", default=None)
+            parser.add_argument("--limit", type=int, default=50)
+            parser.add_argument("--offset", type=int, default=0)
 
             args = parser.parse_args()
             password = get_secret("password", required=False) or args.password
@@ -8391,7 +8386,9 @@ async def main():
             user_bridge = GUIBridge(user_id=user_id)
             result = await user_bridge.get_wallet_transactions(
                 qube_id=args.qube_id,
-                password=password
+                password=password,
+                limit=args.limit,
+                offset=args.offset
             )
             print(json.dumps(result))
 

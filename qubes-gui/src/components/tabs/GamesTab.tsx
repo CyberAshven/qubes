@@ -29,8 +29,8 @@ export const GamesTab: React.FC<GamesTabProps> = ({ qubes }) => {
   // Flag to trigger Qube's auto-move (avoids stale closure in setTimeout)
   const [pendingQubeMove, setPendingQubeMove] = useState(false);
 
-  // Permanent game statistics
-  const [permanentStats, setPermanentStats] = useState<{
+  // Permanent game statistics for both players
+  type GameStats = {
     total_games?: number;
     wins?: number;
     losses?: number;
@@ -41,7 +41,11 @@ export const GamesTab: React.FC<GamesTabProps> = ({ qubes }) => {
     shortest_win_moves?: number | null;
     total_xp_earned?: number;
     elo?: number;
-  } | null>(null);
+  };
+  const [primaryStats, setPrimaryStats] = useState<GameStats | null>(null);
+  const [secondaryStats, setSecondaryStats] = useState<GameStats | null>(null);
+  // Legacy alias for compatibility
+  const permanentStats = primaryStats;
 
   // Ref to hold the latest handleRequestQubeMove without causing effect re-runs
   const handleRequestQubeMoveRef = useRef<(() => Promise<void>) | undefined>(undefined);
@@ -80,33 +84,45 @@ export const GamesTab: React.FC<GamesTabProps> = ({ qubes }) => {
     checkActiveGame();
   }, [primaryQube?.qube_id, userId, password]);
 
-  // Fetch permanent game stats
+  // Fetch permanent game stats for both players
   useEffect(() => {
-    const fetchPermanentStats = async () => {
-      if (!primaryQube || !password) return;
-
+    const fetchStats = async (qubeId: string): Promise<GameStats | null> => {
       try {
         const result = await invoke<{
           success: boolean;
-          stats?: any;
+          stats?: GameStats;
           error?: string;
         }>('get_game_stats', {
           userId,
-          qubeId: primaryQube.qube_id,
+          qubeId,
           password,
           gameType: 'chess',
         });
-
-        if (result.success && result.stats) {
-          setPermanentStats(result.stats);
-        }
+        return result.success && result.stats ? result.stats : null;
       } catch (err) {
-        console.error('Failed to fetch game stats:', err);
+        console.error('Failed to fetch game stats for', qubeId, err);
+        return null;
       }
     };
 
-    fetchPermanentStats();
-  }, [primaryQube?.qube_id, userId, password]);
+    const fetchAllStats = async () => {
+      if (!primaryQube || !password) return;
+
+      // Fetch primary Qube stats
+      const primary = await fetchStats(primaryQube.qube_id);
+      setPrimaryStats(primary);
+
+      // Fetch secondary Qube stats if selected
+      if (secondaryQube) {
+        const secondary = await fetchStats(secondaryQube.qube_id);
+        setSecondaryStats(secondary);
+      } else {
+        setSecondaryStats(null);
+      }
+    };
+
+    fetchAllStats();
+  }, [primaryQube?.qube_id, secondaryQube?.qube_id, userId, password]);
 
   const handleStartGame = async () => {
     if (!primaryQube || !password) {
@@ -913,6 +929,8 @@ export const GamesTab: React.FC<GamesTabProps> = ({ qubes }) => {
             chatMessages={gameState.chat_messages}
             startTime={gameState.start_time}
             permanentStats={permanentStats}
+            whitePlayerStats={gameMode === 'qube-vs-qube' ? primaryStats : null}
+            blackPlayerStats={gameMode === 'qube-vs-qube' ? secondaryStats : null}
           />
         )}
       </div>

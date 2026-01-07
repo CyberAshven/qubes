@@ -1,0 +1,334 @@
+import React, { useState, useEffect, useCallback } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+import { GlassCard, GlassButton } from '../glass';
+import { useAuth } from '../../hooks/useAuth';
+import { TransactionHistoryEntry, TransactionHistoryResponse } from '../../types';
+
+interface TransactionHistoryProps {
+  qubeId: string;
+  walletAddress: string;
+}
+
+// Format BCH amount
+const formatBCH = (sats: number) => {
+  const bch = Math.abs(sats) / 100_000_000;
+  return bch.toFixed(8);
+};
+
+// Format timestamp for display
+const formatTimestamp = (isoString: string) => {
+  const date = new Date(isoString);
+  return date.toLocaleString();
+};
+
+// Get transaction type styling
+const getTxTypeStyle = (txType: string) => {
+  switch (txType) {
+    case 'deposit':
+      return { color: '#22c55e', icon: '📥', label: 'Received' };
+    case 'withdrawal':
+      return { color: '#ef4444', icon: '📤', label: 'Sent' };
+    case 'qube_spend':
+      return { color: '#f59e0b', icon: '🤖', label: 'Qube Spend' };
+    default:
+      return { color: '#6b7280', icon: '💱', label: 'Transaction' };
+  }
+};
+
+// Get confirmation status styling
+const getConfirmationStyle = (isConfirmed: boolean, confirmations: number) => {
+  if (!isConfirmed || confirmations === 0) {
+    return {
+      color: '#ef4444',
+      bgColor: 'rgba(239, 68, 68, 0.15)',
+      borderColor: 'rgba(239, 68, 68, 0.4)',
+      label: 'Unconfirmed',
+      icon: '⏳',
+      pulse: true,
+    };
+  }
+  if (confirmations < 3) {
+    return {
+      color: '#f59e0b',
+      bgColor: 'rgba(245, 158, 11, 0.15)',
+      borderColor: 'rgba(245, 158, 11, 0.4)',
+      label: `${confirmations} confirmation${confirmations > 1 ? 's' : ''}`,
+      icon: '🔄',
+      pulse: false,
+    };
+  }
+  if (confirmations < 6) {
+    return {
+      color: '#eab308',
+      bgColor: 'rgba(234, 179, 8, 0.15)',
+      borderColor: 'rgba(234, 179, 8, 0.4)',
+      label: `${confirmations} confirmations`,
+      icon: '⏱️',
+      pulse: false,
+    };
+  }
+  // 6+ confirmations = fully confirmed
+  return {
+    color: '#22c55e',
+    bgColor: 'rgba(34, 197, 94, 0.15)',
+    borderColor: 'rgba(34, 197, 94, 0.4)',
+    label: `${confirmations}+ confirmed`,
+    icon: '✓',
+    pulse: false,
+  };
+};
+
+export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
+  qubeId,
+  walletAddress,
+}) => {
+  const { userId, password } = useAuth();
+  const [transactions, setTransactions] = useState<TransactionHistoryEntry[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [totalCount, setTotalCount] = useState(0);
+  const [expanded, setExpanded] = useState(false);
+
+  const PAGE_SIZE = 20;
+
+  const fetchTransactions = useCallback(async (offset: number = 0, append: boolean = false) => {
+    if (!userId || !password || !qubeId) return;
+
+    if (offset === 0) {
+      setLoading(true);
+    } else {
+      setLoadingMore(true);
+    }
+    setError(null);
+
+    try {
+      const result = await invoke<TransactionHistoryResponse>('get_wallet_transactions', {
+        userId,
+        qubeId,
+        password,
+        limit: PAGE_SIZE,
+        offset,
+      });
+
+      if (result.success) {
+        const txList = result.transactions || [];
+        if (append) {
+          setTransactions(prev => [...prev, ...txList]);
+        } else {
+          setTransactions(txList);
+        }
+        setHasMore(result.has_more || false);
+        setTotalCount(result.total_count || 0);
+
+        // Debug: log if count mismatches
+        if ((result.total_count || 0) > 0 && txList.length === 0) {
+          console.warn('Transaction count mismatch: total_count =', result.total_count, 'but transactions array is empty');
+        }
+      } else {
+        setError(result.error || 'Failed to fetch transaction history');
+      }
+    } catch (e) {
+      console.error('Failed to fetch transactions:', e);
+      setError('Failed to fetch transaction history');
+    } finally {
+      setLoading(false);
+      setLoadingMore(false);
+    }
+  }, [userId, password, qubeId]);
+
+  useEffect(() => {
+    fetchTransactions(0, false);
+  }, [fetchTransactions]);
+
+  const handleLoadMore = () => {
+    fetchTransactions(transactions.length, true);
+  };
+
+  const handleRefresh = () => {
+    fetchTransactions(0, false);
+  };
+
+  return (
+    <GlassCard className="p-4">
+      {/* Header with toggle */}
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center justify-between text-left"
+      >
+        <h3 className="text-lg font-semibold text-text-primary flex items-center gap-2">
+          <span>📜</span> Transaction History
+          {totalCount > 0 && (
+            <span className="text-sm font-normal text-text-tertiary">
+              ({totalCount} transactions)
+            </span>
+          )}
+        </h3>
+        <span
+          className="text-text-tertiary text-lg transition-transform duration-200"
+          style={{ transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)' }}
+        >
+          ▼
+        </span>
+      </button>
+
+      {expanded && (
+        <div className="mt-4 pt-4 border-t border-glass-border">
+          {/* Refresh button */}
+          <div className="flex justify-end mb-3">
+            <GlassButton
+              onClick={handleRefresh}
+              variant="ghost"
+              size="sm"
+              disabled={loading}
+            >
+              {loading ? 'Loading...' : 'Refresh'}
+            </GlassButton>
+          </div>
+
+          {/* Error state */}
+          {error && (
+            <div className="text-accent-danger text-sm bg-accent-danger/10 p-3 rounded mb-4">
+              {error}
+            </div>
+          )}
+
+          {/* Loading state */}
+          {loading && transactions.length === 0 && (
+            <div className="text-text-tertiary text-center py-8 animate-pulse">
+              Loading transaction history...
+            </div>
+          )}
+
+          {/* Empty state */}
+          {!loading && transactions.length === 0 && !error && (
+            <div className="text-text-tertiary text-center py-8">
+              <div className="text-4xl mb-2">📭</div>
+              <p>No transactions yet</p>
+              <p className="text-sm mt-1">
+                Send BCH to your wallet address to get started
+              </p>
+            </div>
+          )}
+
+          {/* Transaction list */}
+          {transactions.length > 0 && (
+            <div className="space-y-2">
+              {transactions.map((tx) => {
+                const typeStyle = getTxTypeStyle(tx.tx_type);
+                const confStyle = getConfirmationStyle(tx.is_confirmed, tx.confirmations);
+                const isPositive = tx.amount > 0;
+
+                return (
+                  <div
+                    key={tx.txid}
+                    className="p-3 bg-bg-primary rounded-lg border-l-4 border border-glass-border hover:border-accent-primary/30 transition-colors"
+                    style={{ borderLeftColor: confStyle.borderColor }}
+                  >
+                    <div className="flex justify-between items-start">
+                      {/* Left: Type and details */}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-1 flex-wrap">
+                          <span>{typeStyle.icon}</span>
+                          <span
+                            className="text-sm font-medium"
+                            style={{ color: typeStyle.color }}
+                          >
+                            {typeStyle.label}
+                          </span>
+                          {/* Confirmation status badge - always shown */}
+                          <span
+                            className={`text-xs px-2 py-0.5 rounded-full flex items-center gap-1 ${confStyle.pulse ? 'animate-pulse' : ''}`}
+                            style={{
+                              backgroundColor: confStyle.bgColor,
+                              color: confStyle.color,
+                              border: `1px solid ${confStyle.borderColor}`,
+                            }}
+                          >
+                            <span>{confStyle.icon}</span>
+                            <span>{confStyle.label}</span>
+                          </span>
+                        </div>
+
+                        {/* Counterparty address */}
+                        {tx.counterparty && (
+                          <div className="text-xs text-text-tertiary font-mono truncate">
+                            {isPositive ? 'From: ' : 'To: '}
+                            {tx.counterparty.length > 40
+                              ? `${tx.counterparty.slice(0, 25)}...${tx.counterparty.slice(-10)}`
+                              : tx.counterparty}
+                          </div>
+                        )}
+
+                        {/* Memo */}
+                        {tx.memo && (
+                          <div className="text-xs text-text-secondary mt-1 italic">
+                            "{tx.memo}"
+                          </div>
+                        )}
+
+                        {/* Timestamp */}
+                        <div className="text-xs text-text-tertiary mt-1">
+                          {formatTimestamp(tx.timestamp)}
+                        </div>
+                      </div>
+
+                      {/* Right: Amount */}
+                      <div className="text-right flex-shrink-0 ml-4">
+                        <div
+                          className="font-mono font-semibold"
+                          style={{ color: isPositive ? '#22c55e' : '#ef4444' }}
+                        >
+                          {isPositive ? '+' : '-'}{formatBCH(tx.amount)} BCH
+                        </div>
+                        <div className="text-xs text-text-tertiary">
+                          {Math.abs(tx.amount).toLocaleString()} sats
+                        </div>
+                        {tx.fee > 0 && (
+                          <div className="text-xs text-text-disabled">
+                            Fee: {tx.fee} sats
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Transaction link */}
+                    <div className="mt-2 pt-2 border-t border-glass-border/50 flex justify-between items-center">
+                      <span className="text-xs text-text-disabled font-mono">
+                        {tx.txid.slice(0, 16)}...{tx.txid.slice(-8)}
+                      </span>
+                      <a
+                        href={tx.explorer_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs text-accent-primary hover:text-accent-primary/80 transition-colors"
+                      >
+                        View on Explorer →
+                      </a>
+                    </div>
+                  </div>
+                );
+              })}
+
+              {/* Load more button */}
+              {hasMore && (
+                <div className="pt-4 text-center">
+                  <GlassButton
+                    onClick={handleLoadMore}
+                    variant="secondary"
+                    disabled={loadingMore}
+                  >
+                    {loadingMore ? 'Loading...' : 'Load More'}
+                  </GlassButton>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </GlassCard>
+  );
+};
+
+export default TransactionHistory;

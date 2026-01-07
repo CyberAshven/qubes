@@ -77,6 +77,25 @@ class TxHistoryEntry:
         return asdict(self)
 
 
+@dataclass
+class MergedTxHistoryEntry:
+    """Transaction history entry merged from blockchain + local data"""
+    txid: str
+    tx_type: Literal["deposit", "withdrawal", "qube_spend"]
+    amount: int                     # In satoshis
+    fee: int                        # Fee paid
+    counterparty: Optional[str]     # Address sent to/from
+    timestamp: float                # Unix timestamp
+    block_height: Optional[int]     # None if unconfirmed
+    confirmations: int              # Number of confirmations
+    memo: Optional[str] = None      # From local storage
+    is_confirmed: bool = True
+    explorer_url: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
 # =============================================================================
 # WALLET TRANSACTION MANAGER
 # =============================================================================
@@ -541,6 +560,82 @@ class WalletTransactionManager:
         except Exception as e:
             logger.warning("failed_to_load_tx_history", error=str(e))
             return []
+
+    async def get_full_transaction_history(
+        self,
+        limit: int = 50,
+        offset: int = 0
+    ) -> Dict[str, Any]:
+        """
+        Get merged transaction history from blockchain + local metadata.
+
+        Combines blockchain data with local transaction history to provide
+        memos and tx_type distinctions (qube_spend vs withdrawal).
+
+        Args:
+            limit: Maximum number of transactions to return
+            offset: Pagination offset
+
+        Returns:
+            Dict with:
+            - transactions: List of MergedTxHistoryEntry dicts
+            - total_count: Total transaction count
+            - has_more: Whether more transactions exist
+        """
+        # Fetch blockchain history
+        blockchain_result = await self.wallet.get_transaction_history(
+            limit=limit,
+            offset=offset
+        )
+
+        if "error" in blockchain_result:
+            return blockchain_result
+
+        blockchain_txs = blockchain_result.get("transactions", [])
+        total_count = blockchain_result.get("total_count", 0)
+        has_more = blockchain_result.get("has_more", False)
+
+        # Load local history for memo matching
+        local_history = self.get_transaction_history(limit=1000)
+        local_by_txid = {entry.txid: entry for entry in local_history}
+
+        # Merge blockchain data with local metadata
+        merged_transactions = []
+        for bc_tx in blockchain_txs:
+            txid = bc_tx["txid"]
+            local_entry = local_by_txid.get(txid)
+
+            # Determine tx_type - prefer local (which distinguishes qube_spend)
+            if local_entry:
+                tx_type = local_entry.tx_type
+                memo = local_entry.memo
+            else:
+                tx_type = bc_tx["tx_type"]
+                memo = None
+
+            # Build explorer URL
+            explorer_url = f"https://blockchair.com/bitcoin-cash/transaction/{txid}"
+
+            merged = MergedTxHistoryEntry(
+                txid=txid,
+                tx_type=tx_type,
+                amount=bc_tx["amount"],
+                fee=bc_tx["fee"],
+                counterparty=bc_tx["counterparty"],
+                timestamp=bc_tx["timestamp"],
+                block_height=bc_tx["block_height"],
+                confirmations=bc_tx["confirmations"],
+                memo=memo,
+                is_confirmed=bc_tx["is_confirmed"],
+                explorer_url=explorer_url
+            )
+            merged_transactions.append(merged)
+
+        return {
+            "transactions": [tx.to_dict() for tx in merged_transactions],
+            "total_count": total_count,
+            "has_more": has_more
+        }
 
     def _add_to_history(self, entry: TxHistoryEntry) -> None:
         """Add entry to transaction history"""

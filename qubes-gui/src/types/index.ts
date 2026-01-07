@@ -295,3 +295,27 @@ export interface NftAuthStatusResult {
   category_id?: string;
   error?: string;
 }
+
+// Transaction History Types
+export interface TransactionHistoryEntry {
+  txid: string;
+  tx_type: 'deposit' | 'withdrawal' | 'qube_spend';
+  amount: number;  // satoshis
+  fee: number;
+  counterparty: string | null;
+  timestamp: string;  // ISO format
+  block_height: number | null;
+  confirmations: number;
+  memo: string | null;
+  is_confirmed: boolean;
+  explorer_url: string;
+}
+
+export interface TransactionHistoryResponse {
+  success: boolean;
+  wallet_address?: string;
+  transactions?: TransactionHistoryEntry[];
+  total_count?: number;
+  has_more?: boolean;
+  error?: string;
+}

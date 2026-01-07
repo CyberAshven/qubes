@@ -46,6 +46,8 @@ interface ChessGameProps {
   chatMessages?: GameChatMessage[];
   startTime?: string;
   permanentStats?: PermanentStats | null;
+  whitePlayerStats?: PermanentStats | null;
+  blackPlayerStats?: PermanentStats | null;
 }
 
 export const ChessGame: React.FC<ChessGameProps> = ({
@@ -64,6 +66,8 @@ export const ChessGame: React.FC<ChessGameProps> = ({
   chatMessages = [],
   startTime,
   permanentStats,
+  whitePlayerStats,
+  blackPlayerStats,
 }) => {
   const [moveFrom, setMoveFrom] = useState<Square | null>(null);
   const [rightClickedSquares, setRightClickedSquares] = useState<Record<string, React.CSSProperties>>({});
@@ -628,45 +632,90 @@ export const ChessGame: React.FC<ChessGameProps> = ({
           </div>
         </div>
 
-        {/* Permanent Stats */}
-        {permanentStats && (
+        {/* Player Stats */}
+        {(permanentStats || (gameMode === 'qube-vs-qube' && (whitePlayerStats || blackPlayerStats))) && (
           <div>
-            <div className="text-sm text-text-secondary mb-2 font-medium">Record</div>
-            <div className="p-3 rounded-lg bg-glass-bg border border-glass-border">
-              {/* Elo Rating - prominently displayed */}
-              <div className="text-center mb-3 pb-2 border-b border-glass-border">
-                <div className="text-2xl font-bold text-accent-primary">{permanentStats.elo ?? 1200}</div>
-                <div className="text-xs text-text-tertiary">Elo Rating</div>
-              </div>
-              {(permanentStats.total_games ?? 0) > 0 && (
-                <>
-                  <div className="flex justify-center gap-6 mb-2">
-                    <div className="text-center">
-                      <div className="text-lg font-bold text-green-400">{permanentStats.wins ?? 0}</div>
-                      <div className="text-xs text-text-tertiary">Wins</div>
-                    </div>
-                    <div className="text-center">
-                      <div className="text-lg font-bold text-red-400">{permanentStats.losses ?? 0}</div>
-                      <div className="text-xs text-text-tertiary">Losses</div>
-                    </div>
-                    <div className="text-center">
-                      <div className="text-lg font-bold text-gray-400">{permanentStats.draws ?? 0}</div>
-                      <div className="text-xs text-text-tertiary">Draws</div>
-                    </div>
-                  </div>
-                  {((permanentStats.checkmate_wins ?? 0) > 0 || (permanentStats.total_xp_earned ?? 0) > 0) && (
-                    <div className="text-xs text-text-tertiary text-center border-t border-glass-border pt-2 mt-2">
-                      {(permanentStats.checkmate_wins ?? 0) > 0 && (
-                        <span className="mr-3">♔ {permanentStats.checkmate_wins} checkmates</span>
-                      )}
-                      {(permanentStats.total_xp_earned ?? 0) > 0 && (
-                        <span>⭐ {permanentStats.total_xp_earned} XP</span>
-                      )}
-                    </div>
-                  )}
-                </>
-              )}
+            <div className="text-sm text-text-secondary mb-2 font-medium">
+              {gameMode === 'qube-vs-qube' ? 'Player Stats' : 'Record'}
             </div>
+
+            {/* Qube vs Qube Mode - Show both players */}
+            {gameMode === 'qube-vs-qube' ? (
+              <div className="space-y-3">
+                {/* White Player Stats */}
+                <div className="p-3 rounded-lg bg-glass-bg border border-glass-border">
+                  <div className="flex items-center gap-2 mb-2 pb-2 border-b border-glass-border">
+                    <div className="w-3 h-3 rounded-full bg-white"></div>
+                    <span className="text-sm font-medium text-text-primary">{whitePlayer?.name || 'White'}</span>
+                    <span className="ml-auto text-lg font-bold text-accent-primary">{whitePlayerStats?.elo ?? 1200}</span>
+                  </div>
+                  <div className="flex justify-between text-xs">
+                    <span className="text-green-400">{whitePlayerStats?.wins ?? 0}W</span>
+                    <span className="text-red-400">{whitePlayerStats?.losses ?? 0}L</span>
+                    <span className="text-gray-400">{whitePlayerStats?.draws ?? 0}D</span>
+                    {(whitePlayerStats?.checkmate_wins ?? 0) > 0 && (
+                      <span className="text-text-tertiary">♔{whitePlayerStats?.checkmate_wins}</span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Black Player Stats */}
+                <div className="p-3 rounded-lg bg-glass-bg border border-glass-border">
+                  <div className="flex items-center gap-2 mb-2 pb-2 border-b border-glass-border">
+                    <div className="w-3 h-3 rounded-full bg-gray-600"></div>
+                    <span className="text-sm font-medium text-text-primary">{blackPlayer?.name || 'Black'}</span>
+                    <span className="ml-auto text-lg font-bold text-accent-secondary">{blackPlayerStats?.elo ?? 1200}</span>
+                  </div>
+                  <div className="flex justify-between text-xs">
+                    <span className="text-green-400">{blackPlayerStats?.wins ?? 0}W</span>
+                    <span className="text-red-400">{blackPlayerStats?.losses ?? 0}L</span>
+                    <span className="text-gray-400">{blackPlayerStats?.draws ?? 0}D</span>
+                    {(blackPlayerStats?.checkmate_wins ?? 0) > 0 && (
+                      <span className="text-text-tertiary">♔{blackPlayerStats?.checkmate_wins}</span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              /* Human vs Qube Mode - Single player stats */
+              permanentStats && (
+                <div className="p-3 rounded-lg bg-glass-bg border border-glass-border">
+                  {/* Elo Rating - prominently displayed */}
+                  <div className="text-center mb-3 pb-2 border-b border-glass-border">
+                    <div className="text-2xl font-bold text-accent-primary">{permanentStats.elo ?? 1200}</div>
+                    <div className="text-xs text-text-tertiary">Elo Rating</div>
+                  </div>
+                  {(permanentStats.total_games ?? 0) > 0 && (
+                    <>
+                      <div className="flex justify-center gap-6 mb-2">
+                        <div className="text-center">
+                          <div className="text-lg font-bold text-green-400">{permanentStats.wins ?? 0}</div>
+                          <div className="text-xs text-text-tertiary">Wins</div>
+                        </div>
+                        <div className="text-center">
+                          <div className="text-lg font-bold text-red-400">{permanentStats.losses ?? 0}</div>
+                          <div className="text-xs text-text-tertiary">Losses</div>
+                        </div>
+                        <div className="text-center">
+                          <div className="text-lg font-bold text-gray-400">{permanentStats.draws ?? 0}</div>
+                          <div className="text-xs text-text-tertiary">Draws</div>
+                        </div>
+                      </div>
+                      {((permanentStats.checkmate_wins ?? 0) > 0 || (permanentStats.total_xp_earned ?? 0) > 0) && (
+                        <div className="text-xs text-text-tertiary text-center border-t border-glass-border pt-2 mt-2">
+                          {(permanentStats.checkmate_wins ?? 0) > 0 && (
+                            <span className="mr-3">♔ {permanentStats.checkmate_wins} checkmates</span>
+                          )}
+                          {(permanentStats.total_xp_earned ?? 0) > 0 && (
+                            <span>⭐ {permanentStats.total_xp_earned} XP</span>
+                          )}
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              )
+            )}
           </div>
         )}
 

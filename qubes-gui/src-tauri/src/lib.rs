@@ -4353,6 +4353,8 @@ async fn get_wallet_transactions(
     user_id: String,
     qube_id: String,
     password: String,
+    limit: Option<u32>,
+    offset: Option<u32>,
 ) -> Result<serde_json::Value, String> {
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
@@ -4362,6 +4364,14 @@ async fn get_wallet_transactions(
         .arg(&user_id)
         .arg("--qube-id")
         .arg(&qube_id);
+
+    // Add pagination parameters if provided
+    if let Some(lim) = limit {
+        cmd.arg("--limit").arg(lim.to_string());
+    }
+    if let Some(off) = offset {
+        cmd.arg("--offset").arg(off.to_string());
+    }
 
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());

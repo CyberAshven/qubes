@@ -31,8 +31,8 @@ Usage:
 
 import asyncio
 import aiohttp
-from typing import List, Optional, Tuple, Dict, Any
-from dataclasses import dataclass
+from typing import List, Optional, Tuple, Dict, Any, Literal
+from dataclasses import dataclass, field
 
 from crypto.bch_script import (
     create_wallet_address,
@@ -107,6 +107,32 @@ class ProposedTransaction:
             "qube_signature": self.qube_signature.hex(),
             "created_at": self.created_at,
             "memo": self.memo,
+        }
+
+
+@dataclass
+class BlockchainTxInfo:
+    """Transaction info fetched from blockchain"""
+    txid: str
+    tx_type: Literal["deposit", "withdrawal"]
+    amount: int  # satoshis (positive=received, negative=sent)
+    fee: int  # satoshis (0 for deposits)
+    counterparty: Optional[str]  # Primary counterparty address
+    timestamp: float  # Unix timestamp
+    block_height: Optional[int]  # None if unconfirmed
+    confirmations: int
+
+    def to_dict(self) -> dict:
+        return {
+            "txid": self.txid,
+            "tx_type": self.tx_type,
+            "amount": self.amount,
+            "fee": self.fee,
+            "counterparty": self.counterparty,
+            "timestamp": self.timestamp,
+            "block_height": self.block_height,
+            "confirmations": self.confirmations,
+            "is_confirmed": self.block_height is not None and self.block_height > 0,
         }
 
 
@@ -299,6 +325,171 @@ class QubeWallet:
             "qube_pubkey": self.qube_pubkey_hex,
             "owner_pubkey": self.owner_pubkey_hex,
         }
+
+    async def get_transaction_history(
+        self,
+        limit: int = 50,
+        offset: int = 0
+    ) -> Dict[str, Any]:
+        """
+        Get transaction history from blockchain.
+
+        Fetches transaction list from Blockchair API and parses each
+        transaction to determine type (deposit/withdrawal) and amounts.
+
+        Args:
+            limit: Maximum number of transactions to return
+            offset: Pagination offset
+
+        Returns:
+            Dict with:
+            - transactions: List of BlockchainTxInfo dicts
+            - total_count: Total transaction count for address
+            - has_more: Whether more transactions exist
+        """
+        import time
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                # First, get address dashboard with transaction list
+                url = f"{BLOCKCHAIR_API}/dashboards/address/{self._p2sh_address}"
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                    data = await resp.json()
+
+                    if "data" not in data or self._p2sh_address not in data["data"]:
+                        return {
+                            "transactions": [],
+                            "total_count": 0,
+                            "has_more": False
+                        }
+
+                    addr_data = data["data"][self._p2sh_address]
+                    all_txids = addr_data.get("transactions", [])
+                    total_count = len(all_txids)
+
+                    # Apply pagination to txid list
+                    paginated_txids = all_txids[offset:offset + limit]
+
+                    if not paginated_txids:
+                        return {
+                            "transactions": [],
+                            "total_count": total_count,
+                            "has_more": False
+                        }
+
+                    # Batch fetch transaction details (max 10 per request)
+                    transactions = []
+                    current_block = data.get("context", {}).get("state", 0)
+
+                    # Blockchair returns addresses without prefix, so extract just the hash part
+                    # e.g., "bitcoincash:pplayxh..." -> "pplayxh..."
+                    wallet_addr_short = self._p2sh_address.split(":")[-1] if ":" in self._p2sh_address else self._p2sh_address
+
+                    for i in range(0, len(paginated_txids), 10):
+                        batch = paginated_txids[i:i + 10]
+                        txids_param = ",".join(batch)
+                        tx_url = f"{BLOCKCHAIR_API}/dashboards/transactions/{txids_param}"
+
+                        async with session.get(tx_url, timeout=aiohttp.ClientTimeout(total=15)) as tx_resp:
+                            tx_data = await tx_resp.json()
+
+                            if "data" not in tx_data:
+                                continue
+
+                            for txid in batch:
+                                if txid not in tx_data["data"]:
+                                    continue
+
+                                tx_info = tx_data["data"][txid]
+                                tx = tx_info.get("transaction", {})
+                                inputs = tx_info.get("inputs", [])
+                                outputs = tx_info.get("outputs", [])
+
+                                # Calculate amounts for this wallet
+                                # Note: Blockchair returns addresses without prefix
+                                received = sum(
+                                    o.get("value", 0)
+                                    for o in outputs
+                                    if o.get("recipient") == wallet_addr_short
+                                )
+                                sent = sum(
+                                    i.get("value", 0)
+                                    for i in inputs
+                                    if i.get("recipient") == wallet_addr_short
+                                )
+
+                                net_amount = received - sent
+
+                                # Determine transaction type
+                                if net_amount > 0:
+                                    tx_type = "deposit"
+                                    # Find sender (first non-wallet input)
+                                    counterparty = next(
+                                        (f"bitcoincash:{i.get('recipient')}" for i in inputs
+                                         if i.get("recipient") and i.get("recipient") != wallet_addr_short),
+                                        None
+                                    )
+                                    fee = 0  # We didn't pay the fee on deposits
+                                else:
+                                    tx_type = "withdrawal"
+                                    # Find recipient (first non-wallet, non-change output)
+                                    counterparty = next(
+                                        (f"bitcoincash:{o.get('recipient')}" for o in outputs
+                                         if o.get("recipient") and o.get("recipient") != wallet_addr_short),
+                                        None
+                                    )
+                                    fee = tx.get("fee", 0)
+
+                                # Parse timestamp
+                                block_time = tx.get("time")
+                                if block_time:
+                                    try:
+                                        from datetime import datetime
+                                        # Blockchair returns "YYYY-MM-DD HH:MM:SS" format
+                                        # Replace space with T for ISO format compatibility
+                                        iso_time = block_time.replace(" ", "T").replace("Z", "+00:00")
+                                        if "+" not in iso_time and "Z" not in block_time:
+                                            iso_time += "+00:00"  # Assume UTC
+                                        dt = datetime.fromisoformat(iso_time)
+                                        timestamp = dt.timestamp()
+                                    except Exception:
+                                        timestamp = time.time()
+                                else:
+                                    timestamp = time.time()
+
+                                raw_block_id = tx.get("block_id")
+                                # block_id is -1 or None for unconfirmed transactions
+                                block_height = raw_block_id if raw_block_id and raw_block_id > 0 else None
+                                confirmations = 0
+                                if block_height and current_block:
+                                    confirmations = max(0, current_block - block_height + 1)
+
+                                tx_entry = BlockchainTxInfo(
+                                    txid=txid,
+                                    tx_type=tx_type,
+                                    amount=net_amount,
+                                    fee=fee,
+                                    counterparty=counterparty,
+                                    timestamp=timestamp,
+                                    block_height=block_height,
+                                    confirmations=confirmations
+                                )
+                                transactions.append(tx_entry)
+
+                    return {
+                        "transactions": [tx.to_dict() for tx in transactions],
+                        "total_count": total_count,
+                        "has_more": offset + limit < total_count
+                    }
+
+        except Exception as e:
+            logger.error("get_transaction_history_failed", error=str(e))
+            return {
+                "transactions": [],
+                "total_count": 0,
+                "has_more": False,
+                "error": str(e)
+            }
 
     # =========================================================================
     # TRANSACTION CREATION
