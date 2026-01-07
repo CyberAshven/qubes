@@ -10,6 +10,7 @@ import { Qube } from '../../types';
 import { useAuth } from '../../hooks/useAuth';
 import { useAudio } from '../../contexts/AudioContext';
 import { useChatMessages, Message } from '../../hooks/useChatMessages';
+import { useQubeSelection } from '../../hooks/useQubeSelection';
 import { TypewriterText } from './TypewriterText';
 import { formatModelName } from '../../utils/modelFormatter';
 import EmojiPicker, { EmojiClickData, Theme } from 'emoji-picker-react';
@@ -34,6 +35,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes }) =
   const { userId, password } = useAuth();
   const { playTTS, audioElement } = useAudio();
   const { getMessages, addMessage, clearMessages, getUploadedFiles, addUploadedFile, removeUploadedFile, clearUploadedFiles } = useChatMessages();
+  const currentTab = useQubeSelection(state => state.currentTab);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -621,6 +623,16 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes }) =
       };
     }
   }, [showEmojiPicker]);
+
+  // Auto-focus textarea when switching to Chat tab with a qube selected
+  useEffect(() => {
+    if (currentTab === 'dashboard' && selectedQubes.length > 0 && textareaRef.current) {
+      // Small delay to ensure the tab transition is complete
+      setTimeout(() => {
+        textareaRef.current?.focus();
+      }, 100);
+    }
+  }, [currentTab, selectedQubes.length]);
 
   const handleSend = async () => {
     if ((!inputValue.trim() && uploadedFiles.length === 0) || selectedQubes.length === 0 || !userId) {

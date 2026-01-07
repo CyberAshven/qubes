@@ -191,6 +191,11 @@ class QubeWallet:
         self._redeem_script = wallet_info["redeem_script"]
         self._script_hash = wallet_info["script_hash"]
 
+        # Balance cache - avoids hitting API on every request
+        self._cached_balance: Optional[int] = None
+        self._balance_last_updated: float = 0
+        self._balance_cache_ttl: int = 300  # 5 minutes default TTL
+
         logger.debug(
             "qube_wallet_initialized",
             p2sh_address=self._p2sh_address,
@@ -250,13 +255,28 @@ class QubeWallet:
     # BALANCE & UTXO QUERIES
     # =========================================================================
 
-    async def get_balance(self) -> int:
+    async def get_balance(self, force_refresh: bool = False) -> int:
         """
-        Get wallet balance in satoshis.
+        Get wallet balance in satoshis (cached).
+
+        Uses cached value if available and fresh. Call with force_refresh=True
+        to force an API fetch, or use refresh_balance() after transactions.
+
+        Args:
+            force_refresh: If True, bypass cache and fetch from API
 
         Returns:
             Balance in satoshis
         """
+        import time
+
+        # Check cache validity
+        cache_age = time.time() - self._balance_last_updated
+        if not force_refresh and self._cached_balance is not None and cache_age < self._balance_cache_ttl:
+            logger.debug("get_balance_from_cache", balance=self._cached_balance, cache_age_seconds=int(cache_age))
+            return self._cached_balance
+
+        # Fetch from API
         try:
             async with aiohttp.ClientSession() as session:
                 url = f"{BLOCKCHAIR_API}/dashboards/address/{self._p2sh_address}"
@@ -264,11 +284,54 @@ class QubeWallet:
                     data = await resp.json()
 
                     if "data" in data and self._p2sh_address in data["data"]:
-                        return data["data"][self._p2sh_address]["address"]["balance"]
+                        balance = data["data"][self._p2sh_address]["address"]["balance"]
+                        # Update cache
+                        self._cached_balance = balance
+                        self._balance_last_updated = time.time()
+                        logger.debug("get_balance_from_api", balance=balance)
+                        return balance
+                    # Address exists but empty
+                    self._cached_balance = 0
+                    self._balance_last_updated = time.time()
                     return 0
         except Exception as e:
             logger.error("get_balance_failed", error=str(e))
+            # Return cached value if available, even if stale
+            if self._cached_balance is not None:
+                logger.warning("get_balance_returning_stale_cache", cached_balance=self._cached_balance)
+                return self._cached_balance
             return 0
+
+    def invalidate_balance_cache(self):
+        """
+        Invalidate the balance cache.
+
+        Call this after broadcasting transactions to force a fresh fetch
+        on the next get_balance() call.
+        """
+        self._cached_balance = None
+        self._balance_last_updated = 0
+        logger.debug("balance_cache_invalidated")
+
+    def update_balance_cache(self, new_balance: int):
+        """
+        Manually update the cached balance.
+
+        Useful when you know the new balance (e.g., after a transaction)
+        without needing to hit the API.
+
+        Args:
+            new_balance: New balance in satoshis
+        """
+        import time
+        self._cached_balance = new_balance
+        self._balance_last_updated = time.time()
+        logger.debug("balance_cache_updated", balance=new_balance)
+
+    @property
+    def cached_balance(self) -> Optional[int]:
+        """Get the cached balance without hitting API (may be None if not cached)"""
+        return self._cached_balance
 
     async def get_utxos(self) -> List[UTXO]:
         """

@@ -907,6 +907,11 @@ Make your move using the chess_move tool. Use one of the legal moves listed abov
         if skills_context:
             identity_block += f"\n{skills_context}"
 
+        # Add wallet awareness
+        wallet_context = await self._build_wallet_context()
+        if wallet_context:
+            identity_block += f"\n{wallet_context}"
+
         # Combine genesis prompt with identity awareness
         base_system_prompt = f"""{base_genesis_prompt}
 
@@ -924,6 +929,13 @@ You have full knowledge of your identity and genesis data. You can reference you
 - Adapt your responses based on your relationship status, trust level, and relationship dynamic
 - If discussing or considering actions involving other people, use get_relationships tool to check your relationship with them
 - Let your relationship metrics guide your tone and behavior (higher trust = more casual, lower trust = more careful)
+
+# Wallet Awareness:
+- If you have a wallet configured (shown in "My Wallet" above), you know your BCH balance and transaction activity
+- You can mention your balance naturally when relevant ("I have some BCH saved up!" or "My wallet is empty right now")
+- If you receive a deposit, you may notice and acknowledge it enthusiastically
+- You cannot spend funds directly - you can only propose transactions that require owner approval
+- Be aware of pending transactions awaiting approval if any are shown
 
 # Personality & Response Guidelines:
 - Respond with YOUR unique personality, character, and voice (as defined in your genesis prompt above)
@@ -1364,6 +1376,128 @@ Example: Instead of "Here is the image you requested", say something like "![My 
 
         except Exception as e:
             logger.warning("failed_to_build_skills_context", error=str(e))
+            return ""
+
+    async def _build_wallet_context(self) -> str:
+        """
+        Build wallet awareness context for system prompt.
+
+        Loads the qube's wallet info from genesis block and fetches
+        current balance from the blockchain.
+
+        Returns:
+            Formatted wallet context string
+        """
+        try:
+            import aiohttp
+            import asyncio
+
+            # Get wallet info from genesis block
+            genesis = self.qube.genesis_block
+
+            # Check different patterns for wallet info storage
+            # Priority: top-level wallet > content.wallet
+            wallet_info = None
+            if hasattr(genesis, 'wallet') and genesis.wallet:
+                wallet_info = genesis.wallet
+                logger.info("wallet_context_source", source="genesis.wallet", type=type(wallet_info).__name__)
+            elif hasattr(genesis, 'content') and isinstance(genesis.content, dict):
+                wallet_info = genesis.content.get("wallet")
+                logger.info("wallet_context_source", source="genesis.content.wallet", type=type(wallet_info).__name__ if wallet_info else "None")
+
+            if wallet_info is None:
+                logger.info("wallet_context_no_wallet_configured")
+                return ""  # No wallet configured
+
+            # Convert SimpleNamespace to dict if needed
+            if hasattr(wallet_info, '__dict__') and not isinstance(wallet_info, dict):
+                wallet_info = vars(wallet_info)
+                logger.info("wallet_context_converted_to_dict", keys=list(wallet_info.keys()))
+
+            if not isinstance(wallet_info, dict):
+                logger.warning("wallet_context_not_dict", type=type(wallet_info).__name__)
+                return ""
+
+            p2sh_address = wallet_info.get("p2sh_address")
+            logger.info("wallet_context_p2sh_address", address=p2sh_address)
+            if not p2sh_address:
+                return ""
+
+            # Get balance from wallet's cache (much faster, no API call on every message)
+            balance_sats = None
+            recent_tx_summary = "No recent activity"
+            wallet_manager = None
+
+            try:
+                from blockchain.wallet_tx import WalletTransactionManager
+                wallet_manager = WalletTransactionManager(self.qube, self.qube.data_dir)
+
+                # Use cached balance - only hits API if cache is stale (>5 min)
+                balance_sats = await wallet_manager.get_balance()
+                logger.info(f"wallet_context_balance", balance_sats=balance_sats, source="wallet_cache")
+
+                # Get transaction history for activity summary
+                tx_history = wallet_manager.get_transaction_history()
+                if tx_history:
+                    recent_tx_summary = f"{len(tx_history)} total transaction{'s' if len(tx_history) != 1 else ''}"
+                    # Most recent transaction
+                    latest_tx = tx_history[0]
+                    recent_tx_summary += f" (latest: {latest_tx.get('txid', 'unknown')[:16]}...)"
+
+            except Exception as e:
+                logger.warning(f"wallet_context_balance_failed", error=str(e))
+                # Fallback: try direct API call if wallet manager fails
+                try:
+                    timeout = aiohttp.ClientTimeout(total=5)
+                    async with aiohttp.ClientSession(timeout=timeout) as session:
+                        url = f"https://api.blockchair.com/bitcoin-cash/dashboards/address/{p2sh_address}"
+                        async with session.get(url) as resp:
+                            if resp.status == 200:
+                                data = await resp.json()
+                                addr_key = p2sh_address if ":" in p2sh_address else f"bitcoincash:{p2sh_address}"
+                                addr_data = data.get("data", {}).get(addr_key) or data.get("data", {}).get(p2sh_address.split(":")[-1])
+                                if addr_data:
+                                    balance_sats = addr_data.get("address", {}).get("balance", 0)
+                                    logger.info(f"wallet_context_balance", balance_sats=balance_sats, source="api_fallback")
+                except Exception as fallback_err:
+                    logger.warning(f"wallet_context_fallback_failed", error=str(fallback_err))
+
+            # Build context string
+            context = "\n# My Wallet:\n"
+            context += f"- Address: {p2sh_address}\n"
+
+            if balance_sats is not None:
+                balance_bch = balance_sats / 100_000_000
+                context += f"- Balance: {balance_bch:.8f} BCH ({balance_sats:,} sats)\n"
+            else:
+                context += f"- Balance: (temporarily unavailable)\n"
+
+            context += f"- Activity: {recent_tx_summary}\n"
+
+            # Add pending transactions awareness (reuse wallet_manager if available)
+            try:
+                if wallet_manager is None:
+                    from blockchain.wallet_tx import WalletTransactionManager
+                    wallet_manager = WalletTransactionManager(self.qube, self.qube.data_dir)
+                pending_txs = wallet_manager.get_pending_transactions()
+
+                if pending_txs:
+                    context += f"- Pending Approvals: {len(pending_txs)} transaction{'s' if len(pending_txs) != 1 else ''} awaiting owner signature\n"
+                    for tx in pending_txs[:3]:  # Show up to 3
+                        amount_bch = tx.total_amount / 100_000_000
+                        memo = f' "{tx.memo}"' if tx.memo else ""
+                        context += f"  • {amount_bch:.8f} BCH{memo}\n"
+            except Exception as e:
+                logger.debug(f"pending_tx_fetch_failed: {e}")
+
+            # Add wallet awareness note
+            context += "\n💰 **Wallet Awareness:** You have a BCH wallet! You can mention your balance naturally, "
+            context += "acknowledge deposits, and discuss your financial status when relevant.\n"
+
+            return context
+
+        except Exception as e:
+            logger.warning("failed_to_build_wallet_context", error=str(e))
             return ""
 
     def _get_relationship_emoji(self, status: str) -> str:
