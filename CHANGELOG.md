@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Enhanced Block Recall** - BM25 search algorithm with configurable depth and token settings
 - **Transaction History** - View BCH transaction history in wallet tab
 - **Chess statistics** - Track win/loss/draw records per opponent
+- **Auto-lock security** - Walk-away protection locks app after configurable inactivity (5/10/15/30 min)
+- **Collapsible Settings panels** - All 9 Settings panels now collapse for cleaner UI
 
 ### Changed
 - Block Browser now displays actual Qube avatar images with larger names
@@ -28,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 - Enforced official Qubes category ID as consensus rule
 - Removed hardcoded credentials and user data from repository
+- Qube deletion now requires master password confirmation
 
 ### Technical
 - Chess module added to PyInstaller hidden imports
