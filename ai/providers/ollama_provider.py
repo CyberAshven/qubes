@@ -6,9 +6,11 @@ Matches documentation in docs/09_AI_Integration_Tool_Calling.md Section 6.1
 """
 
 from typing import List, Dict, Any, Optional, AsyncIterator
+import json
 
 from ai.providers.base import AIModelInterface, ModelResponse
 from ai.retry_decorators import ollama_retry
+from ai.prompt_tools import get_prompt_tool_handler
 from ai.circuit_breakers import with_circuit_breaker
 from core.exceptions import ModelAPIError
 from utils.logging import get_logger
@@ -30,6 +32,15 @@ class OllamaModel(AIModelInterface):
         "gemma2:9b": 8192,
         "mistral:7b": 8192,
         "codellama:7b": 16384,
+    }
+
+    # Models that don't support native tool/function calling
+    # These will use prompt-based tool calling instead
+    # Add models here as needed based on testing
+    TOOL_INCAPABLE_MODELS = {
+        "codellama:7b",      # Code-focused, no function calling
+        "codellama:13b",
+        "codellama:34b",
     }
 
     def __init__(self, model_name: str, api_key: str = "ollama", base_url: str = "http://localhost:11434/v1", **kwargs):
@@ -72,10 +83,27 @@ class OllamaModel(AIModelInterface):
             if max_tokens:
                 params["max_tokens"] = max_tokens
 
-            # Ollama supports tool calling (OpenAI format)
-            if tools:
+            # Track if we're using prompt-based tools
+            using_prompt_tools = False
+            prompt_tool_handler = None
+
+            # Check if model supports native tool calling
+            if tools and self.model_name not in self.TOOL_INCAPABLE_MODELS:
                 params["tools"] = tools
                 params["tool_choice"] = "auto"
+            elif tools:
+                # Use prompt-based tool calling for models without native support
+                prompt_tool_handler = get_prompt_tool_handler()
+                params["messages"] = prompt_tool_handler.inject_tools_into_messages(
+                    messages, tools
+                )
+                using_prompt_tools = True
+                logger.info(
+                    "ollama_using_prompt_tools",
+                    model=self.model_name,
+                    tools_count=len(tools),
+                    reason="Model doesn't support native function calling, using prompt injection"
+                )
 
             params.update(kwargs)
 
@@ -89,9 +117,12 @@ class OllamaModel(AIModelInterface):
             choice = response.choices[0]
             message = choice.message
 
+            # Extract tool calls if present
             tool_calls = None
+            content = message.content or ""
+
             if message.tool_calls:
-                import json
+                # Native tool calls from API
                 tool_calls = [
                     {
                         "id": tc.id,
@@ -100,6 +131,19 @@ class OllamaModel(AIModelInterface):
                     }
                     for tc in message.tool_calls
                 ]
+            elif using_prompt_tools and prompt_tool_handler:
+                # Parse tool calls from model's text response
+                parsed_calls = prompt_tool_handler.parse_tool_calls(content)
+                if parsed_calls:
+                    tool_calls = prompt_tool_handler.convert_to_native_format(parsed_calls)
+                    # Extract clean content without tool call tags
+                    content = prompt_tool_handler.extract_content_without_tool_calls(content)
+                    logger.info(
+                        "ollama_prompt_tools_parsed",
+                        model=self.model_name,
+                        tool_calls_found=len(tool_calls),
+                        tool_names=[tc["name"] for tc in tool_calls]
+                    )
 
             # Ollama is free (local), so cost is 0
             usage = None
@@ -119,7 +163,7 @@ class OllamaModel(AIModelInterface):
             )
 
             return ModelResponse(
-                content=message.content or "",
+                content=content,
                 tool_calls=tool_calls,
                 model=response.model,
                 usage=usage,
@@ -159,9 +203,22 @@ class OllamaModel(AIModelInterface):
             if max_tokens:
                 params["max_tokens"] = max_tokens
 
-            if tools:
+            # Check if model supports native tool calling
+            if tools and self.model_name not in self.TOOL_INCAPABLE_MODELS:
                 params["tools"] = tools
                 params["tool_choice"] = "auto"
+            elif tools:
+                # Use prompt-based tool calling for streaming too
+                prompt_tool_handler = get_prompt_tool_handler()
+                params["messages"] = prompt_tool_handler.inject_tools_into_messages(
+                    messages, tools
+                )
+                logger.info(
+                    "ollama_stream_using_prompt_tools",
+                    model=self.model_name,
+                    tools_count=len(tools),
+                    reason="Model doesn't support native function calling, using prompt injection"
+                )
 
             params.update(kwargs)
 
@@ -182,8 +239,6 @@ class OllamaModel(AIModelInterface):
 
     def parse_tool_calls(self, response: Any) -> List[Dict[str, Any]]:
         """Parse tool calls from Ollama response (OpenAI format)"""
-        import json
-
         if not hasattr(response, 'choices') or not response.choices:
             return []
 
