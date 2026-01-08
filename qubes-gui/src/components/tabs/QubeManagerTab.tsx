@@ -935,6 +935,8 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, onEdit, onDelete, onSelect, o
     if (model.startsWith('sonar')) return 'perplexity';
     if (model.includes(':')) return 'ollama'; // Ollama models use colon notation (must check before deepseek)
     if (model.startsWith('deepseek-')) return 'deepseek'; // Matches deepseek-chat, deepseek-reasoner, etc.
+    // Venice models (no colon, specific names)
+    if (['venice-uncensored', 'llama-3.3-70b', 'qwen3-235b-a22b-instruct-2507', 'qwen3-4b', 'mistral-31-24b', 'claude-opus-45', 'gemini-3-flash-preview', 'grok-41-fast'].includes(model)) return 'venice';
     return 'openai'; // Default fallback
   };
 
@@ -1349,6 +1351,16 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, onEdit, onDelete, onSelect, o
       { label: 'DeepSeek Chat (V3.2)', value: 'deepseek-chat' },
       { label: 'DeepSeek Reasoner (R1)', value: 'deepseek-reasoner' },
     ],
+    venice: [
+      { label: 'Llama 3.3 70B', value: 'llama-3.3-70b' },
+      { label: 'Qwen3 235B Instruct', value: 'qwen3-235b-a22b-instruct-2507' },
+      { label: 'Qwen3 4B (Fast)', value: 'qwen3-4b' },
+      { label: 'Mistral 3.1 24B', value: 'mistral-31-24b' },
+      { label: 'Claude Opus 4.5', value: 'claude-opus-45' },
+      { label: 'Gemini 3 Flash', value: 'gemini-3-flash-preview' },
+      { label: 'Grok 4.1 Fast', value: 'grok-41-fast' },
+      { label: 'Venice Uncensored', value: 'venice-uncensored' },
+    ],
     ollama: [
       { label: 'Llama 3.3 70B', value: 'llama3.3:70b' },
       { label: 'Llama 3.2', value: 'llama3.2' },
@@ -1510,6 +1522,7 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, onEdit, onDelete, onSelect, o
     { label: 'Google', value: 'google' },
     { label: 'Perplexity', value: 'perplexity' },
     { label: 'DeepSeek', value: 'deepseek' },
+    { label: 'Venice (Private)', value: 'venice' },
     { label: 'Ollama (Local)', value: 'ollama' },
   ];
 
@@ -1519,6 +1532,7 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, onEdit, onDelete, onSelect, o
     google: 'gemini-2.5-flash',
     perplexity: 'sonar',
     deepseek: 'deepseek-chat',
+    venice: 'llama-3.3-70b',
     ollama: 'llama3.3:70b',
   };
 
@@ -2556,6 +2570,16 @@ const formatModelDisplay = (modelId: string): string => {
     'sonar-deep-research': 'Sonar Deep Research',
     'deepseek-chat': 'DeepSeek Chat (V3.2)',
     'deepseek-reasoner': 'DeepSeek Reasoner (R1)',
+    // Venice
+    'venice-uncensored': 'Venice Uncensored',
+    'llama-3.3-70b': 'Llama 3.3 70B',
+    'qwen3-235b-a22b-instruct-2507': 'Qwen3 235B Instruct',
+    'qwen3-4b': 'Qwen3 4B',
+    'mistral-31-24b': 'Mistral 3.1 24B',
+    'claude-opus-45': 'Claude Opus 4.5',
+    'gemini-3-flash-preview': 'Gemini 3 Flash',
+    'grok-41-fast': 'Grok 4.1 Fast',
+    'dolphin-2.9.3-mistral-7b': 'Venice Uncensored',
   };
 
   if (modelMap[modelId]) return modelMap[modelId];

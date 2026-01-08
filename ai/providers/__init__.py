@@ -11,6 +11,7 @@ from ai.providers.google_provider import GoogleModel
 from ai.providers.perplexity_provider import PerplexityModel
 from ai.providers.ollama_provider import OllamaModel
 from ai.providers.deepseek_provider import DeepSeekModel
+from ai.providers.venice_provider import VeniceModel
 
 __all__ = [
     "AIModelInterface",
@@ -21,4 +22,5 @@ __all__ = [
     "PerplexityModel",
     "OllamaModel",
     "DeepSeekModel",
+    "VeniceModel",
 ]

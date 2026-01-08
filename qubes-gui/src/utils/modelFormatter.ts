@@ -50,6 +50,16 @@ export function formatModelName(modelId: string): string {
     // DeepSeek
     'deepseek-chat': 'DeepSeek Chat',
     'deepseek-reasoner': 'DeepSeek Reasoner',
+    // Venice
+    'venice-uncensored': 'Venice Uncensored',
+    'llama-3.3-70b': 'Llama 3.3 70B',
+    'qwen3-235b-a22b-instruct-2507': 'Qwen3 235B Instruct',
+    'qwen3-4b': 'Qwen3 4B',
+    'mistral-31-24b': 'Mistral 3.1 24B',
+    'claude-opus-45': 'Claude Opus 4.5',
+    'gemini-3-flash-preview': 'Gemini 3 Flash',
+    'grok-41-fast': 'Grok 4.1 Fast',
+    'dolphin-2.9.3-mistral-7b': 'Venice Uncensored',
     // Ollama models
     'llama3.3:70b': 'Llama 3.3 70B',
     'llama3.2': 'Llama 3.2',

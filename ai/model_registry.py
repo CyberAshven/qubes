@@ -14,7 +14,8 @@ from ai.providers import (
     GoogleModel,
     PerplexityModel,
     OllamaModel,
-    DeepSeekModel
+    DeepSeekModel,
+    VeniceModel
 )
 from core.exceptions import AIError
 from utils.logging import get_logger
@@ -73,6 +74,20 @@ class ModelRegistry:
         "deepseek-chat": {"provider": "deepseek", "class": DeepSeekModel, "description": "DeepSeek-V3.2 general chat, 64k context"},
         "deepseek-reasoner": {"provider": "deepseek", "class": DeepSeekModel, "description": "DeepSeek-R1 reasoning (32k CoT, 64k context)"},
 
+        # Venice - Privacy-first AI (2025)
+        # Note: Venice uses specific model names - check docs.venice.ai for current list
+        # Some models use prompt-based tool calling (injected into system prompt)
+        "venice-uncensored": {"provider": "venice", "class": VeniceModel, "description": "Venice Uncensored - Dolphin"},
+        "llama-3.3-70b": {"provider": "venice", "class": VeniceModel, "description": "Llama 3.3 70B via Venice"},
+        "qwen3-235b-a22b-instruct-2507": {"provider": "venice", "class": VeniceModel, "description": "Qwen3 235B Instruct"},
+        "qwen3-4b": {"provider": "venice", "class": VeniceModel, "description": "Qwen3 4B (fast)"},
+        "mistral-31-24b": {"provider": "venice", "class": VeniceModel, "description": "Mistral 3.1 24B"},
+        "claude-opus-45": {"provider": "venice", "class": VeniceModel, "description": "Claude Opus 4.5 via Venice"},
+        "gemini-3-flash-preview": {"provider": "venice", "class": VeniceModel, "description": "Gemini 3 Flash via Venice"},
+        "grok-41-fast": {"provider": "venice", "class": VeniceModel, "description": "Grok 4.1 Fast via Venice"},
+        # Legacy alias
+        "dolphin-2.9.3-mistral-7b": {"provider": "venice", "class": VeniceModel, "description": "Legacy: Use venice-uncensored", "alias_for": "venice-uncensored"},
+
         # Ollama - Popular local models (2025)
         "llama3.3:70b": {"provider": "ollama", "class": OllamaModel, "description": "Latest Llama"},
         "llama3.2": {"provider": "ollama", "class": OllamaModel, "description": "Llama 3.2 instruction-tuned (1B/3B)"},
@@ -122,6 +137,15 @@ class ModelRegistry:
                 }
             )
 
+        # Handle model aliases (legacy model names mapped to new ones)
+        actual_model_name = model_info.get("alias_for", model_name)
+        if actual_model_name != model_name:
+            logger.info(
+                "model_alias_resolved",
+                requested=model_name,
+                actual=actual_model_name
+            )
+
         model_class = model_info["class"]
         provider = model_info["provider"]
 
@@ -136,10 +160,11 @@ class ModelRegistry:
             )
 
         try:
-            model = model_class(model_name=model_name, api_key=api_key, **kwargs)
+            # Use the actual model name (resolved alias) for the API call
+            model = model_class(model_name=actual_model_name, api_key=api_key, **kwargs)
             logger.info(
                 "model_loaded",
-                model=model_name,
+                model=actual_model_name,
                 provider=provider,
                 description=model_info.get("description")
             )

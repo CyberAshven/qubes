@@ -1156,8 +1156,10 @@ class GUIBridge:
                     metadata["genesis_block"]["ai_provider"] = "google"
                 elif ai_model.startswith("sonar"):
                     metadata["genesis_block"]["ai_provider"] = "perplexity"
-                elif ai_model.startswith("deepseek-"):
+                elif ai_model.startswith("deepseek-") and ":" not in ai_model:
                     metadata["genesis_block"]["ai_provider"] = "deepseek"
+                elif ai_model in ["venice-uncensored", "llama-3.3-70b", "qwen3-235b", "qwen3-4b", "deepseek-r1-llama-70b", "mistral-31-24b"]:
+                    metadata["genesis_block"]["ai_provider"] = "venice"
                 elif ":" in ai_model:  # Ollama models have format "model:variant"
                     metadata["genesis_block"]["ai_provider"] = "ollama"
 
@@ -1199,6 +1201,10 @@ class GUIBridge:
                             qube.genesis_block.ai_provider = "google"
                         elif ai_model.startswith("sonar"):
                             qube.genesis_block.ai_provider = "perplexity"
+                        elif ai_model.startswith("deepseek-") and ":" not in ai_model:
+                            qube.genesis_block.ai_provider = "deepseek"
+                        elif ai_model in ["venice-uncensored", "llama-3.3-70b", "qwen3-235b", "qwen3-4b", "deepseek-r1-llama-70b", "mistral-31-24b"]:
+                            qube.genesis_block.ai_provider = "venice"
                         elif ":" in ai_model:
                             qube.genesis_block.ai_provider = "ollama"
                 if voice_model is not None:
@@ -5520,6 +5526,13 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
             # DeepSeek - these are already short names
             "deepseek-chat": 64000,
             "deepseek-reasoner": 64000,
+            # Venice - private AI models
+            "venice-uncensored": 131072,
+            "llama-3.3-70b": 65536,
+            "qwen3-235b": 131072,
+            "qwen3-4b": 131072,
+            "deepseek-r1-llama-70b": 131072,
+            "mistral-31-24b": 131072,
             # Perplexity - these are already short names
             "sonar-pro": 127000,
             "sonar": 127000,
@@ -8309,6 +8322,7 @@ async def main():
             parser.add_argument("--google", default="")
             parser.add_argument("--deepseek", default="")
             parser.add_argument("--perplexity", default="")
+            parser.add_argument("--venice", default="")
 
             args = parser.parse_args()
 
@@ -8331,6 +8345,8 @@ async def main():
                 settings.set("api_keys.deepseek", args.deepseek)
             if args.perplexity:
                 settings.set("api_keys.perplexity", args.perplexity)
+            if args.venice:
+                settings.set("api_keys.venice", args.venice)
 
             settings.save()
 

@@ -136,6 +136,7 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
       'google': 'gemini-2.5-flash',
       'perplexity': 'sonar',
       'deepseek': 'deepseek-chat',
+      'venice': 'llama-3.3-70b',
       'ollama': 'llama3.3:70b'
     };
 
@@ -518,6 +519,7 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
                 <option value="google">Google</option>
                 <option value="perplexity">Perplexity</option>
                 <option value="deepseek">DeepSeek</option>
+                <option value="venice">Venice (Private)</option>
                 <option value="ollama">Ollama (Local)</option>
               </select>
             </div>
@@ -572,6 +574,18 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
                   <>
                     <option value="deepseek-chat">DeepSeek Chat (V3.2)</option>
                     <option value="deepseek-reasoner">DeepSeek Reasoner (R1)</option>
+                  </>
+                )}
+                {formData.aiProvider === 'venice' && (
+                  <>
+                    <option value="llama-3.3-70b">Llama 3.3 70B</option>
+                    <option value="qwen3-235b-a22b-instruct-2507">Qwen3 235B Instruct</option>
+                    <option value="qwen3-4b">Qwen3 4B (Fast)</option>
+                    <option value="mistral-31-24b">Mistral 3.1 24B</option>
+                    <option value="claude-opus-45">Claude Opus 4.5</option>
+                    <option value="gemini-3-flash-preview">Gemini 3 Flash</option>
+                    <option value="grok-41-fast">Grok 4.1 Fast</option>
+                    <option value="venice-uncensored">Venice Uncensored</option>
                   </>
                 )}
                 {formData.aiProvider === 'ollama' && (

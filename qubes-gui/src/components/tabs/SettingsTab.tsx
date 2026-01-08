@@ -89,6 +89,7 @@ export const SettingsTab: React.FC = () => {
     google: '',
     deepseek: '',
     perplexity: '',
+    venice: '',
     pinata_jwt: '',
     elevenlabs: '',
     deepgram: '',
@@ -202,6 +203,7 @@ export const SettingsTab: React.FC = () => {
     google: 'Google AI (Gemini)',
     deepseek: 'DeepSeek',
     perplexity: 'Perplexity',
+    venice: 'Venice (Private AI)',
     pinata_jwt: 'Pinata IPFS',
     elevenlabs: 'ElevenLabs (TTS)',
     deepgram: 'Deepgram (STT)',
@@ -213,6 +215,7 @@ export const SettingsTab: React.FC = () => {
     google: 'AIza...',
     deepseek: 'sk-...',
     perplexity: 'pplx-...',
+    venice: '...',
     pinata_jwt: 'eyJ...',
     elevenlabs: '...',
     deepgram: '...',
@@ -878,6 +881,9 @@ export const SettingsTab: React.FC = () => {
                   </a>
                   <a href="https://www.perplexity.ai/settings/api" target="_blank" rel="noopener noreferrer" className="text-accent-primary hover:underline">
                     Perplexity
+                  </a>
+                  <a href="https://venice.ai/settings/api" target="_blank" rel="noopener noreferrer" className="text-accent-primary hover:underline">
+                    Venice
                   </a>
                   <a href="https://app.pinata.cloud/developers/api-keys" target="_blank" rel="noopener noreferrer" className="text-accent-primary hover:underline">
                     Pinata

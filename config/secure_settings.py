@@ -34,6 +34,7 @@ class APIKeys:
     google: Optional[str] = None
     deepseek: Optional[str] = None
     perplexity: Optional[str] = None
+    venice: Optional[str] = None
     pinata_jwt: Optional[str] = None
     elevenlabs: Optional[str] = None
     deepgram: Optional[str] = None
@@ -350,6 +351,8 @@ class SecureSettingsManager:
                 return await self._validate_deepseek(api_key)
             elif provider == "perplexity":
                 return await self._validate_perplexity(api_key)
+            elif provider == "venice":
+                return await self._validate_venice(api_key)
             elif provider == "pinata_jwt":
                 return await self._validate_pinata(api_key)
             elif provider == "elevenlabs":
@@ -677,6 +680,45 @@ class SecureSettingsManager:
                     return {
                         "valid": False,
                         "message": f"Deepgram API error: {response.status_code}",
+                        "details": {"status_code": response.status_code}
+                    }
+        except Exception as e:
+            return {
+                "valid": False,
+                "message": f"Connection error: {str(e)}",
+                "details": {"error": str(e)}
+            }
+
+    async def _validate_venice(self, api_key: str) -> Dict[str, Any]:
+        """Validate Venice.ai API key"""
+        import httpx
+
+        try:
+            async with httpx.AsyncClient() as client:
+                # Venice uses OpenAI-compatible API
+                response = await client.get(
+                    "https://api.venice.ai/api/v1/models",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    timeout=10.0
+                )
+
+                if response.status_code == 200:
+                    models = response.json().get("data", [])
+                    return {
+                        "valid": True,
+                        "message": "Venice API key is valid",
+                        "details": {"models_available": len(models)}
+                    }
+                elif response.status_code == 401:
+                    return {
+                        "valid": False,
+                        "message": "Invalid Venice API key",
+                        "details": {"status_code": 401}
+                    }
+                else:
+                    return {
+                        "valid": False,
+                        "message": f"Venice API error: {response.status_code}",
                         "details": {"status_code": response.status_code}
                     }
         except Exception as e:
