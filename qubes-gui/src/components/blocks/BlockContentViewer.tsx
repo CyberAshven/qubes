@@ -359,46 +359,223 @@ const DecisionBlockContent: React.FC<{ content: any }> = memo(({ content }) => {
 });
 
 const GenesisBlockContent: React.FC<{ content: any }> = memo(({ content }) => {
+  // Core tools that are always available to every Qube
+  const alwaysAvailableTools = [
+    { id: 'search_memory', name: 'Search Memory', icon: '🔍' },
+    { id: 'get_recent_memories', name: 'Recent Memories', icon: '📚' },
+    { id: 'get_current_time', name: 'Current Time', icon: '🕐' },
+    { id: 'describe_my_skills', name: 'Describe Skills', icon: '📊' },
+    { id: 'describe_my_avatar', name: 'Describe Avatar', icon: '🖼️' },
+    { id: 'get_relationships', name: 'Relationships', icon: '🤝' },
+    { id: 'send_message', name: 'Send Message', icon: '💬' },
+    { id: 'web_search', name: 'Web Search', icon: '🌐' },
+    { id: 'browse_url', name: 'Browse URL', icon: '🔗' },
+    { id: 'chess_move', name: 'Chess Move', icon: '♟️' },
+  ];
+
+  // Format voice model nicely (e.g., "openai:fable" -> "OpenAI: Fable")
+  const formatVoiceModel = (voice: string) => {
+    if (!voice) return 'Not specified';
+    const [provider, model] = voice.split(':');
+    if (!model) return voice;
+    const providerNames: Record<string, string> = {
+      openai: 'OpenAI',
+      elevenlabs: 'ElevenLabs',
+      google: 'Google',
+    };
+    const providerName = providerNames[provider.toLowerCase()] || provider;
+    const modelName = model.charAt(0).toUpperCase() + model.slice(1);
+    return `${providerName}: ${modelName}`;
+  };
+
+  // Check if NFT is minted (has category ID that's not pending)
+  const hasNFT = content.nft_category_id && content.nft_category_id !== 'pending_minting';
+
+  // Get avatar URL - check for IPFS CID or local path
+  const getAvatarUrl = () => {
+    if (!content.avatar) return null;
+    // Check for IPFS CID first
+    if (content.avatar.ipfs_cid) {
+      return `https://ipfs.io/ipfs/${content.avatar.ipfs_cid}`;
+    }
+    // Check for direct URL
+    if (content.avatar.url) return content.avatar.url;
+    // Check for local_path (serve via backend)
+    if (content.avatar.local_path) {
+      return `/api/avatar?path=${encodeURIComponent(content.avatar.local_path)}`;
+    }
+    // Check for path
+    if (content.avatar.path) {
+      if (content.avatar.path.startsWith('http')) return content.avatar.path;
+      return `/api/avatar?path=${encodeURIComponent(content.avatar.path)}`;
+    }
+    return null;
+  };
+
+  const avatarUrl = getAvatarUrl();
+
+  // Format blockchain name
+  const formatBlockchain = (chain: string) => {
+    const chains: Record<string, { name: string; short: string }> = {
+      bitcoincash: { name: 'Bitcoin Cash', short: 'BCH' },
+      bitcoin_cash: { name: 'Bitcoin Cash', short: 'BCH' },
+      bitcoin: { name: 'Bitcoin', short: 'BTC' },
+      ethereum: { name: 'Ethereum', short: 'ETH' },
+    };
+    return chains[chain?.toLowerCase()] || { name: chain || 'Unknown', short: chain || '?' };
+  };
+
+  const blockchain = formatBlockchain(content.home_blockchain);
+
+  // Unified panel style
+  const panelClass = "bg-accent-primary/5 border border-accent-primary/20 rounded-lg p-4";
+
   return (
-    <div className="space-y-4">
-      <div className="bg-accent-primary/5 border border-accent-primary/20 rounded-lg p-4">
-        <div className="flex items-center gap-2 mb-3">
-          <span className="text-lg">🌟</span>
-          <span className="text-sm font-medium text-accent-primary">Genesis Block</span>
+    <div className="space-y-3">
+      {/* Header with name, creator, and avatar */}
+      <div className={panelClass}>
+        <div className="flex items-start gap-4">
+          {/* Avatar or placeholder */}
+          <div className="flex-shrink-0">
+            {avatarUrl ? (
+              <img
+                src={avatarUrl}
+                alt={`${content.qube_name}'s avatar`}
+                className="w-20 h-20 rounded-lg object-cover border-2 border-accent-primary/30"
+                onError={(e) => {
+                  // Show placeholder on error
+                  const target = e.target as HTMLImageElement;
+                  target.style.display = 'none';
+                  target.nextElementSibling?.classList.remove('hidden');
+                }}
+              />
+            ) : null}
+            <div
+              className={`w-20 h-20 rounded-lg flex items-center justify-center text-3xl border-2 border-accent-primary/30 ${avatarUrl ? 'hidden' : ''}`}
+              style={{ backgroundColor: content.favorite_color || '#1a1a2e' }}
+            >
+              🌟
+            </div>
+          </div>
+
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2">
+              <div className="text-xl font-bold text-accent-primary">{content.qube_name || 'Unnamed Qube'}</div>
+              {content.favorite_color && (
+                <div
+                  className="w-4 h-4 rounded-full border border-white/20"
+                  style={{ backgroundColor: content.favorite_color }}
+                  title={`Favorite color: ${content.favorite_color}`}
+                />
+              )}
+            </div>
+            {content.creator && (
+              <div className="text-sm text-text-tertiary">Created by <span className="text-text-secondary">{content.creator}</span></div>
+            )}
+            {content.birth_timestamp && (
+              <div className="text-sm text-text-tertiary mt-1">
+                Born {new Date(content.birth_timestamp * 1000).toLocaleString()}
+              </div>
+            )}
+          </div>
         </div>
+      </div>
 
-        <div className="space-y-3 text-sm">
-          {content.qube_name && (
-            <div>
-              <span className="text-text-tertiary">Name:</span>
-              <div className="text-text-primary font-medium mt-1">{content.qube_name}</div>
+      {/* Genesis Prompt */}
+      {content.genesis_prompt && (
+        <div className={panelClass}>
+          <div className="text-xs text-accent-primary font-medium mb-2">Genesis Prompt</div>
+          <div className="text-text-primary whitespace-pre-wrap text-sm leading-relaxed">
+            {content.genesis_prompt}
+          </div>
+        </div>
+      )}
+
+      {/* Configuration - AI, Voice, Qube ID */}
+      <div className={panelClass}>
+        <div className="text-xs text-accent-primary font-medium mb-3">Configuration</div>
+        <div className="space-y-2 text-sm">
+          {content.qube_id && (
+            <div className="flex items-center justify-between">
+              <span className="text-text-tertiary">Qube ID</span>
+              <span className="text-text-primary font-mono text-xs">{content.qube_id}</span>
             </div>
           )}
+          <div className="flex items-center justify-between">
+            <span className="text-text-tertiary">AI Provider</span>
+            <span className="text-text-primary capitalize">{content.ai_provider || 'Unknown'}</span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-text-tertiary">AI Model</span>
+            <span className="text-text-primary font-medium">
+              {content.ai_model ? formatModelName(content.ai_model) : 'Not specified'}
+            </span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-text-tertiary">Voice</span>
+            <span className="text-text-primary">{formatVoiceModel(content.voice_model)}</span>
+          </div>
+        </div>
+      </div>
 
-          {content.genesis_prompt && (
-            <div>
-              <span className="text-text-tertiary">Genesis Prompt:</span>
-              <div className="text-text-primary mt-1 whitespace-pre-wrap bg-bg-tertiary p-3 rounded">
-                {content.genesis_prompt}
-              </div>
+      {/* Network - Blockchain & NFT Data */}
+      <div className={panelClass}>
+        <div className="flex items-center gap-2 mb-3">
+          <div className="text-xs text-accent-primary font-medium">Network</div>
+          {hasNFT && (
+            <span className="text-xs px-2 py-0.5 bg-accent-primary/20 text-accent-primary rounded-full">
+              NFT Minted
+            </span>
+          )}
+        </div>
+        <div className="space-y-2 text-sm">
+          <div className="flex items-center justify-between">
+            <span className="text-text-tertiary">Blockchain</span>
+            <div className="flex items-center gap-2">
+              {(content.home_blockchain === 'bitcoincash' || content.home_blockchain === 'bitcoin_cash') && (
+                <img src="/bitcoin_cash_logo.svg" alt="BCH" className="w-4 h-4" />
+              )}
+              <span className="text-text-primary">{blockchain.name}</span>
+            </div>
+          </div>
+          {content.wallet?.p2sh_address && (
+            <div className="flex items-center justify-between">
+              <span className="text-text-tertiary">Qube Wallet</span>
+              <span className="text-text-primary font-mono text-xs break-all">
+                {content.wallet.p2sh_address}
+              </span>
             </div>
           )}
+          <div className="flex items-center justify-between">
+            <span className="text-text-tertiary">Category</span>
+            <span className="text-text-primary font-mono text-xs break-all">
+              {content.nft_category_id || 'Not minted'}
+            </span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-text-tertiary">Mint TX</span>
+            <span className="text-text-primary font-mono text-xs break-all">
+              {content.mint_txid || 'Not minted'}
+            </span>
+          </div>
+        </div>
+      </div>
 
-          {content.ai_model && (
-            <div>
-              <span className="text-text-tertiary">AI Model:</span>
-              <div className="text-text-primary font-mono mt-1">{formatModelName(content.ai_model)}</div>
-            </div>
-          )}
-
-          {content.birth_timestamp && (
-            <div>
-              <span className="text-text-tertiary">Birth:</span>
-              <div className="text-text-primary mt-1">
-                {new Date(content.birth_timestamp * 1000).toLocaleString()}
-              </div>
-            </div>
-          )}
+      {/* Tools - Always available tools */}
+      <div className={panelClass}>
+        <div className="text-xs text-accent-primary font-medium mb-3">
+          Tools <span className="text-text-tertiary">({alwaysAvailableTools.length} available)</span>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {alwaysAvailableTools.map(tool => (
+            <span
+              key={tool.id}
+              className="text-xs px-2 py-1 bg-accent-primary/20 text-accent-primary rounded-full flex items-center gap-1"
+            >
+              <span>{tool.icon}</span>
+              <span>{tool.name}</span>
+            </span>
+          ))}
         </div>
       </div>
     </div>

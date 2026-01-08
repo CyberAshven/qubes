@@ -71,11 +71,13 @@ class Block(BaseModel):
     birth_timestamp: Optional[int] = None
     genesis_prompt: Optional[str] = None
     genesis_prompt_encrypted: Optional[bool] = None
+    ai_provider: Optional[str] = None
     ai_model: Optional[str] = None
     voice_model: Optional[str] = None
     avatar: Optional[Dict[str, Any]] = None
     favorite_color: Optional[str] = None
     home_blockchain: Optional[str] = None
+    wallet: Optional[Dict[str, Any]] = None  # P2SH co-signing wallet info
     nft_contract: Optional[str] = None
     nft_token_id: Optional[str] = None
     capabilities: Optional[Dict[str, bool]] = None
@@ -189,7 +191,6 @@ def create_genesis_block(
     favorite_color: str = "#4A90E2",
     home_blockchain: str = "bitcoin_cash",
     genesis_prompt_encrypted: bool = False,
-    capabilities: Optional[Dict[str, bool]] = None,
     default_trust_level: int = 50,
     nft_contract: Optional[str] = None,
     nft_token_id: Optional[str] = None
@@ -198,18 +199,11 @@ def create_genesis_block(
     Create genesis block exactly as documented
 
     From docs Section 2.1
+
+    Note: capabilities field removed - tool access is controlled by
+    ALWAYS_AVAILABLE_TOOLS in ai/tools/registry.py
     """
     birth_timestamp = int(datetime.now(timezone.utc).timestamp())
-
-    if capabilities is None:
-        capabilities = {
-            "web_search": True,
-            "image_generation": True,
-            "image_processing": True,
-            "tts": True,
-            "stt": True,
-            "code_execution": False
-        }
 
     block = Block(
         block_type=BlockType.GENESIS,
@@ -228,7 +222,6 @@ def create_genesis_block(
         home_blockchain=home_blockchain,
         nft_contract=nft_contract,
         nft_token_id=nft_token_id,
-        capabilities=capabilities,
         default_trust_level=default_trust_level,
         merkle_root=None,
         previous_hash="0" * 64,

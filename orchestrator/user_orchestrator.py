@@ -225,7 +225,6 @@ class UserOrchestrator:
                 "avatar": avatar_data,
                 "favorite_color": config.get("favorite_color", "#4A90E2"),
                 "home_blockchain": config.get("home_blockchain", "bitcoincash"),
-                "capabilities": config.get("capabilities", self._default_capabilities()),
                 "default_trust_level": config.get("default_trust_level", 50),
                 "temporary": False,  # Genesis blocks are always permanent
                 "merkle_root": None,  # Will be computed
@@ -460,7 +459,6 @@ class UserOrchestrator:
                 "avatar": avatar_data,
                 "favorite_color": config.get("favorite_color", "#4A90E2"),
                 "home_blockchain": config.get("home_blockchain", "bitcoincash"),
-                "capabilities": config.get("capabilities", self._default_capabilities()),
                 "default_trust_level": config.get("default_trust_level", 50),
                 "temporary": False,
                 "merkle_root": None,
@@ -1853,17 +1851,6 @@ class UserOrchestrator:
 
         # Default
         return "openai:alloy"
-
-    def _default_capabilities(self) -> Dict[str, bool]:
-        """Default capabilities for new Qubes"""
-        return {
-            "web_search": True,
-            "image_generation": False,  # Requires separate API
-            "image_processing": True,
-            "tts": True,
-            "stt": True,
-            "code_execution": False  # Security risk, disabled by default
-        }
 
     def _get_api_keys(self) -> Dict[str, str]:
         """

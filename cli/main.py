@@ -702,13 +702,10 @@ def info(name_or_id: str = typer.Argument(..., help="Qube name or ID")):
 [bold]Total Blocks:[/bold] {len(qube.memory_chain.blocks) if hasattr(qube.memory_chain, 'blocks') else 'Unknown'}
 [bold]Genesis Prompt Encrypted:[/bold] {getattr(qube.genesis_block, 'genesis_prompt_encrypted', False)}
 
-[bold cyan]Capabilities[/bold cyan]
+[bold cyan]Tools (10 always available)[/bold cyan]
+Search Memory, Recent Memories, Current Time, Describe Skills,
+Describe Avatar, Relationships, Send Message, Web Search, Browse URL, Chess Move
 """
-
-    capabilities = getattr(qube.genesis_block, 'capabilities', {})
-    for cap, enabled in capabilities.items():
-        status = "[green]✓[/green]" if enabled else "[dim]✗[/dim]"
-        info_text += f"{status} {cap.replace('_', ' ').title()}\n"
 
     console.print(Panel(
         info_text.strip(),

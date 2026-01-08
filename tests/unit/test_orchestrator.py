@@ -123,16 +123,6 @@ class TestUserOrchestrator:
         assert orchestrator._default_voice_for_model("llama3.3:70b") == "piper:en_US-lessac-medium"
         assert orchestrator._default_voice_for_model("qwen3:235b") == "piper:en_US-lessac-medium"
 
-    def test_default_capabilities(self, orchestrator):
-        """Test default capabilities"""
-        capabilities = orchestrator._default_capabilities()
-
-        assert capabilities["web_search"] is True
-        assert capabilities["image_generation"] is False  # Disabled by default
-        assert capabilities["tts"] is True
-        assert capabilities["stt"] is True
-        assert capabilities["code_execution"] is False  # Security risk
-
     def test_encrypt_decrypt_private_key(self, orchestrator):
         """Test private key encryption/decryption"""
         from crypto.keys import generate_key_pair, serialize_private_key

@@ -331,26 +331,6 @@ class TestGenesisBlock:
         assert block.block_hash is not None
         assert len(block.block_hash) == 64
 
-    @pytest.mark.unit
-    def test_genesis_block_default_capabilities(self):
-        """GENESIS should have default capabilities if not provided"""
-        block = create_genesis_block(
-            qube_id="CAP_GEN",
-            qube_name="Charlie",
-            creator="user_test",
-            public_key="pubkey_test",
-            genesis_prompt="Test",
-            ai_model="gpt-4o-mini",
-            voice_model="test",
-            avatar={}
-        )
-
-        assert block.capabilities is not None
-        assert "web_search" in block.capabilities
-        assert block.capabilities["web_search"] is True
-        assert block.capabilities["code_execution"] is False
-
-
 # ==============================================================================
 # THOUGHT BLOCK TESTS
 # ==============================================================================
