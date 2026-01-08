@@ -433,7 +433,7 @@ export const EarningsTab: React.FC<EarningsTabProps> = ({
       {/* Receive & Send - Two column layout */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
         {/* Receive Section - Collapsible */}
-        <GlassCard className="p-4 border-l-4 border-l-accent-primary">
+        <GlassCard className="p-4 border-l-4 border-l-green-500">
           <button
             onClick={() => setReceiveExpanded(!receiveExpanded)}
             className="w-full flex items-center justify-between text-left"
@@ -484,7 +484,7 @@ export const EarningsTab: React.FC<EarningsTabProps> = ({
         </GlassCard>
 
         {/* Send Section - Collapsible */}
-        <GlassCard className="p-4 border-l-4 border-l-accent-secondary">
+        <GlassCard className="p-4 border-l-4 border-l-red-500">
           <button
             onClick={() => setSendExpanded(!sendExpanded)}
             className="w-full flex items-center justify-between text-left"
@@ -604,7 +604,7 @@ export const EarningsTab: React.FC<EarningsTabProps> = ({
       )}
 
       {/* Transaction History & Wallet Details - Side by Side */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
         {/* Transaction History */}
         {walletInfo && (
           <TransactionHistory
@@ -614,7 +614,7 @@ export const EarningsTab: React.FC<EarningsTabProps> = ({
         )}
 
         {/* Wallet Details - Collapsible */}
-        <GlassCard className="p-4 h-fit">
+        <GlassCard className="p-4 h-fit border-l-4 border-l-sky-500">
           <button
             onClick={() => setDetailsExpanded(!detailsExpanded)}
             className="w-full flex items-center justify-between text-left"
@@ -640,16 +640,16 @@ export const EarningsTab: React.FC<EarningsTabProps> = ({
                   <span className="text-text-tertiary">Spending Rules:</span>
                   <span className="text-text-primary">Owner + Qube required</span>
                 </div>
-                <div className="flex justify-between">
+                <div className="flex flex-col gap-1">
                   <span className="text-text-tertiary">Owner Pubkey:</span>
-                  <span className="text-text-primary font-mono text-xs">
-                    {walletInfo?.owner_pubkey?.slice(0, 10)}...{walletInfo?.owner_pubkey?.slice(-10)}
+                  <span className="text-text-primary font-mono text-xs break-all">
+                    {walletInfo?.owner_pubkey}
                   </span>
                 </div>
-                <div className="flex justify-between">
+                <div className="flex flex-col gap-1">
                   <span className="text-text-tertiary">Qube Pubkey:</span>
-                  <span className="text-text-primary font-mono text-xs">
-                    {walletInfo?.qube_pubkey?.slice(0, 10)}...{walletInfo?.qube_pubkey?.slice(-10)}
+                  <span className="text-text-primary font-mono text-xs break-all">
+                    {walletInfo?.qube_pubkey}
                   </span>
                 </div>
               </div>

@@ -151,7 +151,7 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
   };
 
   return (
-    <GlassCard className="p-4">
+    <GlassCard className="p-4 border-l-4 border-l-amber-500">
       {/* Header with toggle */}
       <button
         onClick={() => setExpanded(!expanded)}
@@ -253,11 +253,9 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
 
                         {/* Counterparty address */}
                         {tx.counterparty && (
-                          <div className="text-xs text-text-tertiary font-mono truncate">
+                          <div className="text-xs text-text-tertiary font-mono break-all">
                             {isPositive ? 'From: ' : 'To: '}
-                            {tx.counterparty.length > 40
-                              ? `${tx.counterparty.slice(0, 25)}...${tx.counterparty.slice(-10)}`
-                              : tx.counterparty}
+                            {tx.counterparty}
                           </div>
                         )}
 

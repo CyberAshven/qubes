@@ -34,6 +34,7 @@ export const TabContent: React.FC<TabContentProps> = ({ qubes, setQubes, onQubes
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [qubeToDelete, setQubeToDelete] = useState<Qube | null>(null);
   const [chatMode, setChatMode] = useState<ChatMode>('local');
+  const [deleteConfirmPassword, setDeleteConfirmPassword] = useState('');
 
   // P2P mode state
   const [p2pConnections, setP2pConnections] = useState<Connection[]>([]);
@@ -176,6 +177,7 @@ export const TabContent: React.FC<TabContentProps> = ({ qubes, setQubes, onQubes
       if (result.success) {
         console.log('Qube deleted successfully:', qubeToDelete.qube_id);
         setQubeToDelete(null);
+        setDeleteConfirmPassword('');
         await onQubesChange(); // Refresh the qube list
       } else {
         console.error('Failed to delete qube:', result.error);
@@ -189,6 +191,7 @@ export const TabContent: React.FC<TabContentProps> = ({ qubes, setQubes, onQubes
 
   const cancelDelete = () => {
     setQubeToDelete(null);
+    setDeleteConfirmPassword('');
   };
 
   const handleUpdateQubeConfig = async (qubeId: string, updates: { ai_model?: string; voice_model?: string; favorite_color?: string; tts_enabled?: boolean; evaluation_model?: string }) => {
@@ -406,11 +409,25 @@ export const TabContent: React.FC<TabContentProps> = ({ qubes, setQubes, onQubes
               ⚠️ Delete Qube?
             </h2>
 
-            <p className="text-text-primary mb-6">
+            <p className="text-text-primary mb-4">
               Are you sure you want to delete <span className="font-bold text-accent-danger">{qubeToDelete.name}</span>?
               This will permanently delete all of its data, including memory blocks, relationships, and cryptographic keys.
               This action cannot be undone.
             </p>
+
+            <div className="mb-6">
+              <label className="text-sm text-text-secondary block mb-2">
+                Enter your master password to confirm:
+              </label>
+              <input
+                type="password"
+                value={deleteConfirmPassword}
+                onChange={(e) => setDeleteConfirmPassword(e.target.value)}
+                placeholder="Master password"
+                className="w-full bg-bg-primary border border-glass-border rounded-lg px-3 py-2 text-text-primary placeholder:text-text-disabled focus:outline-none focus:border-accent-danger"
+                autoFocus
+              />
+            </div>
 
             <div className="flex gap-3 justify-end">
               <GlassButton
@@ -423,6 +440,7 @@ export const TabContent: React.FC<TabContentProps> = ({ qubes, setQubes, onQubes
               <GlassButton
                 variant="danger"
                 onClick={confirmDelete}
+                disabled={deleteConfirmPassword !== password}
               >
                 Delete Qube
               </GlassButton>

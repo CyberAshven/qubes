@@ -5,10 +5,12 @@ import { QubeRoster } from './components/roster/QubeRoster';
 import { TabBar } from './components/tabs/TabBar';
 import { TabContent } from './components/tabs/TabContent';
 import { LoginScreen } from './components/auth/LoginScreen';
+import { LockScreen } from './components/LockScreen';
 import { ExitConfirmDialog } from './components/dialogs/ExitConfirmDialog';
 import { PromptDebugModal } from './components/dialogs/PromptDebugModal';
 import { SetupWizard } from './components/wizard';
 import { useAuth } from './hooks/useAuth';
+import { useAutoLock } from './hooks/useAutoLock';
 import { AudioProvider } from './contexts/AudioContext';
 import { Qube } from './types';
 
@@ -28,7 +30,10 @@ interface FirstRunResponse {
 }
 
 function App() {
-  const { isAuthenticated, userId, password, login, logout } = useAuth();
+  const { isAuthenticated, isLocked, userId, password, login, logout } = useAuth();
+
+  // Initialize auto-lock (monitors activity and locks after timeout)
+  useAutoLock();
   const [qubes, setQubes] = useState<Qube[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -93,6 +98,16 @@ function App() {
           return; // Don't prevent, let it close
         }
 
+        // If locked, just exit immediately (no dialog needed)
+        if (isLocked) {
+          try {
+            await invoke('force_exit');
+          } catch (err) {
+            console.error('force_exit failed:', err);
+          }
+          return;
+        }
+
         // Prevent the window from closing
         event.preventDefault();
 
@@ -134,7 +149,7 @@ function App() {
     return () => {
       unlistenPromise.then(unlisten => unlisten());
     };
-  }, [isAuthenticated, allowClose, qubes, userId]);
+  }, [isAuthenticated, isLocked, allowClose, qubes, userId]);
 
   const handleLogin = async (username: string, password: string) => {
     try {
@@ -303,7 +318,10 @@ function App() {
 
   return (
     <AudioProvider>
-      <div className="h-screen w-screen flex flex-col bg-bg-primary">
+      {/* Lock Screen Overlay */}
+      <LockScreen />
+
+      <div className={`h-screen w-screen flex flex-col bg-bg-primary ${isLocked ? 'invisible' : ''}`}>
         {/* Title Bar */}
         <div className="h-8 flex items-center justify-between px-4 bg-bg-quaternary border-b border-glass-border">
           <span className="text-sm font-display text-accent-primary">QUBES ({qubes.length} loaded)</span>

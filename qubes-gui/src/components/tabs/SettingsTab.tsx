@@ -69,7 +69,7 @@ interface MemoryConfig {
 }
 
 export const SettingsTab: React.FC = () => {
-  const { userId, password } = useAuth();
+  const { userId, password, autoLockEnabled, autoLockTimeout, setAutoLockSettings } = useAuth();
 
   const {
     updateAvailable,
@@ -178,6 +178,23 @@ export const SettingsTab: React.FC = () => {
   const [loadingMemoryConfig, setLoadingMemoryConfig] = useState(true);
   const [savingMemoryConfig, setSavingMemoryConfig] = useState(false);
   const [showAdvancedRecall, setShowAdvancedRecall] = useState(false);
+
+  // Collapsible panel state (all collapsed by default)
+  const [collapsedPanels, setCollapsedPanels] = useState<Record<string, boolean>>({
+    apiKeys: true,
+    googleTTS: true,
+    blockSettings: true,
+    blockRecall: true,
+    relationshipDifficulty: true,
+    trustPersonality: true,
+    decisionIntelligence: true,
+    security: true,
+    softwareUpdates: true,
+  });
+
+  const togglePanel = (panel: string) => {
+    setCollapsedPanels(prev => ({ ...prev, [panel]: !prev[panel] }));
+  };
 
   const providerLabels: Record<string, string> = {
     openai: 'OpenAI',
@@ -737,10 +754,21 @@ export const SettingsTab: React.FC = () => {
           <div>
             {/* API Keys Section */}
             <GlassCard className="p-4">
-              <h2 className="text-lg font-display text-text-primary mb-2">
-                🔑 API Keys
-              </h2>
-              <p className="text-xs text-text-tertiary mb-3">
+              <button
+                onClick={() => togglePanel('apiKeys')}
+                className="w-full flex items-center justify-between text-left"
+              >
+                <h2 className="text-lg font-display text-text-primary">
+                  🔑 API Keys
+                </h2>
+                <span className={`text-text-tertiary transition-transform ${collapsedPanels.apiKeys ? '' : 'rotate-180'}`}>
+                  ▼
+                </span>
+              </button>
+
+              {!collapsedPanels.apiKeys && (
+                <>
+              <p className="text-xs text-text-tertiary mb-3 mt-2">
                 Your API keys are encrypted with your master password and stored securely.
               </p>
 
@@ -856,14 +884,27 @@ export const SettingsTab: React.FC = () => {
                   </a>
                 </div>
               </div>
+                </>
+              )}
             </GlassCard>
 
             {/* Google Cloud TTS Credentials */}
             <GlassCard className="p-4 mt-4">
-              <h2 className="text-lg font-display text-text-primary mb-2">
-                🎙️ Google Cloud TTS
-              </h2>
-              <p className="text-[10px] text-text-tertiary mb-3">
+              <button
+                onClick={() => togglePanel('googleTTS')}
+                className="w-full flex items-center justify-between text-left"
+              >
+                <h2 className="text-lg font-display text-text-primary">
+                  🎙️ Google Cloud TTS
+                </h2>
+                <span className={`text-text-tertiary transition-transform ${collapsedPanels.googleTTS ? '' : 'rotate-180'}`}>
+                  ▼
+                </span>
+              </button>
+
+              {!collapsedPanels.googleTTS && (
+                <>
+              <p className="text-[10px] text-text-tertiary mb-3 mt-2">
                 Path to your Google Cloud service account JSON credentials file. Optional - only needed for Google Cloud TTS (30+ voices).
               </p>
               {loadingGoogleTTSPath ? (
@@ -912,13 +953,26 @@ export const SettingsTab: React.FC = () => {
                   </p>
                 </div>
               )}
+                </>
+              )}
             </GlassCard>
 
             {/* Block Preferences */}
             <GlassCard className="p-4 mt-4">
-              <h2 className="text-lg font-display text-text-primary mb-2">
-                ⚙️ Block Settings
-              </h2>
+              <button
+                onClick={() => togglePanel('blockSettings')}
+                className="w-full flex items-center justify-between text-left"
+              >
+                <h2 className="text-lg font-display text-text-primary">
+                  ⚙️ Block Settings
+                </h2>
+                <span className={`text-text-tertiary transition-transform ${collapsedPanels.blockSettings ? '' : 'rotate-180'}`}>
+                  ▼
+                </span>
+              </button>
+
+              {!collapsedPanels.blockSettings && (
+                <>
               {loadingPreferences ? (
                 <p className="text-xs text-text-tertiary">Loading...</p>
               ) : (
@@ -994,14 +1048,27 @@ export const SettingsTab: React.FC = () => {
                   </div>
                 </div>
               )}
+                </>
+              )}
             </GlassCard>
 
             {/* Block Recall Settings */}
             <GlassCard className="p-4 mt-4">
-              <h2 className="text-lg font-display text-text-primary mb-2">
-                🧠 Block Recall
-              </h2>
-              <p className="text-[10px] text-text-tertiary mb-3">
+              <button
+                onClick={() => togglePanel('blockRecall')}
+                className="w-full flex items-center justify-between text-left"
+              >
+                <h2 className="text-lg font-display text-text-primary">
+                  🧠 Block Recall
+                </h2>
+                <span className={`text-text-tertiary transition-transform ${collapsedPanels.blockRecall ? '' : 'rotate-180'}`}>
+                  ▼
+                </span>
+              </button>
+
+              {!collapsedPanels.blockRecall && (
+                <>
+              <p className="text-[10px] text-text-tertiary mb-3 mt-2">
                 Configure how memories are recalled and injected into conversations.
               </p>
 
@@ -1189,25 +1256,30 @@ export const SettingsTab: React.FC = () => {
                   )}
                 </div>
               )}
+                </>
+              )}
             </GlassCard>
           </div>
 
           {/* Right Column */}
           <div>
-            {/* Relationship & Decision Settings */}
+            {/* Relationship Difficulty */}
             <GlassCard className="p-4">
-              <h2 className="text-lg font-display text-text-primary mb-2">
-                💞 Relationship & Decision Intelligence
-              </h2>
-              <p className="text-[10px] text-text-tertiary mb-3">
-                Settings that affect relationship building and AI decision-making intelligence.
-              </p>
+              <button
+                onClick={() => togglePanel('relationshipDifficulty')}
+                className="w-full flex items-center justify-between text-left"
+              >
+                <h2 className="text-lg font-display text-text-primary">
+                  💞 Relationship Difficulty
+                </h2>
+                <span className={`text-text-tertiary transition-transform ${collapsedPanels.relationshipDifficulty ? '' : 'rotate-180'}`}>
+                  ▼
+                </span>
+              </button>
 
-              {/* Relationship Difficulty Sub-section */}
-              <h3 className="text-sm font-medium text-text-primary mb-2 mt-2">
-                Relationship Difficulty
-              </h3>
-              <p className="text-[10px] text-text-tertiary mb-3">
+              {!collapsedPanels.relationshipDifficulty && (
+                <>
+              <p className="text-[10px] text-text-tertiary mb-3 mt-2">
                 Global setting that affects all qubes equally. Determines how quickly relationships build.
               </p>
 
@@ -1288,17 +1360,31 @@ export const SettingsTab: React.FC = () => {
                   )}
                 </div>
               )}
+                </>
+              )}
+            </GlassCard>
 
-              {/* Trust Personality Sub-section */}
-              <div className="border-t border-white/10 mt-6 pt-4">
-                <h3 className="text-sm font-medium text-text-primary mb-2">
+            {/* Trust Personality */}
+            <GlassCard className="p-4 mt-4">
+              <button
+                onClick={() => togglePanel('trustPersonality')}
+                className="w-full flex items-center justify-between text-left"
+              >
+                <h2 className="text-lg font-display text-text-primary">
                   🎭 Trust Personality
-                </h3>
-                <p className="text-[10px] text-text-tertiary mb-3">
-                  Configure how each Qube evaluates trust in relationships.
-                </p>
+                </h2>
+                <span className={`text-text-tertiary transition-transform ${collapsedPanels.trustPersonality ? '' : 'rotate-180'}`}>
+                  ▼
+                </span>
+              </button>
 
-                {/* Qube Selector */}
+              {!collapsedPanels.trustPersonality && (
+                <>
+              <p className="text-[10px] text-text-tertiary mb-3 mt-2">
+                Configure how each Qube evaluates trust in relationships.
+              </p>
+
+              {/* Qube Selector */}
                 <div className="mb-3">
                   <label className="text-[10px] text-text-secondary mb-1 block">Select Qube:</label>
                   <select
@@ -1370,18 +1456,31 @@ export const SettingsTab: React.FC = () => {
                     {trustPersonality === 'analytical' && 'This Qube prioritizes demonstrated expertise and competence when evaluating trust.'}
                   </p>
                 </div>
-              </div>
+                </>
+              )}
+            </GlassCard>
 
-              {/* Decision Intelligence Sub-section */}
-              <div className="border-t border-white/10 mt-6 pt-4">
-                <h3 className="text-sm font-medium text-text-primary mb-2">
-                  🧠 Decision Intelligence Settings
-                </h3>
-                <p className="text-[10px] text-text-tertiary mb-3">
-                  Configure how Qubes use relationship and self-evaluation metrics to make better decisions.
-                </p>
+            {/* Decision Intelligence */}
+            <GlassCard className="p-4 mt-4">
+              <button
+                onClick={() => togglePanel('decisionIntelligence')}
+                className="w-full flex items-center justify-between text-left"
+              >
+                <h2 className="text-lg font-display text-text-primary">
+                  🧠 Decision Intelligence
+                </h2>
+                <span className={`text-text-tertiary transition-transform ${collapsedPanels.decisionIntelligence ? '' : 'rotate-180'}`}>
+                  ▼
+                </span>
+              </button>
 
-                {loadingDecisionConfig ? (
+              {!collapsedPanels.decisionIntelligence && (
+                <>
+              <p className="text-[10px] text-text-tertiary mb-3 mt-2">
+                Configure how Qubes use relationship and self-evaluation metrics to make better decisions.
+              </p>
+
+              {loadingDecisionConfig ? (
                   <p className="text-xs text-text-tertiary">Loading...</p>
                 ) : (
                   <div className="space-y-4">
@@ -1593,15 +1692,97 @@ export const SettingsTab: React.FC = () => {
                     </div>
                   </div>
                 )}
+                </>
+              )}
+            </GlassCard>
+
+            {/* Security Settings */}
+            <GlassCard className="p-4 mt-4">
+              <button
+                onClick={() => togglePanel('security')}
+                className="w-full flex items-center justify-between text-left"
+              >
+                <h2 className="text-lg font-display text-text-primary">
+                  🔐 Security
+                </h2>
+                <span className={`text-text-tertiary transition-transform ${collapsedPanels.security ? '' : 'rotate-180'}`}>
+                  ▼
+                </span>
+              </button>
+
+              {!collapsedPanels.security && (
+                <>
+              <p className="text-[10px] text-text-tertiary mb-3 mt-2">
+                Configure security features to protect your Qubes and data.
+              </p>
+
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-sm font-medium text-text-primary">Auto-Lock</h3>
+                    <p className="text-[10px] text-text-tertiary">
+                      Lock the app after a period of inactivity
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setAutoLockSettings(!autoLockEnabled, autoLockTimeout)}
+                    className={`w-12 h-6 rounded-full transition-colors duration-200 relative ${
+                      autoLockEnabled ? 'bg-accent-primary' : 'bg-white/20'
+                    }`}
+                  >
+                    <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform duration-200 ${
+                      autoLockEnabled ? 'translate-x-7' : 'translate-x-1'
+                    }`} />
+                  </button>
+                </div>
+
+                {autoLockEnabled && (
+                  <div className="pl-4 border-l-2 border-accent-primary/30">
+                    <label className="text-xs text-text-secondary block mb-2">
+                      Lock after inactivity:
+                    </label>
+                    <div className="grid grid-cols-4 gap-2">
+                      {[5, 10, 15, 30].map((minutes) => (
+                        <button
+                          key={minutes}
+                          onClick={() => setAutoLockSettings(autoLockEnabled, minutes)}
+                          className={`px-3 py-2 rounded text-xs font-medium transition-all ${
+                            autoLockTimeout === minutes
+                              ? 'bg-accent-primary/20 text-accent-primary border-2 border-accent-primary/40'
+                              : 'bg-white/5 text-text-secondary border border-white/10 hover:bg-white/10'
+                          }`}
+                        >
+                          {minutes} min
+                        </button>
+                      ))}
+                    </div>
+                    <p className="text-[9px] text-text-tertiary mt-2 italic">
+                      You'll need to enter your password to unlock
+                    </p>
+                  </div>
+                )}
               </div>
+                </>
+              )}
             </GlassCard>
 
             {/* Software Updates Section */}
             <GlassCard className="p-4 mt-4">
-              <h2 className="text-lg font-display text-text-primary mb-2">
-                🔄 Software Updates
-              </h2>
-              <p className="text-[10px] text-text-tertiary mb-3">
+              <button
+                onClick={() => togglePanel('softwareUpdates')}
+                className="w-full flex items-center justify-between text-left"
+              >
+                <h2 className="text-lg font-display text-text-primary">
+                  🔄 Software Updates
+                </h2>
+                <span className={`text-text-tertiary transition-transform ${collapsedPanels.softwareUpdates ? '' : 'rotate-180'}`}>
+                  ▼
+                </span>
+              </button>
+
+              {!collapsedPanels.softwareUpdates && (
+                <>
+              <p className="text-[10px] text-text-tertiary mb-3 mt-2">
                 Keep Qubes up to date with the latest features and security fixes.
               </p>
 
@@ -1685,6 +1866,8 @@ export const SettingsTab: React.FC = () => {
                   </p>
                 )}
               </div>
+                </>
+              )}
             </GlassCard>
           </div>
         </div>
