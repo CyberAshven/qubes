@@ -58,6 +58,16 @@ interface DecisionConfig {
   auto_thresholds: boolean;
 }
 
+interface MemoryConfig {
+  recall_threshold: number;
+  max_recalls: number;
+  decay_rate: number;
+  semantic_weight: number;
+  keyword_weight: number;
+  temporal_weight: number;
+  relationship_weight: number;
+}
+
 export const SettingsTab: React.FC = () => {
   const { userId, password } = useAuth();
 
@@ -145,6 +155,30 @@ export const SettingsTab: React.FC = () => {
   const [loadingTrustPersonality, setLoadingTrustPersonality] = useState(false);
   const [savingTrustPersonality, setSavingTrustPersonality] = useState(false);
 
+  // Memory recall config state
+  const [memoryConfig, setMemoryConfig] = useState<MemoryConfig>({
+    recall_threshold: 15.0,
+    max_recalls: 5,
+    decay_rate: 0.1,
+    semantic_weight: 0.4,
+    keyword_weight: 0.3,
+    temporal_weight: 0.15,
+    relationship_weight: 0.1,
+  });
+  // Local state for smooth slider dragging (synced on release)
+  const [localMemoryConfig, setLocalMemoryConfig] = useState<MemoryConfig>({
+    recall_threshold: 15.0,
+    max_recalls: 5,
+    decay_rate: 0.1,
+    semantic_weight: 0.4,
+    keyword_weight: 0.3,
+    temporal_weight: 0.15,
+    relationship_weight: 0.1,
+  });
+  const [loadingMemoryConfig, setLoadingMemoryConfig] = useState(true);
+  const [savingMemoryConfig, setSavingMemoryConfig] = useState(false);
+  const [showAdvancedRecall, setShowAdvancedRecall] = useState(false);
+
   const providerLabels: Record<string, string> = {
     openai: 'OpenAI',
     anthropic: 'Anthropic (Claude)',
@@ -203,6 +237,11 @@ export const SettingsTab: React.FC = () => {
       loadTrustPersonality(selectedQubeForTrust);
     }
   }, [selectedQubeForTrust]);
+
+  // Load memory config on mount
+  useEffect(() => {
+    loadMemoryConfig();
+  }, [userId]);
 
   const loadGoogleTTSPath = async () => {
     try {
@@ -267,6 +306,58 @@ export const SettingsTab: React.FC = () => {
       await loadDecisionConfig();
     } finally {
       setSavingDecisionConfig(false);
+    }
+  };
+
+  const loadMemoryConfig = async () => {
+    try {
+      setLoadingMemoryConfig(true);
+      const result = await invoke<{ success: boolean; config: MemoryConfig }>('get_memory_config', {
+        userId,
+      });
+      if (result.success && result.config) {
+        setMemoryConfig(result.config);
+        setLocalMemoryConfig(result.config); // Sync local state
+      }
+    } catch (error) {
+      console.error('Failed to load memory config:', error);
+    } finally {
+      setLoadingMemoryConfig(false);
+    }
+  };
+
+  // Update local state while dragging (no API call)
+  const handleMemoryConfigSliderChange = (updates: Partial<MemoryConfig>) => {
+    setLocalMemoryConfig(prev => ({ ...prev, ...updates }));
+  };
+
+  // Save to backend when slider is released
+  const handleMemoryConfigSliderRelease = async () => {
+    // Find what changed between memoryConfig and localMemoryConfig
+    const updates: Partial<MemoryConfig> = {};
+    for (const key of Object.keys(localMemoryConfig) as (keyof MemoryConfig)[]) {
+      if (localMemoryConfig[key] !== memoryConfig[key]) {
+        (updates as any)[key] = localMemoryConfig[key];
+      }
+    }
+
+    if (Object.keys(updates).length === 0) return; // Nothing changed
+
+    try {
+      setSavingMemoryConfig(true);
+      setMemoryConfig(localMemoryConfig); // Update main state
+
+      await invoke('update_memory_config', {
+        userId,
+        configJson: JSON.stringify(updates),
+      });
+    } catch (error) {
+      console.error('Failed to update memory config:', error);
+      alert(`❌ Error updating config: ${String(error)}`);
+      // Reload to get the correct state
+      await loadMemoryConfig();
+    } finally {
+      setSavingMemoryConfig(false);
     }
   };
 
@@ -901,6 +992,201 @@ export const SettingsTab: React.FC = () => {
                       </label>
                     </div>
                   </div>
+                </div>
+              )}
+            </GlassCard>
+
+            {/* Block Recall Settings */}
+            <GlassCard className="p-4 mt-4">
+              <h2 className="text-lg font-display text-text-primary mb-2">
+                🧠 Block Recall
+              </h2>
+              <p className="text-[10px] text-text-tertiary mb-3">
+                Configure how memories are recalled and injected into conversations.
+              </p>
+
+              {loadingMemoryConfig ? (
+                <p className="text-xs text-text-tertiary">Loading...</p>
+              ) : (
+                <div className="space-y-3">
+                  {/* Basic Settings */}
+                  <div className="space-y-2">
+                    {/* Recall Threshold */}
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between">
+                        <label className="text-xs text-text-secondary">Recall Threshold</label>
+                        <span className="text-xs text-text-primary font-mono">{localMemoryConfig.recall_threshold.toFixed(1)}</span>
+                      </div>
+                      <input
+                        type="range"
+                        min="0"
+                        max="100"
+                        step="1"
+                        value={localMemoryConfig.recall_threshold}
+                        onChange={(e) => handleMemoryConfigSliderChange({ recall_threshold: parseFloat(e.target.value) })}
+                        onPointerUp={handleMemoryConfigSliderRelease}
+                        onTouchEnd={handleMemoryConfigSliderRelease}
+                        className="w-full h-1.5 bg-white/10 rounded-lg appearance-none cursor-pointer accent-accent-primary"
+                      />
+                      <p className="text-[9px] text-text-tertiary">Minimum relevance score (0-100) to recall a memory</p>
+                    </div>
+
+                    {/* Max Recalls */}
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between">
+                        <label className="text-xs text-text-secondary">Max Recalls</label>
+                        <span className="text-xs text-text-primary font-mono">{localMemoryConfig.max_recalls}</span>
+                      </div>
+                      <input
+                        type="range"
+                        min="1"
+                        max="20"
+                        step="1"
+                        value={localMemoryConfig.max_recalls}
+                        onChange={(e) => handleMemoryConfigSliderChange({ max_recalls: parseInt(e.target.value) })}
+                        onPointerUp={handleMemoryConfigSliderRelease}
+                        onTouchEnd={handleMemoryConfigSliderRelease}
+                        className="w-full h-1.5 bg-white/10 rounded-lg appearance-none cursor-pointer accent-accent-primary"
+                      />
+                      <p className="text-[9px] text-text-tertiary">Maximum memories to inject per query</p>
+                    </div>
+
+                    {/* Decay Rate */}
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between">
+                        <label className="text-xs text-text-secondary">Temporal Decay Rate</label>
+                        <span className="text-xs text-text-primary font-mono">{localMemoryConfig.decay_rate.toFixed(2)}</span>
+                      </div>
+                      <input
+                        type="range"
+                        min="0.01"
+                        max="1"
+                        step="0.01"
+                        value={localMemoryConfig.decay_rate}
+                        onChange={(e) => handleMemoryConfigSliderChange({ decay_rate: parseFloat(e.target.value) })}
+                        onPointerUp={handleMemoryConfigSliderRelease}
+                        onTouchEnd={handleMemoryConfigSliderRelease}
+                        className="w-full h-1.5 bg-white/10 rounded-lg appearance-none cursor-pointer accent-accent-primary"
+                      />
+                      <p className="text-[9px] text-text-tertiary">
+                        {localMemoryConfig.decay_rate <= 0.2 ? 'Slow decay - older memories stay relevant longer' :
+                         localMemoryConfig.decay_rate >= 0.8 ? 'Fast decay - strongly favors recent memories' :
+                         'Moderate decay - balanced recency preference'}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Advanced Settings Toggle */}
+                  <button
+                    onClick={() => setShowAdvancedRecall(!showAdvancedRecall)}
+                    className="flex items-center gap-2 text-xs text-accent-primary hover:text-accent-primary/80 transition-colors"
+                  >
+                    <span className={`transform transition-transform ${showAdvancedRecall ? 'rotate-90' : ''}`}>▶</span>
+                    Advanced Recall Settings
+                  </button>
+
+                  {/* Advanced Settings (Collapsible) */}
+                  {showAdvancedRecall && (
+                    <div className="space-y-2 pl-4 border-l-2 border-white/10">
+                      <p className="text-[9px] text-text-tertiary mb-2">
+                        Scoring weights determine how different factors contribute to relevance. Should sum to ~1.0.
+                      </p>
+
+                      {/* Semantic Weight */}
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between">
+                          <label className="text-[10px] text-text-secondary">Semantic Weight</label>
+                          <span className="text-[10px] text-text-primary font-mono">{localMemoryConfig.semantic_weight.toFixed(2)}</span>
+                        </div>
+                        <input
+                          type="range"
+                          min="0"
+                          max="1"
+                          step="0.05"
+                          value={localMemoryConfig.semantic_weight}
+                          onChange={(e) => handleMemoryConfigSliderChange({ semantic_weight: parseFloat(e.target.value) })}
+                          onPointerUp={handleMemoryConfigSliderRelease}
+                          onTouchEnd={handleMemoryConfigSliderRelease}
+                          className="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-accent-primary"
+                        />
+                        <p className="text-[8px] text-text-tertiary">Meaning/context similarity via embeddings</p>
+                      </div>
+
+                      {/* Keyword Weight */}
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between">
+                          <label className="text-[10px] text-text-secondary">Keyword Weight</label>
+                          <span className="text-[10px] text-text-primary font-mono">{localMemoryConfig.keyword_weight.toFixed(2)}</span>
+                        </div>
+                        <input
+                          type="range"
+                          min="0"
+                          max="1"
+                          step="0.05"
+                          value={localMemoryConfig.keyword_weight}
+                          onChange={(e) => handleMemoryConfigSliderChange({ keyword_weight: parseFloat(e.target.value) })}
+                          onPointerUp={handleMemoryConfigSliderRelease}
+                          onTouchEnd={handleMemoryConfigSliderRelease}
+                          className="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-accent-primary"
+                        />
+                        <p className="text-[8px] text-text-tertiary">Exact word/phrase matches</p>
+                      </div>
+
+                      {/* Temporal Weight */}
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between">
+                          <label className="text-[10px] text-text-secondary">Temporal Weight</label>
+                          <span className="text-[10px] text-text-primary font-mono">{localMemoryConfig.temporal_weight.toFixed(2)}</span>
+                        </div>
+                        <input
+                          type="range"
+                          min="0"
+                          max="1"
+                          step="0.05"
+                          value={localMemoryConfig.temporal_weight}
+                          onChange={(e) => handleMemoryConfigSliderChange({ temporal_weight: parseFloat(e.target.value) })}
+                          onPointerUp={handleMemoryConfigSliderRelease}
+                          onTouchEnd={handleMemoryConfigSliderRelease}
+                          className="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-accent-primary"
+                        />
+                        <p className="text-[8px] text-text-tertiary">Recency boost for newer memories</p>
+                      </div>
+
+                      {/* Relationship Weight */}
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between">
+                          <label className="text-[10px] text-text-secondary">Relationship Weight</label>
+                          <span className="text-[10px] text-text-primary font-mono">{localMemoryConfig.relationship_weight.toFixed(2)}</span>
+                        </div>
+                        <input
+                          type="range"
+                          min="0"
+                          max="1"
+                          step="0.05"
+                          value={localMemoryConfig.relationship_weight}
+                          onChange={(e) => handleMemoryConfigSliderChange({ relationship_weight: parseFloat(e.target.value) })}
+                          onPointerUp={handleMemoryConfigSliderRelease}
+                          onTouchEnd={handleMemoryConfigSliderRelease}
+                          className="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-accent-primary"
+                        />
+                        <p className="text-[8px] text-text-tertiary">Boost for memories involving close relationships</p>
+                      </div>
+
+                      {/* Weight Sum Indicator */}
+                      <div className="mt-2 pt-2 border-t border-white/10">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[9px] text-text-tertiary">Total Weight Sum:</span>
+                          <span className={`text-[10px] font-mono ${
+                            Math.abs((localMemoryConfig.semantic_weight + localMemoryConfig.keyword_weight + localMemoryConfig.temporal_weight + localMemoryConfig.relationship_weight) - 1) < 0.05
+                              ? 'text-accent-success'
+                              : 'text-accent-warning'
+                          }`}>
+                            {(localMemoryConfig.semantic_weight + localMemoryConfig.keyword_weight + localMemoryConfig.temporal_weight + localMemoryConfig.relationship_weight).toFixed(2)}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </GlassCard>

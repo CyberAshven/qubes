@@ -153,13 +153,13 @@ def calculate_final_score(
     if query_context is None:
         query_context = {}
 
-    # Base weights for each component
+    # Base weights for each component (can be overridden via query_context)
     weights = {
-        "semantic": 0.4,      # Semantic similarity is most important
-        "keyword": 0.3,       # Exact keyword matches matter
-        "temporal": 0.15,     # Recent blocks slightly preferred
-        "relationship": 0.1,  # Relationship strength matters
-        "block_type": 0.05    # Some block types more important
+        "semantic": query_context.get("semantic_weight", 0.4),      # Semantic similarity
+        "keyword": query_context.get("keyword_weight", 0.3),        # Exact keyword matches
+        "temporal": query_context.get("temporal_weight", 0.15),     # Recent blocks preference
+        "relationship": query_context.get("relationship_weight", 0.1),  # Relationship strength
+        "block_type": 0.05    # Some block types more important (not configurable)
     }
 
     # Base score from semantic + keyword

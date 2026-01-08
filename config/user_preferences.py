@@ -53,6 +53,22 @@ class OnboardingPreferences:
 
 
 @dataclass
+class MemoryConfig:
+    """User-configurable memory recall settings."""
+
+    # Basic Settings
+    recall_threshold: float = 15.0      # Minimum relevance score (0-100) to recall a memory
+    max_recalls: int = 5                # Maximum memories to inject per query
+    decay_rate: float = 0.1             # Temporal decay rate (0.1=slow, 1.0=fast)
+
+    # Advanced Settings - Scoring Weights (must sum to ~1.0)
+    semantic_weight: float = 0.4        # Weight for semantic/meaning similarity
+    keyword_weight: float = 0.3         # Weight for exact keyword matches
+    temporal_weight: float = 0.15       # Weight for recency
+    relationship_weight: float = 0.1    # Weight for relationship strength with participants
+
+
+@dataclass
 class DecisionConfig:
     """User-configurable decision intelligence settings."""
 
@@ -87,12 +103,14 @@ class UserPreferences:
 
     blocks: BlockPreferences
     audio: AudioPreferences
+    memory: MemoryConfig
     decision: DecisionConfig
     onboarding: OnboardingPreferences
 
     def __init__(self):
         self.blocks = BlockPreferences()
         self.audio = AudioPreferences()
+        self.memory = MemoryConfig()
         self.decision = DecisionConfig()
         self.onboarding = OnboardingPreferences()
 
@@ -101,6 +119,7 @@ class UserPreferences:
         return {
             'blocks': asdict(self.blocks),
             'audio': asdict(self.audio),
+            'memory': asdict(self.memory),
             'decision': asdict(self.decision),
             'onboarding': asdict(self.onboarding)
         }
@@ -115,6 +134,9 @@ class UserPreferences:
 
         if 'audio' in data:
             prefs.audio = AudioPreferences(**data['audio'])
+
+        if 'memory' in data:
+            prefs.memory = MemoryConfig(**data['memory'])
 
         if 'decision' in data:
             prefs.decision = DecisionConfig(**data['decision'])
@@ -236,6 +258,55 @@ class UserPreferencesManager:
     def get_audio_preferences(self) -> AudioPreferences:
         """Get audio-related preferences."""
         return self.load_preferences().audio
+
+    # =========================================================================
+    # MEMORY RECALL PREFERENCES
+    # =========================================================================
+
+    def update_memory_config(self, **kwargs) -> UserPreferences:
+        """
+        Update memory recall configuration.
+
+        Args:
+            **kwargs: Key-value pairs of MemoryConfig fields to update
+                - recall_threshold: Minimum relevance score (0-100)
+                - max_recalls: Maximum memories to inject per query
+                - decay_rate: Temporal decay rate (0.1=slow, 1.0=fast)
+                - semantic_weight: Weight for semantic similarity
+                - keyword_weight: Weight for keyword matches
+                - temporal_weight: Weight for recency
+                - relationship_weight: Weight for relationship strength
+
+        Returns:
+            Updated UserPreferences object
+        """
+        prefs = self.load_preferences()
+
+        for key, value in kwargs.items():
+            if hasattr(prefs.memory, key):
+                # Validate specific fields
+                if key == 'recall_threshold' and not (0 <= value <= 100):
+                    raise ValueError("recall_threshold must be between 0 and 100")
+                if key == 'max_recalls' and value < 1:
+                    raise ValueError("max_recalls must be at least 1")
+                if key == 'decay_rate' and not (0 < value <= 1.0):
+                    raise ValueError("decay_rate must be between 0 and 1.0")
+                if key in ('semantic_weight', 'keyword_weight', 'temporal_weight', 'relationship_weight'):
+                    if not (0 <= value <= 1.0):
+                        raise ValueError(f"{key} must be between 0 and 1.0")
+
+                setattr(prefs.memory, key, value)
+
+        self.save_preferences(prefs)
+        return prefs
+
+    def get_memory_config(self) -> MemoryConfig:
+        """Get memory recall configuration."""
+        return self.load_preferences().memory
+
+    # =========================================================================
+    # DECISION INTELLIGENCE PREFERENCES
+    # =========================================================================
 
     def update_decision_config(self, **kwargs) -> UserPreferences:
         """

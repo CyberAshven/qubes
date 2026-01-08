@@ -7149,6 +7149,67 @@ async def main():
                 sys.exit(1)
 
         # =====================================================================
+        # Memory Recall Config Commands
+        # =====================================================================
+
+        elif command == "get-memory-config":
+            if len(sys.argv) < 3:
+                print(json.dumps({"error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            try:
+                from config.user_preferences import UserPreferencesManager
+                from dataclasses import asdict
+
+                # Get user data directory
+                data_dir = Path("data") / "users" / user_id
+                prefs_manager = UserPreferencesManager(data_dir)
+
+                # Get memory config from preferences
+                config = prefs_manager.get_memory_config()
+
+                print(json.dumps({
+                    "success": True,
+                    "config": asdict(config)
+                }))
+            except Exception as e:
+                logger.error(f"Failed to get memory config: {e}", exc_info=True)
+                print(json.dumps({"success": False, "error": str(e)}), file=sys.stderr)
+                sys.exit(1)
+
+        elif command == "update-memory-config":
+            if len(sys.argv) < 4:
+                print(json.dumps({"error": "User ID and config JSON required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            config_json = sys.argv[3]
+
+            try:
+                from config.user_preferences import UserPreferencesManager
+
+                # Get user data directory
+                data_dir = Path("data") / "users" / user_id
+                prefs_manager = UserPreferencesManager(data_dir)
+
+                # Parse config data
+                config_data = json.loads(config_json)
+
+                # Update memory config
+                prefs_manager.update_memory_config(**config_data)
+
+                print(json.dumps({
+                    "success": True,
+                    "message": "Memory config updated"
+                }))
+            except Exception as e:
+                logger.error(f"Failed to update memory config: {e}", exc_info=True)
+                print(json.dumps({"success": False, "error": str(e)}), file=sys.stderr)
+                sys.exit(1)
+
+        # =====================================================================
         # Onboarding Tutorial Commands
         # =====================================================================
 

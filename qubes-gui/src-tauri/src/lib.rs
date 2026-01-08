@@ -2066,6 +2066,62 @@ async fn update_decision_config(
 }
 
 // =============================================================================
+// MEMORY RECALL CONFIG COMMANDS
+// =============================================================================
+
+#[tauri::command]
+async fn get_memory_config(user_id: String) -> Result<serde_json::Value, String> {
+    // Validate inputs
+    validate_identifier(&user_id, "user_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("get-memory-config")
+        .arg(&user_id)
+        .output()
+        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Operation"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn update_memory_config(
+    user_id: String,
+    config_json: String
+) -> Result<serde_json::Value, String> {
+    // Validate inputs
+    validate_identifier(&user_id, "user_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("update-memory-config")
+        .arg(&user_id)
+        .arg(&config_json)
+        .output()
+        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Operation"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+// =============================================================================
 // ONBOARDING TUTORIAL COMMANDS
 // =============================================================================
 
@@ -4460,6 +4516,8 @@ pub fn run() {
             get_difficulty_presets,
             get_decision_config,
             update_decision_config,
+            get_memory_config,
+            update_memory_config,
             get_onboarding_preferences,
             mark_tutorial_seen,
             reset_tutorial,
