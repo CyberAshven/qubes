@@ -5151,9 +5151,9 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
                     from blockchain.wallet_tx import WalletTransactionManager
                     wallet_manager = WalletTransactionManager(qube, self.orchestrator.data_dir)
 
-                    # Get balance
+                    # Get balance with persistent caching (loads from disk if API fails)
                     balance_sats = await asyncio.wait_for(
-                        wallet_manager.wallet.get_balance(),
+                        wallet_manager.get_balance_with_cache(),
                         timeout=5.0
                     )
 

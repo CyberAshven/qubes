@@ -163,10 +163,14 @@ class WalletTransactionManager:
         self.data_dir = data_dir or Path(qube.qube_dir)
         self.pending_tx_file = self.data_dir / "pending_transactions.json"
         self.tx_history_file = self.data_dir / "transaction_history.json"
+        self.balance_cache_file = self.data_dir / "balance_cache.json"
 
         # In-memory cache
         self._pending_txs: Dict[str, PendingTx] = {}
         self._load_pending_transactions()
+
+        # Load persisted balance cache into wallet
+        self._load_balance_cache()
 
         logger.debug(
             "wallet_tx_manager_initialized",
@@ -191,6 +195,75 @@ class WalletTransactionManager:
         info = await self.wallet.get_wallet_info()
         info["pending_tx_count"] = len(self.get_pending_transactions())
         return info
+
+    def _load_balance_cache(self) -> None:
+        """
+        Load persisted balance cache from disk into the wallet's in-memory cache.
+
+        This ensures balance is available immediately even if the API is slow/down.
+        """
+        try:
+            if self.balance_cache_file.exists():
+                with open(self.balance_cache_file, 'r') as f:
+                    cache_data = json.load(f)
+
+                cached_balance = cache_data.get("balance")
+                cached_timestamp = cache_data.get("timestamp", 0)
+
+                if cached_balance is not None:
+                    # Load into wallet's in-memory cache
+                    self.wallet._cached_balance = cached_balance
+                    self.wallet._balance_last_updated = cached_timestamp
+                    logger.debug(
+                        "balance_cache_loaded",
+                        balance=cached_balance,
+                        cache_age=int(time.time() - cached_timestamp)
+                    )
+        except Exception as e:
+            logger.debug(f"Could not load balance cache: {e}")
+
+    def _save_balance_cache(self, balance: int) -> None:
+        """
+        Persist balance to disk for fast startup.
+
+        Args:
+            balance: Balance in satoshis
+        """
+        try:
+            cache_data = {
+                "balance": balance,
+                "timestamp": time.time(),
+                "address": self.p2sh_address
+            }
+            with open(self.balance_cache_file, 'w') as f:
+                json.dump(cache_data, f)
+            logger.debug("balance_cache_saved", balance=balance)
+        except Exception as e:
+            logger.debug(f"Could not save balance cache: {e}")
+
+    async def get_balance_with_cache(self) -> int:
+        """
+        Get wallet balance with persistent caching.
+
+        Returns cached balance immediately if API fails or times out.
+        Saves balance to disk on successful fetch for future sessions.
+
+        Returns:
+            Balance in satoshis
+        """
+        try:
+            # Try to fetch fresh balance
+            balance = await self.wallet.get_balance()
+            # Save to disk on success
+            if balance is not None:
+                self._save_balance_cache(balance)
+            return balance
+        except Exception as e:
+            logger.debug(f"API balance fetch failed: {e}")
+            # Return cached value if available
+            if self.wallet._cached_balance is not None:
+                return self.wallet._cached_balance
+            return 0
 
     # =========================================================================
     # QUBE PROPOSES TRANSACTION

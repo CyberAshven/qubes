@@ -1,6 +1,6 @@
 import { calculateTokenCost, formatUSD, formatBCH } from '../../utils/tokenCostCalculator';
 import React, { useState, useEffect } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { GlassCard, GlassButton } from '../glass';
 import { Qube } from '../../types';
 import { BlockContentViewer } from '../blocks/BlockContentViewer';
@@ -96,6 +96,26 @@ const getBlockTypeRing = (blockType: string): string => {
     'GAME': 'ring-yellow-400',
   };
   return ringColors[blockType] || 'ring-text-secondary';
+};
+
+// Helper function to get avatar URL for a qube
+const getAvatarPath = (qube: Qube, userId: string): string | null => {
+  // Priority 1: IPFS URL from backend
+  if (qube.avatar_url) return qube.avatar_url;
+
+  // Priority 2: Local file path via Tauri convertFileSrc
+  if (qube.avatar_local_path) {
+    return convertFileSrc(qube.avatar_local_path);
+  }
+
+  // Priority 3: Construct path from qube info (fallback for older qubes)
+  if (userId && qube.name && qube.qube_id) {
+    const projectRoot = 'C:/Users/bit_f/Projects/Qubes';
+    const filePath = `${projectRoot}/data/users/${userId}/qubes/${qube.name}_${qube.qube_id}/chain/${qube.qube_id}_avatar.png`;
+    return convertFileSrc(filePath);
+  }
+
+  return null;
 };
 
 // Selection section types
@@ -475,18 +495,37 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-3">
                   {/* Qube Avatar */}
+                  {selectedQube && getAvatarPath(selectedQube, userId) ? (
+                    <img
+                      src={getAvatarPath(selectedQube, userId)!}
+                      alt={selectedQube.name}
+                      className="w-12 h-12 rounded-lg object-cover"
+                      style={{
+                        borderColor: selectedQube.favorite_color || '#00ff88',
+                        borderWidth: '2px',
+                        borderStyle: 'solid'
+                      }}
+                      onError={(e) => {
+                        // Fall back to letter avatar if image fails to load
+                        const target = e.target as HTMLImageElement;
+                        target.style.display = 'none';
+                        target.nextElementSibling?.classList.remove('hidden');
+                      }}
+                    />
+                  ) : null}
                   <div
-                    className="w-10 h-10 rounded-lg flex items-center justify-center text-lg font-bold"
+                    className={`w-12 h-12 rounded-lg flex items-center justify-center text-xl font-bold ${selectedQube && getAvatarPath(selectedQube, userId) ? 'hidden' : ''}`}
                     style={{
                       backgroundColor: `${selectedQube?.favorite_color || '#00ff88'}20`,
                       borderColor: selectedQube?.favorite_color || '#00ff88',
                       borderWidth: '2px',
+                      borderStyle: 'solid',
                       color: selectedQube?.favorite_color || '#00ff88'
                     }}
                   >
                     {selectedQube?.name?.charAt(0).toUpperCase()}
                   </div>
-                  <h2 className="text-xl font-display" style={{ color: selectedQube?.favorite_color || '#00ff88' }}>
+                  <h2 className="text-2xl font-display font-bold" style={{ color: selectedQube?.favorite_color || '#00ff88' }}>
                     {selectedQube?.name}
                   </h2>
                 </div>
