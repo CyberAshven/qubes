@@ -5002,6 +5002,454 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
             logger.error(f"Failed to get wallet info: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
 
+    async def get_context_preview(
+        self,
+        qube_id: str,
+        password: str
+    ) -> Dict[str, Any]:
+        """
+        Get preview of what's in the Qube's active context and short-term memory.
+
+        This shows the user everything that would be injected into the AI's context
+        window when processing a message.
+
+        Args:
+            qube_id: Qube ID
+            password: User's master password
+
+        Returns:
+            Dict with active_context and short_term_memory sections
+        """
+        try:
+            self.orchestrator.set_master_key(password)
+            qube = await self.orchestrator.load_qube(qube_id)
+
+            if not qube:
+                return {"success": False, "error": f"Qube {qube_id} not found"}
+
+            # Initialize session if needed (to access session blocks)
+            if not hasattr(qube, 'session') or qube.session is None:
+                from core.session import Session
+                qube.session = Session(qube)
+
+            # Build active context (always-present identity data)
+            active_context = await self._build_active_context_preview(qube)
+
+            # Build short-term memory (blocks in context window)
+            short_term_memory = await self._build_short_term_memory_preview(qube)
+
+            return {
+                "success": True,
+                "active_context": active_context,
+                "short_term_memory": short_term_memory
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to get context preview: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def _build_active_context_preview(self, qube) -> Dict[str, Any]:
+        """
+        Build preview of active context (always-present identity data).
+        """
+        from utils.time_format import format_timestamp
+
+        genesis = qube.genesis_block
+
+        # Genesis Identity
+        genesis_identity = {
+            "name": genesis.qube_name,
+            "qube_id": qube.qube_id,
+            "birth_date": format_timestamp(genesis.birth_timestamp) if genesis.birth_timestamp else None,
+            "genesis_prompt": genesis.genesis_prompt,
+            "favorite_color": genesis.favorite_color or "#4A90E2",
+            "ai_model": genesis.ai_model,
+            "voice_model": genesis.voice_model,
+            "creator": genesis.creator,
+            "nft_category_id": getattr(genesis, 'nft_category_id', None),
+            "mint_txid": getattr(genesis, 'mint_txid', None)
+        }
+
+        # Relationships (top 5 by interaction count)
+        relationships = []
+        try:
+            # Reload relationships from disk to get latest
+            qube.relationships.storage._load_relationships()
+            all_rels = qube.relationships.get_all_relationships()
+
+            # Sort by total messages (sent + received) and take top 5
+            sorted_rels = sorted(
+                all_rels,
+                key=lambda r: (r.messages_sent or 0) + (r.messages_received or 0),
+                reverse=True
+            )[:5]
+
+            for rel in sorted_rels:
+                # Use entity_name if available, otherwise entity_id
+                name = getattr(rel, 'entity_name', None) or rel.entity_id
+                # Trust is 0-100, convert to 0-1 for display
+                trust = getattr(rel, 'trust', 0) / 100.0
+                # Calculate interaction count from messages
+                interaction_count = (getattr(rel, 'messages_sent', 0) or 0) + (getattr(rel, 'messages_received', 0) or 0)
+
+                relationships.append({
+                    "entity_id": rel.entity_id[:16] + "..." if len(rel.entity_id) > 16 else rel.entity_id,
+                    "name": name,
+                    "status": getattr(rel, 'status', 'unknown') or "unknown",
+                    "trust_level": round(trust, 2),
+                    "interaction_count": interaction_count
+                })
+        except Exception as e:
+            logger.warning(f"Failed to load relationships for context preview: {e}")
+
+        # Skills summary
+        skills = []
+        skills_total = {"total_xp": 0, "unlocked_skills": 0, "categories": 0}
+        try:
+            from utils.skills_manager import SkillsManager
+            skills_manager = SkillsManager(qube.data_dir)
+            skills_manager.load_skills()
+            summary = skills_manager.get_skill_summary()
+
+            # Get top categories by unlocked count - use correct keys
+            top_categories = sorted(
+                summary.get("by_category", {}).items(),
+                key=lambda x: x[1].get("unlocked", 0),
+                reverse=True
+            )[:5]
+
+            for category_id, stats in top_categories:
+                if stats.get("unlocked", 0) > 0:  # Only show if has unlocked skills
+                    skills.append({
+                        "skill_id": category_id,
+                        "total_xp": 0,  # XP is per-skill, not per-category in this structure
+                        "unlocked": stats.get("unlocked", 0),
+                        "total": stats.get("total", 0),
+                        "level": 1  # Categories don't have levels
+                    })
+
+            # Add total stats - use correct keys from SkillsManager.get_skill_summary()
+            skills_total = {
+                "total_xp": summary.get("total_xp", 0),
+                "unlocked_skills": summary.get("unlocked_skills", 0),
+                "categories": len(summary.get("by_category", {}))
+            }
+        except Exception as e:
+            logger.warning(f"Failed to load skills for context preview: {e}")
+
+        # Wallet info with balance and recent transactions
+        wallet = None
+        try:
+            wallet_info = self._get_wallet_info_from_genesis(genesis)
+            if wallet_info:
+                p2sh_address = wallet_info.get("p2sh_address")
+                balance_sats = 0
+                recent_transactions = []
+
+                # Try to fetch balance and transactions
+                try:
+                    from blockchain.wallet_tx import WalletTransactionManager
+                    wallet_manager = WalletTransactionManager(qube, self.orchestrator.data_dir)
+
+                    # Get balance
+                    balance_sats = await asyncio.wait_for(
+                        wallet_manager.wallet.get_balance(),
+                        timeout=5.0
+                    )
+
+                    # Get recent transactions (up to 3)
+                    try:
+                        tx_history = await asyncio.wait_for(
+                            wallet_manager.wallet.get_transaction_history(limit=3),
+                            timeout=5.0
+                        )
+                        for tx in tx_history:
+                            recent_transactions.append({
+                                "txid": tx.get("txid", "")[:16] + "..." if tx.get("txid") else "",
+                                "amount_sats": tx.get("amount", 0),
+                                "type": "received" if tx.get("amount", 0) > 0 else "sent",
+                                "timestamp": tx.get("timestamp"),
+                                "confirmations": tx.get("confirmations", 0)
+                            })
+                    except Exception as tx_err:
+                        logger.debug(f"Could not fetch transaction history: {tx_err}")
+
+                except Exception as bal_err:
+                    logger.debug(f"Could not fetch wallet balance: {bal_err}")
+
+                wallet = {
+                    "p2sh_address": p2sh_address,
+                    "balance_sats": balance_sats,
+                    "balance_bch": balance_sats / 100_000_000 if balance_sats else 0,
+                    "recent_transactions": recent_transactions,
+                    "has_wallet": True
+                }
+        except Exception as e:
+            logger.warning(f"Failed to load wallet for context preview: {e}")
+
+        return {
+            "genesis_identity": genesis_identity,
+            "relationships": {
+                "count": len(relationships),
+                "top_relationships": relationships
+            },
+            "skills": {
+                "totals": skills_total,
+                "top_skills": skills
+            },
+            "wallet": wallet
+        }
+
+    async def _build_short_term_memory_preview(self, qube) -> Dict[str, Any]:
+        """
+        Build preview of short-term memory (blocks in context window).
+        """
+        from ai.tools.memory_search import intelligent_memory_search
+
+        # Semantic recalls (from last query)
+        semantic_recalls = []
+        recalled_block_numbers = set()
+
+        try:
+            # Get recent context to search
+            session = qube.current_session
+            recent_messages = []
+            if session and hasattr(session, 'session_blocks') and session.session_blocks:
+                for block in session.session_blocks[-3:]:
+                    content = block.content if isinstance(block.content, dict) else {}
+                    if "message" in content:
+                        recent_messages.append(content["message"][:200])
+
+            if recent_messages:
+                query = " ".join(recent_messages)
+                results = await intelligent_memory_search(
+                    qube=qube,
+                    query=query,
+                    context={"query_type": "context_preview"},
+                    top_k=5
+                )
+
+                for result in results:
+                    block = result.block
+                    block_num = block.get("block_number", -1)
+                    recalled_block_numbers.add(block_num)
+                    semantic_recalls.append({
+                        "block_number": block_num,
+                        "block_type": block.get("block_type", "UNKNOWN"),
+                        "relevance_score": round(result.score, 2),
+                        "preview": self._get_block_preview(block)
+                    })
+        except Exception as e:
+            logger.warning(f"Failed to get semantic recalls: {e}")
+
+        # Recent permanent blocks (with summary exclusion awareness)
+        recent_blocks = []
+        recent_blocks_content_chars = 0
+        try:
+            from ai.reasoner import QubeReasoner
+            reasoner = QubeReasoner(qube)
+            permanent_blocks = reasoner._get_recent_permanent_blocks(
+                limit=10,
+                recalled_block_numbers=recalled_block_numbers
+            )
+
+            for block in permanent_blocks:
+                content = block.content if isinstance(block.content, dict) else {}
+                if block.encrypted and "ciphertext" in content:
+                    try:
+                        content = qube.decrypt_block_content(content)
+                    except:
+                        content = {"preview": "[Encrypted]"}
+
+                # Track actual content size for token estimation
+                try:
+                    content_str = json.dumps(content, default=str) if isinstance(content, dict) else str(content)
+                    recent_blocks_content_chars += len(content_str)
+                except:
+                    recent_blocks_content_chars += 500  # Fallback estimate
+
+                recent_blocks.append({
+                    "block_number": block.block_number,
+                    "block_type": block.block_type if isinstance(block.block_type, str) else block.block_type.value,
+                    "timestamp": block.timestamp,
+                    "is_summary": block.block_type == "SUMMARY",
+                    "preview": self._get_block_preview({"content": content, "block_type": block.block_type})
+                })
+        except Exception as e:
+            logger.warning(f"Failed to get recent permanent blocks: {e}")
+
+        # Session blocks
+        session_blocks = []
+        session_blocks_content_chars = 0
+        try:
+            session = qube.current_session
+            if session and hasattr(session, 'session_blocks') and session.session_blocks:
+                for block in session.session_blocks[-10:]:
+                    content = block.content if isinstance(block.content, dict) else {}
+
+                    # Track actual content size for token estimation
+                    try:
+                        content_str = json.dumps(content, default=str) if isinstance(content, dict) else str(content)
+                        session_blocks_content_chars += len(content_str)
+                    except:
+                        session_blocks_content_chars += 500  # Fallback estimate
+
+                    session_blocks.append({
+                        "block_number": block.block_number,
+                        "block_type": block.block_type if isinstance(block.block_type, str) else block.block_type.value,
+                        "timestamp": block.timestamp,
+                        "preview": self._get_block_preview({"content": content, "block_type": block.block_type})
+                    })
+        except Exception as e:
+            logger.warning(f"Failed to get session blocks: {e}")
+
+        # Estimate total tokens in short-term memory
+        # Use ~4 characters per token as a rough approximation
+        total_chars = 0
+
+        # Add actual content sizes from blocks we tracked
+        total_chars += recent_blocks_content_chars
+        total_chars += session_blocks_content_chars
+
+        # Semantic recalls - estimate from preview * 10 (previews are very truncated)
+        # Each recalled block typically has 500-2000 chars of actual content
+        for block in semantic_recalls:
+            preview_len = len(block.get("preview", ""))
+            # Estimate actual content is ~10x the preview (preview is 100 chars, content is ~1000)
+            total_chars += max(preview_len * 10, 500)
+
+        # Add estimate for active context (genesis prompt, system instructions, etc.)
+        # This is typically 500-1500 tokens worth of content
+        genesis_prompt = qube.genesis_block.genesis_prompt if qube.genesis_block else ""
+        total_chars += len(genesis_prompt)
+        total_chars += 1000  # Base system prompt overhead
+
+        estimated_tokens = total_chars // 4
+
+        # Get max context window for this qube's AI model
+        # Try multiple possible attribute names
+        model_name = getattr(qube, 'current_ai_model', None)
+        if not model_name:
+            model_name = getattr(qube, 'ai_model', None)
+        if not model_name and qube.genesis_block:
+            model_name = getattr(qube.genesis_block, 'ai_model', None)
+        if not model_name:
+            model_name = 'unknown'
+        max_context_window = self._get_model_context_window(model_name)
+
+        return {
+            "semantic_recalls": {
+                "count": len(semantic_recalls),
+                "blocks": semantic_recalls
+            },
+            "recent_permanent": {
+                "count": len(recent_blocks),
+                "blocks": recent_blocks
+            },
+            "session": {
+                "count": len(session_blocks),
+                "blocks": session_blocks
+            },
+            "estimated_tokens": estimated_tokens,
+            "max_context_window": max_context_window
+        }
+
+    def _get_model_context_window(self, model_name: str | None) -> int:
+        """Get the context window size for a given model name."""
+        if not model_name:
+            return 128000  # Default fallback
+
+        # Consolidated context windows from all providers
+        # Includes both full API names and short aliases
+        CONTEXT_WINDOWS = {
+            # Anthropic - full names
+            "claude-sonnet-4-5-20250929": 200000,
+            "claude-opus-4-1-20250805": 200000,
+            "claude-opus-4-20250514": 200000,
+            "claude-sonnet-4-20250514": 1000000,
+            "claude-3-7-sonnet-20250219": 200000,
+            "claude-3-5-haiku-20241022": 200000,
+            "claude-3-haiku-20240307": 200000,
+            # Anthropic - short aliases
+            "claude-sonnet-4.5": 200000,
+            "claude-opus-4.1": 200000,
+            "claude-opus-4": 200000,
+            "claude-sonnet-4": 1000000,
+            "claude-3.5-sonnet": 200000,
+            "claude-3.5-haiku": 200000,
+            "claude-3-haiku": 200000,
+            # OpenAI - these are already short names
+            "gpt-5": 256000,
+            "gpt-5-mini": 128000,
+            "gpt-5-nano": 64000,
+            "gpt-5-codex": 256000,
+            "gpt-4.1": 1000000,
+            "gpt-4.1-mini": 128000,
+            "gpt-4o": 128000,
+            "gpt-4o-mini": 128000,
+            "o4-mini": 128000,
+            "o3-mini": 128000,
+            "o1": 200000,
+            # Google - these are already short names
+            "gemini-2.5-pro": 2000000,
+            "gemini-2.5-flash": 1000000,
+            "gemini-2.5-flash-lite": 1000000,
+            "gemini-2.0-flash": 1000000,
+            "gemini-1.5-pro": 2000000,
+            # DeepSeek - these are already short names
+            "deepseek-chat": 64000,
+            "deepseek-reasoner": 64000,
+            # Perplexity - these are already short names
+            "sonar-pro": 127000,
+            "sonar": 127000,
+            "sonar-reasoning-pro": 127000,
+            "sonar-reasoning": 127000,
+            "sonar-deep-research": 127000,
+            # Ollama (local) - these are already short names
+            "llama3.3:70b": 128000,
+            "qwen3:235b": 32768,
+            "qwen3:30b": 32768,
+            "qwen2.5:7b": 32768,
+            "deepseek-r1:8b": 32768,
+            "phi4:14b": 16384,
+            "gemma2:9b": 8192,
+            "mistral:7b": 8192,
+            "codellama:7b": 16384,
+        }
+        # Default to 128K if model not found
+        return CONTEXT_WINDOWS.get(model_name, 128000)
+
+    def _get_block_preview(self, block: dict) -> str:
+        """Get a short preview of block content."""
+        content = block.get("content", {})
+        if isinstance(content, str):
+            return content[:100] + "..." if len(content) > 100 else content
+
+        block_type = block.get("block_type", "")
+        if block_type == "SUMMARY":
+            summary = content.get("summary", "")
+            return summary[:100] + "..." if len(summary) > 100 else summary
+
+        # MESSAGE block
+        msg = content.get("message", content.get("response", ""))
+        if msg:
+            return msg[:100] + "..." if len(msg) > 100 else msg
+
+        return "[No preview available]"
+
+    def _calculate_skill_level(self, xp: int) -> int:
+        """Calculate skill level from XP."""
+        if xp < 100:
+            return 1
+        elif xp < 500:
+            return 2
+        elif xp < 1500:
+            return 3
+        elif xp < 5000:
+            return 4
+        else:
+            return 5
+
     async def propose_wallet_transaction(
         self,
         qube_id: str,
@@ -8240,6 +8688,31 @@ async def main():
 
             user_bridge = GUIBridge(user_id=user_id)
             result = await user_bridge.get_qube_wallet_info(
+                qube_id=args.qube_id,
+                password=password
+            )
+            print(json.dumps(result))
+
+        elif command == "get-context-preview":
+            # Get context preview (active context + short-term memory)
+            if len(sys.argv) < 3:
+                print(json.dumps({"success": False, "error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("command")
+            parser.add_argument("user_id")
+            parser.add_argument("--qube-id", required=True)
+            parser.add_argument("--password", default=None)
+
+            args = parser.parse_args()
+            password = get_secret("password", required=False) or args.password
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.get_context_preview(
                 qube_id=args.qube_id,
                 password=password
             )

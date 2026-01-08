@@ -1563,19 +1563,24 @@ Example: Instead of "Here is the image you requested", say something like "![My 
 
         return text
 
-    def _get_recent_permanent_blocks(self, limit: int) -> List:
+    def _get_recent_permanent_blocks(self, limit: int, recalled_block_numbers: set = None) -> List:
         """
         Get recent permanent blocks with SUMMARY replacement logic
 
         If a SUMMARY block covers some of the recent blocks, those blocks
-        are replaced by the SUMMARY block itself.
+        are replaced by the SUMMARY block itself. However, blocks that were
+        semantically recalled are always included regardless of summary coverage.
 
         Args:
             limit: Maximum number of blocks/summaries to return
+            recalled_block_numbers: Set of block numbers that were semantically
+                recalled and should be included even if covered by a summary
 
         Returns:
             List of Block objects (MESSAGE and SUMMARY blocks only)
         """
+        if recalled_block_numbers is None:
+            recalled_block_numbers = set()
         # Get last N permanent blocks
         chain_length = self.qube.memory_chain.get_chain_length()
         if chain_length == 0:
@@ -1616,9 +1621,13 @@ Example: Instead of "Here is the image you requested", say something like "![My 
             result_blocks.append(summary)
 
         # Add MESSAGE blocks that aren't covered by any summary
+        # OR were semantically recalled (recalled blocks override summary coverage)
         for block in blocks_to_check:
-            if block.block_type == "MESSAGE" and block.block_number not in covered_block_numbers:
-                result_blocks.append(block)
+            if block.block_type == "MESSAGE":
+                is_not_covered = block.block_number not in covered_block_numbers
+                was_recalled = block.block_number in recalled_block_numbers
+                if is_not_covered or was_recalled:
+                    result_blocks.append(block)
 
         # Sort by block number (chronological order)
         result_blocks.sort(key=lambda b: b.block_number)
@@ -1632,7 +1641,8 @@ Example: Instead of "Here is the image you requested", say something like "![My 
             requested=limit,
             returned=len(result_blocks),
             summaries=sum(1 for b in result_blocks if b.block_type == "SUMMARY"),
-            messages=sum(1 for b in result_blocks if b.block_type == "MESSAGE")
+            messages=sum(1 for b in result_blocks if b.block_type == "MESSAGE"),
+            semantic_recalls=len(recalled_block_numbers)
         )
 
         return result_blocks

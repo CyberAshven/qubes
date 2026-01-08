@@ -4,6 +4,18 @@ import { invoke } from '@tauri-apps/api/core';
 import { GlassCard, GlassButton } from '../glass';
 import { Qube } from '../../types';
 import { BlockContentViewer } from '../blocks/BlockContentViewer';
+import { SKILL_DEFINITIONS } from '../../data/skillDefinitions';
+import { ActiveContextPanel } from '../context';
+
+// Helper to get skill name from ID
+const getSkillName = (skillId: string): string => {
+  for (const skills of Object.values(SKILL_DEFINITIONS)) {
+    const skill = skills.find(s => s.id === skillId);
+    if (skill?.name) return skill.name;
+  }
+  // Fallback: convert ID to title case
+  return skillId.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+};
 
 interface Block {
   block_number: number;
@@ -37,28 +49,70 @@ interface BlocksTabProps {
   selectedQubes: Qube[];
   userId: string;
   password: string;
+  isActive?: boolean;
 }
 
-// Helper function to get color for block type
-const getBlockTypeColor = (blockType: string): string => {
-  const colors: Record<string, string> = {
-    'GENESIS': 'text-red-500 bg-red-500/20',
-    'MESSAGE': 'text-emerald-400 bg-emerald-400/20',
-    'THOUGHT': 'text-purple-400 bg-purple-400/20',
-    'ACTION': 'text-accent-warning bg-accent-warning/20',
-    'SUMMARY': 'text-fuchsia-400 bg-fuchsia-400/20',
-    'DECISION': 'text-pink-400 bg-pink-400/20',
-    'OBSERVATION': 'text-blue-400 bg-blue-400/20',
-    'MEMORY_ANCHOR': 'text-indigo-400 bg-indigo-400/20',
-    'GAME': 'text-amber-400 bg-amber-400/20',
-  };
-  return colors[blockType] || 'text-text-secondary bg-text-secondary/20';
+// Unified color scheme for block types and sections
+// Block types use these colors consistently across the app
+// Active types: GENESIS, MESSAGE, ACTION, SUMMARY, GAME
+// Deprecated (removed): THOUGHT, DECISION, OBSERVATION, MEMORY_ANCHOR
+const BLOCK_TYPE_COLORS: Record<string, { text: string; bg: string; border: string }> = {
+  'GENESIS': { text: 'text-red-500', bg: 'bg-red-500/20', border: 'border-l-red-500' },
+  'MESSAGE': { text: 'text-emerald-400', bg: 'bg-emerald-400/20', border: 'border-l-emerald-400' },
+  'ACTION': { text: 'text-amber-400', bg: 'bg-amber-400/20', border: 'border-l-amber-400' },
+  'SUMMARY': { text: 'text-fuchsia-400', bg: 'bg-fuchsia-400/20', border: 'border-l-fuchsia-400' },
+  'GAME': { text: 'text-yellow-400', bg: 'bg-yellow-400/20', border: 'border-l-yellow-400' },
 };
 
-export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, password }) => {
+// Section colors (where memory came from, not what type it is)
+const SECTION_COLORS = {
+  recalled: { text: 'text-violet-400', bg: 'bg-violet-400/20', border: 'border-l-violet-400' },  // Semantic recall (AI-driven)
+  recent: { text: 'text-slate-400', bg: 'bg-slate-400/20', border: 'border-l-slate-400' },       // Recent history (neutral)
+  session: { text: 'text-sky-400', bg: 'bg-sky-400/20', border: 'border-sky-400' },             // Current session (live/active)
+};
+
+// Helper function to get color for block type (for badge styling)
+const getBlockTypeColor = (blockType: string): string => {
+  const colors = BLOCK_TYPE_COLORS[blockType];
+  if (colors) {
+    return `${colors.text} ${colors.bg}`;
+  }
+  return 'text-text-secondary bg-text-secondary/20';
+};
+
+// Helper function to get border color for block type
+const getBlockTypeBorder = (blockType: string): string => {
+  const colors = BLOCK_TYPE_COLORS[blockType];
+  return colors?.border || 'border-l-text-secondary';
+};
+
+// Helper function to get ring color for selected block
+const getBlockTypeRing = (blockType: string): string => {
+  const ringColors: Record<string, string> = {
+    'GENESIS': 'ring-red-500',
+    'MESSAGE': 'ring-emerald-400',
+    'ACTION': 'ring-amber-400',
+    'SUMMARY': 'ring-fuchsia-400',
+    'GAME': 'ring-yellow-400',
+  };
+  return ringColors[blockType] || 'ring-text-secondary';
+};
+
+// Selection section types
+type SelectionSection = 'recalled' | 'recent' | 'session' | 'permanent';
+
+export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, password, isActive = false }) => {
   const [sessionBlocks, setSessionBlocks] = useState<Block[]>([]);
   const [permanentBlocks, setPermanentBlocks] = useState<Block[]>([]);
+
+  // Track if initial load has completed for this qube
+  // This prevents the tab switch effect from running before initial data is loaded
+  const hasInitiallyLoaded = React.useRef(false);
+
+  // Track the qube ID that was loaded - used to detect when we need a fresh load
+  const loadedQubeId = React.useRef<string | null>(null);
   const [selectedBlock, setSelectedBlock] = useState<Block | null>(null);
+  const [selectedSection, setSelectedSection] = useState<SelectionSection | null>(null);
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterType, setFilterType] = useState<string>('all');
@@ -76,6 +130,15 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
   // Pagination state
   const [sessionBlocksToShow, setSessionBlocksToShow] = useState(10);
   const [permanentBlocksToShow, setPermanentBlocksToShow] = useState(10);
+
+  // Collapsible panel state (collapsed by default)
+  const [shortTermExpanded, setShortTermExpanded] = useState(false);
+  const [longTermExpanded, setLongTermExpanded] = useState(false);
+
+  // Context preview state
+  const [contextPreview, setContextPreview] = useState<any>(null);
+  const [contextLoading, setContextLoading] = useState(false);
+  const [showContextPanels, setShowContextPanels] = useState(true);
 
   const selectedQube = selectedQubes.length === 1 ? selectedQubes[0] : null;
 
@@ -106,9 +169,9 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
     }
   };
 
-  const loadBlocks = async () => {
+  const loadBlocks = async (): Promise<{ sessionCount: number; permanentCount: number } | null> => {
     console.log('🔍 loadBlocks called, selectedQube:', selectedQube?.qube_id, 'userId:', userId, 'password:', password ? '***' : 'MISSING');
-    if (!selectedQube) return;
+    if (!selectedQube) return null;
 
     setLoading(true);
     console.log('🚀 About to invoke get_qube_blocks...');
@@ -127,38 +190,90 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
       console.log('✅ get_qube_blocks returned:', result);
 
       if (result.success) {
-        console.log('Loaded blocks:', {
-          session: result.session_blocks?.length,
-          permanent: result.permanent_blocks?.length
-        });
+        const sessionCount = result.session_blocks?.length || 0;
+        const permanentCount = result.permanent_blocks?.length || 0;
+        console.log('Loaded blocks:', { session: sessionCount, permanent: permanentCount });
         setSessionBlocks(result.session_blocks || []);
         setPermanentBlocks(result.permanent_blocks || []);
 
         // Reset pagination when blocks are loaded
         setSessionBlocksToShow(10);
         setPermanentBlocksToShow(10);
+        setLoading(false);
+
+        // Return counts for comparison (don't update lastContextState here -
+        // it should only be updated after context is successfully loaded)
+        return { sessionCount, permanentCount };
       } else {
         console.error('Failed to load blocks:', result.error);
         alert(`Failed to load blocks: ${result.error}`);
       }
       setLoading(false);
+      return null;
     } catch (error) {
       console.error('Failed to load blocks:', error);
       alert(`Failed to load blocks: ${error}`);
       setLoading(false);
+      return null;
     }
   };
 
-  // Load blocks when qube selection changes OR on initial mount
+  // Load context preview (what's actually in the Qube's context window)
+  const loadContextPreview = async () => {
+    if (!selectedQube || !password) return;
+
+    setContextLoading(true);
+    try {
+      const result = await invoke<any>('get_context_preview', {
+        userId,
+        qubeId: selectedQube.qube_id,
+        password,
+      });
+
+      if (result.success) {
+        setContextPreview(result);
+        // Note: lastContextState is updated by loadBlocks, not here
+        // This ensures we compare apples to apples (both from loadBlocks)
+      } else {
+        console.warn('Failed to load context preview:', result.error);
+        setContextPreview(null);
+      }
+    } catch (error) {
+      console.warn('Failed to load context preview:', error);
+      setContextPreview(null);
+    } finally {
+      setContextLoading(false);
+    }
+  };
+
+  // Load blocks and context when qube selection changes
+  // This is the ONLY place where we do automatic loading
   useEffect(() => {
+    const currentQubeId = selectedQube?.qube_id;
+
+    // Check if we already have data for this qube - skip reload if so
+    if (currentQubeId && loadedQubeId.current === currentQubeId && hasInitiallyLoaded.current) {
+      return;
+    }
+
     // Clear blocks immediately when qube changes to prevent flash of old data
     setSessionBlocks([]);
     setPermanentBlocks([]);
     setSelectedBlock(null);
+    setSelectedSection(null);
+    setContextPreview(null);
+    hasInitiallyLoaded.current = false;
+    loadedQubeId.current = null;
 
-    if (selectedQube) {
-      loadBlocks();
-    }
+    const loadInitial = async () => {
+      if (selectedQube) {
+        await loadBlocks();
+        await loadContextPreview();
+        loadedQubeId.current = selectedQube.qube_id;
+        hasInitiallyLoaded.current = true;
+      }
+    };
+    loadInitial();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedQube?.qube_id]);
 
@@ -173,6 +288,8 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
         password,
       });
       await loadBlocks();
+      // Refresh context preview since blocks changed
+      await loadContextPreview();
     } catch (error) {
       console.error('Failed to anchor session:', error);
       alert(`Failed to anchor session: ${error}`);
@@ -200,7 +317,10 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
       });
       console.log('✅ Discard all completed:', result);
       await loadBlocks();
+      // Refresh context preview since blocks changed
+      await loadContextPreview();
       setSelectedBlock(null);
+      setSelectedSection(null);
     } catch (error) {
       console.error('Failed to discard session:', error);
       alert(`Failed to discard session: ${error}`);
@@ -226,7 +346,10 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
       });
       console.log('✅ Discard selected completed:', result);
       await loadBlocks();
+      // Refresh context preview since blocks changed
+      await loadContextPreview();
       setSelectedBlock(null);
+      setSelectedSection(null);
     } catch (error) {
       console.error('Failed to discard block:', error);
       alert(`Failed to discard block: ${error}`);
@@ -237,10 +360,11 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
     setShowDiscardConfirm(false);
   };
 
-  const handleBlockClick = (block: Block) => {
+  const handleBlockClick = (block: Block, section: SelectionSection) => {
     console.log('🔍 Block clicked:', {
       block_number: block.block_number,
       block_type: block.block_type,
+      section: section,
       encrypted: block.encrypted,
       content: block.content,
       content_type: typeof block.content,
@@ -249,6 +373,7 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
 
     try {
       setSelectedBlock(block);
+      setSelectedSection(section);
       // All blocks are already decrypted since we prompted for password on load
       setDecryptedContent(block.content);
     } catch (error) {
@@ -264,7 +389,7 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
     return matchesSearch && matchesFilter;
   });
 
-  const blockTypes = ['all', 'GENESIS', 'MESSAGE', 'THOUGHT', 'ACTION', 'SUMMARY', 'DECISION', 'OBSERVATION', 'GAME'];
+  const blockTypes = ['all', 'GENESIS', 'MESSAGE', 'ACTION', 'SUMMARY', 'GAME'];
 
   if (!selectedQube) {
     return (
@@ -305,68 +430,224 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
         <div className="p-4 border-b border-glass-border">
           <div className="flex items-center justify-between">
             <div>
-              <h1 className="text-2xl font-display text-accent-primary mb-1">
+              <h1 className="text-2xl font-display text-accent-primary">
                 Block Browser
               </h1>
-              <p className="text-sm text-text-tertiary">
-                {selectedQube.name}'s Memory
-              </p>
             </div>
-            <button
-              onClick={loadBlocks}
-              disabled={loading}
-              className="p-2 rounded hover:bg-accent-primary/10 text-accent-primary transition-colors disabled:opacity-50"
-              title="Refresh blocks"
-            >
-              <svg
-                className={`w-5 h-5 ${loading ? 'animate-spin' : ''}`}
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setShowContextPanels(!showContextPanels)}
+                className={`p-2 rounded transition-colors ${showContextPanels ? 'bg-accent-primary/20 text-accent-primary' : 'hover:bg-glass-bg/30 text-text-tertiary'}`}
+                title={showContextPanels ? "Hide context preview" : "Show context preview"}
               >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
-                />
-              </svg>
-            </button>
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                </svg>
+              </button>
+              <button
+                onClick={loadBlocks}
+                disabled={loading}
+                className="p-2 rounded hover:bg-accent-primary/10 text-accent-primary transition-colors disabled:opacity-50"
+                title="Refresh blocks"
+              >
+                <svg
+                  className={`w-5 h-5 ${loading ? 'animate-spin' : ''}`}
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+                  />
+                </svg>
+              </button>
+            </div>
           </div>
         </div>
 
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
-          {/* Short-term Memory (Session Blocks) */}
-          <div>
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="text-lg font-display text-accent-warning flex items-center gap-2">
-                ⚡ Short-term Memory
-                <span className="text-xs bg-accent-warning/20 text-accent-warning px-2 py-0.5 rounded-full">
-                  {sessionBlocks.length}
+          {/* Context Preview Panels */}
+          {showContextPanels && (
+            <>
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-3">
+                  {/* Qube Avatar */}
+                  <div
+                    className="w-10 h-10 rounded-lg flex items-center justify-center text-lg font-bold"
+                    style={{
+                      backgroundColor: `${selectedQube?.favorite_color || '#00ff88'}20`,
+                      borderColor: selectedQube?.favorite_color || '#00ff88',
+                      borderWidth: '2px',
+                      color: selectedQube?.favorite_color || '#00ff88'
+                    }}
+                  >
+                    {selectedQube?.name?.charAt(0).toUpperCase()}
+                  </div>
+                  <h2 className="text-xl font-display" style={{ color: selectedQube?.favorite_color || '#00ff88' }}>
+                    {selectedQube?.name}
+                  </h2>
+                </div>
+                <button
+                  onClick={async () => {
+                    await loadBlocks();
+                    await loadContextPreview();
+                  }}
+                  disabled={contextLoading || loading}
+                  className="text-xs text-accent-primary hover:text-accent-primary/80 transition-colors disabled:opacity-50"
+                  title="Refresh blocks and context"
+                >
+                  {(contextLoading || loading) ? 'Loading...' : 'Refresh'}
+                </button>
+              </div>
+              <ActiveContextPanel
+                data={contextPreview?.active_context}
+                shortTermMemory={contextPreview?.short_term_memory}
+                loading={contextLoading && !contextPreview}
+                favoriteColor={selectedQube?.favorite_color}
+              />
+              <div className="border-b border-glass-border my-4" />
+            </>
+          )}
+
+          {/* Short-term Memory (All Context Blocks) */}
+          <GlassCard className="p-3 mb-4 border-l-2 border-l-amber-400">
+            <button
+              onClick={() => setShortTermExpanded(!shortTermExpanded)}
+              className="w-full flex items-center justify-between"
+            >
+              <h2 className="text-sm font-display text-amber-400 flex items-center gap-2">
+                <span className="text-lg">🧠</span>
+                Short-term Memory
+                <span className="text-xs bg-amber-400/20 text-amber-400 px-1.5 py-0.5 rounded">
+                  {(() => {
+                    const count = sessionBlocks.length + (contextPreview?.short_term_memory?.recent_permanent?.count || 0) + (contextPreview?.short_term_memory?.semantic_recalls?.count || 0);
+                    return `${count} ${count === 1 ? 'block' : 'blocks'}`;
+                  })()}
                 </span>
               </h2>
               <div className="flex items-center gap-2">
-                {sessionBlocks.length > 10 && (
-                  <button
-                    onClick={() => setSessionBlocksToShow(sessionBlocks.length)}
-                    className="text-xs text-accent-warning hover:text-accent-warning/80 transition-colors"
+                {shortTermExpanded && sessionBlocks.length > 10 && (
+                  <span
+                    onClick={(e) => { e.stopPropagation(); setSessionBlocksToShow(sessionBlocks.length); }}
+                    className="text-xs text-text-secondary hover:text-text-primary transition-colors"
                   >
                     Show All
-                  </button>
+                  </span>
                 )}
-                {sessionBlocksToShow > 10 && (
-                  <button
-                    onClick={() => setSessionBlocksToShow(10)}
-                    className="text-xs text-accent-warning hover:text-accent-warning/80 transition-colors"
+                {shortTermExpanded && sessionBlocksToShow > 10 && (
+                  <span
+                    onClick={(e) => { e.stopPropagation(); setSessionBlocksToShow(10); }}
+                    className="text-xs text-text-secondary hover:text-text-primary transition-colors"
                   >
                     Minimize
-                  </button>
+                  </span>
                 )}
+                <span className="text-text-tertiary">{shortTermExpanded ? '▼' : '▶'}</span>
               </div>
-            </div>
+            </button>
 
+            {shortTermExpanded && (
+              <>
+            {/* Recalled Memories from Context */}
+            {contextPreview?.short_term_memory?.semantic_recalls?.blocks?.length > 0 && (
+              <div className="mb-3">
+                <div className={`text-xs ${SECTION_COLORS.recalled.text} mb-2 flex items-center gap-2`}>
+                  <span>🔮</span> Recalled Memories
+                  <span className={`${SECTION_COLORS.recalled.bg} ${SECTION_COLORS.recalled.text} px-1.5 py-0.5 rounded`}>
+                    {contextPreview.short_term_memory.semantic_recalls.count}
+                  </span>
+                </div>
+                <div className="space-y-2">
+                  {contextPreview.short_term_memory.semantic_recalls.blocks.map((block: any, idx: number) => (
+                    <GlassCard
+                      key={`recalled-${idx}`}
+                      variant="interactive"
+                      className={`p-3 cursor-pointer border-l-2 ${getBlockTypeBorder(block.block_type)} ${
+                        selectedBlock?.block_number === block.block_number && selectedSection === 'recalled'
+                          ? `ring-2 ${getBlockTypeRing(block.block_type)}`
+                          : ''
+                      }`}
+                      onClick={() => {
+                        // Find the full block from permanentBlocks if available
+                        const fullBlock = permanentBlocks.find(b => b.block_number === block.block_number);
+                        if (fullBlock) handleBlockClick(fullBlock, 'recalled');
+                      }}
+                    >
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-sm font-mono text-text-primary">
+                          Block #{block.block_number}
+                        </span>
+                        <div className="flex items-center gap-2">
+                          <span className={`text-xs ${SECTION_COLORS.recalled.text}`}>
+                            {Math.round((block.relevance_score || 0) * 100)}%
+                          </span>
+                          <span className={`text-xs px-2 py-0.5 rounded ${getBlockTypeColor(block.block_type)}`}>
+                            {block.block_type}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="text-xs text-text-tertiary">
+                        {block.timestamp && new Date(block.timestamp > 1e12 ? block.timestamp : block.timestamp * 1000).toLocaleString()}
+                      </div>
+                    </GlassCard>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Recent History from Context */}
+            {contextPreview?.short_term_memory?.recent_permanent?.blocks?.length > 0 && (
+              <div className="mb-3">
+                <div className={`text-xs ${SECTION_COLORS.recent.text} mb-2 flex items-center gap-2`}>
+                  <span>📚</span> Recent History
+                  <span className={`${SECTION_COLORS.recent.bg} ${SECTION_COLORS.recent.text} px-1.5 py-0.5 rounded`}>
+                    {contextPreview.short_term_memory.recent_permanent.count}
+                  </span>
+                </div>
+                <div className="space-y-2">
+                  {contextPreview.short_term_memory.recent_permanent.blocks.map((block: any, idx: number) => (
+                    <GlassCard
+                      key={`recent-${idx}`}
+                      variant="interactive"
+                      className={`p-3 cursor-pointer border-l-2 ${getBlockTypeBorder(block.block_type)} ${
+                        selectedBlock?.block_number === block.block_number && selectedSection === 'recent'
+                          ? `ring-2 ${getBlockTypeRing(block.block_type)}`
+                          : ''
+                      }`}
+                      onClick={() => {
+                        const fullBlock = permanentBlocks.find(b => b.block_number === block.block_number);
+                        if (fullBlock) handleBlockClick(fullBlock, 'recent');
+                      }}
+                    >
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-sm font-mono text-text-primary">
+                          Block #{block.block_number}
+                        </span>
+                        <span className={`text-xs px-2 py-0.5 rounded ${getBlockTypeColor(block.block_type)}`}>
+                          {block.block_type}
+                        </span>
+                      </div>
+                      <div className="text-xs text-text-tertiary">
+                        {block.timestamp && new Date(block.timestamp > 1e12 ? block.timestamp : block.timestamp * 1000).toLocaleString()}
+                      </div>
+                    </GlassCard>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Session Blocks */}
             {sessionBlocks.length > 0 ? (
               <>
+                <div className={`text-xs ${SECTION_COLORS.session.text} mb-2 flex items-center gap-2`}>
+                  <span>⚡</span> Current Session
+                  <span className={`${SECTION_COLORS.session.bg} ${SECTION_COLORS.session.text} px-1.5 py-0.5 rounded`}>
+                    {sessionBlocks.length}
+                  </span>
+                </div>
                 <div className="flex gap-2 mb-3">
                   <GlassButton
                     variant="primary"
@@ -389,15 +670,15 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                     <GlassCard
                       key={block.block_number}
                       variant="interactive"
-                      className={`p-3 cursor-pointer border-2 border-dashed border-accent-warning/30 bg-accent-warning/5 ${
-                        selectedBlock?.block_number === block.block_number
-                          ? 'ring-2 ring-accent-warning'
+                      className={`p-3 cursor-pointer border-l-2 ${getBlockTypeBorder(block.block_type)} border border-dashed ${SECTION_COLORS.session.border}/30 bg-sky-400/5 ${
+                        selectedBlock?.block_number === block.block_number && selectedSection === 'session'
+                          ? `ring-2 ${getBlockTypeRing(block.block_type)}`
                           : ''
                       }`}
-                      onClick={() => handleBlockClick(block)}
+                      onClick={() => handleBlockClick(block, 'session')}
                     >
                       <div className="flex items-center justify-between mb-1">
-                        <span className="text-sm font-mono text-accent-warning">
+                        <span className={`text-sm font-mono ${SECTION_COLORS.session.text}`}>
                           Block #{block.block_number}
                         </span>
                         <span className={`text-xs px-2 py-0.5 rounded ${getBlockTypeColor(block.block_type)}`}>
@@ -415,7 +696,7 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                   <div className="mt-3 text-center">
                     <button
                       onClick={() => setSessionBlocksToShow(prev => Math.min(prev + 10, sessionBlocks.length))}
-                      className="text-sm text-accent-warning hover:text-accent-warning/80 transition-colors px-4 py-2 rounded bg-accent-warning/10 hover:bg-accent-warning/20"
+                      className="text-sm text-text-secondary hover:text-text-primary transition-colors px-4 py-2 rounded bg-glass-bg/30 hover:bg-glass-bg/50"
                     >
                       Show More ({sessionBlocks.length - sessionBlocksToShow} remaining)
                     </button>
@@ -423,41 +704,50 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                 )}
               </>
             ) : (
-              <div className="text-center py-8 text-text-tertiary text-sm border-2 border-dashed border-accent-warning/20 rounded-lg">
+              <div className={`text-center py-8 text-text-tertiary text-sm border-2 border-dashed ${SECTION_COLORS.session.border}/20 rounded-lg`}>
                 No session blocks - start a conversation to create short-term memories
               </div>
             )}
-          </div>
+              </>
+            )}
+          </GlassCard>
 
           {/* Long-term Memory (Permanent Blocks) */}
-          <div>
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="text-lg font-display text-accent-primary flex items-center gap-2">
-                💾 Long-term Memory
-                <span className="text-xs bg-accent-primary/20 text-accent-primary px-2 py-0.5 rounded-full">
-                  {permanentBlocks.length}
+          <GlassCard className="p-3 mb-4 border-l-2 border-l-cyan-400">
+            <button
+              onClick={() => setLongTermExpanded(!longTermExpanded)}
+              className="w-full flex items-center justify-between"
+            >
+              <h2 className="text-sm font-display text-cyan-400 flex items-center gap-2">
+                <span className="text-lg">💾</span>
+                Long-term Memory
+                <span className="text-xs bg-cyan-400/20 text-cyan-400 px-1.5 py-0.5 rounded">
+                  {permanentBlocks.length} {permanentBlocks.length === 1 ? 'block' : 'blocks'}
                 </span>
               </h2>
               <div className="flex items-center gap-2">
-                {filteredPermanentBlocks.length > 10 && (
-                  <button
-                    onClick={() => setPermanentBlocksToShow(filteredPermanentBlocks.length)}
-                    className="text-xs text-accent-primary hover:text-accent-primary/80 transition-colors"
+                {longTermExpanded && filteredPermanentBlocks.length > 10 && (
+                  <span
+                    onClick={(e) => { e.stopPropagation(); setPermanentBlocksToShow(filteredPermanentBlocks.length); }}
+                    className="text-xs text-text-secondary hover:text-text-primary transition-colors"
                   >
                     Show All
-                  </button>
+                  </span>
                 )}
-                {permanentBlocksToShow > 10 && (
-                  <button
-                    onClick={() => setPermanentBlocksToShow(10)}
-                    className="text-xs text-accent-primary hover:text-accent-primary/80 transition-colors"
+                {longTermExpanded && permanentBlocksToShow > 10 && (
+                  <span
+                    onClick={(e) => { e.stopPropagation(); setPermanentBlocksToShow(10); }}
+                    className="text-xs text-text-secondary hover:text-text-primary transition-colors"
                   >
                     Minimize
-                  </button>
+                  </span>
                 )}
+                <span className="text-text-tertiary">{longTermExpanded ? '▼' : '▶'}</span>
               </div>
-            </div>
+            </button>
 
+            {longTermExpanded && (
+              <>
             {/* Search and Filter */}
             <div className="space-y-2 mb-3">
               <input
@@ -494,12 +784,12 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                     <GlassCard
                       key={block.block_number}
                       variant="interactive"
-                      className={`p-3 cursor-pointer ${
-                        selectedBlock?.block_number === block.block_number
-                          ? 'ring-2 ring-accent-primary'
+                      className={`p-3 cursor-pointer border-l-2 ${getBlockTypeBorder(block.block_type)} ${
+                        selectedBlock?.block_number === block.block_number && selectedSection === 'permanent'
+                          ? `ring-2 ${getBlockTypeRing(block.block_type)}`
                           : ''
                       }`}
-                      onClick={() => handleBlockClick(block)}
+                      onClick={() => handleBlockClick(block, 'permanent')}
                     >
                       <div className="flex items-center justify-between mb-1">
                         <span className="text-sm font-mono text-text-primary">
@@ -519,7 +809,7 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                     <div className="mt-3 text-center">
                       <button
                         onClick={() => setPermanentBlocksToShow(prev => Math.min(prev + 10, filteredPermanentBlocks.length))}
-                        className="text-sm text-accent-primary hover:text-accent-primary/80 transition-colors px-4 py-2 rounded bg-accent-primary/10 hover:bg-accent-primary/20"
+                        className="text-sm text-text-secondary hover:text-text-primary transition-colors px-4 py-2 rounded bg-glass-bg/30 hover:bg-glass-bg/50"
                       >
                         Show More ({filteredPermanentBlocks.length - permanentBlocksToShow} remaining)
                       </button>
@@ -528,7 +818,9 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                 </>
               )}
             </div>
-          </div>
+              </>
+            )}
+          </GlassCard>
         </div>
       </div>
 
@@ -1114,8 +1406,8 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                           {/* Skill Header */}
                           <div className="flex items-center justify-between mb-2">
                             <div className="flex items-center gap-2">
-                              <span className="text-accent-secondary font-semibold capitalize">
-                                {skillId.replace(/_/g, ' ')}
+                              <span className="text-accent-secondary font-semibold">
+                                {getSkillName(skillId)}
                               </span>
                             </div>
                             <span className="text-green-400 font-bold">+{data.total_xp} XP</span>

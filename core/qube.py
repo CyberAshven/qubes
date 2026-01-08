@@ -215,6 +215,7 @@ class Qube:
         self.api_keys: Dict[str, str] = {}  # Populated after creation
         self.reasoner = None  # Initialized with init_ai()
         self.tool_registry = None  # Initialized with init_ai()
+        self.semantic_search = None  # Initialized in background thread
 
         # Decision Intelligence configuration
         from config.user_preferences import UserPreferencesManager
@@ -236,6 +237,9 @@ class Qube:
 
         # Initialize shared memory systems
         self._init_shared_memory(qube_data_dir)
+
+        # Initialize semantic search in background (don't block startup)
+        self._init_semantic_search_background()
 
         logger.info(
             "qube_initialized",
@@ -269,6 +273,67 @@ class Qube:
             market_dir=str(market_dir),
             cache_dir=str(cache_dir)
         )
+
+    def _init_semantic_search_background(self):
+        """
+        Initialize semantic search in a background thread.
+
+        This loads the sentence-transformers model and FAISS index without
+        blocking Qube startup. If initialization fails, semantic search
+        gracefully falls back to keyword-only search.
+        """
+        import threading
+
+        def init_search():
+            try:
+                from ai.semantic_search import SemanticSearch
+
+                # Initialize semantic search with storage in chain directory
+                self.semantic_search = SemanticSearch(
+                    qube_id=self.qube_id,
+                    storage_dir=self.data_dir / "chain"
+                )
+
+                # Validate index integrity - compare indexed count vs actual
+                indexed_count = len(self.semantic_search.block_ids)
+                actual_count = self.memory_chain.get_chain_length()
+
+                if indexed_count != actual_count:
+                    logger.info(
+                        "semantic_index_mismatch_rebuilding",
+                        qube_id=self.qube_id,
+                        indexed=indexed_count,
+                        actual=actual_count
+                    )
+                    # Get all blocks and rebuild index
+                    blocks = []
+                    for block_num in range(actual_count):
+                        try:
+                            block = self.memory_chain.get_block(block_num)
+                            if block:
+                                blocks.append(block)
+                        except Exception:
+                            continue
+                    self.semantic_search.rebuild_index(blocks)
+
+                logger.info(
+                    "semantic_search_ready",
+                    qube_id=self.qube_id,
+                    indexed_blocks=len(self.semantic_search.block_ids)
+                )
+
+            except Exception as e:
+                logger.warning(
+                    "semantic_search_init_failed",
+                    qube_id=self.qube_id,
+                    error=str(e)
+                )
+                # Leave semantic_search as None - fallback will be used
+                self.semantic_search = None
+
+        # Start initialization in background thread
+        thread = threading.Thread(target=init_search, daemon=True, name=f"semantic-init-{self.qube_id}")
+        thread.start()
 
     @property
     def storage_dir_name(self) -> str:

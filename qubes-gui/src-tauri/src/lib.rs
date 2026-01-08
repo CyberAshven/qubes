@@ -4220,6 +4220,32 @@ async fn get_wallet_info(
 }
 
 #[tauri::command]
+async fn get_context_preview(
+    user_id: String,
+    qube_id: String,
+    password: String,
+) -> Result<serde_json::Value, String> {
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("get-context-preview")
+        .arg(&user_id)
+        .arg("--qube-id")
+        .arg(&qube_id);
+
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
+
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
 async fn propose_wallet_transaction(
     user_id: String,
     qube_id: String,
@@ -4506,6 +4532,7 @@ pub fn run() {
             respond_to_draw,
             // Wallet Commands
             get_wallet_info,
+            get_context_preview,
             propose_wallet_transaction,
             approve_wallet_transaction,
             reject_wallet_transaction,

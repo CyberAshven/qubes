@@ -44,6 +44,9 @@ export const TabContent: React.FC<TabContentProps> = ({ qubes, setQubes, onQubes
   // Get Dashboard selection specifically (for chat interfaces that should persist)
   const dashboardSelection = useQubeSelection((state) => state.selectionByTab['dashboard'] ?? EMPTY_ARRAY);
 
+  // Get Blocks selection specifically (for BlocksTab to persist across tab switches)
+  const blocksSelection = useQubeSelection((state) => state.selectionByTab['blocks'] ?? EMPTY_ARRAY);
+
   // Fetch connections when P2P mode is selected
   useEffect(() => {
     const fetchConnections = async () => {
@@ -161,10 +164,10 @@ export const TabContent: React.FC<TabContentProps> = ({ qubes, setQubes, onQubes
     [qubes, dashboardSelection]
   );
 
-  // Blocks tab uses current tab's selection
+  // Blocks tab uses its own selection (persists across tab switches)
   const selectedQubesForBlocks = useMemo(
-    () => qubes.filter(q => selectedQubeIds.includes(q.qube_id)),
-    [qubes, selectedQubeIds]
+    () => qubes.filter(q => blocksSelection.includes(q.qube_id)),
+    [qubes, blocksSelection]
   );
 
   return (
@@ -240,6 +243,7 @@ export const TabContent: React.FC<TabContentProps> = ({ qubes, setQubes, onQubes
             selectedQubes={selectedQubesForBlocks}
             userId={userId || ''}
             password={password || ''}
+            isActive={currentTab === 'blocks'}
           />
         </div>
 

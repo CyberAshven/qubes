@@ -3,8 +3,9 @@
  * Converts technical model IDs to human-readable names
  */
 export function formatModelName(modelId: string): string {
-  // Common model mappings
+  // Common model mappings - includes both full API names and short aliases
   const modelMap: Record<string, string> = {
+    // OpenAI
     'gpt-5-turbo': 'GPT-5 Turbo',
     'gpt-5': 'GPT-5',
     'gpt-5-mini': 'GPT-5 Mini',
@@ -18,6 +19,7 @@ export function formatModelName(modelId: string): string {
     'o1': 'GPT-O1',
     'gpt-4o': 'GPT-4o',
     'gpt-4o-mini': 'GPT-4o Mini',
+    // Anthropic - full API names
     'claude-sonnet-4-5-20250929': 'Claude Sonnet 4.5',
     'claude-opus-4-1-20250805': 'Claude Opus 4.1',
     'claude-opus-4-20250514': 'Claude Opus 4',
@@ -25,16 +27,27 @@ export function formatModelName(modelId: string): string {
     'claude-3-7-sonnet-20250219': 'Claude 3.7 Sonnet',
     'claude-3-5-haiku-20241022': 'Claude 3.5 Haiku',
     'claude-3-haiku-20240307': 'Claude 3 Haiku',
+    // Anthropic - short aliases
+    'claude-sonnet-4.5': 'Claude Sonnet 4.5',
+    'claude-opus-4.1': 'Claude Opus 4.1',
+    'claude-opus-4': 'Claude Opus 4',
+    'claude-sonnet-4': 'Claude Sonnet 4',
+    'claude-3.5-sonnet': 'Claude 3.5 Sonnet',
+    'claude-3.5-haiku': 'Claude 3.5 Haiku',
+    'claude-3-haiku': 'Claude 3 Haiku',
+    // Google
     'gemini-2.5-pro': 'Gemini 2.5 Pro',
     'gemini-2.5-flash': 'Gemini 2.5 Flash',
     'gemini-2.5-flash-lite': 'Gemini 2.5 Flash Lite',
     'gemini-2.0-flash': 'Gemini 2.0 Flash',
     'gemini-1.5-pro': 'Gemini 1.5 Pro',
+    // Perplexity
     'sonar': 'Sonar',
     'sonar-pro': 'Sonar Pro',
     'sonar-reasoning': 'Sonar Reasoning',
     'sonar-reasoning-pro': 'Sonar Reasoning Pro',
     'sonar-deep-research': 'Sonar Deep Research',
+    // DeepSeek
     'deepseek-chat': 'DeepSeek Chat',
     'deepseek-reasoner': 'DeepSeek Reasoner',
     // Ollama models

@@ -1038,6 +1038,13 @@ Return ONLY valid JSON with this exact structure:
         with open(block_file, 'w') as f:
             json.dump(block.to_dict(), f, indent=2)
 
+        # Index block for semantic search (if initialized)
+        try:
+            if self.qube.semantic_search is not None:
+                self.qube.semantic_search.add_block(block)
+        except Exception as e:
+            logger.debug("semantic_index_skip", block_number=block.block_number, error=str(e))
+
     def _extract_all_participants(self, blocks: List[Block]) -> set:
         """
         Extract all unique participants from blocks

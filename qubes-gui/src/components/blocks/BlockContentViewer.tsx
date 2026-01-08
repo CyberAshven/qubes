@@ -1,5 +1,6 @@
 import React, { memo } from 'react';
 import { GlassCard } from '../glass';
+import { formatModelName } from '../../utils/modelFormatter';
 
 interface BlockContentViewerProps {
   blockType: string;
@@ -386,7 +387,7 @@ const GenesisBlockContent: React.FC<{ content: any }> = memo(({ content }) => {
           {content.ai_model && (
             <div>
               <span className="text-text-tertiary">AI Model:</span>
-              <div className="text-text-primary font-mono mt-1">{content.ai_model}</div>
+              <div className="text-text-primary font-mono mt-1">{formatModelName(content.ai_model)}</div>
             </div>
           )}
 
