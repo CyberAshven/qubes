@@ -1464,6 +1464,32 @@ async fn get_qube_blocks(
 }
 
 #[tauri::command]
+async fn recall_last_context(
+    user_id: String,
+    qube_id: String,
+    password: String,
+) -> Result<serde_json::Value, String> {
+    // Validate inputs
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("recall-last-context")
+        .arg(&user_id)
+        .arg(&qube_id);
+
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
+
+    let (stdout, _) = execute_with_secrets(cmd, secrets)?;
+
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
 async fn update_qube_config(
     user_id: String,
     qube_id: String,
@@ -4495,6 +4521,7 @@ pub fn run() {
             force_exit,
             update_qube_config,
             get_qube_blocks,
+            recall_last_context,
             delete_qube,
             save_image,
             upload_avatar_to_ipfs,

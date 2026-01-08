@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { Qube } from '../../types';
 import { useQubeSelection } from '../../hooks/useQubeSelection';
 import { useAuth } from '../../hooks/useAuth';
+import { useChatMessages } from '../../hooks/useChatMessages';
 import { GlassCard, GlassButton } from '../glass';
 import { QubeManagerTab } from './QubeManagerTab';
 import { CreateQubeModal, CreateQubeData } from './CreateQubeModal';
@@ -72,6 +73,67 @@ export const TabContent: React.FC<TabContentProps> = ({ qubes, setQubes, onQubes
 
     fetchConnections();
   }, [chatMode, userId, qubes, dashboardSelection]);
+
+  // Chat messages for "Recall Last" feature
+  const { addMessage } = useChatMessages();
+  // Subscribe to the actual messages map to detect changes
+  const messagesByQube = useChatMessages(state => state.messagesByQube);
+
+  // Get the single selected qube for local chat (when only 1 is selected)
+  const singleSelectedQube = useMemo(() => {
+    if (dashboardSelection.length === 1) {
+      return qubes.find(q => q.qube_id === dashboardSelection[0]);
+    }
+    return null;
+  }, [dashboardSelection, qubes]);
+
+  // Check if chat is empty for the selected qube (subscribes to message changes)
+  const isChatEmpty = useMemo(() => {
+    if (!singleSelectedQube) return false;
+    const messages = messagesByQube.get(singleSelectedQube.qube_id) || [];
+    return messages.length === 0;
+  }, [singleSelectedQube, messagesByQube]);
+
+  // State for recall loading
+  const [isRecalling, setIsRecalling] = useState(false);
+
+  // Handle "Recall Last" button click
+  const handleRecallLast = async () => {
+    if (!singleSelectedQube || !userId || !password) return;
+
+    setIsRecalling(true);
+    try {
+      const result = await invoke<{
+        success: boolean;
+        content?: string;
+        block_type?: string;
+        block_number?: number;
+        timestamp?: number;
+        error?: string;
+      }>('recall_last_context', {
+        userId,
+        qubeId: singleSelectedQube.qube_id,
+        password,
+      });
+
+      if (result.success && result.content) {
+        // Add the recalled message to the chat as a qube message
+        addMessage(singleSelectedQube.qube_id, {
+          id: `recalled-${Date.now()}`,
+          sender: 'qube',
+          qubeName: singleSelectedQube.name,
+          content: result.block_type === 'SUMMARY'
+            ? `📋 *Last session summary:*\n\n${result.content}`
+            : result.content,
+          timestamp: new Date(result.timestamp || Date.now()),
+        });
+      }
+    } catch (err) {
+      console.error('Failed to recall last context:', err);
+    } finally {
+      setIsRecalling(false);
+    }
+  };
 
   const handleCreateQube = async (data: CreateQubeData) => {
     await invoke('create_qube', {
@@ -180,28 +242,46 @@ export const TabContent: React.FC<TabContentProps> = ({ qubes, setQubes, onQubes
           }`}
         >
           {/* Mode Toggle - Local vs P2P */}
-          <div className="flex items-center justify-center gap-2 py-3 bg-bg-secondary/50 border-b border-glass-border">
-            <span className="text-text-secondary text-sm mr-2">Chat Mode:</span>
-            <button
-              onClick={() => setChatMode('local')}
-              className={`px-4 py-1.5 rounded-l-lg text-sm font-medium transition-all ${
-                chatMode === 'local'
-                  ? 'bg-accent-primary text-bg-primary'
-                  : 'bg-glass-bg text-text-secondary hover:text-text-primary border border-glass-border'
-              }`}
-            >
-              Local
-            </button>
-            <button
-              onClick={() => setChatMode('p2p')}
-              className={`px-4 py-1.5 rounded-r-lg text-sm font-medium transition-all ${
-                chatMode === 'p2p'
-                  ? 'bg-accent-secondary text-bg-primary'
-                  : 'bg-glass-bg text-text-secondary hover:text-text-primary border border-glass-border'
-              }`}
-            >
-              P2P Network
-            </button>
+          <div className="flex items-center justify-between py-3 px-4 bg-bg-secondary/50 border-b border-glass-border">
+            <div>{/* Spacer for centering */}</div>
+            <div className="flex items-center gap-2">
+              <span className="text-text-secondary text-sm mr-2">Chat Mode:</span>
+              <button
+                onClick={() => setChatMode('local')}
+                className={`px-4 py-1.5 rounded-l-lg text-sm font-medium transition-all ${
+                  chatMode === 'local'
+                    ? 'bg-accent-primary text-bg-primary'
+                    : 'bg-glass-bg text-text-secondary hover:text-text-primary border border-glass-border'
+                }`}
+              >
+                Local
+              </button>
+              <button
+                onClick={() => setChatMode('p2p')}
+                className={`px-4 py-1.5 rounded-r-lg text-sm font-medium transition-all ${
+                  chatMode === 'p2p'
+                    ? 'bg-accent-secondary text-bg-primary'
+                    : 'bg-glass-bg text-text-secondary hover:text-text-primary border border-glass-border'
+                }`}
+              >
+                P2P Network
+              </button>
+            </div>
+            {/* Recall Last button - only visible when chat is empty and single qube selected in Local mode */}
+            <div className="min-w-[100px] flex justify-end">
+              {chatMode === 'local' && isChatEmpty && singleSelectedQube && (
+                <button
+                  onClick={handleRecallLast}
+                  disabled={isRecalling}
+                  className="px-3 py-1.5 text-sm font-medium text-accent-primary hover:text-accent-primary/80
+                             bg-accent-primary/10 hover:bg-accent-primary/20 border border-accent-primary/30
+                             rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Load the most recent message or summary into the chat"
+                >
+                  {isRecalling ? 'Loading...' : 'Recall Last'}
+                </button>
+              )}
+            </div>
           </div>
 
           {/* Local Chat Mode */}

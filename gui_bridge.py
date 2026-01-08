@@ -945,6 +945,127 @@ class GUIBridge:
                 "error": str(e)
             }
 
+    async def recall_last_context(self, qube_id: str, password: str = None) -> Dict[str, Any]:
+        """
+        Get the most recent MESSAGE or SUMMARY block for context recall.
+
+        If a SUMMARY block is more recent than the last MESSAGE, returns the summary.
+        Otherwise returns the last Qube response from the MESSAGE block.
+
+        Returns:
+            Dict with:
+                - success: bool
+                - content: str (the message or summary text)
+                - block_type: str ("MESSAGE" or "SUMMARY")
+                - block_number: int
+                - timestamp: int (milliseconds)
+        """
+        try:
+            # Set master key if password provided
+            if password:
+                self.orchestrator.set_master_key(password)
+
+            # Load the qube if not already loaded
+            if qube_id not in self.orchestrator.qubes:
+                await self.orchestrator.load_qube(qube_id)
+
+            qube = self.orchestrator.qubes[qube_id]
+
+            # Get all block numbers, sorted newest first
+            all_block_nums = sorted(qube.memory_chain.block_index.keys(), reverse=True)
+
+            last_message_block = None
+            last_summary_block = None
+
+            # Find the most recent MESSAGE and SUMMARY blocks
+            for block_num in all_block_nums:
+                if last_message_block and last_summary_block:
+                    break  # Found both, no need to continue
+
+                block = qube.memory_chain.get_block(block_num)
+                if not block:
+                    continue
+
+                block_type = block.block_type if isinstance(block.block_type, str) else block.block_type.value
+
+                if block_type == "MESSAGE" and not last_message_block:
+                    last_message_block = block
+                elif block_type == "SUMMARY" and not last_summary_block:
+                    last_summary_block = block
+
+            # Determine which to return based on recency
+            if not last_message_block and not last_summary_block:
+                return {
+                    "success": False,
+                    "error": "No MESSAGE or SUMMARY blocks found"
+                }
+
+            # Compare timestamps to find the most recent
+            message_timestamp = last_message_block.timestamp if last_message_block else 0
+            summary_timestamp = last_summary_block.timestamp if last_summary_block else 0
+
+            if last_summary_block and summary_timestamp > message_timestamp:
+                # SUMMARY is more recent - return the summary text
+                # Decrypt if encrypted (content is a dict with 'ciphertext' key when encrypted)
+                content = last_summary_block.content
+
+                if last_summary_block.encrypted:
+                    try:
+                        # Content is a dict like {"ciphertext": "..."}, decrypt it
+                        content = qube.decrypt_block_content(content)
+                    except Exception as decrypt_err:
+                        logger.warning(f"Failed to decrypt SUMMARY block: {decrypt_err}")
+                        content = {}
+
+                if not isinstance(content, dict):
+                    content = {}
+
+                summary_text = content.get("summary_text", content.get("summary", ""))
+
+                return {
+                    "success": True,
+                    "content": summary_text,
+                    "block_type": "SUMMARY",
+                    "block_number": last_summary_block.block_number,
+                    "timestamp": last_summary_block.timestamp * 1000  # Convert to milliseconds
+                }
+            elif last_message_block:
+                # MESSAGE is more recent - return the Qube's response
+                # Decrypt if encrypted (content is a dict with 'ciphertext' key when encrypted)
+                content = last_message_block.content
+
+                if last_message_block.encrypted:
+                    try:
+                        content = qube.decrypt_block_content(content)
+                    except Exception as decrypt_err:
+                        logger.warning(f"Failed to decrypt MESSAGE block: {decrypt_err}")
+                        content = {}
+
+                if not isinstance(content, dict):
+                    content = {}
+
+                response_text = content.get("response", content.get("message", ""))
+
+                return {
+                    "success": True,
+                    "content": response_text,
+                    "block_type": "MESSAGE",
+                    "block_number": last_message_block.block_number,
+                    "timestamp": last_message_block.timestamp * 1000  # Convert to milliseconds
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": "No suitable blocks found"
+                }
+
+        except Exception as e:
+            logger.error(f"Failed to recall last context for qube {qube_id}: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
     async def generate_speech(self, qube_id: str, text: str, password: str = None) -> Dict[str, Any]:
         """Generate speech audio for given text using qube's voice"""
         try:
@@ -6132,6 +6253,21 @@ async def main():
             # Create bridge with correct user
             user_bridge = GUIBridge(user_id=user_id)
             result = await user_bridge.get_qube_blocks(qube_id, password, limit, offset)
+            print(json.dumps(result))
+
+        elif command == "recall-last-context":
+            if len(sys.argv) < 4:
+                print(json.dumps({"error": "User ID and Qube ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            # SECURITY: Validate qube_id
+            qube_id = validate_qube_id(sys.argv[3])
+            password = get_secret("password")
+
+            # Create bridge with correct user
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.recall_last_context(qube_id, password)
             print(json.dumps(result))
 
         elif command == "generate-speech":
