@@ -78,17 +78,6 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
 
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [conversationHistory, setConversationHistory] = useState<ConversationMessage[]>([]);
-
-  // DEBUG: Log when props change
-  useEffect(() => {
-    console.log('🔄 MultiQubeChatInterface props changed:', {
-      selectedQubesCount: selectedQubes.length,
-      selectedQubeIds: selectedQubes.map(q => q.qube_id),
-      conversationId,
-      historyLength: conversationHistory.length,
-      isActive: conversationId !== null
-    });
-  }, [selectedQubes]);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1757,15 +1746,6 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
 
   // Auto-continue conversation when typewriter completes
   useEffect(() => {
-    console.log('🔍 Auto-continue useEffect triggered:', {
-      activeTypewriterMessageId,
-      isConversationActive,
-      shouldContinue: shouldContinueRef.current,
-      pendingTTSMessage: pendingTTSMessage?.turn_number,
-      isLoading,
-      processingMessage: processingMessageRef.current
-    });
-
     // Check if we should pause after current message completes
     // BUT: if there's a prefetched response, play it first before pausing
     if (
@@ -1776,7 +1756,6 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
     ) {
       // If there's a prefetched response, play it before pausing
       if (nextResponsePrefetch) {
-        console.log('🎬 Pause requested - playing prefetched response before pausing');
         setPendingTTSMessage(nextResponsePrefetch);
         setNextResponsePrefetch(null);
         setNextTTSPrefetch(null);
@@ -1787,7 +1766,6 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
       }
 
       // No prefetch, pause now
-      console.log('⏸️ Message completed and pause was requested - pausing now');
       setIsConversationActive(false);
       pauseAfterCurrentMessageRef.current = false;
       setIsPauseRequested(false); // Clear pause requested state
@@ -1810,7 +1788,6 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
       !processingMessageRef.current && // Make sure we're not in the middle of processing
       !waitingForUserResponseRef.current // Don't fetch next turn if waiting for user's message
     ) {
-      console.log('✅ All conditions met for auto-continue, setting up timer');
       // Check if we have a COMPLETE prefetch ready (both response AND TTS)
       const nextMessageId = nextResponsePrefetch ? `${nextResponsePrefetch.conversation_id}-${nextResponsePrefetch.turn_number}` : null;
       const hasPrefetchedTTS = nextTTSPrefetch !== null && prefetchedMessageId === nextMessageId;
@@ -1963,8 +1940,6 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
       }, delay);
 
       return () => clearTimeout(timer);
-    } else {
-      console.log('❌ Conditions not met for auto-continue');
     }
   }, [activeTypewriterMessageId, isConversationActive, pendingTTSMessage, isLoading]);
   // NOTE: nextResponsePrefetch is intentionally NOT in dependencies

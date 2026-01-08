@@ -64,7 +64,6 @@ function App() {
     const checkFirstRun = async () => {
       try {
         const response = await invoke<FirstRunResponse>('check_first_run');
-        console.log('First run check:', response);
         setIsFirstRun(response.is_first_run);
       } catch (err) {
         console.error('Failed to check first run:', err);
@@ -79,7 +78,6 @@ function App() {
 
   // Load qubes from Python backend after authentication
   useEffect(() => {
-    console.log('useEffect triggered. isAuthenticated:', isAuthenticated, 'userId:', userId);
     if (isAuthenticated) {
       loadQubes();
     }
@@ -179,9 +177,7 @@ function App() {
     try {
       setLoading(true);
       setError(null);
-      console.log('Loading qubes for user:', userId);
       const qubeList = await invoke<Qube[]>('list_qubes', { userId });
-      console.log('Loaded qubes:', qubeList);
       setQubes(qubeList);
     } catch (err) {
       console.error('Failed to load qubes:', err);

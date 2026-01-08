@@ -41,13 +41,6 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
   onDeleteQube,
   onUpdateQubeConfig,
 }) => {
-  // Debug: Log qube data to see what we're receiving from backend
-  useEffect(() => {
-    if (qubes.length > 0) {
-      console.log('Qube data received:', qubes[0]);
-    }
-  }, [qubes]);
-
   const { userId, password: masterPassword } = useAuth();
 
   // Check Pinata configuration on mount
