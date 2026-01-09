@@ -1548,9 +1548,34 @@ async fn get_audio_base64(file_path: String) -> Result<String, String> {
         project_root.join(&file_path)
     };
 
+    // Check if file exists
+    if !absolute_path.exists() {
+        return Err(format!("Audio file does not exist: {:?}", absolute_path));
+    }
+
     // Read the audio file
     let audio_data = fs::read(&absolute_path)
-        .map_err(|e| format!("Failed to read audio file: {}", e))?;
+        .map_err(|e| format!("Failed to read audio file {:?}: {}", absolute_path, e))?;
+
+    // Validate file has content
+    if audio_data.is_empty() {
+        return Err(format!("Audio file is empty: {:?}", absolute_path));
+    }
+
+    // Log file info for debugging
+    let file_size = audio_data.len();
+    let first_bytes: Vec<u8> = audio_data.iter().take(4).cloned().collect();
+    eprintln!("[TTS Debug] Audio file: {:?}, size: {} bytes, first 4 bytes: {:?}",
+              absolute_path, file_size, first_bytes);
+
+    // Validate MP3 magic bytes (ID3 tag or MP3 frame sync)
+    let is_valid_mp3 = (audio_data.len() >= 3 && &audio_data[0..3] == b"ID3") ||
+                       (audio_data.len() >= 2 && audio_data[0] == 0xFF && (audio_data[1] & 0xE0) == 0xE0);
+    let is_valid_wav = audio_data.len() >= 4 && &audio_data[0..4] == b"RIFF";
+
+    if !is_valid_mp3 && !is_valid_wav {
+        eprintln!("[TTS Debug] WARNING: Audio file may be corrupt - doesn't start with expected magic bytes");
+    }
 
     // Convert to base64
     let base64_data = general_purpose::STANDARD.encode(&audio_data);
@@ -1563,6 +1588,8 @@ async fn get_audio_base64(file_path: String) -> Result<String, String> {
     } else {
         "audio/mpeg"  // Default fallback
     };
+
+    eprintln!("[TTS Debug] Returning data URL with mime: {}, base64 length: {}", mime_type, base64_data.len());
 
     // Return as data URL with correct MIME type
     Ok(format!("data:{};base64,{}", mime_type, base64_data))

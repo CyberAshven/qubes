@@ -324,13 +324,16 @@ class AudioManager:
             tts_provider = self.tts_providers[provider]
             await tts_provider.synthesize_file(text, voice_config, output_path)
 
+            # Convert to absolute path for reliable cross-process resolution
+            absolute_output_path = output_path.resolve()
+
             logger.info(
                 "speech_file_generated",
-                output_path=str(output_path),
-                file_size=output_path.stat().st_size
+                output_path=str(absolute_output_path),
+                file_size=absolute_output_path.stat().st_size
             )
 
-            return output_path
+            return absolute_output_path
 
         except Exception as e:
             logger.error("speech_file_generation_failed", error=str(e), exc_info=True)
