@@ -155,8 +155,7 @@ export const TabContent: React.FC<TabContentProps> = ({ qubes, setQubes, onQubes
     await onQubesChange();
   };
 
-  const handleEditQube = (qube: Qube) => {
-    console.log('Edit qube:', qube);
+  const handleEditQube = (_qube: Qube) => {
     // TODO: Open edit modal
   };
 
@@ -175,7 +174,6 @@ export const TabContent: React.FC<TabContentProps> = ({ qubes, setQubes, onQubes
       });
 
       if (result.success) {
-        console.log('Qube deleted successfully:', qubeToDelete.qube_id);
         setQubeToDelete(null);
         setDeleteConfirmPassword('');
         await onQubesChange(); // Refresh the qube list

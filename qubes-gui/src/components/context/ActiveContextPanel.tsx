@@ -36,6 +36,21 @@ interface SkillsTotals {
   categories: number;
 }
 
+interface OwnerInfoField {
+  key: string;
+  value: string;
+  sensitivity: 'public' | 'private' | 'secret';
+}
+
+interface OwnerInfoSummary {
+  total_fields: number;
+  public_fields: number;
+  private_fields: number;
+  secret_fields: number;
+  categories_populated: number;
+  top_fields: OwnerInfoField[];
+}
+
 interface WalletTransaction {
   txid: string;
   amount_sats: number;
@@ -62,6 +77,7 @@ interface ActiveContextData {
     totals: SkillsTotals;
     top_skills: SkillInfo[];
   };
+  owner_info?: OwnerInfoSummary | null;
   wallet: WalletInfo | null;
 }
 
@@ -150,6 +166,7 @@ export const ActiveContextPanel: React.FC<ActiveContextPanelProps> = ({
   const [genesisExpanded, setGenesisExpanded] = useState(false);
   const [relationshipsExpanded, setRelationshipsExpanded] = useState(false);
   const [skillsExpanded, setSkillsExpanded] = useState(false);
+  const [ownerInfoExpanded, setOwnerInfoExpanded] = useState(false);
   const [walletExpanded, setWalletExpanded] = useState(false);
   const [semanticExpanded, setSemanticExpanded] = useState(false);
   const [recentExpanded, setRecentExpanded] = useState(false);
@@ -396,6 +413,59 @@ export const ActiveContextPanel: React.FC<ActiveContextPanelProps> = ({
                   ))
                 ) : (
                   <span className="text-xs text-text-tertiary">No skills recorded yet</span>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Owner Info */}
+          <div>
+            <button
+              onClick={() => setOwnerInfoExpanded(!ownerInfoExpanded)}
+              className="w-full flex items-center justify-between p-2 rounded hover:bg-glass-bg/30 transition-colors"
+            >
+              <span className="text-sm text-text-secondary flex items-center gap-2">
+                <span>👤</span>
+                Owner Info
+                {data.owner_info && data.owner_info.total_fields > 0 ? (
+                  <span className="text-xs bg-glass-bg/50 px-1.5 py-0.5 rounded">
+                    {data.owner_info.total_fields} fields
+                  </span>
+                ) : (
+                  <span className="text-xs text-text-tertiary">0</span>
+                )}
+              </span>
+              <span className="text-xs text-text-tertiary">{ownerInfoExpanded ? '▼' : '▶'}</span>
+            </button>
+            {ownerInfoExpanded && (
+              <div className="ml-6 mt-2 space-y-2">
+                {data.owner_info && data.owner_info.total_fields > 0 ? (
+                  <>
+                    <div className="flex justify-between text-xs text-text-tertiary">
+                      <span>🌐 Public: {data.owner_info.public_fields}</span>
+                      <span>🔒 Private: {data.owner_info.private_fields}</span>
+                      {data.owner_info.secret_fields > 0 && (
+                        <span>🔐 Secret: {data.owner_info.secret_fields}</span>
+                      )}
+                    </div>
+                    {data.owner_info.top_fields.map((field, idx) => (
+                      <div key={idx} className="flex items-center justify-between text-xs p-1.5 bg-glass-bg/20 rounded">
+                        <span className="text-text-primary capitalize flex items-center gap-1">
+                          <span className={field.sensitivity === 'public' ? 'text-emerald-400' : 'text-yellow-400'}>
+                            {field.sensitivity === 'public' ? '🌐' : '🔒'}
+                          </span>
+                          {field.key.replace(/_/g, ' ')}
+                        </span>
+                        <span className="text-text-secondary truncate max-w-[120px]" title={field.value}>
+                          {field.value}
+                        </span>
+                      </div>
+                    ))}
+                  </>
+                ) : (
+                  <div className="text-xs text-text-tertiary p-2 bg-glass-bg/10 rounded italic">
+                    No owner info yet. Chat with your Qube and share personal details - they'll remember!
+                  </div>
                 )}
               </div>
             )}

@@ -62,13 +62,10 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const playTTS = useCallback(async (userId: string, qubeId: string, text: string, password: string) => {
     // Skip if we've already played this exact text
     if (lastPlayedTextRef.current === text) {
-      console.log('TTS already played for this response, skipping');
       return;
     }
 
     try {
-      console.log('Generating TTS for:', text.substring(0, 50) + '...');
-
       const speechResponse = await invoke<SpeechResponse>('generate_speech', {
         userId,
         qubeId,
@@ -77,18 +74,13 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       });
 
       if (speechResponse.success && speechResponse.audio_path) {
-        console.log('TTS generated, audio path:', speechResponse.audio_path);
-
         // Get audio as base64 data URL from Tauri backend
         const base64Audio = await invoke<string>('get_audio_base64', {
           filePath: speechResponse.audio_path
         });
 
-        console.log('Got base64 audio data URL (length:', base64Audio.length, ')');
-
         if (audioRef.current) {
           // Reset audio element to clear any stale state (ended, error, etc.)
-          console.log('[AudioContext] Resetting audio element before loading new audio');
           audioRef.current.pause();
           audioRef.current.currentTime = 0;
           audioRef.current.removeAttribute('src');
@@ -97,19 +89,13 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           // Now set the new src
           audioRef.current.src = base64Audio;
 
-          audioRef.current.addEventListener('loadeddata', () => {
-            console.log('Audio loaded successfully - ready to play');
-          }, { once: true });
-
           audioRef.current.addEventListener('error', (e) => {
             console.error('Audio element error:', e);
             console.error('Audio error details:', audioRef.current?.error);
           }, { once: true });
 
           // Start playing audio immediately
-          console.log('Audio loaded, starting playback...');
           await audioRef.current.play();
-          console.log('Audio playing');
 
           // Mark this text as played
           lastPlayedTextRef.current = text;
@@ -126,8 +112,6 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const prefetchTTS = useCallback(async (userId: string, qubeId: string, text: string, password: string): Promise<string> => {
     try {
-      console.log('Prefetching TTS for:', text.substring(0, 50) + '...');
-
       const speechResponse = await invoke<SpeechResponse>('generate_speech', {
         userId,
         qubeId,
@@ -136,14 +120,11 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       });
 
       if (speechResponse.success && speechResponse.audio_path) {
-        console.log('TTS prefetched, audio path:', speechResponse.audio_path);
-
         // Get audio as base64 data URL from Tauri backend
         const base64Audio = await invoke<string>('get_audio_base64', {
           filePath: speechResponse.audio_path
         });
 
-        console.log('Prefetched TTS base64 audio (length:', base64Audio.length, ')');
         return base64Audio;
       } else {
         console.error('TTS prefetch failed:', speechResponse.error);
@@ -158,16 +139,12 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const playPrefetchedTTS = useCallback(async (base64Audio: string, text: string): Promise<void> => {
     // Skip if we've already played this exact text
     if (lastPlayedTextRef.current === text) {
-      console.log('TTS already played for this response, skipping');
       return;
     }
 
     try {
-      console.log('Playing prefetched TTS audio');
-
       if (audioRef.current) {
         // Reset audio element to clear any stale state (ended, error, etc.)
-        console.log('[AudioContext] Resetting audio element before loading prefetched audio');
         audioRef.current.pause();
         audioRef.current.currentTime = 0;
         audioRef.current.removeAttribute('src');
@@ -176,19 +153,13 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         // Now set the new src
         audioRef.current.src = base64Audio;
 
-        audioRef.current.addEventListener('loadeddata', () => {
-          console.log('Prefetched audio loaded successfully - ready to play');
-        }, { once: true });
-
         audioRef.current.addEventListener('error', (e) => {
           console.error('Prefetched audio element error:', e);
           console.error('Audio error details:', audioRef.current?.error);
         }, { once: true });
 
         // Start playing prefetched audio immediately
-        console.log('Prefetched audio loaded, starting playback...');
         await audioRef.current.play();
-        console.log('Prefetched audio playing');
 
         // Mark this text as played
         lastPlayedTextRef.current = text;

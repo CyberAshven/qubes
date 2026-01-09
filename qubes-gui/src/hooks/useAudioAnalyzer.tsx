@@ -84,12 +84,6 @@ export function useAudioAnalyzer(
           // Connect: source -> analyzer -> destination
           source.connect(analyzer);
           analyzer.connect(audioContext.destination);
-
-          console.log('Audio analyzer initialized:', {
-            fftSize,
-            frequencyBinCount: analyzer.frequencyBinCount,
-            sampleRate: audioContext.sampleRate
-          });
         } catch (error: any) {
           // If we get an error about the element already being used, that's OK
           // It means the audio is already connected elsewhere
@@ -166,16 +160,8 @@ export function useAudioAnalyzer(
       // Use emitTo to target the specific visualizer window
       emitTo('visualizer', 'visualizer-audio-data', {
         frequencyData: Array.from(adjustedFrequencyData)
-      }).then(() => {
-        // Success - only log first few
-        if (performance.now() - startTimeRef.current < 1000) {
-          console.log('🎵 Main window: Emitted audio data to visualizer window');
-        }
-      }).catch(err => {
+      }).catch(() => {
         // If visualizer window doesn't exist, silently fail
-        if (performance.now() - startTimeRef.current < 1000) {
-          console.log('🎵 Main window: Visualizer window not found (this is OK if using overlay)');
-        }
       });
 
       animationFrameRef.current = requestAnimationFrame(analyze);
@@ -248,7 +234,6 @@ export function useAudioAnalyzer(
     // If audio is already playing when this hook initializes, start analyzing immediately
     // This handles the case where the visualizer is toggled on mid-playback
     if (!audioElement.paused && !audioElement.ended) {
-      console.log('🎵 Audio already playing, starting analyzer immediately');
       startAnalyzing();
     }
 

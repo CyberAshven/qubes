@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { QRCodeSVG } from 'qrcode.react';
 import { GlassCard, GlassButton, GlassInput } from '../glass';
 import { PendingMintingResult, MintingStatusResult, MintingStatus } from '../../types';
@@ -192,40 +192,53 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
   // Poll minting status
   const pollMintingStatus = useCallback(async (registrationId: string) => {
     try {
+      console.log('[Minting] Polling status for:', registrationId);
       const result = await invoke<MintingStatusResult>('check_minting_status', {
         userId,
         registrationId,
         password,
       });
+      console.log('[Minting] Poll result:', JSON.stringify(result, null, 2));
 
       if (result.success) {
         setMintingStatus(result.status || null);
 
         if (result.status === 'complete') {
-          // Stop polling
+          console.log('[Minting] Status is COMPLETE! Transitioning to success step.');
+          // Stop polling FIRST before any state changes
           if (statusPollingInterval) {
+            console.log('[Minting] Clearing polling interval');
             clearInterval(statusPollingInterval);
             setStatusPollingInterval(null);
           }
+          // Set states to show success screen
+          // NOTE: Don't call onQubesChange here - it causes parent re-render that
+          // closes the modal before the success screen can display.
+          // onQubesChange will be called in handleClose instead.
+          console.log('[Minting] Setting success=true, step=7');
           setSuccess(true);
           setStep(7);  // Success step
-          onQubesChange?.();  // Refresh qube list
+          console.log('[Minting] Success screen should now be visible.');
         } else if (result.status === 'failed') {
+          console.log('[Minting] Status is FAILED:', result.error_message);
           if (statusPollingInterval) {
             clearInterval(statusPollingInterval);
             setStatusPollingInterval(null);
           }
           setPaymentError(result.error_message || 'Minting failed');
         } else if (result.status === 'expired') {
+          console.log('[Minting] Status is EXPIRED');
           if (statusPollingInterval) {
             clearInterval(statusPollingInterval);
             setStatusPollingInterval(null);
           }
           setPaymentError('Payment window expired. Please try again.');
         }
+      } else {
+        console.warn('[Minting] Poll returned success=false. Error:', result.error, 'Full result:', JSON.stringify(result, null, 2));
       }
     } catch (error) {
-      console.error('Failed to check minting status:', error);
+      console.error('[Minting] Failed to check minting status:', error);
     }
   }, [userId, password, statusPollingInterval, onQubesChange]);
 
@@ -233,14 +246,6 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
   const handleStartMinting = async () => {
     setLoading(true);
     setPaymentError(null);
-
-    // Debug: Log what we're sending
-    console.log('🔍 handleStartMinting - formData:', {
-      avatarFile: formData.avatarFile,
-      generateAvatar: formData.generateAvatar,
-      avatarStyle: formData.avatarStyle,
-    });
-    console.log('🔍 handleStartMinting - password length:', password?.length, 'userId:', userId);
 
     try {
       const result = await invoke<PendingMintingResult>('prepare_qube_for_minting', {
@@ -347,6 +352,12 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
       setStatusPollingInterval(null);
     }
 
+    // If minting was successful, refresh the qube list NOW (after user saw success screen)
+    if (success) {
+      console.log('[Minting] Closing after successful minting - refreshing qube list');
+      onQubesChange?.();
+    }
+
     // Reset form
     setFormData({
       name: '',
@@ -423,25 +434,102 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
     setStep(step - 1);
   };
 
+  // Debug: Log render state when success changes
+  if (success) {
+    console.log('[Minting] RENDER: success=true, showing success view');
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
       <GlassCard className="w-full max-w-2xl max-h-[90vh] overflow-y-auto p-8">
         {success ? (
-          // Success View
-          <div className="text-center py-12">
-            <div className="text-6xl mb-6">🎉</div>
-            <h2 className="text-3xl font-display text-accent-primary mb-4">
-              Qube Created Successfully!
-            </h2>
-            <p className="text-text-secondary mb-2">
-              {formData.name} has been created and their NFT has been minted.
-            </p>
-            <p className="text-text-tertiary text-sm mb-8">
-              Check the console for blockchain transaction details.
-            </p>
-            <GlassButton onClick={handleClose}>
-              Close
-            </GlassButton>
+          // Success View - Celebratory Qube Minted Screen
+          <div className="text-center py-8 relative overflow-hidden">
+            {/* Animated confetti background */}
+            <div className="absolute inset-0 pointer-events-none overflow-hidden">
+              {[...Array(20)].map((_, i) => (
+                <div
+                  key={i}
+                  className="absolute animate-bounce"
+                  style={{
+                    left: `${Math.random() * 100}%`,
+                    top: `${Math.random() * 100}%`,
+                    animationDelay: `${Math.random() * 2}s`,
+                    animationDuration: `${1 + Math.random() * 2}s`,
+                    fontSize: `${12 + Math.random() * 16}px`,
+                    opacity: 0.6,
+                  }}
+                >
+                  {['✨', '🎉', '🎊', '⭐', '💫', '🌟'][Math.floor(Math.random() * 6)]}
+                </div>
+              ))}
+            </div>
+
+            {/* Main content */}
+            <div className="relative z-10">
+              {/* Large celebration icon */}
+              <div className="text-7xl mb-4 animate-pulse">🎉</div>
+
+              <h2 className="text-4xl font-display text-accent-primary mb-2">
+                Qube Minted!
+              </h2>
+
+              <p className="text-xl text-text-primary mb-6">
+                Welcome to the world, <span className="font-bold text-accent-primary">{formData.name}</span>!
+              </p>
+
+              {/* Qube card preview */}
+              <div
+                className="mx-auto mb-6 p-6 rounded-2xl max-w-sm"
+                style={{
+                  background: `linear-gradient(135deg, ${formData.favoriteColor}22 0%, transparent 50%)`,
+                  border: `2px solid ${formData.favoriteColor}66`,
+                  boxShadow: `0 0 30px ${formData.favoriteColor}33`,
+                }}
+              >
+                {/* Avatar with glow */}
+                <div
+                  className="w-24 h-24 mx-auto mb-4 rounded-full bg-glass-bg flex items-center justify-center text-4xl overflow-hidden"
+                  style={{
+                    boxShadow: `0 0 20px ${formData.favoriteColor}`,
+                    border: `3px solid ${formData.favoriteColor}`,
+                  }}
+                >
+                  {formData.avatarFile ? (
+                    <img
+                      src={convertFileSrc(formData.avatarFile)}
+                      alt={`${formData.name} avatar`}
+                      className="w-full h-full object-cover"
+                    />
+                  ) : formData.generateAvatar ? (
+                    <span className="text-3xl">✨</span>
+                  ) : (
+                    <span>🤖</span>
+                  )}
+                </div>
+
+                <h3 className="text-2xl font-display text-text-primary mb-2">{formData.name}</h3>
+
+                <div className="text-sm text-text-tertiary space-y-1">
+                  <p><span className="text-text-secondary">AI:</span> {formData.aiProvider} / {formData.aiModel}</p>
+                  <p><span className="text-text-secondary">Voice:</span> {formData.voiceModel?.split(':')[1]}</p>
+                </div>
+              </div>
+
+              {/* NFT Badge with BCH logo */}
+              <div className="inline-flex items-center gap-2 px-4 py-2 bg-accent-success/20 border border-accent-success/40 rounded-full mb-6">
+                <img src="/bitcoin_cash_logo.svg" alt="BCH" className="w-5 h-5" />
+                <span className="text-accent-success font-medium">NFT Minted on Bitcoin Cash</span>
+              </div>
+
+              <p className="text-text-tertiary text-sm mb-8">
+                Your new Qube is ready to chat! Their identity is now permanently recorded on the blockchain.
+              </p>
+
+              <GlassButton variant="primary" onClick={handleClose} className="px-8 py-3">
+                Done
+              </GlassButton>
+            </div>
           </div>
         ) : (
           <>

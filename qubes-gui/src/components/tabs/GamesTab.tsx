@@ -183,7 +183,6 @@ export const GamesTab: React.FC<GamesTabProps> = ({ qubes }) => {
 
         // Auto-start Qube vs Qube game - trigger first Qube's move
         if (gameMode === 'qube-vs-qube') {
-          console.log('🎯 Qube vs Qube: Auto-starting first move...');
           setPendingQubeMove(true);
         }
       } else {
@@ -199,15 +198,7 @@ export const GamesTab: React.FC<GamesTabProps> = ({ qubes }) => {
 
   // Define handleRequestQubeMove first (used by handleMove)
   const handleRequestQubeMove = useCallback(async () => {
-    console.log('🤖 handleRequestQubeMove called', {
-      current_turn: gameState?.current_turn,
-      your_color: gameState?.your_color,
-      status: gameState?.status,
-      gameMode,
-    });
-
     if (!primaryQube || !password || !gameState) {
-      console.log('❌ Missing primaryQube, password, or gameState');
       return;
     }
 
@@ -216,7 +207,6 @@ export const GamesTab: React.FC<GamesTabProps> = ({ qubes }) => {
     if (gameMode === 'human-vs-qube') {
       const yourColor = gameState.your_color || 'white';
       if (gameState.current_turn === yourColor) {
-        console.log('❌ handleRequestQubeMove: It\'s the human\'s turn, not requesting Qube move');
         return;
       }
     }
@@ -236,10 +226,8 @@ export const GamesTab: React.FC<GamesTabProps> = ({ qubes }) => {
       } else if (currentTurn === 'black' && blackPlayerId) {
         movingQubeId = blackPlayerId;
       }
-      console.log('🎯 Qube vs Qube: Requesting move from', movingQubeId, 'for', currentTurn);
     }
 
-    console.log('🔄 Requesting Qube move from backend...');
     try {
       const result = await invoke<{
         success: boolean;
@@ -251,11 +239,8 @@ export const GamesTab: React.FC<GamesTabProps> = ({ qubes }) => {
         qubeId: movingQubeId,
         password,
       });
-      console.log('📥 request_qube_move result:', JSON.stringify(result, null, 2));
 
       if (result.success && result.game_state) {
-        console.log('✅ Qube move successful, updating game state with FEN:', result.game_state.fen);
-
         // Check if game is over from the game state (backend now provides is_game_over)
         const isGameOver = result.game_state.is_game_over ||
                            result.game_state.status === 'completed' ||
@@ -276,13 +261,6 @@ export const GamesTab: React.FC<GamesTabProps> = ({ qubes }) => {
 
         // Check if game is over - trigger end_game to create GAME block
         if (isGameOver) {
-          console.log('🏁 Game over detected after Qube move!', {
-            status: result.game_state.status,
-            is_checkmate: result.game_state.is_checkmate,
-            is_stalemate: result.game_state.is_stalemate,
-            is_draw: result.game_state.is_draw,
-          });
-
           // Determine result and termination from game state
           let gameResult = 'draw';
           let termination = 'unknown';
@@ -307,23 +285,13 @@ export const GamesTab: React.FC<GamesTabProps> = ({ qubes }) => {
             result: gameResult,
             termination,
             password,
-          }).then(() => {
-            console.log('✅ GAME block created successfully');
           }).catch(err => {
-            console.error('❌ Failed to create GAME block:', err);
+            console.error('Failed to create GAME block:', err);
           });
         } else if (gameMode === 'qube-vs-qube') {
           // Auto-continue Qube vs Qube game - trigger next Qube's move
-          console.log('⏳ Qube vs Qube: Setting pendingQubeMove for next Qube...');
           setPendingQubeMove(true);
         }
-      } else {
-        console.log('❌ Qube move failed or no game_state returned:', {
-          success: result.success,
-          hasGameState: !!result.game_state,
-          error: result.error,
-          qubeResponse: result.qube_response
-        });
       }
     } catch (err) {
       console.error('Failed to request qube move:', err);
@@ -341,9 +309,7 @@ export const GamesTab: React.FC<GamesTabProps> = ({ qubes }) => {
   useEffect(() => {
     if (!pendingQubeMove) return;
 
-    console.log('🎯 pendingQubeMove effect triggered, scheduling move...');
     const timer = setTimeout(() => {
-      console.log('⏰ Timer fired, calling handleRequestQubeMove');
       if (handleRequestQubeMoveRef.current) {
         handleRequestQubeMoveRef.current();
       }
@@ -351,27 +317,18 @@ export const GamesTab: React.FC<GamesTabProps> = ({ qubes }) => {
     }, 500);
 
     return () => {
-      console.log('🧹 Cleanup: clearing timer');
       clearTimeout(timer);
     };
   }, [pendingQubeMove]); // Only depend on pendingQubeMove, use ref for callback
 
   const handleMove = useCallback(async (move: string): Promise<MoveResult> => {
-    console.log('🎮 handleMove called with move:', move, 'gameState:', {
-      current_turn: gameState?.current_turn,
-      your_color: gameState?.your_color,
-      status: gameState?.status,
-    });
-
     if (!primaryQube || !password || !gameState) {
-      console.log('❌ handleMove: No active game or missing data');
       return { success: false, error: 'No active game' };
     }
 
     // Guard: Only allow human moves when it's the human's turn
     const yourColor = gameState.your_color || 'white';
     if (gameState.current_turn !== yourColor) {
-      console.log('❌ handleMove: Not human\'s turn, ignoring');
       return { success: false, error: 'Not your turn' };
     }
 
@@ -397,10 +354,6 @@ export const GamesTab: React.FC<GamesTabProps> = ({ qubes }) => {
 
         // Check if game is over - trigger end_game to create GAME block
         if (result.game_over) {
-          console.log('🏁 Game over detected after human move!', {
-            result: result.result,
-            termination: result.termination
-          });
           // Call end_game to create GAME block and award XP
           invoke('end_game', {
             userId,
@@ -408,14 +361,11 @@ export const GamesTab: React.FC<GamesTabProps> = ({ qubes }) => {
             result: result.result || 'unknown',
             termination: result.termination || 'unknown',
             password,
-          }).then(() => {
-            console.log('✅ GAME block created successfully');
           }).catch(err => {
-            console.error('❌ Failed to create GAME block:', err);
+            console.error('Failed to create GAME block:', err);
           });
         } else if (gameMode === 'human-vs-qube') {
           // Auto-trigger Qube's move in Human vs Qube mode (if game not over)
-          console.log('⏳ Setting pendingQubeMove flag to trigger auto-move...');
           setPendingQubeMove(true);
         }
       }
@@ -585,7 +535,6 @@ export const GamesTab: React.FC<GamesTabProps> = ({ qubes }) => {
       });
 
       if (result.success) {
-        console.log('Game resigned:', result.game_summary);
         setGameState(prev => prev ? {
           ...prev,
           status: 'completed',
@@ -620,7 +569,6 @@ export const GamesTab: React.FC<GamesTabProps> = ({ qubes }) => {
       });
 
       if (result.success) {
-        console.log('Draw offered');
         setGameState(prev => prev ? {
           ...prev,
           pending_draw_offer: result.pending_draw_offer || {
@@ -655,7 +603,6 @@ export const GamesTab: React.FC<GamesTabProps> = ({ qubes }) => {
 
       if (result.success) {
         if (accepting) {
-          console.log('Draw accepted:', result.game_summary);
           setGameState(prev => prev ? {
             ...prev,
             status: 'completed',
@@ -667,7 +614,6 @@ export const GamesTab: React.FC<GamesTabProps> = ({ qubes }) => {
             setSetupState('idle');
           }, 2000);
         } else {
-          console.log('Draw declined');
           setGameState(prev => prev ? {
             ...prev,
             pending_draw_offer: null,

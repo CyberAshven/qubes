@@ -52,8 +52,6 @@ export class TTSCoordinator {
   ): Promise<void> {
     const { messageId, text, qubeId } = message;
 
-    console.log(`[TTSCoordinator] Starting playback for message ${messageId}`);
-
     // Prevent concurrent playback
     if (this.isPlaying && this.currentMessageId !== messageId) {
       throw new Error(`Cannot play ${messageId}: already playing ${this.currentMessageId}`);
@@ -76,7 +74,6 @@ export class TTSCoordinator {
       // Wait for audio to be fully loaded and ready
       await this.waitForAudioReady(this.audioElement);
 
-      console.log(`[TTSCoordinator] Audio ready for ${messageId}`);
       this.callbacks.onTTSReady(messageId);
 
       // Small delay to ensure React has rendered the TypewriterText component
@@ -85,13 +82,11 @@ export class TTSCoordinator {
       // Start playing audio
       await this.audioElement.play();
 
-      console.log(`[TTSCoordinator] Audio playing for ${messageId}`);
       this.callbacks.onTypewriterStart(messageId);
 
       // Wait for audio to finish
       await this.waitForAudioEnd(this.audioElement);
 
-      console.log(`[TTSCoordinator] Audio finished for ${messageId}`);
       this.callbacks.onTypewriterComplete(messageId);
 
     } catch (error) {

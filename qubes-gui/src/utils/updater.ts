@@ -71,11 +71,8 @@ export async function downloadAndInstallUpdate(
     const update = await check();
 
     if (!update) {
-      console.log('No update available');
       return false;
     }
-
-    console.log(`Downloading update ${update.version}...`);
 
     // Track download progress
     let totalSize = 0;
@@ -86,7 +83,6 @@ export async function downloadAndInstallUpdate(
       switch (event.event) {
         case 'Started':
           totalSize = (event.data as { contentLength?: number }).contentLength || 0;
-          console.log(`Download started, total size: ${totalSize} bytes`);
           break;
         case 'Progress':
           downloadedSize += event.data.chunkLength;
@@ -98,12 +94,10 @@ export async function downloadAndInstallUpdate(
           }
           break;
         case 'Finished':
-          console.log('Download finished');
           break;
       }
     });
 
-    console.log('Update installed, relaunching...');
     await relaunch();
 
     return true;
@@ -120,11 +114,6 @@ export async function downloadAndInstallUpdate(
 export async function checkForUpdateSilently(): Promise<UpdateStatus | null> {
   try {
     const status = await checkForUpdate();
-
-    if (status.available) {
-      console.log(`Update available: ${status.newVersion}`);
-    }
-
     // Always return status so we have currentVersion
     return status;
   } catch (error) {

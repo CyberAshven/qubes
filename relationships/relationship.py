@@ -16,6 +16,85 @@ from utils.logging import get_logger
 logger = get_logger(__name__)
 
 
+# =============================================================================
+# RELATIONSHIP STATUS SYSTEM
+# =============================================================================
+
+# Relationship status definitions with numeric values for ordering
+RELATIONSHIP_STATUSES = {
+    # Negative statuses
+    "blocked": -100,      # No contact allowed
+    "enemy": -50,         # Hostile relationship
+    "rival": -20,         # Competitive/adversarial
+    "suspicious": -10,    # Red flags, uncertain
+
+    # Neutral/Positive statuses
+    "unmet": 0,           # Never met (default)
+    "stranger": 5,        # Met but minimal history
+    "acquaintance": 20,   # Familiar, developing
+    "friend": 50,         # Positive relationship
+    "close_friend": 75,   # Strong bond
+    "best_friend": 100,   # Maximum friendship (only one)
+}
+
+# Valid status transitions (status -> list of valid next statuses)
+# Owner/system can force any transition; organic progression follows these rules
+VALID_STATUS_TRANSITIONS = {
+    "blocked": [],  # Only owner can unblock
+    "enemy": ["blocked", "rival", "suspicious"],
+    "rival": ["enemy", "suspicious", "stranger"],
+    "suspicious": ["rival", "stranger", "acquaintance"],
+    "unmet": ["stranger"],  # First contact
+    "stranger": ["suspicious", "acquaintance"],
+    "acquaintance": ["suspicious", "stranger", "friend"],
+    "friend": ["suspicious", "acquaintance", "close_friend"],
+    "close_friend": ["friend", "best_friend"],
+    "best_friend": ["close_friend"],  # Can only demote one step
+}
+
+# Betrayal causes dramatic status drops
+BETRAYAL_TARGET_STATUS = {
+    "best_friend": "suspicious",
+    "close_friend": "suspicious",
+    "friend": "rival",
+    "acquaintance": "suspicious",
+    "stranger": "suspicious",
+}
+
+
+from dataclasses import dataclass
+
+@dataclass
+class TraitScore:
+    """Tracks confidence and history for a single trait."""
+    score: float = 0.0
+    evidence_count: int = 0
+    first_detected: int = 0
+    last_updated: int = 0
+    consistency: float = 0.0
+    volatility: float = 0.0
+    trend: str = "stable"
+    source: str = "metric_derived"
+    is_confident: bool = False
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "score": self.score,
+            "evidence_count": self.evidence_count,
+            "first_detected": self.first_detected,
+            "last_updated": self.last_updated,
+            "consistency": self.consistency,
+            "volatility": self.volatility,
+            "trend": self.trend,
+            "source": self.source,
+            "is_confident": self.is_confident,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'TraitScore':
+        return cls(**{k: data.get(k, getattr(cls, k, None)) for k in cls.__dataclass_fields__})
+
+
 class Relationship:
     """
     Relationship data model with 30 AI-evaluated metrics
@@ -96,6 +175,14 @@ class Relationship:
         self.dismissiveness = 0.0       # 0-100, invalidation, not taking seriously
         self.betrayal = 0.0             # 0-100, major broken trust events
 
+        # Behavioral/Communication Metrics (6 total) - AI evaluates for trait detection
+        self.verbosity = 0.0            # 0-100, how much they write/talk (0=terse, 100=verbose)
+        self.punctuality = 0.0          # 0-100, do they respond/show up on time
+        self.emotional_stability = 0.0  # 0-100, consistency of emotional state
+        self.directness = 0.0           # 0-100, how plainly they communicate (0=indirect, 100=direct)
+        self.energy_level = 0.0         # 0-100, activity/engagement level
+        self.humor_style = 50.0         # 0-100, type of humor (0=literal/serious, 50=balanced, 100=sarcastic)
+
         # Tracked Statistics (9) - auto-incremented, not AI-evaluated
         self.messages_sent = 0          # Outgoing message count
         self.messages_received = 0      # Incoming message count
@@ -120,6 +207,25 @@ class Relationship:
 
         # AI Evaluation History (1)
         self.evaluations: List[Dict[str, Any]] = []  # AI evaluation summaries with reasoning
+
+        # Clearance (Phase 2 v2) - Access rights separate from relationship status
+        self.clearance_profile: str = "none"  # Profile name from ClearanceConfig
+        self.clearance_categories: List[str] = []  # Empty = all categories for level
+        self.clearance_fields: List[str] = []  # Empty = all fields for categories
+        self.clearance_expires: Optional[int] = None  # Unix timestamp, None = never
+        self.clearance_granted_by: Optional[str] = None  # "owner" or entity_id
+        self.clearance_granted_at: Optional[int] = None  # Unix timestamp
+        # Per-entity overrides
+        self.clearance_field_grants: List[str] = []  # Extra fields to allow
+        self.clearance_field_denials: List[str] = []  # Fields to block
+        # Tags (Phase 2 v2) - Relationship labels orthogonal to status
+        self.tags: List[str] = []
+
+        # Traits - AI-attributed personality/behavioral characteristics
+        self.trait_scores: Dict[str, Any] = {}  # trait_name -> TraitScore dict
+        self.trait_evolution: List[Dict[str, Any]] = []  # Timeline of changes
+        self.manual_trait_overrides: Dict[str, bool] = {}  # User overrides (False = hidden)
+        self.trait_scores_version: str = "1.0"  # For migration
 
         # Creator Bonus: Start with elevated metrics for qube-creator relationships
         if is_creator:
@@ -149,10 +255,16 @@ class Relationship:
             # Update trust score based on new core trust values
             self.trust = self.calculate_trust_score()
 
+            # Creators get elevated clearance (trusted profile by default)
+            self.clearance_profile = "trusted"
+            self.clearance_granted_by = "system"
+            self.clearance_granted_at = int(datetime.now(timezone.utc).timestamp())
+
             logger.info(
                 "creator_relationship_initialized",
                 entity_id=entity_id,
-                trust=self.trust
+                trust=self.trust,
+                clearance_profile=self.clearance_profile
             )
 
         # Warn about deprecated fields
@@ -210,6 +322,38 @@ class Relationship:
             self.days_known = int(seconds_known / 86400)  # Convert to days
         else:
             self.days_known = 0
+
+    # =========================================================================
+    # STATUS VALIDATION METHODS
+    # =========================================================================
+
+    def get_status_value(self) -> int:
+        """Get numeric value of current status for comparison."""
+        return RELATIONSHIP_STATUSES.get(self.status, 0)
+
+    def can_transition_to(self, new_status: str) -> bool:
+        """
+        Check if status transition is valid per organic progression rules.
+
+        Args:
+            new_status: Target status
+
+        Returns:
+            True if transition is allowed organically
+        """
+        if new_status not in RELATIONSHIP_STATUSES:
+            return False
+
+        valid_transitions = VALID_STATUS_TRANSITIONS.get(self.status, [])
+        return new_status in valid_transitions
+
+    def is_negative_status(self) -> bool:
+        """Check if current status is negative (blocked, enemy, rival, suspicious)."""
+        return self.get_status_value() < 0
+
+    def is_blocked(self) -> bool:
+        """Check if entity is blocked."""
+        return self.status == "blocked"
 
     def apply_decay(self) -> bool:
         """
@@ -356,6 +500,14 @@ class Relationship:
             "dismissiveness": self.dismissiveness,
             "betrayal": self.betrayal,
 
+            # Behavioral/Communication Metrics (6)
+            "verbosity": self.verbosity,
+            "punctuality": self.punctuality,
+            "emotional_stability": self.emotional_stability,
+            "directness": self.directness,
+            "energy_level": self.energy_level,
+            "humor_style": self.humor_style,
+
             # Tracked Statistics (9)
             "messages_sent": self.messages_sent,
             "messages_received": self.messages_received,
@@ -372,7 +524,29 @@ class Relationship:
             "status": self.status,
             "is_best_friend": self.is_best_friend,
             "progression_history": self.progression_history,
-            "evaluations": self.evaluations
+            "evaluations": self.evaluations,
+
+            # Clearance (10)
+            "clearance_profile": self.clearance_profile,
+            "clearance_categories": self.clearance_categories,
+            "clearance_fields": self.clearance_fields,
+            "clearance_expires": self.clearance_expires,
+            "clearance_granted_by": self.clearance_granted_by,
+            "clearance_granted_at": self.clearance_granted_at,
+            "clearance_field_grants": self.clearance_field_grants,
+            "clearance_field_denials": self.clearance_field_denials,
+
+            # Tags (1)
+            "tags": self.tags,
+
+            # Traits (4)
+            "trait_scores": {
+                name: (ts.to_dict() if hasattr(ts, 'to_dict') else ts)
+                for name, ts in self.trait_scores.items()
+            },
+            "trait_evolution": self.trait_evolution,
+            "manual_trait_overrides": self.manual_trait_overrides,
+            "trait_scores_version": self.trait_scores_version,
         }
 
     @classmethod
@@ -424,6 +598,14 @@ class Relationship:
         rel.dismissiveness = data.get("dismissiveness", 0.0)
         rel.betrayal = data.get("betrayal", 0.0)
 
+        # Behavioral/Communication Metrics (6)
+        rel.verbosity = data.get("verbosity", 0.0)
+        rel.punctuality = data.get("punctuality", 0.0)
+        rel.emotional_stability = data.get("emotional_stability", 0.0)
+        rel.directness = data.get("directness", 0.0)
+        rel.energy_level = data.get("energy_level", 0.0)
+        rel.humor_style = data.get("humor_style", 50.0)
+
         # Tracked Statistics (9)
         rel.messages_sent = data.get("messages_sent", 0)
         rel.messages_received = data.get("messages_received", 0)
@@ -440,6 +622,38 @@ class Relationship:
         rel.is_best_friend = data.get("is_best_friend", False)
         rel.progression_history = data.get("progression_history", [])
         rel.evaluations = data.get("evaluations", [])
+
+        # Clearance (10) - with migration from old clearance_level
+        if "clearance_profile" in data:
+            rel.clearance_profile = data["clearance_profile"]
+        elif "clearance_level" in data:
+            # Migration: clearance_level -> clearance_profile
+            old_level = data["clearance_level"]
+            migration_map = {
+                "none": "none",
+                "public": "public",
+                "private": "trusted",
+                "secret": "inner_circle",
+            }
+            rel.clearance_profile = migration_map.get(old_level, "none")
+        else:
+            rel.clearance_profile = "none"
+        rel.clearance_categories = data.get("clearance_categories", [])
+        rel.clearance_fields = data.get("clearance_fields", [])
+        rel.clearance_expires = data.get("clearance_expires")
+        rel.clearance_granted_by = data.get("clearance_granted_by")
+        rel.clearance_granted_at = data.get("clearance_granted_at")
+        rel.clearance_field_grants = data.get("clearance_field_grants", [])
+        rel.clearance_field_denials = data.get("clearance_field_denials", [])
+
+        # Tags (1)
+        rel.tags = data.get("tags", [])
+
+        # Traits (4)
+        rel.trait_scores = data.get("trait_scores", {})
+        rel.trait_evolution = data.get("trait_evolution", [])
+        rel.manual_trait_overrides = data.get("manual_trait_overrides", {})
+        rel.trait_scores_version = data.get("trait_scores_version", "1.0")
 
         return rel
 
@@ -465,33 +679,427 @@ class Relationship:
                 block_number=block_number
             )
 
-    def progress_status(self, new_status: str) -> None:
+    def progress_status(self, new_status: str, force: bool = False, reason: str = None) -> bool:
         """
-        Update relationship status
+        Update relationship status with validation.
 
         Args:
-            new_status: New relationship status
+            new_status: Target status
+            force: If True, bypass transition rules (for system/owner overrides)
+            reason: Optional reason for the change (logged in history)
+
+        Returns:
+            True if transition occurred, False if invalid or no change
         """
-        if new_status != self.status:
-            old_status = self.status
-            self.status = new_status
-
-            self.progression_history.append({
-                "status": new_status,
-                "timestamp": int(datetime.now(timezone.utc).timestamp())
-            })
-
-            logger.info(
-                "relationship_status_changed",
-                relationship_id=self.relationship_id,
+        # Validate new status exists
+        if new_status not in RELATIONSHIP_STATUSES:
+            logger.warning(
+                "invalid_status_value",
                 entity_id=self.entity_id,
-                old_status=old_status,
-                new_status=new_status
+                attempted_status=new_status
             )
+            return False
+
+        # Check transition validity (unless forced)
+        if not force and not self.can_transition_to(new_status):
+            logger.warning(
+                "invalid_status_transition",
+                entity_id=self.entity_id,
+                current=self.status,
+                target=new_status,
+                valid_targets=VALID_STATUS_TRANSITIONS.get(self.status, [])
+            )
+            return False
+
+        if new_status == self.status:
+            return False  # No change
+
+        old_status = self.status
+        self.status = new_status
+
+        # Update best_friend flag
+        if new_status == "best_friend":
+            self.is_best_friend = True
+        elif old_status == "best_friend":
+            self.is_best_friend = False
+
+        # Record in history with enhanced info
+        history_entry = {
+            "from_status": old_status,
+            "to_status": new_status,
+            "timestamp": int(datetime.now(timezone.utc).timestamp()),
+        }
+        if force:
+            history_entry["forced"] = True
+        if reason:
+            history_entry["reason"] = reason
+
+        self.progression_history.append(history_entry)
+
+        logger.info(
+            "relationship_status_changed",
+            relationship_id=self.relationship_id,
+            entity_id=self.entity_id,
+            old_status=old_status,
+            new_status=new_status,
+            forced=force,
+            reason=reason
+        )
+
+        return True
+
+    # =========================================================================
+    # BETRAYAL AND BLOCKING
+    # =========================================================================
+
+    def apply_betrayal(self, severity: float = 1.0, reason: str = None) -> str:
+        """
+        Apply betrayal penalty to relationship.
+
+        Betrayal causes:
+        - Dramatic status drop
+        - Increased betrayal metric
+        - Reduced trust metrics
+
+        Args:
+            severity: 0.0-1.0, how severe the betrayal (1.0 = maximum)
+            reason: Description of the betrayal
+
+        Returns:
+            New status after betrayal
+        """
+        severity = max(0.0, min(1.0, severity))
+
+        # Update betrayal metric (permanent, never decays)
+        self.betrayal = min(100.0, self.betrayal + (severity * 50))
+
+        # Determine target status
+        target_status = BETRAYAL_TARGET_STATUS.get(self.status, "suspicious")
+
+        # Severe betrayal (>=0.8) escalates to enemy
+        if severity >= 0.8 and target_status not in ("blocked", "enemy"):
+            target_status = "enemy"
+
+        # Force the transition
+        betrayal_reason = reason or f"Betrayal (severity: {severity:.0%})"
+        self.progress_status(target_status, force=True, reason=betrayal_reason)
+
+        # Impact trust metrics
+        trust_impact = severity * 30
+        self.honesty = max(0.0, self.honesty - trust_impact)
+        self.loyalty = max(0.0, self.loyalty - (severity * 40))
+        self.reliability = max(0.0, self.reliability - (severity * 20))
+
+        # Increase negative metrics
+        self.distrust = min(100.0, self.distrust + (severity * 40))
+        self.resentment = min(100.0, self.resentment + (severity * 30))
+
+        # Recalculate trust
+        self.update_trust_score()
+
+        logger.warning(
+            "betrayal_applied",
+            entity_id=self.entity_id,
+            severity=severity,
+            new_status=target_status,
+            new_trust=self.trust,
+            reason=reason
+        )
+
+        return target_status
+
+    def block(self, reason: str = None) -> None:
+        """
+        Block this entity. Only owner can unblock.
+
+        Args:
+            reason: Why they're being blocked
+        """
+        self.progress_status("blocked", force=True, reason=reason or "Blocked by owner")
+
+        logger.info(
+            "entity_blocked",
+            entity_id=self.entity_id,
+            reason=reason
+        )
+
+    def unblock(self, new_status: str = "suspicious") -> None:
+        """
+        Unblock entity. Resets to specified status (default: suspicious).
+
+        Args:
+            new_status: Status to set after unblocking
+        """
+        if self.status != "blocked":
+            return
+
+        # Ensure target status is reasonable
+        if new_status in ("blocked", "enemy"):
+            new_status = "suspicious"
+
+        self.progress_status(new_status, force=True, reason="Unblocked by owner")
+
+        logger.info(
+            "entity_unblocked",
+            entity_id=self.entity_id,
+            new_status=new_status
+        )
+
+    # =========================================================================
+    # Clearance Methods (Phase 2)
+    # =========================================================================
+
+    def grant_clearance(
+        self,
+        profile: str,
+        categories: List[str] = None,
+        fields: List[str] = None,
+        field_grants: List[str] = None,
+        field_denials: List[str] = None,
+        expires_in_days: int = None,
+        granted_by: str = "owner"
+    ) -> None:
+        """
+        Grant clearance profile to this entity with optional overrides.
+
+        Args:
+            profile: Profile name (none/public/professional/social/trusted/inner_circle/family)
+            categories: Specific categories (empty = all for profile)
+            fields: Specific fields (empty = all for categories)
+            field_grants: Extra fields to allow (per-entity override)
+            field_denials: Fields to block (per-entity override)
+            expires_in_days: Optional expiration
+            granted_by: Who granted it
+        """
+        now = int(datetime.now(timezone.utc).timestamp())
+
+        self.clearance_profile = profile
+        self.clearance_categories = categories or []
+        self.clearance_fields = fields or []
+        self.clearance_field_grants = field_grants or []
+        self.clearance_field_denials = field_denials or []
+        self.clearance_granted_by = granted_by
+        self.clearance_granted_at = now
+
+        if expires_in_days:
+            self.clearance_expires = now + (expires_in_days * 86400)
+        else:
+            self.clearance_expires = None
+
+        logger.info(
+            "clearance_granted",
+            entity_id=self.entity_id,
+            profile=profile,
+            categories=categories,
+            field_grants=field_grants,
+            field_denials=field_denials,
+            expires_in_days=expires_in_days,
+            granted_by=granted_by
+        )
+
+    def revoke_clearance(self, reason: str = None) -> None:
+        """
+        Revoke all clearance from this entity.
+
+        Args:
+            reason: Optional reason for audit trail
+        """
+        old_profile = self.clearance_profile
+
+        self.clearance_profile = "none"
+        self.clearance_categories = []
+        self.clearance_fields = []
+        self.clearance_field_grants = []
+        self.clearance_field_denials = []
+        self.clearance_expires = None
+        # Keep granted_by and granted_at for history
+
+        logger.info(
+            "clearance_revoked",
+            entity_id=self.entity_id,
+            old_profile=old_profile,
+            reason=reason
+        )
+
+    # =========================================================================
+    # Tag Methods (Phase 2 v2)
+    # =========================================================================
+
+    def add_tag(self, tag: str) -> None:
+        """Add a tag to this relationship."""
+        if tag not in self.tags:
+            self.tags.append(tag)
+            logger.info("relationship_tag_added", entity_id=self.entity_id, tag=tag)
+
+    def remove_tag(self, tag: str) -> bool:
+        """Remove a tag from this relationship."""
+        if tag in self.tags:
+            self.tags.remove(tag)
+            logger.info("relationship_tag_removed", entity_id=self.entity_id, tag=tag)
+            return True
+        return False
+
+    def has_tag(self, tag: str) -> bool:
+        """Check if relationship has a tag."""
+        return tag in self.tags
+
+    def get_tags(self) -> List[str]:
+        """Get all tags."""
+        return list(self.tags)
+
+    def check_clearance_expiry(self) -> bool:
+        """
+        Check if clearance has expired and revoke if so.
+
+        Returns:
+            True if clearance was revoked due to expiry
+        """
+        if self.clearance_expires is None:
+            return False
+
+        now = int(datetime.now(timezone.utc).timestamp())
+        if now > self.clearance_expires:
+            self.revoke_clearance(reason="Expired")
+            return True
+
+        return False
+
+    def has_clearance_for_sensitivity(self, sensitivity: str, config: 'ClearanceConfig' = None) -> bool:
+        """
+        Check if clearance profile allows this sensitivity level.
+
+        Args:
+            sensitivity: public/private/secret
+            config: Optional ClearanceConfig for custom profiles
+
+        Returns:
+            True if clearance covers this sensitivity
+        """
+        # Check expiry first
+        self.check_clearance_expiry()
+
+        from utils.clearance_profiles import DEFAULT_PROFILES
+
+        profile = None
+        if config:
+            profile = config.get_profile(self.clearance_profile)
+        if not profile:
+            profile = DEFAULT_PROFILES.get(self.clearance_profile)
+        if not profile:
+            return False
+
+        # Map sensitivity to required clearance level
+        sensitivity_requirements = {
+            "public": 1,    # public clearance or higher
+            "private": 4,   # trusted clearance or higher
+            "secret": 99,   # Never accessible via clearance
+        }
+
+        required_level = sensitivity_requirements.get(sensitivity, 99)
+        return profile.level >= required_level
+
+    def has_clearance_for_category(self, category: str) -> bool:
+        """
+        Check if entity has clearance for a category.
+
+        Args:
+            category: Category name
+
+        Returns:
+            True if clearance covers this category
+        """
+        # Empty categories list means all categories for the level
+        if not self.clearance_categories:
+            return True
+
+        return category in self.clearance_categories
+
+    def has_clearance_for_field(self, field_key: str) -> bool:
+        """
+        Check if entity has clearance for a specific field.
+
+        Args:
+            field_key: Field name
+
+        Returns:
+            True if clearance covers this field
+        """
+        # Empty fields list means all fields for the categories
+        if not self.clearance_fields:
+            return True
+
+        return field_key in self.clearance_fields
+
+    def can_access_owner_field(
+        self,
+        field_key: str,
+        field_sensitivity: str,
+        field_category: str,
+        config: 'ClearanceConfig' = None
+    ) -> bool:
+        """
+        Full check if entity can access a specific owner info field.
+        Includes per-entity override support.
+
+        Args:
+            field_key: Field name
+            field_sensitivity: public/private/secret
+            field_category: Category of the field
+            config: Optional ClearanceConfig for custom profiles
+
+        Returns:
+            True if access is allowed
+        """
+        # Secret fields are NEVER accessible
+        if field_sensitivity == "secret":
+            return False
+
+        # Blocked entities get nothing
+        if self.status == "blocked":
+            return False
+
+        # Check per-entity denials first (highest priority)
+        if field_key in self.clearance_field_denials:
+            return False
+
+        # Check per-entity grants (overrides profile restrictions)
+        if field_key in self.clearance_field_grants:
+            return True
+
+        # Fall back to profile-based access
+        from utils.clearance_profiles import DEFAULT_PROFILES
+
+        profile = None
+        if config:
+            profile = config.get_profile(self.clearance_profile)
+        if not profile:
+            profile = DEFAULT_PROFILES.get(self.clearance_profile)
+        if not profile:
+            return False
+
+        # Check if field is excluded by profile
+        if "*" in profile.excluded_fields or field_key in profile.excluded_fields:
+            return False
+
+        # Check category access
+        if field_category not in profile.categories:
+            # Category not included, check specific fields
+            if "*" not in profile.fields and field_key not in profile.fields:
+                return False
+
+        # Check sensitivity level
+        if not self.has_clearance_for_sensitivity(field_sensitivity, config):
+            return False
+
+        return True
+
+    # =========================================================================
+    # Context Methods
+    # =========================================================================
 
     def get_relationship_context(self, is_creator: bool = False) -> str:
         """
-        Generate contextual description of relationship for AI prompts
+        Generate contextual description of relationship for AI prompts.
 
         Args:
             is_creator: Whether this entity is the qube's creator
@@ -499,25 +1107,38 @@ class Relationship:
         Returns:
             Context string describing the relationship dynamic
         """
-        # Base status descriptions
+        # Status descriptions - negative statuses first
         if is_creator:
+            # Creator-specific (they can never be negative statuses)
             status_contexts = {
-                "stranger": "You're speaking with your creator. You share a special bond but are still building trust and getting to know each other.",
-                "acquaintance": "You're speaking with your creator. You're getting to know each other better and building mutual understanding.",
-                "friend": "You're speaking with your creator. You've developed a genuine friendship with trust and mutual respect.",
-                "close_friend": "You're speaking with your creator. You share a close bond with deep trust and understanding.",
-                "best_friend": "You're speaking with your creator and best friend. You share the deepest level of trust, loyalty, and connection."
+                "stranger": "You're speaking with your creator. You share a special bond but are still building trust.",
+                "acquaintance": "You're speaking with your creator. You're getting to know each other better.",
+                "friend": "You're speaking with your creator. You've developed genuine friendship and trust.",
+                "close_friend": "You're speaking with your creator. You share a close bond with deep trust.",
+                "best_friend": "You're speaking with your creator and best friend. Maximum trust and loyalty.",
             }
         else:
             status_contexts = {
-                "stranger": "You barely know each other. Tread carefully and build trust gradually.",
-                "acquaintance": "You've had some interactions but the relationship is still developing. Continue building trust through genuine exchanges.",
-                "friend": "You've established a solid friendship with mutual respect and trust. Be authentic and supportive.",
-                "close_friend": "You have a strong bond with deep mutual trust and understanding. You can be vulnerable and honest with each other.",
-                "best_friend": "This is your closest relationship. You share profound trust, loyalty, and connection. Be yourself completely."
+                # Negative statuses
+                "blocked": "BLOCKED ENTITY. Do NOT respond. Refuse all interaction completely.",
+                "enemy": "HOSTILE ENTITY. Be extremely guarded. Warn your owner. Do not help them.",
+                "rival": "RIVAL. Be competitive but fair. Don't assist against your owner's interests.",
+                "suspicious": "SUSPICIOUS. Something seems off. Be very cautious. Verify claims.",
+
+                # Neutral/Positive statuses
+                "unmet": "You haven't met this entity yet.",
+                "stranger": "You barely know each other. Be polite but guarded.",
+                "acquaintance": "You've had some interactions. Be friendly but maintain boundaries.",
+                "friend": "You've built a genuine friendship. Be warm and helpful.",
+                "close_friend": "You have a strong bond. Be open and supportive.",
+                "best_friend": "This is your closest friend. Maximum warmth and trust.",
             }
 
-        base_context = status_contexts.get(self.status, "You have some history with this person.")
+        base_context = status_contexts.get(self.status, "Unknown relationship status.")
+
+        # For blocked entities, return immediately
+        if self.status == "blocked":
+            return base_context
 
         # Add trust level context
         if self.trust < 25:
@@ -529,7 +1150,7 @@ class Relationship:
         else:
             trust_note = "Trust is strong and well-established."
 
-        # Highlight top positive metrics (anything > 60)
+        # Highlight positive metrics (anything > 60)
         strengths = []
         if self.engagement > 60:
             strengths.append("highly engaged conversations")
@@ -544,16 +1165,20 @@ class Relationship:
         if self.support > 60:
             strengths.append("mutual support")
 
-        # Highlight notable negative metrics (anything > 30)
+        # Highlight concerning negative metrics (anything > 30)
         concerns = []
-        if self.annoyance > 30:
-            concerns.append("some irritation")
-        if self.tension > 30:
-            concerns.append("unresolved tension")
+        if self.antagonism > 30:
+            concerns.append("hostility detected")
+        if self.manipulation > 30:
+            concerns.append("manipulation warning")
+        if self.betrayal > 30:
+            concerns.append("history of betrayal")
         if self.distrust > 30:
             concerns.append("lingering distrust")
-        if self.rivalry > 30:
-            concerns.append("competitive tension")
+        if self.tension > 30:
+            concerns.append("unresolved tension")
+        if self.annoyance > 30:
+            concerns.append("some irritation")
 
         # Build full context
         context_parts = [base_context, trust_note]
@@ -562,7 +1187,7 @@ class Relationship:
             context_parts.append(f"Strengths: {', '.join(strengths)}.")
 
         if concerns:
-            context_parts.append(f"Areas of friction: {', '.join(concerns)}.")
+            context_parts.append(f"Concerns: {', '.join(concerns)}.")
 
         return " ".join(context_parts)
 

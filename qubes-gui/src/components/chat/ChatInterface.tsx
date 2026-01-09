@@ -591,13 +591,6 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes }) =
     return () => window.removeEventListener('keydown', handleEscapeKey);
   }, [selectedQubes, clearMessages]);
 
-  // Debug: Log qube data when selection changes
-  useEffect(() => {
-    if (selectedQubes.length > 0) {
-      console.log('Selected Qube Data:', selectedQubes[0]);
-    }
-  }, [selectedQubes]);
-
   // Clear pending states when switching Qubes
   useEffect(() => {
     // Clear any pending responses from previous Qube

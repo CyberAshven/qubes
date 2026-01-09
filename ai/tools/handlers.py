@@ -657,6 +657,38 @@ def register_default_tools(registry: ToolRegistry) -> None:
         handler=lambda params: chess_move_handler(qube, params)
     ))
 
+    # Remember About Owner Tool
+    registry.register(ToolDefinition(
+        name="remember_about_owner",
+        description="Store personal information about your owner when they share it with you. Use this when your owner tells you things like their name, birthday, preferences, family members, or any other personal details they want you to remember. The information is stored encrypted and used to personalize your interactions. IMPORTANT: Only use this for information your owner explicitly shares - never infer or assume personal details.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "category": {
+                    "type": "string",
+                    "enum": ["standard", "physical", "preferences", "people", "dates", "dynamic"],
+                    "description": "Category for the information: standard (name, nickname, occupation), physical (eye color, hair), preferences (favorite things), people (family, pets), dates (birthday, anniversary), dynamic (anything else)"
+                },
+                "key": {
+                    "type": "string",
+                    "description": "Field name for the information (e.g., 'name', 'birthday', 'favorite_color', 'pet_name')"
+                },
+                "value": {
+                    "type": "string",
+                    "description": "The information to remember"
+                },
+                "sensitivity": {
+                    "type": "string",
+                    "enum": ["public", "private", "secret"],
+                    "description": "Privacy level: public (can share with anyone), private (only share in private chats), secret (never share). Default is private for most info.",
+                    "default": "private"
+                }
+            },
+            "required": ["category", "key", "value"]
+        },
+        handler=lambda params: remember_about_owner_handler(qube, params)
+    ))
+
     logger.info("default_tools_registered", tool_count=len(registry.tools), qube_id=qube.qube_id)
 
 
@@ -2808,6 +2840,94 @@ async def chess_move_handler(qube, params: Dict[str, Any]) -> Dict[str, Any]:
 
     except Exception as e:
         logger.error("chess_move_handler_failed", qube_id=qube.qube_id, exc_info=True)
+        return {
+            "error": str(e),
+            "success": False
+        }
+
+
+async def remember_about_owner_handler(qube, params: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Store personal information about the owner.
+
+    Args:
+        params: {
+            "category": str (standard, physical, preferences, people, dates, dynamic),
+            "key": str (field name),
+            "value": str (information to store),
+            "sensitivity": str (public, private, secret)
+        }
+
+    Returns:
+        {"success": bool, "message": str} or {"error": str}
+    """
+    try:
+        from utils.owner_info_manager import OwnerInfoManager, DEFAULT_SENSITIVITIES
+        from crypto.keys import serialize_private_key
+        import hashlib
+
+        category = params.get("category", "dynamic")
+        key = params.get("key")
+        value = params.get("value")
+        sensitivity = params.get("sensitivity")
+
+        if not key or not value:
+            return {
+                "error": "Both key and value are required",
+                "success": False
+            }
+
+        # Normalize key - remove spaces and convert to snake_case
+        key = key.lower().replace(" ", "_").replace("-", "_")
+
+        # Use default sensitivity if not provided
+        if not sensitivity:
+            sensitivity = DEFAULT_SENSITIVITIES.get(key, "private")
+
+        # Validate category
+        valid_categories = ["standard", "physical", "preferences", "people", "dates", "dynamic"]
+        if category not in valid_categories:
+            category = "dynamic"
+
+        # Derive encryption key from qube's private key
+        private_key_bytes = serialize_private_key(qube.private_key)
+        encryption_key = hashlib.sha256(private_key_bytes).digest()
+
+        # Initialize manager and set field
+        manager = OwnerInfoManager(qube.data_dir, encryption_key)
+        success = manager.set_field(
+            category=category,
+            key=key,
+            value=value,
+            sensitivity=sensitivity,
+            source="explicit",  # Info came directly from owner
+            confidence=100  # High confidence for explicitly stated info
+        )
+
+        if success:
+            sensitivity_emoji = {"public": "🌐", "private": "🔒", "secret": "🔐"}.get(sensitivity, "🔒")
+            logger.info(
+                "owner_info_stored_via_tool",
+                qube_id=qube.qube_id,
+                category=category,
+                key=key,
+                sensitivity=sensitivity
+            )
+            return {
+                "success": True,
+                "message": f"I'll remember that! {sensitivity_emoji} Stored '{key}' as {sensitivity} information.",
+                "category": category,
+                "key": key,
+                "sensitivity": sensitivity
+            }
+        else:
+            return {
+                "error": "Failed to store information",
+                "success": False
+            }
+
+    except Exception as e:
+        logger.error("remember_about_owner_handler_failed", qube_id=qube.qube_id, error=str(e), exc_info=True)
         return {
             "error": str(e),
             "success": False

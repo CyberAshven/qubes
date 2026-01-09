@@ -18,11 +18,8 @@ export function ExitConfirmDialog({ userId, password, qubes, onComplete, onCance
       setProcessing(true);
       setError(null);
 
-      console.log('Anchoring sessions for', qubes.length, 'qubes...');
-
       // Anchor sessions for all qubes
       for (const qube of qubes) {
-        console.log('Anchoring session for qube:', qube.qube_id);
         await invoke('anchor_session', {
           userId,
           qubeId: qube.qube_id,
@@ -30,7 +27,6 @@ export function ExitConfirmDialog({ userId, password, qubes, onComplete, onCance
         });
       }
 
-      console.log('All sessions anchored, calling onComplete');
       onComplete();
     } catch (err) {
       console.error('Failed to anchor sessions:', err);
@@ -44,11 +40,8 @@ export function ExitConfirmDialog({ userId, password, qubes, onComplete, onCance
       setProcessing(true);
       setError(null);
 
-      console.log('Discarding sessions for', qubes.length, 'qubes...');
-
       // Discard sessions for all qubes
       for (const qube of qubes) {
-        console.log('Discarding session for qube:', qube.qube_id);
         await invoke('discard_session', {
           userId,
           qubeId: qube.qube_id,
@@ -56,7 +49,6 @@ export function ExitConfirmDialog({ userId, password, qubes, onComplete, onCance
         });
       }
 
-      console.log('All sessions discarded, calling onComplete');
       onComplete();
     } catch (err) {
       console.error('Failed to discard sessions:', err);

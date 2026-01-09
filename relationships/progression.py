@@ -99,7 +99,8 @@ class RelationshipProgressionManager:
         )
 
         if new_status != current_status:
-            relationship.progress_status(new_status)
+            # Use force=True because progression system has its own validation
+            relationship.progress_status(new_status, force=True, reason="Trust-based progression")
 
             logger.info(
                 "relationship_progressed",
@@ -288,7 +289,7 @@ class RelationshipProgressionManager:
         # Demote current best friend if exists
         if current_best_friend and current_best_friend.entity_id != relationship.entity_id:
             current_best_friend.is_best_friend = False
-            current_best_friend.progress_status("close_friend")
+            current_best_friend.progress_status("close_friend", force=True, reason="Demoted - new best friend designated")
 
             logger.info(
                 "best_friend_demoted",
@@ -298,7 +299,7 @@ class RelationshipProgressionManager:
 
         # Promote to best friend
         relationship.is_best_friend = True
-        relationship.progress_status("best_friend")
+        relationship.progress_status("best_friend", force=True, reason="Designated as best friend")
 
         logger.info(
             "best_friend_designated",

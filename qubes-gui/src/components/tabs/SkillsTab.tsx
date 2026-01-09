@@ -364,7 +364,6 @@ export const SkillsTab: React.FC<SkillsTabProps> = ({ qubes }) => {
 
         // If no skills exist or empty, initialize with defaults
         if (!response.success || !response.skills || response.skills.length === 0) {
-          console.log('No skills found, initializing defaults');
           loadedSkills = generateSkillsForQube(selectedQube.qube_id);
 
           // Save the initialized skills to backend

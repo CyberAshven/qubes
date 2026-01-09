@@ -131,8 +131,6 @@ export const P2PChatInterface: React.FC<P2PChatInterfaceProps> = ({ selectedQube
     const ws = new WebSocket(`wss://qube.cash/api/v2/conversation/ws/${sessionId}`);
 
     ws.onopen = () => {
-      console.log('P2P WebSocket connected');
-
       // Send auth message (server expects 'auth' type, not 'join')
       ws.send(JSON.stringify({
         type: 'auth',
@@ -154,7 +152,6 @@ export const P2PChatInterface: React.FC<P2PChatInterfaceProps> = ({ selectedQube
     };
 
     ws.onclose = () => {
-      console.log('P2P WebSocket disconnected');
       setWsConnected(false);
     };
 
@@ -173,7 +170,6 @@ export const P2PChatInterface: React.FC<P2PChatInterfaceProps> = ({ selectedQube
   const handleWebSocketMessage = useCallback(async (data: any) => {
     switch (data.type) {
       case 'auth_success':
-        console.log('P2P WebSocket authenticated');
         setWsConnected(true);
         break;
 
@@ -246,11 +242,9 @@ export const P2PChatInterface: React.FC<P2PChatInterfaceProps> = ({ selectedQube
         break;
 
       case 'participant_joined':
-        console.log('Participant joined:', data.participant);
         break;
 
       case 'participant_left':
-        console.log('Participant left:', data.commitment);
         break;
     }
   }, [selectedQubes, conversationId, processingResponse, session, userId, password, primaryQube, getLocalQubeIds, getRemoteConnectionsJson]);
@@ -364,12 +358,6 @@ export const P2PChatInterface: React.FC<P2PChatInterfaceProps> = ({ selectedQube
 
       if (!conversationStarted) {
         // First message - start the P2P conversation
-        console.log('🚀 Starting P2P conversation with:', {
-          localQubes: localQubeIds,
-          sessionId: session.session_id,
-          message: messageContent.substring(0, 50)
-        });
-
         const result = await invoke<{
           success: boolean;
           conversation_id?: string;
@@ -425,11 +413,6 @@ export const P2PChatInterface: React.FC<P2PChatInterfaceProps> = ({ selectedQube
         }
       } else {
         // Subsequent message - inject user message
-        console.log('💬 Sending user message in P2P conversation:', {
-          conversationId,
-          message: messageContent.substring(0, 50)
-        });
-
         const result = await invoke<{
           success: boolean;
           user_message?: any;

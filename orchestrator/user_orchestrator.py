@@ -746,7 +746,7 @@ class UserOrchestrator:
         # Save nft_metadata.json
         qube_dir = self.data_dir / "qubes" / f"{qube.name}_{qube.qube_id}"
         nft_metadata_path = qube_dir / "chain" / "nft_metadata.json"
-        with open(nft_metadata_path, "w") as f:
+        with open(nft_metadata_path, "w", encoding="utf-8") as f:
             json.dump(nft_metadata, f, indent=2)
         logger.info("nft_metadata_saved", path=str(nft_metadata_path))
 
@@ -819,7 +819,7 @@ class UserOrchestrator:
             "created_at": datetime.now().isoformat()
         }
 
-        with open(pending_file, "w") as f:
+        with open(pending_file, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
 
         logger.debug("pending_registration_saved", registration_id=pending.registration_id)
@@ -831,17 +831,23 @@ class UserOrchestrator:
         """Load pending registration from disk"""
         pending_file = self.data_dir / "pending_minting" / f"{registration_id}.json"
 
+        logger.debug("loading_pending_registration", path=str(pending_file), exists=pending_file.exists())
+
         if not pending_file.exists():
+            logger.warning("pending_file_not_found", path=str(pending_file))
             return None
 
-        with open(pending_file, "r") as f:
+        with open(pending_file, "r", encoding="utf-8") as f:
             data = json.load(f)
 
-        # Load the associated qube
+        logger.debug("pending_data_loaded", qube_id=data.get("qube_id"))
+
+        # Load the associated qube (skip NFT validation since it's still pending_minting)
         try:
-            qube = await self.load_qube(data["qube_id"])
+            qube = await self.load_qube(data["qube_id"], skip_nft_validation=True)
         except Exception as e:
-            logger.error("failed_to_load_pending_qube", error=str(e))
+            import traceback
+            logger.error("failed_to_load_pending_qube", error=str(e), traceback=traceback.format_exc())
             return None
 
         # Parse expires_at
@@ -885,7 +891,7 @@ class UserOrchestrator:
         registrations = []
         for pending_file in pending_dir.glob("*.json"):
             try:
-                with open(pending_file, "r") as f:
+                with open(pending_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 registrations.append(data)
             except Exception as e:
@@ -893,13 +899,14 @@ class UserOrchestrator:
 
         return registrations
 
-    async def load_qube(self, qube_id: str, force_reload: bool = False) -> Qube:
+    async def load_qube(self, qube_id: str, force_reload: bool = False, skip_nft_validation: bool = False) -> Qube:
         """
         Load existing Qube from storage
 
         Args:
             qube_id: Qube ID to load
             force_reload: If True, reload qube even if already in memory (refreshes API keys)
+            skip_nft_validation: If True, skip NFT category validation (used during finalization)
 
         Returns:
             Loaded Qube instance
@@ -908,7 +915,7 @@ class UserOrchestrator:
             QubesError: If Qube not found or load fails
         """
         try:
-            logger.info("loading_qube", qube_id=qube_id[:16] + "...", force_reload=force_reload)
+            logger.info("loading_qube", qube_id=qube_id[:16] + "...", force_reload=force_reload, skip_nft_validation=skip_nft_validation)
 
             if qube_id in self.qubes and not force_reload:
                 logger.debug("qube_already_loaded", qube_id=qube_id[:16] + "...")
@@ -944,18 +951,22 @@ class UserOrchestrator:
             # Defense-in-depth: Validate official Qubes category
             # This should never trigger since minting is mandatory at creation,
             # but protects against corrupted data or tampering
-            from core.official_category import is_official_qube
-            nft_category_id = qube.genesis_block.nft_category_id if hasattr(qube.genesis_block, 'nft_category_id') else None
-            if not nft_category_id:
-                raise QubesError(
-                    f"Qube {qube_id} is not minted. Minting is required.",
-                    context={"qube_id": qube_id}
-                )
-            if not is_official_qube(nft_category_id):
-                raise QubesError(
-                    f"Qube {qube_id} has invalid category ID. Not an official Qube.",
-                    context={"qube_id": qube_id, "category_id": nft_category_id[:16] + "..."}
-                )
+            # Skip validation during finalization (when qube still has pending_minting status)
+            if not skip_nft_validation:
+                from core.official_category import is_official_qube
+                nft_category_id = qube.genesis_block.nft_category_id if hasattr(qube.genesis_block, 'nft_category_id') else None
+                if not nft_category_id:
+                    raise QubesError(
+                        f"Qube {qube_id} is not minted. Minting is required.",
+                        context={"qube_id": qube_id}
+                    )
+                if not is_official_qube(nft_category_id):
+                    raise QubesError(
+                        f"Qube {qube_id} has invalid category ID. Not an official Qube.",
+                        context={"qube_id": qube_id, "category_id": nft_category_id[:16] + "..."}
+                    )
+            else:
+                logger.debug("skipping_nft_validation_for_finalization", qube_id=qube_id[:16] + "...")
 
             # Initialize AI with API keys from secure settings
             api_keys = self._get_api_keys()
@@ -1240,7 +1251,7 @@ class UserOrchestrator:
                         metadata_path = d / "qube.json"
 
                     if metadata_path.exists():
-                        with open(metadata_path, "r") as f:
+                        with open(metadata_path, "r", encoding="utf-8") as f:
                             data = json.load(f)
                             if data["qube_id"] == qube_id:
                                 qube_dir = d
@@ -1264,6 +1275,213 @@ class UserOrchestrator:
             logger.error("qube_deletion_failed", qube_id=qube_id, error=str(e), exc_info=True)
             raise QubesError(
                 f"Failed to delete Qube: {str(e)}",
+                context={"qube_id": qube_id},
+                cause=e
+            )
+
+    async def reset_qube(self, qube_id: str) -> bool:
+        """
+        Reset a Qube to fresh state while preserving identity.
+
+        This resets all accumulated state (blocks, relationships, skills progress,
+        snapshots, semantic index) while keeping the genesis block, NFT info,
+        and cryptographic identity intact.
+
+        WARNING: This is a destructive operation intended for development only.
+
+        Args:
+            qube_id: Qube ID to reset
+
+        Returns:
+            True if successfully reset
+
+        Raises:
+            QubesError: If reset fails
+        """
+        import shutil
+
+        try:
+            logger.info("resetting_qube", qube_id=qube_id[:16] + "...")
+
+            # Find qube directory
+            qubes_dir = self.data_dir / "qubes"
+            qube_dir = None
+
+            for d in qubes_dir.iterdir():
+                if d.is_dir():
+                    metadata_path = d / "chain" / "qube_metadata.json"
+                    if not metadata_path.exists():
+                        metadata_path = d / "qube.json"
+
+                    if metadata_path.exists():
+                        with open(metadata_path, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                            if data["qube_id"] == qube_id:
+                                qube_dir = d
+                                break
+
+            if not qube_dir:
+                raise QubesError(
+                    f"Qube not found: {qube_id}",
+                    context={"qube_id": qube_id}
+                )
+
+            # Remove from memory if loaded
+            if qube_id in self.qubes:
+                del self.qubes[qube_id]
+
+            # === DELETE accumulated state files ===
+
+            # 1. Delete all blocks except genesis (block 0)
+            blocks_dir = qube_dir / "blocks" / "permanent"
+            if blocks_dir.exists():
+                for block_file in blocks_dir.glob("*.json"):
+                    # Keep genesis block (starts with 0_GENESIS_)
+                    if not block_file.name.startswith("0_GENESIS_"):
+                        block_file.unlink()
+                        logger.debug("deleted_block", file=block_file.name)
+
+            # 2. Delete relationships folder
+            relationships_dir = qube_dir / "relationships"
+            if relationships_dir.exists():
+                shutil.rmtree(relationships_dir)
+                logger.debug("deleted_relationships_dir")
+
+            # 3. Delete snapshots folder
+            snapshots_dir = qube_dir / "snapshots"
+            if snapshots_dir.exists():
+                shutil.rmtree(snapshots_dir)
+                logger.debug("deleted_snapshots_dir")
+
+            # 4. Delete semantic index files
+            chain_dir = qube_dir / "chain"
+            semantic_index = chain_dir / "semantic_index.faiss"
+            semantic_mapping = chain_dir / "semantic_mapping.npy"
+            if semantic_index.exists():
+                semantic_index.unlink()
+                logger.debug("deleted_semantic_index")
+            if semantic_mapping.exists():
+                semantic_mapping.unlink()
+                logger.debug("deleted_semantic_mapping")
+
+            # 5. Delete audio cache
+            audio_dir = qube_dir / "audio"
+            if audio_dir.exists():
+                shutil.rmtree(audio_dir)
+                logger.debug("deleted_audio_dir")
+
+            # 6. Delete visualizer settings
+            visualizer_settings = qube_dir / "visualizer_settings.json"
+            if visualizer_settings.exists():
+                visualizer_settings.unlink()
+                logger.debug("deleted_visualizer_settings")
+
+            # 7. Delete session lock files
+            for lock_file in qube_dir.glob("*.lock"):
+                lock_file.unlink()
+                logger.debug("deleted_lock_file", file=lock_file.name)
+            for lock_file in chain_dir.glob("*.lock"):
+                lock_file.unlink()
+                logger.debug("deleted_chain_lock_file", file=lock_file.name)
+
+            # 8. Delete root-level chain_state.json if exists (duplicate)
+            root_chain_state = qube_dir / "chain_state.json"
+            if root_chain_state.exists():
+                root_chain_state.unlink()
+                logger.debug("deleted_root_chain_state")
+
+            # === RESET state files to fresh values ===
+
+            # 1. Reset chain_state.json
+            chain_state_path = chain_dir / "chain_state.json"
+            if chain_state_path.exists():
+                with open(chain_state_path, "r", encoding="utf-8") as f:
+                    chain_state = json.load(f)
+
+                # Get genesis block hash from genesis.json
+                genesis_path = chain_dir / "genesis.json"
+                genesis_hash = chain_state.get("last_block_hash", "0" * 64)
+                if genesis_path.exists():
+                    with open(genesis_path, "r", encoding="utf-8") as f:
+                        genesis_data = json.load(f)
+                        genesis_hash = genesis_data.get("block_hash", genesis_hash)
+
+                # Reset to fresh state
+                chain_state.update({
+                    "chain_length": 1,
+                    "last_block_number": 0,
+                    "last_block_hash": genesis_hash,
+                    "last_merkle_root": None,
+                    "last_anchor_block": None,
+                    "current_session_id": None,
+                    "session_block_count": 0,
+                    "next_negative_index": -1,
+                    "session_start_timestamp": None,
+                    "block_counts": {
+                        "GENESIS": 1,
+                        "THOUGHT": 0,
+                        "ACTION": 0,
+                        "OBSERVATION": 0,
+                        "MESSAGE": 0,
+                        "DECISION": 0,
+                        "MEMORY_ANCHOR": 0,
+                        "COLLABORATIVE_MEMORY": 0,
+                        "SUMMARY": 0
+                    },
+                    "total_tokens_used": 0,
+                    "total_api_cost": 0.0,
+                    "tokens_by_model": {},
+                    "api_calls_by_tool": {},
+                    "last_updated": int(datetime.now().timestamp()),
+                    "last_backup": None,
+                    "integrity_verified": True,
+                    "merkle_tree_valid": True,
+                    "avatar_description": None,
+                    "avatar_description_generated_at": None
+                })
+
+                with open(chain_state_path, "w", encoding="utf-8") as f:
+                    json.dump(chain_state, f, indent=2)
+                logger.debug("reset_chain_state")
+
+            # 2. Reset skills.json - set all XP to 0 and clear evidence
+            skills_dir = qube_dir / "skills"
+            skills_path = skills_dir / "skills.json"
+            if skills_path.exists():
+                with open(skills_path, "r", encoding="utf-8") as f:
+                    skills_data = json.load(f)
+
+                # Reset all skills
+                for skill in skills_data.get("skills", []):
+                    skill["xp"] = 0
+                    skill["level"] = 0
+                    skill["evidence"] = []
+
+                skills_data["last_updated"] = datetime.now().isoformat() + "Z"
+
+                with open(skills_path, "w", encoding="utf-8") as f:
+                    json.dump(skills_data, f, indent=2)
+                logger.debug("reset_skills")
+
+            # 3. Clear skill_history.json
+            skill_history_path = skills_dir / "skill_history.json"
+            if skill_history_path.exists():
+                with open(skill_history_path, "w", encoding="utf-8") as f:
+                    json.dump([], f)
+                logger.debug("reset_skill_history")
+
+            logger.info(
+                "qube_reset_successfully",
+                qube_id=qube_id[:16] + "...",
+                preserved=["genesis.json", "qube_metadata.json", "nft_metadata.json", "avatar"]
+            )
+
+            return True
+
+        except Exception as e:
+            logger.error("qube_reset_failed", qube_id=qube_id, error=str(e), exc_info=True)
+            raise QubesError(
+                f"Failed to reset Qube: {str(e)}",
                 context={"qube_id": qube_id},
                 cause=e
             )
@@ -1968,7 +2186,7 @@ class UserOrchestrator:
 
         # Save to disk (in chain/ folder to keep root clean)
         qube_metadata = qube_dir / "chain" / "qube_metadata.json"
-        with open(qube_metadata, "w") as f:
+        with open(qube_metadata, "w", encoding="utf-8") as f:
             json.dump(qube_data, f, indent=2)
 
         logger.debug("qube_saved", qube_id=qube.qube_id[:16] + "...")
@@ -2025,7 +2243,7 @@ class UserOrchestrator:
                     qube_metadata = qube_dir / "qube.json"
 
                 if qube_metadata.exists():
-                    with open(qube_metadata, "r") as f:
+                    with open(qube_metadata, "r", encoding="utf-8") as f:
                         qube_data = json.load(f)
                         if qube_data["qube_id"] == qube_id:
                             return qube_data

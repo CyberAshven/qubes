@@ -22,12 +22,20 @@ interface Relationship {
   entity_id: string;
   entity_name?: string;
   entity_type?: string;
-  status: 'unmet' | 'stranger' | 'acquaintance' | 'friend' | 'close_friend' | 'best_friend';
+  status: 'blocked' | 'enemy' | 'rival' | 'suspicious' | 'unmet' | 'stranger' | 'acquaintance' | 'friend' | 'close_friend' | 'best_friend';
   trust: number;
   friendship: number;
   messages_sent: number;
   messages_received: number;
   interaction_frequency_per_day?: number;
+  // Clearance System (v2)
+  clearance_profile?: 'none' | 'public' | 'professional' | 'social' | 'trusted' | 'inner_circle' | 'family';
+  clearance_categories?: string[];
+  clearance_expires_at?: number;
+  clearance_field_grants?: string[];
+  clearance_field_denials?: string[];
+  // Tags
+  tags?: string[];
 }
 
 interface NetworkGraphProps {
@@ -103,6 +111,10 @@ const NetworkGraphInner: React.FC<NetworkGraphProps> = ({
       case 'acquaintance': return '#ffaa00';
       case 'stranger': return '#888888';
       case 'unmet': return '#666666';
+      case 'suspicious': return '#ff8800';
+      case 'rival': return '#ff6600';
+      case 'enemy': return '#ff3333';
+      case 'blocked': return '#cc0000';
       default: return '#888888';
     }
   };
@@ -162,6 +174,54 @@ const NetworkGraphInner: React.FC<NetworkGraphProps> = ({
     }
   };
 
+  // Clearance profile border styles
+  const getClearanceBorderStyle = (profile?: string): { border: string; boxShadow?: string } => {
+    switch (profile) {
+      case 'family':
+        return { border: '3px solid #ff69b4', boxShadow: '0 0 8px #ff69b4, 0 0 16px #ff69b480' };
+      case 'inner_circle':
+        return { border: '3px solid #00ff88', boxShadow: '0 0 8px #00ff88, 0 0 16px #00ff8880' };
+      case 'trusted':
+        return { border: '3px solid #00cc66' };
+      case 'social':
+        return { border: '2px solid #ffaa00' };
+      case 'professional':
+        return { border: '2px solid #4a90e2' };
+      case 'public':
+        return { border: '2px solid #888888' };
+      case 'none':
+        return { border: '2px dashed #666666' };
+      default:
+        return { border: '2px solid #444444' };
+    }
+  };
+
+  const getClearanceIcon = (profile?: string): string => {
+    switch (profile) {
+      case 'family': return '👨‍👩‍👧‍👦';
+      case 'inner_circle': return '💫';
+      case 'trusted': return '🔒';
+      case 'social': return '🎉';
+      case 'professional': return '💼';
+      case 'public': return '🌐';
+      case 'none': return '🚫';
+      default: return '❓';
+    }
+  };
+
+  const formatClearanceLabel = (profile?: string): string => {
+    switch (profile) {
+      case 'none': return 'None';
+      case 'public': return 'Minimal';
+      case 'professional': return 'Limited';
+      case 'social': return 'Standard';
+      case 'trusted': return 'Extended';
+      case 'inner_circle': return 'Full';
+      case 'family': return 'Complete';
+      default: return 'None';
+    }
+  };
+
   // Calculate network stats
   const networkStats = useMemo(() => {
     if (!relationships || relationships.length === 0) return null;
@@ -197,20 +257,13 @@ const NetworkGraphInner: React.FC<NetworkGraphProps> = ({
       const savedViewport = loadViewportFromStorage(centerQube.qube_id);
       if (savedViewport) {
         reactFlowInstance.setViewport(savedViewport);
-        console.log('✅ Restored viewport:', savedViewport);
       }
       setIsInitialized(true);
     }
   }, [nodes, isInitialized, reactFlowInstance, centerQube.qube_id]);
 
   useEffect(() => {
-    console.log('🌐 NetworkGraph useEffect triggered:', {
-      relationshipsCount: relationships?.length,
-      centerQube: centerQube?.name
-    });
-
     if (!relationships || relationships.length === 0) {
-      console.log('❌ No relationships to render');
       setNodes([]);
       setEdges([]);
       setIsInitialized(false);
@@ -293,6 +346,14 @@ const NetworkGraphInner: React.FC<NetworkGraphProps> = ({
       const savedPosition = savedPositions?.[rel.entity_id];
       const position = savedPosition || defaultPosition;
 
+      // Get clearance border style
+      const clearanceBorderStyle = getClearanceBorderStyle(rel.clearance_profile);
+
+      // Get tags (show max 2)
+      const tags = rel.tags || [];
+      const displayTags = tags.slice(0, 2);
+      const extraTagCount = tags.length - 2;
+
       return {
         id: rel.entity_id,
         type: 'default',
@@ -318,9 +379,39 @@ const NetworkGraphInner: React.FC<NetworkGraphProps> = ({
               <div className="text-xs text-gray-400">
                 Trust: {Math.round(rel.trust)}
               </div>
-              {messageCount > 0 && (
-                <div className="text-xs text-gray-500">
-                  💬 {messageCount}
+
+              {/* Tags Display */}
+              {tags.length > 0 && (
+                <div className="flex items-center justify-center gap-0.5 mt-1 flex-wrap">
+                  {displayTags.map((tag, i) => (
+                    <span
+                      key={i}
+                      className="px-1 py-0 text-[9px] bg-accent-secondary/30 text-accent-secondary rounded"
+                      title={tag}
+                    >
+                      {tag.length > 6 ? tag.substring(0, 6) + '..' : tag}
+                    </span>
+                  ))}
+                  {extraTagCount > 0 && (
+                    <span className="text-[9px] text-gray-500">+{extraTagCount}</span>
+                  )}
+                </div>
+              )}
+
+              {/* Clearance Badge */}
+              {rel.clearance_profile && rel.clearance_profile !== 'none' && (
+                <div
+                  className="mt-1 text-[9px] px-1.5 py-0.5 rounded-full inline-flex items-center gap-0.5"
+                  style={{
+                    background: getClearanceBorderStyle(rel.clearance_profile).border.includes('#')
+                      ? getClearanceBorderStyle(rel.clearance_profile).border.split(' ').pop() + '30'
+                      : '#44444430',
+                    border: `1px solid ${getClearanceBorderStyle(rel.clearance_profile).border.split(' ').pop() || '#444'}`,
+                  }}
+                  title={`Clearance: ${formatClearanceLabel(rel.clearance_profile)}`}
+                >
+                  <span className="text-[8px]">{getClearanceIcon(rel.clearance_profile)}</span>
+                  <span className="text-gray-300">{formatClearanceLabel(rel.clearance_profile)}</span>
                 </div>
               )}
             </div>
@@ -332,10 +423,10 @@ const NetworkGraphInner: React.FC<NetworkGraphProps> = ({
           background: hoveredNode === rel.entity_id
             ? `${getStatusColor(rel.status)}40`
             : `${getStatusColor(rel.status)}20`,
-          border: `2px solid ${getStatusColor(rel.status)}`,
+          ...clearanceBorderStyle,
           borderRadius: '12px',
           width: width,
-          height: height,
+          height: height + (tags.length > 0 ? 15 : 0) + (rel.clearance_profile && rel.clearance_profile !== 'none' ? 20 : 0),
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
@@ -387,13 +478,6 @@ const NetworkGraphInner: React.FC<NetworkGraphProps> = ({
           relationship: rel,
         },
       };
-    });
-
-    console.log('✅ Created nodes and edges:', {
-      totalNodes: [centerNode, ...relationshipNodes].length,
-      totalEdges: relationshipEdges.length,
-      centerNode,
-      relationshipNodes
     });
 
     setNodes([centerNode, ...relationshipNodes]);
@@ -493,7 +577,7 @@ const NetworkGraphInner: React.FC<NetworkGraphProps> = ({
 
         {/* Legend Panel */}
         <Panel position="bottom-right">
-          <div className="bg-glass-bg/95 backdrop-blur-sm rounded-lg p-3 shadow-lg border border-glass-border">
+          <div className="bg-glass-bg/95 backdrop-blur-sm rounded-lg p-3 shadow-lg border border-glass-border max-h-[400px] overflow-y-auto">
             <h3 className="text-sm font-bold text-accent-primary mb-2">Legend</h3>
             <div className="space-y-2 text-xs">
               {/* Node Size */}
@@ -508,9 +592,44 @@ const NetworkGraphInner: React.FC<NetworkGraphProps> = ({
                 <div className="text-text-tertiary">Message Count</div>
               </div>
 
-              {/* Colors */}
+              {/* Clearance Borders */}
               <div>
-                <div className="font-semibold text-text-secondary mb-1">Status Colors</div>
+                <div className="font-semibold text-text-secondary mb-1">Clearance (Border)</div>
+                <div className="space-y-0.5">
+                  <div className="flex items-center gap-2">
+                    <div className="w-4 h-3 rounded" style={{ border: '2px solid #ff69b4', boxShadow: '0 0 4px #ff69b4' }}></div>
+                    <span className="text-text-tertiary">👨‍👩‍👧‍👦 Complete</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="w-4 h-3 rounded" style={{ border: '2px solid #00ff88', boxShadow: '0 0 4px #00ff88' }}></div>
+                    <span className="text-text-tertiary">💫 Full</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="w-4 h-3 rounded" style={{ border: '2px solid #00cc66' }}></div>
+                    <span className="text-text-tertiary">🔒 Extended</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="w-4 h-3 rounded" style={{ border: '2px solid #ffaa00' }}></div>
+                    <span className="text-text-tertiary">🎉 Standard</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="w-4 h-3 rounded" style={{ border: '2px solid #4a90e2' }}></div>
+                    <span className="text-text-tertiary">💼 Limited</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="w-4 h-3 rounded" style={{ border: '2px solid #888' }}></div>
+                    <span className="text-text-tertiary">🌐 Minimal</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="w-4 h-3 rounded" style={{ border: '2px dashed #666' }}></div>
+                    <span className="text-text-tertiary">🚫 None</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Status Colors */}
+              <div>
+                <div className="font-semibold text-text-secondary mb-1">Status (Background)</div>
                 <div className="space-y-0.5">
                   <div className="flex items-center gap-2">
                     <div className="w-3 h-3 rounded-full" style={{ background: '#ff69b4' }}></div>

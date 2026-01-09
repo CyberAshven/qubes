@@ -40,7 +40,6 @@ export const TypewriterText: React.FC<TypewriterTextProps> = ({ text, audioEleme
     const updateText = () => {
       // If component became hidden, force complete immediately
       if (!isComponentVisible) {
-        console.log('[TypewriterText] Component hidden during animation - force completing');
         setDisplayedText(text);
         onCompleteRef.current?.();
         return;
@@ -79,32 +78,18 @@ export const TypewriterText: React.FC<TypewriterTextProps> = ({ text, audioEleme
       }
     };
 
-    // Check if audio is already playing/ended when we mount
-    console.log('[TypewriterText] Mounted, checking audio state...', {
-      paused: audioElement.paused,
-      ended: audioElement.ended,
-      currentTime: audioElement.currentTime,
-      duration: audioElement.duration,
-      readyState: audioElement.readyState,
-      src: audioElement.src?.substring(0, 100),
-      networkState: audioElement.networkState,
-      error: audioElement.error
-    });
-
     // DON'T bail out on error or ended state!
     // The audio element might be in a stale state from the previous playback.
     // We'll wait for the 'play' event which fires when the NEW audio starts.
     // If the audio truly never plays, the parent will handle timeout/cleanup.
 
     const handlePlay = () => {
-      console.log('[TypewriterText] Audio play event received, starting animation');
       animationFrame = requestAnimationFrame(updateText);
     };
 
     // Handle visibility changes - force complete when hidden
     const handleVisibilityChange = () => {
       if (document.hidden) {
-        console.log('[TypewriterText] Page hidden - force completing animation');
         isComponentVisible = false;
         if (animationFrame) {
           cancelAnimationFrame(animationFrame);
@@ -130,11 +115,9 @@ export const TypewriterText: React.FC<TypewriterTextProps> = ({ text, audioEleme
     // audio starts, when currentTime is still exactly 0 (race condition)
     if (!audioElement.paused && audioElement.readyState >= 2) {
       // Audio is actually playing with data, start animation immediately
-      console.log('[TypewriterText] Audio is playing with data, starting animation');
       animationFrame = requestAnimationFrame(updateText);
-    } else {
-      console.log('[TypewriterText] Waiting for play event... (paused:', audioElement.paused, 'readyState:', audioElement.readyState, 'currentTime:', audioElement.currentTime, ')');
     }
+    // Otherwise wait for play event
 
     return () => {
       audioElement.removeEventListener('play', handlePlay);

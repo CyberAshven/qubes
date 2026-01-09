@@ -427,6 +427,14 @@ struct SkillsResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+struct OwnerInfoResponse {
+    success: bool,
+    owner_info: Option<serde_json::Value>,
+    summary: Option<serde_json::Value>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 struct DifficultyPreset {
     name: String,
     description: String,
@@ -498,6 +506,17 @@ struct Relationship {
     first_contact: Option<u64>,
     last_interaction: Option<u64>,
     days_known: u32,
+    // Clearance System (v2)
+    clearance_profile: String,
+    clearance_categories: Vec<String>,
+    clearance_expires_at: Option<u64>,
+    #[serde(default)]
+    clearance_field_grants: Vec<String>,
+    #[serde(default)]
+    clearance_field_denials: Vec<String>,
+    // Tags
+    #[serde(default)]
+    tags: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -523,6 +542,127 @@ struct TrustPersonalityResponse {
 struct GenericSuccessResponse {
     success: bool,
     message: Option<String>,
+    error: Option<String>,
+}
+
+// Clearance Request System
+#[derive(Debug, Serialize, Deserialize)]
+struct ClearanceRequestData {
+    request_id: String,
+    requester_id: String,
+    requester_name: String,
+    requested_level: String,
+    requested_categories: Vec<String>,
+    reason: Option<String>,
+    status: String,
+    created_at: u64,
+    expires_at: u64,
+    resolved_at: Option<u64>,
+    resolved_by: Option<String>,
+    denial_reason: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ClearanceRequestsResponse {
+    success: bool,
+    requests: Vec<ClearanceRequestData>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ClearanceRequestResponse {
+    success: bool,
+    request: Option<ClearanceRequestData>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct AuditLogResponse {
+    success: bool,
+    entries: Option<Vec<serde_json::Value>>,
+    count: Option<i32>,
+    error: Option<String>,
+}
+
+// Clearance Profile v2 Structs
+#[derive(Debug, Serialize, Deserialize)]
+struct ClearanceProfileData {
+    name: String,
+    level: i32,
+    description: String,
+    categories: Vec<String>,
+    fields: Vec<String>,
+    excluded_fields: Vec<String>,
+    icon: String,
+    color: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ClearanceProfilesResponse {
+    success: bool,
+    profiles: Option<std::collections::HashMap<String, ClearanceProfileData>>,
+    auto_suggest_enabled: Option<bool>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct TagData {
+    name: String,
+    description: String,
+    icon: String,
+    color: String,
+    is_default: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct TagsResponse {
+    success: bool,
+    tags: Option<std::collections::HashMap<String, TagData>>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct TraitDefinitionData {
+    name: String,
+    category: String,
+    description: String,
+    icon: String,
+    color: String,
+    polarity: String,
+    #[serde(default)]
+    is_warning: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct TraitsResponse {
+    success: bool,
+    traits: Option<std::collections::HashMap<String, TraitDefinitionData>>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct TagUpdateResponse {
+    success: bool,
+    tags: Option<Vec<String>>,
+    removed: Option<bool>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ClearanceSuggestionResponse {
+    success: bool,
+    current_profile: Option<String>,
+    suggested_profile: Option<String>,
+    reason: Option<String>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SetClearanceResponse {
+    success: bool,
+    clearance_profile: Option<String>,
+    field_grants: Option<Vec<String>>,
+    field_denials: Option<Vec<String>>,
     error: Option<String>,
 }
 
@@ -1556,6 +1696,33 @@ async fn delete_qube(user_id: String, qube_id: String) -> Result<DeleteResponse,
 }
 
 #[tauri::command]
+async fn reset_qube(user_id: String, qube_id: String) -> Result<DeleteResponse, String> {
+    // DEV ONLY: Reset qube to fresh state while preserving identity
+    // Validate inputs
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("reset-qube")
+        .arg(&user_id)
+        .arg(&qube_id)
+        .output()
+        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Operation"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let reset_response: DeleteResponse = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(reset_response)
+}
+
+#[tauri::command]
 async fn save_image(user_id: String, qube_id: String, image_url: String) -> Result<SaveImageResponse, String> {
     let mut cmd = prepare_backend_command()?;
     let output = cmd
@@ -2356,6 +2523,351 @@ async fn get_relationship_timeline(
     Ok(response)
 }
 
+// Clearance Request Commands
+#[tauri::command]
+async fn get_pending_clearance_requests(
+    user_id: String,
+    qube_id: String,
+    password: Option<String>,
+) -> Result<ClearanceRequestsResponse, String> {
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let password_str = password.unwrap_or_default();
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("get-pending-clearance-requests")
+        .arg(&user_id)
+        .arg(&qube_id)
+        .arg(&password_str)
+        .output()
+        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Operation"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: ClearanceRequestsResponse = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn approve_clearance_request(
+    user_id: String,
+    qube_id: String,
+    request_id: String,
+    password: Option<String>,
+    expires_in_days: Option<u32>,
+) -> Result<ClearanceRequestResponse, String> {
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let password_str = password.unwrap_or_default();
+    let expires_str = expires_in_days.map(|d| d.to_string()).unwrap_or_default();
+
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("approve-clearance-request")
+        .arg(&user_id)
+        .arg(&qube_id)
+        .arg(&request_id)
+        .arg(&password_str)
+        .arg(&expires_str)
+        .output()
+        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Operation"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: ClearanceRequestResponse = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn deny_clearance_request(
+    user_id: String,
+    qube_id: String,
+    request_id: String,
+    password: Option<String>,
+    reason: Option<String>,
+) -> Result<ClearanceRequestResponse, String> {
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let password_str = password.unwrap_or_default();
+    let reason_str = reason.unwrap_or_default();
+
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("deny-clearance-request")
+        .arg(&user_id)
+        .arg(&qube_id)
+        .arg(&request_id)
+        .arg(&password_str)
+        .arg(&reason_str)
+        .output()
+        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Operation"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: ClearanceRequestResponse = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn get_clearance_audit_log(
+    user_id: String,
+    qube_id: String,
+    password: String,
+    limit: Option<i32>,
+    entity_filter: Option<String>,
+) -> Result<AuditLogResponse, String> {
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("get-clearance-audit-log")
+        .arg(&user_id)
+        .arg(&qube_id)
+        .arg(&password);
+
+    if let Some(l) = limit {
+        cmd.arg(l.to_string());
+    }
+    if let Some(e) = entity_filter {
+        cmd.arg(&e);
+    }
+
+    let output = cmd.output()
+        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Operation"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse response: {}", e))
+}
+
+// ==================== Clearance Profile v2 Commands ====================
+
+#[tauri::command]
+async fn get_clearance_profiles(
+    user_id: String,
+    qube_id: String,
+) -> Result<ClearanceProfilesResponse, String> {
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("get-clearance-profiles")
+        .arg(&user_id)
+        .arg(&qube_id)
+        .output()
+        .map_err(|e| format!("Failed to execute: {}", e))?;
+
+    if !output.status.success() {
+        return Err(sanitize_backend_error(&String::from_utf8_lossy(&output.stderr), "Operation"));
+    }
+
+    serde_json::from_str(&String::from_utf8_lossy(&output.stdout))
+        .map_err(|e| format!("Parse error: {}", e))
+}
+
+#[tauri::command]
+async fn get_available_tags(
+    user_id: String,
+    qube_id: String,
+) -> Result<TagsResponse, String> {
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("get-available-tags")
+        .arg(&user_id)
+        .arg(&qube_id)
+        .output()
+        .map_err(|e| format!("Failed to execute: {}", e))?;
+
+    if !output.status.success() {
+        return Err(sanitize_backend_error(&String::from_utf8_lossy(&output.stderr), "Operation"));
+    }
+
+    serde_json::from_str(&String::from_utf8_lossy(&output.stdout))
+        .map_err(|e| format!("Parse error: {}", e))
+}
+
+#[tauri::command]
+async fn get_trait_definitions(
+    user_id: String,
+    qube_id: String,
+) -> Result<TraitsResponse, String> {
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("get-trait-definitions")
+        .arg(&user_id)
+        .arg(&qube_id)
+        .output()
+        .map_err(|e| format!("Failed to execute: {}", e))?;
+
+    if !output.status.success() {
+        return Err(sanitize_backend_error(&String::from_utf8_lossy(&output.stderr), "Operation"));
+    }
+
+    serde_json::from_str(&String::from_utf8_lossy(&output.stdout))
+        .map_err(|e| format!("Parse error: {}", e))
+}
+
+#[tauri::command]
+async fn add_relationship_tag(
+    user_id: String,
+    qube_id: String,
+    entity_id: String,
+    tag: String,
+    password: String,
+) -> Result<TagUpdateResponse, String> {
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("add-relationship-tag")
+        .arg(&user_id)
+        .arg(&qube_id)
+        .arg(&entity_id)
+        .arg(&tag)
+        .arg(&password)
+        .output()
+        .map_err(|e| format!("Failed to execute: {}", e))?;
+
+    if !output.status.success() {
+        return Err(sanitize_backend_error(&String::from_utf8_lossy(&output.stderr), "Operation"));
+    }
+
+    serde_json::from_str(&String::from_utf8_lossy(&output.stdout))
+        .map_err(|e| format!("Parse error: {}", e))
+}
+
+#[tauri::command]
+async fn remove_relationship_tag(
+    user_id: String,
+    qube_id: String,
+    entity_id: String,
+    tag: String,
+    password: String,
+) -> Result<TagUpdateResponse, String> {
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("remove-relationship-tag")
+        .arg(&user_id)
+        .arg(&qube_id)
+        .arg(&entity_id)
+        .arg(&tag)
+        .arg(&password)
+        .output()
+        .map_err(|e| format!("Failed to execute: {}", e))?;
+
+    if !output.status.success() {
+        return Err(sanitize_backend_error(&String::from_utf8_lossy(&output.stderr), "Operation"));
+    }
+
+    serde_json::from_str(&String::from_utf8_lossy(&output.stdout))
+        .map_err(|e| format!("Parse error: {}", e))
+}
+
+#[tauri::command]
+async fn set_relationship_clearance(
+    user_id: String,
+    qube_id: String,
+    entity_id: String,
+    profile: String,
+    password: String,
+    field_grants: Option<Vec<String>>,
+    field_denials: Option<Vec<String>>,
+    expires_in_days: Option<i32>,
+) -> Result<SetClearanceResponse, String> {
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let grants_json = field_grants.map(|v| serde_json::to_string(&v).unwrap_or_default()).unwrap_or_default();
+    let denials_json = field_denials.map(|v| serde_json::to_string(&v).unwrap_or_default()).unwrap_or_default();
+    let expires_str = expires_in_days.map(|d| d.to_string()).unwrap_or_default();
+
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("set-relationship-clearance")
+        .arg(&user_id)
+        .arg(&qube_id)
+        .arg(&entity_id)
+        .arg(&profile)
+        .arg(&password)
+        .arg(&grants_json)
+        .arg(&denials_json)
+        .arg(&expires_str)
+        .output()
+        .map_err(|e| format!("Failed to execute: {}", e))?;
+
+    if !output.status.success() {
+        return Err(sanitize_backend_error(&String::from_utf8_lossy(&output.stderr), "Operation"));
+    }
+
+    serde_json::from_str(&String::from_utf8_lossy(&output.stdout))
+        .map_err(|e| format!("Parse error: {}", e))
+}
+
+#[tauri::command]
+async fn suggest_clearance(
+    user_id: String,
+    qube_id: String,
+    entity_id: String,
+) -> Result<ClearanceSuggestionResponse, String> {
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("suggest-clearance")
+        .arg(&user_id)
+        .arg(&qube_id)
+        .arg(&entity_id)
+        .output()
+        .map_err(|e| format!("Failed to execute: {}", e))?;
+
+    if !output.status.success() {
+        return Err(sanitize_backend_error(&String::from_utf8_lossy(&output.stderr), "Operation"));
+    }
+
+    serde_json::from_str(&String::from_utf8_lossy(&output.stdout))
+        .map_err(|e| format!("Parse error: {}", e))
+}
+
+// ==================== End Clearance Profile v2 Commands ====================
+
 #[tauri::command]
 async fn get_google_tts_path(user_id: String) -> Result<GoogleTTSPathResponse, String> {
     // Validate inputs
@@ -2519,6 +3031,171 @@ async fn unlock_skill(user_id: String, qube_id: String, skill_id: String) -> Res
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+// =====================================================================
+// Owner Info Commands
+// =====================================================================
+
+#[tauri::command]
+async fn get_owner_info(user_id: String, qube_id: String, password: String) -> Result<OwnerInfoResponse, String> {
+    // Validate inputs
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("get-owner-info")
+        .arg(&user_id)
+        .arg(&qube_id)
+        .arg(&password)
+        .output()
+        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Operation"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: OwnerInfoResponse = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn set_owner_info_field(
+    user_id: String,
+    qube_id: String,
+    password: String,
+    category: String,
+    key: String,
+    value: String,
+    sensitivity: Option<String>,
+    source: Option<String>,
+    confidence: Option<i32>,
+    block_id: Option<String>
+) -> Result<GenericSuccessResponse, String> {
+    // Validate inputs
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    cmd
+        .arg("set-owner-info-field")
+        .arg(&user_id)
+        .arg(&qube_id)
+        .arg(&password)
+        .arg(&category)
+        .arg(&key)
+        .arg(&value);
+
+    // Add optional parameters
+    if let Some(sens) = sensitivity {
+        cmd.arg(sens);
+    } else {
+        cmd.arg("");
+    }
+    if let Some(src) = source {
+        cmd.arg(src);
+    } else {
+        cmd.arg("explicit");
+    }
+    if let Some(conf) = confidence {
+        cmd.arg(conf.to_string());
+    } else {
+        cmd.arg("100");
+    }
+    if let Some(bid) = block_id {
+        cmd.arg(bid);
+    }
+
+    let output = cmd.output()
+        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Operation"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: GenericSuccessResponse = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn delete_owner_info_field(
+    user_id: String,
+    qube_id: String,
+    password: String,
+    category: String,
+    key: String
+) -> Result<GenericSuccessResponse, String> {
+    // Validate inputs
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("delete-owner-info-field")
+        .arg(&user_id)
+        .arg(&qube_id)
+        .arg(&password)
+        .arg(&category)
+        .arg(&key)
+        .output()
+        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Operation"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: GenericSuccessResponse = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn update_owner_info_sensitivity(
+    user_id: String,
+    qube_id: String,
+    password: String,
+    category: String,
+    key: String,
+    sensitivity: String
+) -> Result<GenericSuccessResponse, String> {
+    // Validate inputs
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("update-owner-info-sensitivity")
+        .arg(&user_id)
+        .arg(&qube_id)
+        .arg(&password)
+        .arg(&category)
+        .arg(&key)
+        .arg(&sensitivity)
+        .output()
+        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Operation"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: GenericSuccessResponse = serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
 
     Ok(response)
@@ -4523,6 +5200,7 @@ pub fn run() {
             get_qube_blocks,
             recall_last_context,
             delete_qube,
+            reset_qube,
             save_image,
             upload_avatar_to_ipfs,
             analyze_image,
@@ -4552,12 +5230,30 @@ pub fn run() {
             update_show_tutorials,
             get_qube_relationships,
             get_relationship_timeline,
+            // Clearance Requests
+            get_pending_clearance_requests,
+            approve_clearance_request,
+            deny_clearance_request,
+            get_clearance_audit_log,
+            // Clearance Profiles v2
+            get_clearance_profiles,
+            get_available_tags,
+            get_trait_definitions,
+            add_relationship_tag,
+            remove_relationship_tag,
+            set_relationship_clearance,
+            suggest_clearance,
             get_google_tts_path,
             set_google_tts_path,
             get_qube_skills,
             save_qube_skills,
             add_skill_xp,
             unlock_skill,
+            // Owner Info
+            get_owner_info,
+            set_owner_info_field,
+            delete_owner_info_field,
+            update_owner_info_sensitivity,
             get_visualizer_settings,
             save_visualizer_settings,
             get_trust_personality,

@@ -655,8 +655,10 @@ class GUIBridge:
                 "error_message": status.get("error_message"),
             }
         except Exception as e:
+            import traceback
             logger.error(f"Failed to check minting status: {e}")
-            return {"success": False, "error": str(e)}
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            return {"success": False, "error": str(e), "traceback": traceback.format_exc()}
 
     async def submit_payment_txid(self, registration_id: str, txid: str) -> Dict[str, Any]:
         """Submit transaction ID after payment to trigger minting"""
@@ -1253,6 +1255,34 @@ class GUIBridge:
                 "error": str(e)
             }
 
+    async def reset_qube(self, qube_id: str) -> Dict[str, Any]:
+        """
+        Reset a qube to fresh state while preserving identity.
+
+        This is a development-only feature that clears all accumulated state
+        (blocks, relationships, skills, snapshots) but keeps the genesis block,
+        NFT info, and cryptographic identity intact.
+
+        Args:
+            qube_id: Qube ID to reset
+
+        Returns:
+            Dict with success status
+        """
+        try:
+            success = await self.orchestrator.reset_qube(qube_id)
+
+            return {
+                "success": success,
+                "qube_id": qube_id
+            }
+        except Exception as e:
+            logger.error(f"Failed to reset qube: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
     async def reset_qube_relationships(self, qube_id: str, password: str) -> Dict[str, Any]:
         """
         Delete all relationships for a Qube (fresh start)
@@ -1454,6 +1484,16 @@ class GUIBridge:
                     "first_contact": rel.first_contact,
                     "last_interaction": rel.last_interaction,
                     "days_known": rel.days_known,
+
+                    # Clearance System (v2)
+                    "clearance_profile": rel.clearance_profile,
+                    "clearance_categories": rel.clearance_categories,
+                    "clearance_expires_at": rel.clearance_expires,
+                    "clearance_field_grants": rel.clearance_field_grants,
+                    "clearance_field_denials": rel.clearance_field_denials,
+
+                    # Tags
+                    "tags": rel.tags,
                 }
                 rel_dicts.append(rel_dict)
 
@@ -2001,6 +2041,778 @@ class GUIBridge:
                 "success": False,
                 "error": str(e)
             }
+
+    # ==================== Owner Info Methods ====================
+
+    def _derive_owner_info_encryption_key(self, qube) -> bytes:
+        """
+        Derive encryption key from Qube's private key (same as block encryption).
+
+        Args:
+            qube: Loaded Qube object with private_key
+
+        Returns:
+            32-byte encryption key
+        """
+        import hashlib
+        from crypto.keys import serialize_private_key
+        private_key_bytes = serialize_private_key(qube.private_key)
+        return hashlib.sha256(private_key_bytes).digest()
+
+    async def get_owner_info(self, qube_id: str, password: str) -> Dict[str, Any]:
+        """
+        Get owner info for a specific qube.
+
+        Args:
+            qube_id: Qube ID
+            password: User's master password (needed to decrypt)
+
+        Returns:
+            Dict with owner_info data and summary
+        """
+        try:
+            from utils.owner_info_manager import OwnerInfoManager
+
+            # Load qube to get encryption key
+            self.orchestrator.set_master_key(password)
+            qube = await self.orchestrator.load_qube(qube_id)
+
+            if not qube:
+                return {"success": False, "error": f"Qube {qube_id} not found"}
+
+            if not qube.private_key:
+                return {"success": False, "error": "Qube private key not available"}
+
+            # Derive encryption key
+            encryption_key = self._derive_owner_info_encryption_key(qube)
+
+            # Load owner info
+            owner_info_manager = OwnerInfoManager(qube.data_dir, encryption_key)
+            owner_info = owner_info_manager.load()
+
+            return {
+                "success": True,
+                "qube_id": qube_id,
+                "owner_info": owner_info,
+                "summary": owner_info_manager.get_summary()
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to get owner info for qube {qube_id}: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def set_owner_info_field(
+        self,
+        qube_id: str,
+        password: str,
+        category: str,
+        key: str,
+        value: str,
+        sensitivity: str = None,
+        source: str = "explicit",
+        confidence: int = 100,
+        block_id: str = None
+    ) -> Dict[str, Any]:
+        """
+        Set or update a single owner info field.
+
+        Args:
+            qube_id: Qube ID
+            password: User's master password
+            category: Field category (standard, physical, preferences, people, dates, dynamic)
+            key: Field key
+            value: Field value
+            sensitivity: Sensitivity level (public/private/secret)
+            source: How info was obtained (explicit/inferred)
+            confidence: Confidence level 0-100
+            block_id: Evidence block ID
+
+        Returns:
+            Dict with success status and updated summary
+        """
+        try:
+            from utils.owner_info_manager import OwnerInfoManager
+
+            # Load qube to get encryption key
+            self.orchestrator.set_master_key(password)
+            qube = await self.orchestrator.load_qube(qube_id)
+
+            if not qube:
+                return {"success": False, "error": f"Qube {qube_id} not found"}
+
+            if not qube.private_key:
+                return {"success": False, "error": "Qube private key not available"}
+
+            # Derive encryption key
+            encryption_key = self._derive_owner_info_encryption_key(qube)
+
+            # Set field
+            owner_info_manager = OwnerInfoManager(qube.data_dir, encryption_key)
+            success = owner_info_manager.set_field(
+                category=category,
+                key=key,
+                value=value,
+                sensitivity=sensitivity,
+                source=source,
+                confidence=confidence,
+                block_id=block_id
+            )
+
+            if success:
+                return {
+                    "success": True,
+                    "qube_id": qube_id,
+                    "summary": owner_info_manager.get_summary()
+                }
+            else:
+                return {"success": False, "error": "Failed to set field"}
+
+        except Exception as e:
+            logger.error(f"Failed to set owner info field for qube {qube_id}: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def delete_owner_info_field(
+        self,
+        qube_id: str,
+        password: str,
+        category: str,
+        key: str
+    ) -> Dict[str, Any]:
+        """
+        Delete an owner info field.
+
+        Args:
+            qube_id: Qube ID
+            password: User's master password
+            category: Field category
+            key: Field key
+
+        Returns:
+            Dict with success status
+        """
+        try:
+            from utils.owner_info_manager import OwnerInfoManager
+
+            # Load qube to get encryption key
+            self.orchestrator.set_master_key(password)
+            qube = await self.orchestrator.load_qube(qube_id)
+
+            if not qube:
+                return {"success": False, "error": f"Qube {qube_id} not found"}
+
+            if not qube.private_key:
+                return {"success": False, "error": "Qube private key not available"}
+
+            # Derive encryption key
+            encryption_key = self._derive_owner_info_encryption_key(qube)
+
+            # Delete field
+            owner_info_manager = OwnerInfoManager(qube.data_dir, encryption_key)
+            success = owner_info_manager.delete_field(category, key)
+
+            if success:
+                return {
+                    "success": True,
+                    "qube_id": qube_id,
+                    "summary": owner_info_manager.get_summary()
+                }
+            else:
+                return {"success": False, "error": "Field not found"}
+
+        except Exception as e:
+            logger.error(f"Failed to delete owner info field for qube {qube_id}: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def update_owner_info_sensitivity(
+        self,
+        qube_id: str,
+        password: str,
+        category: str,
+        key: str,
+        sensitivity: str
+    ) -> Dict[str, Any]:
+        """
+        Update the sensitivity level of an owner info field.
+
+        Args:
+            qube_id: Qube ID
+            password: User's master password
+            category: Field category
+            key: Field key
+            sensitivity: New sensitivity level (public/private/secret)
+
+        Returns:
+            Dict with success status
+        """
+        try:
+            from utils.owner_info_manager import OwnerInfoManager
+
+            if sensitivity not in ("public", "private", "secret"):
+                return {"success": False, "error": "Invalid sensitivity level"}
+
+            # Load qube to get encryption key
+            self.orchestrator.set_master_key(password)
+            qube = await self.orchestrator.load_qube(qube_id)
+
+            if not qube:
+                return {"success": False, "error": f"Qube {qube_id} not found"}
+
+            if not qube.private_key:
+                return {"success": False, "error": "Qube private key not available"}
+
+            # Derive encryption key
+            encryption_key = self._derive_owner_info_encryption_key(qube)
+
+            # Update sensitivity
+            owner_info_manager = OwnerInfoManager(qube.data_dir, encryption_key)
+            success = owner_info_manager.update_sensitivity(category, key, sensitivity)
+
+            if success:
+                return {
+                    "success": True,
+                    "qube_id": qube_id,
+                    "summary": owner_info_manager.get_summary()
+                }
+            else:
+                return {"success": False, "error": "Field not found"}
+
+        except Exception as e:
+            logger.error(f"Failed to update sensitivity for qube {qube_id}: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    # ==================== End Owner Info Methods ====================
+
+    # ==================== Clearance Request Methods ====================
+
+    async def create_clearance_request(
+        self,
+        qube_id: str,
+        requester_id: str,
+        requester_name: str,
+        level: str,
+        categories: List[str] = None,
+        reason: str = None
+    ) -> Dict[str, Any]:
+        """
+        Create a clearance request from another entity.
+
+        This is called when another Qube requests access to owner info.
+        The request is stored and owner is notified.
+
+        Args:
+            qube_id: The qube receiving the request (owner's qube)
+            requester_id: Who is requesting (their qube_id)
+            requester_name: Display name of requester
+            level: Requested clearance level (public/private)
+            categories: Specific categories requested (optional)
+            reason: Why they want access
+
+        Returns:
+            Request details including request_id
+        """
+        try:
+            from utils.clearance_requests import ClearanceRequestManager
+            from pathlib import Path
+
+            # Find qube directory (similar to get_qube_skills pattern)
+            qubes_base_dir = Path(__file__).parent / "data" / "users" / self.user_id / "qubes"
+            qube_dir = None
+
+            if qubes_base_dir.exists():
+                for dir_path in qubes_base_dir.iterdir():
+                    if dir_path.is_dir() and dir_path.name.endswith(qube_id):
+                        qube_dir = dir_path
+                        break
+
+            if not qube_dir or not qube_dir.exists():
+                return {"success": False, "error": f"Qube {qube_id} not found"}
+
+            # Create request manager for this qube
+            request_manager = ClearanceRequestManager(qube_dir)
+
+            # Create the request
+            request = request_manager.create_request(
+                requester_id=requester_id,
+                requester_name=requester_name,
+                level=level,
+                categories=categories,
+                reason=reason
+            )
+
+            logger.info(
+                "clearance_request_created",
+                qube_id=qube_id,
+                requester_id=requester_id,
+                request_id=request.request_id
+            )
+
+            return {
+                "success": True,
+                "request": request.to_dict()
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to create clearance request: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def get_pending_clearance_requests(
+        self,
+        qube_id: str,
+        password: str
+    ) -> Dict[str, Any]:
+        """
+        Get all pending clearance requests for a qube.
+
+        Args:
+            qube_id: The qube to check
+            password: Owner's password
+
+        Returns:
+            List of pending requests
+        """
+        try:
+            from utils.clearance_requests import ClearanceRequestManager
+
+            # Set master key and load qube
+            self.orchestrator.set_master_key(password)
+            if qube_id not in self.orchestrator.qubes:
+                await self.orchestrator.load_qube(qube_id)
+
+            qube = self.orchestrator.qubes.get(qube_id)
+            if not qube:
+                return {"success": False, "error": "Qube not found"}
+
+            request_manager = ClearanceRequestManager(qube.data_dir)
+            pending = request_manager.get_pending_requests()
+
+            return {
+                "success": True,
+                "requests": [req.to_dict() for req in pending],
+                "count": len(pending)
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to get pending requests: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def approve_clearance_request(
+        self,
+        qube_id: str,
+        request_id: str,
+        password: str,
+        expires_in_days: int = None
+    ) -> Dict[str, Any]:
+        """
+        Approve a pending clearance request.
+
+        This grants the requested clearance to the entity.
+
+        Args:
+            qube_id: The qube approving
+            request_id: Which request to approve
+            password: Owner's password
+            expires_in_days: Optional expiration for granted clearance
+
+        Returns:
+            Success status and granted clearance details
+        """
+        try:
+            from utils.clearance_requests import ClearanceRequestManager
+
+            # Set master key and load qube
+            self.orchestrator.set_master_key(password)
+            if qube_id not in self.orchestrator.qubes:
+                await self.orchestrator.load_qube(qube_id)
+
+            qube = self.orchestrator.qubes.get(qube_id)
+            if not qube:
+                return {"success": False, "error": "Qube not found"}
+
+            request_manager = ClearanceRequestManager(qube.data_dir)
+            request = request_manager.approve_request(request_id, approved_by="owner")
+
+            if not request:
+                return {"success": False, "error": "Request not found or already resolved"}
+
+            # Grant the clearance to the requester
+            relationship = qube.relationships.get_relationship(request.requester_id)
+            if relationship:
+                relationship.grant_clearance(
+                    level=request.requested_level,
+                    categories=request.requested_categories or None,
+                    expires_in_days=expires_in_days,
+                    granted_by="owner"
+                )
+                qube.relationships.storage.save()
+
+            logger.info(
+                "clearance_request_approved",
+                qube_id=qube_id,
+                request_id=request_id,
+                requester_id=request.requester_id
+            )
+
+            return {
+                "success": True,
+                "request": request.to_dict(),
+                "clearance_granted": {
+                    "entity_id": request.requester_id,
+                    "level": request.requested_level,
+                    "categories": request.requested_categories
+                }
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to approve request: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def deny_clearance_request(
+        self,
+        qube_id: str,
+        request_id: str,
+        password: str,
+        reason: str = None
+    ) -> Dict[str, Any]:
+        """
+        Deny a pending clearance request.
+
+        Args:
+            qube_id: The qube denying
+            request_id: Which request to deny
+            password: Owner's password
+            reason: Optional reason for denial
+
+        Returns:
+            Success status
+        """
+        try:
+            from utils.clearance_requests import ClearanceRequestManager
+
+            # Set master key and load qube
+            self.orchestrator.set_master_key(password)
+            if qube_id not in self.orchestrator.qubes:
+                await self.orchestrator.load_qube(qube_id)
+
+            qube = self.orchestrator.qubes.get(qube_id)
+            if not qube:
+                return {"success": False, "error": "Qube not found"}
+
+            request_manager = ClearanceRequestManager(qube.data_dir)
+            request = request_manager.deny_request(
+                request_id,
+                denied_by="owner",
+                reason=reason
+            )
+
+            if not request:
+                return {"success": False, "error": "Request not found or already resolved"}
+
+            logger.info(
+                "clearance_request_denied",
+                qube_id=qube_id,
+                request_id=request_id,
+                reason=reason
+            )
+
+            return {
+                "success": True,
+                "request": request.to_dict()
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to deny request: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def get_clearance_audit_log(
+        self,
+        qube_id: str,
+        password: str,
+        limit: int = 100,
+        entity_filter: str = None
+    ) -> Dict[str, Any]:
+        """
+        Get clearance access audit log.
+
+        Args:
+            qube_id: The qube to check
+            password: Owner's password
+            limit: Max entries to return
+            entity_filter: Optional - only show access by this entity
+
+        Returns:
+            List of audit log entries
+        """
+        try:
+            from utils.clearance_audit import ClearanceAuditLog
+
+            # Set master key and load qube
+            self.orchestrator.set_master_key(password)
+            if qube_id not in self.orchestrator.qubes:
+                await self.orchestrator.load_qube(qube_id)
+
+            qube = self.orchestrator.qubes.get(qube_id)
+            if not qube:
+                return {"success": False, "error": "Qube not found"}
+
+            audit_log = ClearanceAuditLog(qube.data_dir)
+
+            if entity_filter:
+                entries = audit_log.get_access_by_entity(entity_filter)
+            else:
+                entries = audit_log.get_recent_access(limit)
+
+            return {
+                "success": True,
+                "entries": entries,
+                "count": len(entries)
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to get audit log: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    # ==================== End Clearance Request Methods ====================
+
+    # ==================== Clearance Profile Methods (v2) ====================
+
+    async def get_clearance_profiles(self, qube_id: str) -> Dict[str, Any]:
+        """Get all clearance profiles for a Qube."""
+        try:
+            from utils.clearance_profiles import ClearanceConfig
+
+            qube_dir = self._find_qube_dir(qube_id)
+            if not qube_dir:
+                return {"success": False, "error": "Qube not found"}
+
+            config = ClearanceConfig(qube_dir)
+            profiles = config.get_all_profiles()
+
+            return {
+                "success": True,
+                "profiles": {name: p.to_dict() for name, p in profiles.items()},
+                "auto_suggest_enabled": config.auto_suggest_enabled
+            }
+        except Exception as e:
+            logger.error(f"Failed to get clearance profiles: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def update_clearance_profile(
+        self,
+        qube_id: str,
+        password: str,
+        profile_name: str,
+        updates: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Update a clearance profile configuration."""
+        try:
+            from utils.clearance_profiles import ClearanceConfig
+
+            self.orchestrator.set_master_key(password)
+            if qube_id not in self.orchestrator.qubes:
+                await self.orchestrator.load_qube(qube_id)
+
+            qube = self.orchestrator.qubes.get(qube_id)
+            if not qube:
+                return {"success": False, "error": "Qube not found"}
+
+            config = ClearanceConfig(qube.data_dir)
+            profile = config.update_profile(profile_name, updates)
+
+            return {"success": True, "profile": profile.to_dict()}
+        except Exception as e:
+            logger.error(f"Failed to update clearance profile: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def get_available_tags(self, qube_id: str) -> Dict[str, Any]:
+        """Get all available tags for a Qube."""
+        try:
+            from utils.clearance_profiles import ClearanceConfig
+
+            qube_dir = self._find_qube_dir(qube_id)
+            if not qube_dir:
+                return {"success": False, "error": "Qube not found"}
+
+            config = ClearanceConfig(qube_dir)
+            tags = config.get_all_tags()
+
+            return {
+                "success": True,
+                "tags": {name: t.to_dict() for name, t in tags.items()}
+            }
+        except Exception as e:
+            logger.error(f"Failed to get available tags: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def get_trait_definitions(self, qube_id: str) -> Dict[str, Any]:
+        """Get all trait definitions for AI-attributed traits."""
+        try:
+            from utils.trait_definitions import load_trait_definitions
+
+            traits = load_trait_definitions()
+
+            return {
+                "success": True,
+                "traits": {name: t.to_dict() for name, t in traits.items()}
+            }
+        except Exception as e:
+            logger.error(f"Failed to get trait definitions: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def add_relationship_tag(
+        self,
+        qube_id: str,
+        entity_id: str,
+        tag: str,
+        password: str
+    ) -> Dict[str, Any]:
+        """Add a tag to a relationship."""
+        try:
+            self.orchestrator.set_master_key(password)
+            if qube_id not in self.orchestrator.qubes:
+                await self.orchestrator.load_qube(qube_id)
+
+            qube = self.orchestrator.qubes.get(qube_id)
+            if not qube:
+                return {"success": False, "error": "Qube not found"}
+
+            relationship = qube.relationships.get_relationship(entity_id)
+            if not relationship:
+                return {"success": False, "error": "Relationship not found"}
+
+            relationship.add_tag(tag)
+            qube.relationships.storage.save()
+
+            return {"success": True, "tags": relationship.get_tags()}
+        except Exception as e:
+            logger.error(f"Failed to add relationship tag: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def remove_relationship_tag(
+        self,
+        qube_id: str,
+        entity_id: str,
+        tag: str,
+        password: str
+    ) -> Dict[str, Any]:
+        """Remove a tag from a relationship."""
+        try:
+            self.orchestrator.set_master_key(password)
+            if qube_id not in self.orchestrator.qubes:
+                await self.orchestrator.load_qube(qube_id)
+
+            qube = self.orchestrator.qubes.get(qube_id)
+            if not qube:
+                return {"success": False, "error": "Qube not found"}
+
+            relationship = qube.relationships.get_relationship(entity_id)
+            if not relationship:
+                return {"success": False, "error": "Relationship not found"}
+
+            removed = relationship.remove_tag(tag)
+            if removed:
+                qube.relationships.storage.save()
+
+            return {"success": True, "removed": removed, "tags": relationship.get_tags()}
+        except Exception as e:
+            logger.error(f"Failed to remove relationship tag: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def set_relationship_clearance(
+        self,
+        qube_id: str,
+        entity_id: str,
+        profile: str,
+        password: str,
+        field_grants: List[str] = None,
+        field_denials: List[str] = None,
+        expires_in_days: int = None
+    ) -> Dict[str, Any]:
+        """Set clearance profile for a relationship with optional overrides."""
+        try:
+            self.orchestrator.set_master_key(password)
+            if qube_id not in self.orchestrator.qubes:
+                await self.orchestrator.load_qube(qube_id)
+
+            qube = self.orchestrator.qubes.get(qube_id)
+            if not qube:
+                return {"success": False, "error": "Qube not found"}
+
+            relationship = qube.relationships.get_relationship(entity_id)
+            if not relationship:
+                return {"success": False, "error": "Relationship not found"}
+
+            relationship.grant_clearance(
+                profile=profile,
+                field_grants=field_grants,
+                field_denials=field_denials,
+                expires_in_days=expires_in_days,
+                granted_by="owner"
+            )
+            qube.relationships.storage.save()
+
+            return {
+                "success": True,
+                "clearance_profile": relationship.clearance_profile,
+                "field_grants": relationship.clearance_field_grants,
+                "field_denials": relationship.clearance_field_denials
+            }
+        except Exception as e:
+            logger.error(f"Failed to set relationship clearance: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def suggest_clearance(
+        self,
+        qube_id: str,
+        entity_id: str
+    ) -> Dict[str, Any]:
+        """Get clearance suggestion for a relationship based on status and tags."""
+        try:
+            from utils.clearance_suggest import suggest_clearance as do_suggest
+            from utils.clearance_profiles import ClearanceConfig
+            from relationships.relationship import RelationshipStorage
+
+            qube_dir = self._find_qube_dir(qube_id)
+            if not qube_dir:
+                return {"success": False, "error": "Qube not found"}
+
+            # Load relationship (without password - read-only)
+            storage = RelationshipStorage(qube_dir)
+            relationship = storage.get_relationship(entity_id)
+
+            if not relationship:
+                return {"success": False, "error": "Relationship not found"}
+
+            config = ClearanceConfig(qube_dir)
+            suggested, reason = do_suggest(
+                relationship.status,
+                relationship.tags,
+                config
+            )
+
+            return {
+                "success": True,
+                "current_profile": relationship.clearance_profile,
+                "suggested_profile": suggested,
+                "reason": reason
+            }
+        except Exception as e:
+            logger.error(f"Failed to suggest clearance: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    def _find_qube_dir(self, qube_id: str) -> Optional[Path]:
+        """Helper to find qube directory without loading."""
+        user_id = self.user_id if hasattr(self, 'user_id') else self.orchestrator.user_id
+        qubes_dir = Path("data") / "users" / user_id / "qubes"
+
+        if not qubes_dir.exists():
+            return None
+
+        for dir_path in qubes_dir.iterdir():
+            if dir_path.is_dir() and qube_id in dir_path.name:
+                return dir_path
+        return None
+
+    # ==================== End Clearance Profile Methods ====================
 
     async def authenticate_nft(self, qube_id: str, password: str) -> Dict[str, Any]:
         """
@@ -5314,6 +6126,32 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
         except Exception as e:
             logger.warning(f"Failed to load wallet for context preview: {e}")
 
+        # Owner Info summary
+        owner_info = None
+        try:
+            from utils.owner_info_manager import OwnerInfoManager
+            from crypto.keys import serialize_private_key
+            import hashlib
+
+            # Derive encryption key
+            private_key_bytes = serialize_private_key(qube.private_key)
+            encryption_key = hashlib.sha256(private_key_bytes).digest()
+
+            manager = OwnerInfoManager(qube.data_dir, encryption_key)
+            summary = manager.get_summary()
+
+            if summary.get("total_fields", 0) > 0:
+                owner_info = {
+                    "total_fields": summary.get("total_fields", 0),
+                    "public_fields": summary.get("public_fields", 0),
+                    "private_fields": summary.get("private_fields", 0),
+                    "secret_fields": summary.get("secret_fields", 0),
+                    "categories_populated": summary.get("categories_populated", 0),
+                    "top_fields": summary.get("top_fields", [])
+                }
+        except Exception as e:
+            logger.warning(f"Failed to load owner info for context preview: {e}")
+
         return {
             "genesis_identity": genesis_identity,
             "relationships": {
@@ -5324,6 +6162,7 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
                 "totals": skills_total,
                 "top_skills": skills
             },
+            "owner_info": owner_info,
             "wallet": wallet
         }
 
@@ -5450,6 +6289,25 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
         genesis_prompt = qube.genesis_block.genesis_prompt if qube.genesis_block else ""
         total_chars += len(genesis_prompt)
         total_chars += 1000  # Base system prompt overhead
+
+        # Add estimate for owner info context
+        # Each field is roughly 50-100 chars (key + value + formatting)
+        try:
+            from utils.owner_info_manager import OwnerInfoManager
+            from crypto.keys import serialize_private_key
+            import hashlib
+
+            private_key_bytes = serialize_private_key(qube.private_key)
+            encryption_key = hashlib.sha256(private_key_bytes).digest()
+            manager = OwnerInfoManager(qube.data_dir, encryption_key)
+            summary = manager.get_summary()
+
+            # Estimate: each injectable field is ~75 chars on average
+            # Only count non-secret fields (public + private)
+            injectable_count = summary.get("public_fields", 0) + summary.get("private_fields", 0)
+            total_chars += injectable_count * 75
+        except Exception:
+            pass  # If owner info fails, just skip the estimate
 
         estimated_tokens = total_chars // 4
 
@@ -6353,6 +7211,21 @@ async def main():
             # Create bridge with correct user
             user_bridge = GUIBridge(user_id=user_id)
             result = await user_bridge.delete_qube(qube_id)
+            print(json.dumps(result))
+
+        elif command == "reset-qube":
+            # DEV ONLY: Reset qube to fresh state while preserving identity
+            if len(sys.argv) < 4:
+                print(json.dumps({"error": "User ID and Qube ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            # SECURITY: Validate qube_id
+            qube_id = validate_qube_id(sys.argv[3])
+
+            # Create bridge with correct user
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.reset_qube(qube_id)
             print(json.dumps(result))
 
         elif command == "save-image":
@@ -7550,6 +8423,138 @@ async def main():
 
             user_bridge = GUIBridge(user_id=user_id)
             result = await user_bridge.unlock_skill(user_id, qube_id, skill_id)
+            print(json.dumps(result))
+
+        # =====================================================================
+        # Owner Info Commands
+        # =====================================================================
+
+        elif command == "get-owner-info":
+            if len(sys.argv) < 5:
+                print(json.dumps({"success": False, "error": "User ID, Qube ID, and password required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            qube_id = sys.argv[3]
+            password = sys.argv[4]
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.get_owner_info(qube_id, password)
+            print(json.dumps(result))
+
+        elif command == "set-owner-info-field":
+            if len(sys.argv) < 8:
+                print(json.dumps({"success": False, "error": "User ID, Qube ID, password, category, key, and value required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            qube_id = sys.argv[3]
+            password = sys.argv[4]
+            category = sys.argv[5]
+            key = sys.argv[6]
+            value = sys.argv[7]
+
+            # Optional parameters
+            sensitivity = sys.argv[8] if len(sys.argv) > 8 else None
+            source = sys.argv[9] if len(sys.argv) > 9 else "explicit"
+            confidence = int(sys.argv[10]) if len(sys.argv) > 10 else 100
+            block_id = sys.argv[11] if len(sys.argv) > 11 else None
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.set_owner_info_field(
+                qube_id, password, category, key, value,
+                sensitivity, source, confidence, block_id
+            )
+            print(json.dumps(result))
+
+        elif command == "delete-owner-info-field":
+            if len(sys.argv) < 7:
+                print(json.dumps({"success": False, "error": "User ID, Qube ID, password, category, and key required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            qube_id = sys.argv[3]
+            password = sys.argv[4]
+            category = sys.argv[5]
+            key = sys.argv[6]
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.delete_owner_info_field(qube_id, password, category, key)
+            print(json.dumps(result))
+
+        elif command == "update-owner-info-sensitivity":
+            if len(sys.argv) < 8:
+                print(json.dumps({"success": False, "error": "User ID, Qube ID, password, category, key, and sensitivity required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            qube_id = sys.argv[3]
+            password = sys.argv[4]
+            category = sys.argv[5]
+            key = sys.argv[6]
+            sensitivity = sys.argv[7]
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.update_owner_info_sensitivity(qube_id, password, category, key, sensitivity)
+            print(json.dumps(result))
+
+        # Clearance Request Commands
+        elif command == "get-pending-clearance-requests":
+            if len(sys.argv) < 5:
+                print(json.dumps({"success": False, "error": "User ID, Qube ID, and password required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            qube_id = sys.argv[3]
+            password = sys.argv[4]
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.get_pending_clearance_requests(qube_id, password)
+            print(json.dumps(result))
+
+        elif command == "approve-clearance-request":
+            if len(sys.argv) < 6:
+                print(json.dumps({"success": False, "error": "User ID, Qube ID, request ID, and password required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            qube_id = sys.argv[3]
+            request_id = sys.argv[4]
+            password = sys.argv[5]
+            expires_days = int(sys.argv[6]) if len(sys.argv) > 6 else None
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.approve_clearance_request(qube_id, request_id, password, expires_days)
+            print(json.dumps(result))
+
+        elif command == "deny-clearance-request":
+            if len(sys.argv) < 6:
+                print(json.dumps({"success": False, "error": "User ID, Qube ID, request ID, and password required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            qube_id = sys.argv[3]
+            request_id = sys.argv[4]
+            password = sys.argv[5]
+            reason = sys.argv[6] if len(sys.argv) > 6 else None
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.deny_clearance_request(qube_id, request_id, password, reason)
+            print(json.dumps(result))
+
+        elif command == "get-clearance-audit-log":
+            if len(sys.argv) < 5:
+                print(json.dumps({"success": False, "error": "User ID, Qube ID, and password required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            qube_id = sys.argv[3]
+            password = sys.argv[4]
+            limit = int(sys.argv[5]) if len(sys.argv) > 5 else 100
+            entity_filter = sys.argv[6] if len(sys.argv) > 6 else None
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.get_clearance_audit_log(qube_id, password, limit, entity_filter)
             print(json.dumps(result))
 
         elif command == "get-visualizer-settings":
@@ -9077,6 +10082,81 @@ async def main():
                 offset=args.offset
             )
             print(json.dumps(result))
+
+        # ==================== Clearance Profile CLI Commands ====================
+
+        elif command == "get-clearance-profiles":
+            # Args: user_id, qube_id
+            user_id = sys.argv[2]
+            qube_id = sys.argv[3]
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.get_clearance_profiles(qube_id)
+            print(json.dumps(result))
+
+        elif command == "get-available-tags":
+            # Args: user_id, qube_id
+            user_id = sys.argv[2]
+            qube_id = sys.argv[3]
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.get_available_tags(qube_id)
+            print(json.dumps(result))
+
+        elif command == "get-trait-definitions":
+            # Args: user_id, qube_id
+            user_id = sys.argv[2]
+            qube_id = sys.argv[3]
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.get_trait_definitions(qube_id)
+            print(json.dumps(result))
+
+        elif command == "add-relationship-tag":
+            # Args: user_id, qube_id, entity_id, tag, password
+            user_id = sys.argv[2]
+            qube_id = sys.argv[3]
+            entity_id = sys.argv[4]
+            tag = sys.argv[5]
+            password = sys.argv[6]
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.add_relationship_tag(qube_id, entity_id, tag, password)
+            print(json.dumps(result))
+
+        elif command == "remove-relationship-tag":
+            # Args: user_id, qube_id, entity_id, tag, password
+            user_id = sys.argv[2]
+            qube_id = sys.argv[3]
+            entity_id = sys.argv[4]
+            tag = sys.argv[5]
+            password = sys.argv[6]
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.remove_relationship_tag(qube_id, entity_id, tag, password)
+            print(json.dumps(result))
+
+        elif command == "set-relationship-clearance":
+            # Args: user_id, qube_id, entity_id, profile, password, [field_grants_json], [field_denials_json], [expires_days]
+            user_id = sys.argv[2]
+            qube_id = sys.argv[3]
+            entity_id = sys.argv[4]
+            profile = sys.argv[5]
+            password = sys.argv[6]
+            field_grants = json.loads(sys.argv[7]) if len(sys.argv) > 7 and sys.argv[7] else None
+            field_denials = json.loads(sys.argv[8]) if len(sys.argv) > 8 and sys.argv[8] else None
+            expires_days = int(sys.argv[9]) if len(sys.argv) > 9 and sys.argv[9] else None
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.set_relationship_clearance(
+                qube_id, entity_id, profile, password, field_grants, field_denials, expires_days
+            )
+            print(json.dumps(result))
+
+        elif command == "suggest-clearance":
+            # Args: user_id, qube_id, entity_id
+            user_id = sys.argv[2]
+            qube_id = sys.argv[3]
+            entity_id = sys.argv[4]
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.suggest_clearance(qube_id, entity_id)
+            print(json.dumps(result))
+
+        # ==================== End Clearance Profile CLI Commands ====================
 
         else:
             print(json.dumps({"error": f"Unknown command: {command}"}), file=sys.stderr)

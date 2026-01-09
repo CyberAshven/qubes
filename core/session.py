@@ -13,6 +13,8 @@ from core.block import Block
 from core.exceptions import SessionRecoveryError, MemoryChainError
 # Import signing functions in methods to avoid circular import
 from utils.logging import get_logger
+from relationships.trait_detection import TraitDetector
+from utils.trait_definitions import load_trait_definitions
 
 logger = get_logger(__name__)
 
@@ -1224,7 +1226,7 @@ CONVERSATION:
 
 PARTICIPANTS TO EVALUATE: {', '.join(participants)}
 
-For EACH participant, provide deltas (-5 to +5) for these 30 metrics:
+For EACH participant, provide deltas (-5 to +5) for these 36 metrics:
 
 CORE TRUST METRICS (5 AI-evaluated, 0-100 scale):
 These are foundational earned qualities that define trust:
@@ -1262,7 +1264,20 @@ NEGATIVE SOCIAL METRICS (10 AI-evaluated, 0-100 scale):
 - dismissiveness: Invalidation or not taking seriously?
 - betrayal: Major broken trust events?
 
+BEHAVIORAL/COMMUNICATION METRICS (6 AI-evaluated, 0-100 scale):
+- verbosity: How much do they write/talk? (0=very terse, 100=very verbose)
+- punctuality: Do they respond/show up on time? (0=always late, 100=always punctual)
+- emotional_stability: How consistent is their emotional state? (0=volatile, 100=very stable)
+- directness: How plainly do they communicate? (0=indirect/hints, 100=very direct)
+- energy_level: What's their activity/engagement level? (0=low energy, 100=high energy)
+- humor_style: What type of humor? (0=literal/serious, 50=balanced, 100=very sarcastic/playful)
+
 NOTE: Positive metrics increase warmth/connection. Negative metrics track problems. Both can coexist.
+
+TRAIT DETECTION (OPTIONAL but helpful):
+If you can identify personality traits from this conversation, list them.
+Examples: reliable, flirty, supportive, analytical, verbose, manipulative, patient, warm, direct, etc.
+Only include traits you're confident about based on the conversation evidence.
 
 Return JSON with this structure:
 {{
@@ -1276,12 +1291,18 @@ Return JSON with this structure:
       "responsiveness": 3.0, "expertise": 1.5,
       "antagonism": 0.0, "resentment": 0.0, "annoyance": 0.0, "distrust": 0.0,
       "rivalry": 0.0, "tension": 0.0, "condescension": 0.0, "manipulation": 0.0,
-      "dismissiveness": 0.0, "betrayal": 0.0
+      "dismissiveness": 0.0, "betrayal": 0.0,
+      "verbosity": 0.0, "punctuality": 0.0, "emotional_stability": 0.0,
+      "directness": 0.0, "energy_level": 0.0, "humor_style": 0.0
     }},
     "reasoning": "Detailed explanation of deltas",
     "key_moments": ["Block 42: Did X", "Block 58: Said Y"],
     "message_count": 15,
-    "avg_response_time_seconds": 30.5
+    "avg_response_time_seconds": 30.5,
+    "detected_traits": ["trait1", "trait2"],
+    "trait_evidence": {{
+      "trait1": "Evidence from conversation supporting this trait"
+    }}
   }}
 }}
 
@@ -1416,6 +1437,86 @@ IMPORTANT: Return ONLY valid JSON, no other text."""
                     "key_moments": evaluation.get("key_moments", []),
                     "deltas": deltas
                 })
+
+                # Detect and update traits
+                try:
+                    trait_definitions = load_trait_definitions()
+                    trait_detector = TraitDetector(
+                        trait_definitions=trait_definitions,
+                        difficulty=getattr(self, 'relationship_difficulty', 'long'),
+                        trust_personality=getattr(self.qube, 'trust_personality', 'balanced'),
+                    )
+
+                    # Get AI-detected traits from evaluation if present
+                    ai_detected = evaluation.get("detected_traits", [])
+                    ai_evidence = evaluation.get("trait_evidence", {})
+
+                    # Store old trait scores for comparison
+                    old_trait_scores = dict(rel.trait_scores)
+
+                    # Detect traits
+                    new_trait_scores = trait_detector.detect_traits(
+                        rel,
+                        evaluation,
+                        ai_detected=ai_detected,
+                        ai_evidence=ai_evidence,
+                    )
+
+                    # Update relationship trait scores
+                    rel.trait_scores = {
+                        name: score.to_dict() if hasattr(score, 'to_dict') else score
+                        for name, score in new_trait_scores.items()
+                    }
+
+                    # Log significant trait changes to evolution
+                    for trait_name, new_score in new_trait_scores.items():
+                        old_score_data = old_trait_scores.get(trait_name, {})
+                        old_score_value = old_score_data.get("score", 0) if isinstance(old_score_data, dict) else 0
+
+                        if abs(new_score.score - old_score_value) > 5:
+                            rel.trait_evolution.append({
+                                "timestamp": int(datetime.now(timezone.utc).timestamp()),
+                                "trait": trait_name,
+                                "old_score": old_score_value,
+                                "new_score": new_score.score,
+                                "evaluation_index": len(rel.evaluations) - 1,
+                            })
+
+                    # Build trait_changes for SUMMARY block display
+                    trait_changes = {}
+                    assigned = []
+                    strengthened = []
+                    weakened = []
+
+                    for trait_name, new_score in new_trait_scores.items():
+                        old_score_data = old_trait_scores.get(trait_name, {})
+                        old_score_value = old_score_data.get("score", 0) if isinstance(old_score_data, dict) else 0
+
+                        if trait_name not in old_trait_scores:
+                            assigned.append(trait_name)
+                        elif new_score.score > old_score_value + 3:
+                            strengthened.append(trait_name)
+                        elif new_score.score < old_score_value - 3:
+                            weakened.append(trait_name)
+
+                    if assigned or strengthened or weakened:
+                        trait_changes[entity_id] = {
+                            "assigned": assigned,
+                            "strengthened": strengthened,
+                            "weakened": weakened,
+                            "removed": [],
+                        }
+
+                    # Update the evaluation record with trait changes
+                    if trait_changes and rel.evaluations:
+                        rel.evaluations[-1]["trait_changes"] = trait_changes
+
+                    logger.debug("traits_detected", entity_id=entity_id,
+                               trait_count=len(new_trait_scores),
+                               confident_count=len([t for t in new_trait_scores.values() if t.is_confident]))
+
+                except Exception as e:
+                    logger.error("trait_detection_failed", entity_id=entity_id, error=str(e))
 
                 # Check for relationship progression
                 self.qube.relationships.check_progression(entity_id)

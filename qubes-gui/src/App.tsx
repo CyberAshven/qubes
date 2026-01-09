@@ -202,8 +202,6 @@ function App() {
       pinata?: string;
     };
   }) => {
-    console.log('Wizard completed, logging in user:', data.userId);
-
     // Save API keys if provided
     if (data.apiKeys) {
       const keyMapping: Record<string, string> = {
@@ -219,14 +217,12 @@ function App() {
         const apiKey = data.apiKeys[key as keyof typeof data.apiKeys];
         if (apiKey && apiKey.trim()) {
           try {
-            console.log(`Saving ${provider} API key...`);
             await invoke('save_api_key', {
               userId: data.userId,
               provider,
               apiKey: apiKey.trim(),
               password: data.password,
             });
-            console.log(`${provider} API key saved successfully`);
           } catch (err) {
             console.error(`Failed to save ${provider} API key:`, err);
             // Continue with other keys even if one fails
@@ -296,12 +292,10 @@ function App() {
   }
 
   const handleExitComplete = async () => {
-    console.log('handleExitComplete called');
     setShowExitDialog(false);
 
     // Use our custom force_exit command to immediately terminate
     try {
-      console.log('Calling force_exit command');
       await invoke('force_exit');
     } catch (err) {
       console.error('force_exit failed:', err);

@@ -21,6 +21,7 @@ export interface WizardData {
     google?: string;
     deepseek?: string;
     perplexity?: string;
+    venice?: string;
     pinata?: string;
   };
 }

@@ -56,37 +56,32 @@ export const useRelationshipUpdates = (options: UseRelationshipUpdatesOptions = 
       const ws = new WebSocket('ws://localhost:8765');
 
       ws.onopen = () => {
-        console.log('[WS] Connected to relationship updates');
         setIsConnected(true);
       };
 
       ws.onmessage = (event) => {
         try {
           const update: RelationshipUpdate = JSON.parse(event.data);
-          console.log('[WS] Received update:', update);
-
           setLastUpdate(update);
 
           if (onUpdate) {
             onUpdate(update);
           }
         } catch (error) {
-          console.error('[WS] Failed to parse message:', error);
+          console.error('Failed to parse WebSocket message:', error);
         }
       };
 
-      ws.onerror = (error) => {
-        console.warn('[WS] Connection error (server may not be running):', error);
+      ws.onerror = (_error) => {
+        // Server may not be running - this is expected
       };
 
       ws.onclose = () => {
-        console.log('[WS] Disconnected from relationship updates');
         setIsConnected(false);
         wsRef.current = null;
 
         // Attempt to reconnect after delay (only if autoConnect is true)
         if (autoConnect) {
-          console.log(`[WS] Reconnecting in ${reconnectDelay}ms...`);
           reconnectTimeoutRef.current = setTimeout(() => {
             connect();
           }, reconnectDelay);

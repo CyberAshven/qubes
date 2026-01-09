@@ -188,7 +188,6 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
     const ws = new WebSocket(`wss://qube.cash/api/v2/conversation/ws/${sessionId}`);
 
     ws.onopen = () => {
-      console.log('P2P WebSocket connected');
       ws.send(JSON.stringify({
         type: 'auth',
         commitment: primaryCommitment,
@@ -208,7 +207,6 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
     };
 
     ws.onclose = () => {
-      console.log('P2P WebSocket disconnected');
       setWsConnected(false);
     };
 
@@ -223,7 +221,6 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
   const handleP2PWebSocketMessage = useCallback(async (data: any) => {
     switch (data.type) {
       case 'auth_success':
-        console.log('P2P WebSocket authenticated');
         setWsConnected(true);
         break;
 
@@ -363,7 +360,6 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
 
         // Add to group chat's uploaded files
         addUploadedFile(`group_${selectedQubes.map(q => q.qube_id).join('_')}`, fileData);
-        console.log('✅ File uploaded to group chat:', fileName);
       }
     } catch (err) {
       console.error('Failed to upload file:', err);
@@ -475,7 +471,6 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
         qubeId: speakerId,
         imageUrl: imageUrl
       });
-      console.log('✅ Image saved to disk for qube:', speakerId);
     } catch (err) {
       console.error('Failed to save image:', err);
       // Don't show error to user - saving is optional background task
@@ -507,7 +502,6 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
 
     // Format: http://asset.localhost/{path}
     const assetUrl = `http://asset.localhost/${encodedPath}`;
-    console.log(`[Asset URL] Converting path: ${path} -> ${assetUrl}`);
     return assetUrl;
   };
 
@@ -758,12 +752,10 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
 
   // Continue the conversation automatically (get next turn)
   const continueConversation = async () => {
-    console.log('📞 continueConversation() called from:', new Error().stack);
     if (!conversationId || !userId || !password || !isConversationActive) return;
 
     // Prevent concurrent fetches (both regular and prefetch)
     if (isFetchingNextRef.current) {
-      console.log('⏸️ Already fetching next turn, skipping duplicate fetch');
       return;
     }
 
@@ -1010,16 +1002,7 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
     clearUploadedFiles(`group_${selectedQubes.map(q => q.qube_id).join('_')}`);
     setError(null);
 
-    // LOG IMMEDIATELY - User pressed Enter
-    console.log('');
-    console.log('========================================');
-    console.log('👤 USER MESSAGE ENTERED:', userMessage);
-    console.log('========================================');
-    console.log('');
-
-    // CRITICAL: Cancel ALL prefetch work immediately - it's now stale
-    console.log('🔄 CANCELLING ALL PREFETCH WORK');
-
+    // Cancel ALL prefetch work immediately - it's now stale
     // Set cancellation flag FIRST
     prefetchCancelledRef.current = true;
 
@@ -1098,8 +1081,6 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
           });
         }
 
-        console.log(`✅ Backend responded: user turn ${response.user_message.turn_number}, qube turn ${response.qube_response.turn_number}`);
-
         // Store the responses (don't display yet - wait for speaker to finish)
         // Don't change status here - keep showing "bit_faced response ready"
         setPendingUserMessage({
@@ -1119,23 +1100,8 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
 
   // Pause the conversation
   const handlePauseConversation = () => {
-    console.log('⏸️ Pause button clicked:', {
-      hasNextResponsePrefetch: !!nextResponsePrefetch,
-      hasPendingTTSMessage: !!pendingTTSMessage,
-      hasActiveTypewriter: !!activeTypewriterMessageId,
-      nextResponseStatus: nextResponseStatus.stage,
-      isLoading: isLoading,
-      isConversationActive: isConversationActive
-    });
-
     // If there's a prefetched response ready, keep it and play it before pausing
     if (nextResponsePrefetch) {
-      console.log('🎯 Pause requested with prefetched response ready - will play it before pausing', {
-        nextResponseTurn: nextResponsePrefetch.turn_number,
-        speaker: nextResponsePrefetch.speaker_name,
-        messageCurrentlyPlaying: !!(pendingTTSMessage || activeTypewriterMessageId)
-      });
-
       // Set flags to pause after the prefetched message plays
       pauseAfterCurrentMessageRef.current = true;
       setIsPauseRequested(true); // Visual feedback
@@ -1145,18 +1111,14 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
 
       // If no message is currently playing, trigger the prefetched response now
       if (!pendingTTSMessage && !activeTypewriterMessageId) {
-        console.log('🎬 No message playing - triggering prefetched response immediately');
         setPendingTTSMessage(nextResponsePrefetch);
         setNextResponsePrefetch(null);
         setNextTTSPrefetch(null);
         setPrefetchedMessageId(null);
-      } else {
-        console.log('⏳ Message currently playing - will play prefetched response after it completes');
-        // Don't clear the prefetch - let it play after current message finishes
       }
+      // else: Don't clear the prefetch - let it play after current message finishes
     } else {
       // No prefetched response - cancel any ongoing prefetch and pause immediately
-      console.log('⏸️ Pausing conversation immediately (no prefetch available - cancelling any in-progress prefetch)');
       setIsConversationActive(false);
       shouldContinueRef.current = false;
       isFetchingNextRef.current = false;
@@ -1209,8 +1171,6 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
         password,
       });
 
-      console.log('Conversation ended:', summary);
-
       // Reset state
       setConversationId(null);
       setConversationHistory([]);
@@ -1238,14 +1198,12 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
 
       // Skip if we're already processing this exact message (prevents duplicates)
       if (processingMessageRef.current === messageId) {
-        console.log('Already processing message:', messageId);
         return;
       }
 
       // Mark as processing and track turn number
       processingMessageRef.current = messageId;
       lastProcessedTurnRef.current = pendingTTSMessage.turn_number;
-      console.log(`🔄 Processing turn ${pendingTTSMessage.turn_number}`);
 
       // Try to find qube from selectedQubes first, then allQubes (for P2P connections)
       let qube = getQubeById(pendingTTSMessage.speaker_id);
@@ -1253,9 +1211,6 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
       // In P2P mode, also try to find by speaker_name in allQubes
       if (!qube && isP2P && allQubes.length > 0) {
         qube = allQubes.find(q => q.name === pendingTTSMessage.speaker_name);
-        if (qube) {
-          console.log(`🔍 Found P2P participant ${qube.name} in allQubes for TTS`);
-        }
       }
 
       // Get voice model - prioritize from the response itself, then from qube
@@ -1264,7 +1219,6 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
 
       if (!voiceModel || !ttsEnabled) {
         // TTS disabled or no voice model - add message to history and show without TTS
-        console.log(`⏭️ Skipping TTS: voiceModel=${voiceModel}, ttsEnabled=${ttsEnabled}`);
         setConversationHistory(prev => [...prev, pendingTTSMessage]);
         setPendingTTSMessage(null);
         setIsLoading(false);
@@ -1282,37 +1236,27 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
         // Validate if we have prefetched TTS for THIS EXACT message
         const hasPrefetchedTTS = nextTTSPrefetch !== null && prefetchedMessageId === messageId;
 
-        if (hasPrefetchedTTS) {
-          console.log(`✓ Using prefetched TTS for turn ${pendingTTSMessage.turn_number}`);
-        } else if (nextTTSPrefetch !== null && prefetchedMessageId !== messageId) {
+        if (!hasPrefetchedTTS && nextTTSPrefetch !== null && prefetchedMessageId !== messageId) {
           console.warn(`⚠ Prefetched TTS mismatch! Expected: ${messageId}, Got: ${prefetchedMessageId}. Discarding and regenerating.`);
           // Clear mismatched prefetch
           setNextTTSPrefetch(null);
           setPrefetchedMessageId(null);
-        } else {
-          console.log(`⏳ No prefetch available for turn ${pendingTTSMessage.turn_number}, generating TTS...`);
         }
 
         // Lock in this response as "spoken" BEFORE starting TTS
         // This marks it as prefetch=false so it won't be removed if user interjects
-        console.log(`🔍 Checking lock-in for turn ${pendingTTSMessage.turn_number}, timestamp: ${pendingTTSMessage.timestamp}, conversationId: ${conversationId}`);
-
         if (pendingTTSMessage.timestamp && conversationId) {
           try {
-            console.log(`🔒 Calling lock_in_multi_qube_response...`);
             await invoke('lock_in_multi_qube_response', {
               userId,
               conversationId,
               timestamp: pendingTTSMessage.timestamp,
               password
             });
-            console.log(`✅ Successfully locked in response for turn ${pendingTTSMessage.turn_number}`);
           } catch (err) {
-            console.error('❌ Failed to lock in response:', err);
+            console.error('Failed to lock in response:', err);
             // Don't fail - continue with TTS
           }
-        } else {
-          console.warn(`⚠️ Cannot lock in response - missing timestamp (${pendingTTSMessage.timestamp}) or conversationId (${conversationId})`);
         }
 
         // Check if this was a "ready to respond" case (smooth transition) or needs indicator
@@ -1320,7 +1264,6 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
 
         if (wasReady) {
           // Prefetched response - smooth transition: add message FIRST, then clear indicator
-          console.log(`📝 Adding prefetched message to history for turn ${pendingTTSMessage.turn_number}`);
           setConversationHistory(prev => [...prev, pendingTTSMessage]);
 
           // Wait for React to render the message bubble
@@ -1349,14 +1292,11 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
         } else if (qube) {
           // Generate TTS normally and WAIT for it to finish
           await playTTS(userId, qube.qube_id, cleanedMessage, password);
-        } else {
-          // Qube not found locally (rare case) - skip TTS but continue
-          console.log(`⚠️ Qube not found for TTS, continuing without audio`);
         }
+        // If qube not found locally (rare case) - skip TTS but continue
 
         // TTS is ready! Now add message to history if we didn't already (first response case)
         if (!wasReady) {
-          console.log(`📝 Adding message to history for turn ${pendingTTSMessage.turn_number}`);
           setConversationHistory(prev => [...prev, pendingTTSMessage]);
 
           // Clear the generating indicator
@@ -1367,7 +1307,6 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
         await new Promise(resolve => setTimeout(resolve, 50));
 
         // NOW activate typewriter - audio is playing
-        console.log(`🎬 Activating typewriter for turn ${pendingTTSMessage.turn_number}: ${messageId}`);
         setActiveTypewriterMessageId(messageId);
 
         // Start prefetching immediately (in parallel with TTS playback)
@@ -1376,7 +1315,6 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
         const prefetchPromise = (async () => {
           // P2P MODE: Skip prefetch entirely - blocks are immediately sent to hub
           if (isP2P) {
-            console.log('⏭️ Prefetch disabled for P2P mode');
             return;
           }
 
@@ -1385,7 +1323,6 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
 
           // Check if prefetch was cancelled before we even start
           if (prefetchCancelledRef.current) {
-            console.log(`⚠️ Prefetch cancelled before it could start`);
             return;
           }
 
@@ -1398,7 +1335,6 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
             try {
               // Check again right before calling backend (race condition check)
               if (prefetchCancelledRef.current) {
-                console.log(`⚠️ Prefetch cancelled right before backend call`);
                 isFetchingNextRef.current = false;
                 return;
               }
@@ -1493,7 +1429,6 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
 
               // CHECK: Was prefetch cancelled while we were fetching?
               if (prefetchCancelledRef.current) {
-                console.log(`⚠️ Prefetch for turn ${nextResponse.turn_number} cancelled - deleting blocks from all qubes`);
                 // Only clear status if it's not a user indicator (preserve "bit_faced response ready")
                 setNextResponseStatus(prev =>
                   prev.qubeId === userId ? prev : { stage: 'idle' }
@@ -1505,8 +1440,6 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
                 (async () => {
                   for (const qube of selectedQubes) {
                     try {
-                      console.log(`🗑️ Querying blocks for ${qube.name} to find turn ${nextResponse.turn_number}`);
-
                       // Get all blocks for this qube
                       const blocksResponse = await invoke<any>('get_qube_blocks', {
                         userId,
@@ -1518,7 +1451,6 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
                       const sessionBlocks = blocksResponse.session_blocks || [];
                       for (const block of sessionBlocks) {
                         if (block.content?.turn_number === nextResponse.turn_number) {
-                          console.log(`🗑️ Deleting session block ${block.block_number} from ${qube.name}`);
                           await invoke('delete_session_block', {
                             userId,
                             qubeId: qube.qube_id,
@@ -1547,7 +1479,6 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
 
               // CHECK: Status update
               if (prefetchCancelledRef.current) {
-                console.log(`⚠️ Prefetch cancelled during status update - clearing status`);
                 // Only clear status if it's not a user indicator (preserve "bit_faced response ready")
                 setNextResponseStatus(prev =>
                   prev.qubeId === userId ? prev : { stage: 'idle' }
@@ -1572,7 +1503,6 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
 
                   // CHECK AGAIN: Was prefetch cancelled while we were generating TTS?
                   if (prefetchCancelledRef.current) {
-                    console.log(`⚠️ TTS prefetch for turn ${nextResponse.turn_number} cancelled - deleting blocks`);
                     // Only clear status if it's not a user indicator (preserve "bit_faced response ready")
                     setNextResponseStatus(prev =>
                       prev.qubeId === userId ? prev : { stage: 'idle' }
@@ -1591,7 +1521,6 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
                           const sessionBlocks = blocksResponse.session_blocks || [];
                           for (const block of sessionBlocks) {
                             if (block.content?.turn_number === nextResponse.turn_number) {
-                              console.log(`🗑️ Deleting session block ${block.block_number} from ${qube.name}`);
                               await invoke('delete_session_block', {
                                 userId,
                                 qubeId: qube.qube_id,
@@ -1611,11 +1540,9 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
                   // Store BOTH the audio and which message it belongs to
                   setNextTTSPrefetch(prefetchedAudio);
                   setPrefetchedMessageId(nextMessageId);
-                  console.log(`✓ Successfully prefetched next response AND TTS audio for turn ${nextResponse.turn_number}`);
 
                   // CHECK ONE MORE TIME before showing "ready"
                   if (prefetchCancelledRef.current) {
-                    console.log(`⚠️ Prefetch cancelled before ready status - clearing and deleting blocks`);
                     setNextResponsePrefetch(null);
                     setNextTTSPrefetch(null);
                     setPrefetchedMessageId(null);
@@ -1637,7 +1564,6 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
                           const sessionBlocks = blocksResponse.session_blocks || [];
                           for (const block of sessionBlocks) {
                             if (block.content?.turn_number === nextResponse.turn_number) {
-                              console.log(`🗑️ Deleting session block ${block.block_number} from ${qube.name}`);
                               await invoke('delete_session_block', {
                                 userId,
                                 qubeId: qube.qube_id,
@@ -1678,7 +1604,6 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
                     qubeName: nextQube.name
                   });
                 } else if (prefetchCancelledRef.current) {
-                  console.log(`⚠️ Prefetch cancelled (no TTS) - deleting blocks`);
                   // Only clear status if it's not a user indicator (preserve "bit_faced response ready")
                   setNextResponseStatus(prev =>
                     prev.qubeId === userId ? prev : { stage: 'idle' }
@@ -1697,7 +1622,6 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
                         const sessionBlocks = blocksResponse.session_blocks || [];
                         for (const block of sessionBlocks) {
                           if (block.content?.turn_number === nextResponse.turn_number) {
-                            console.log(`🗑️ Deleting session block ${block.block_number} from ${qube.name}`);
                             await invoke('delete_session_block', {
                               userId,
                               qubeId: qube.qube_id,
@@ -1796,16 +1720,9 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
       // Fixed 1 second delay between responses for natural conversation pacing
       const delay = 1000; // 1 second delay for all responses
 
-      if (hasCompletePrefetch) {
-        console.log(`⚡ Complete prefetch ready (response + TTS)! Will start turn ${nextResponsePrefetch.turn_number} after ${delay}ms delay`);
-      } else if (nextResponsePrefetch && !hasPrefetchedTTS) {
-        console.log(`⏳ Response prefetched but TTS not ready yet for turn ${nextResponsePrefetch.turn_number}, waiting...`);
-      }
-
       const timer = setTimeout(async () => {
         // First, wait for any in-progress prefetch to complete (max 20 seconds)
         if (isFetchingNextRef.current) {
-          console.log(`⏳ Prefetch in progress, waiting for it to complete...`);
           const maxWait = 20000; // 20 seconds for very long TTS generation
           const checkInterval = 100;
           let waited = 0;
@@ -1815,13 +1732,7 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
             waited += checkInterval;
           }
 
-          if (isFetchingNextRef.current) {
-            console.log(`⏰ Prefetch still in progress after ${waited}ms`);
-            // DON'T force clear the flag - let the prefetch complete
-            // We'll set up polling to wait for it
-          } else {
-            console.log(`✅ Prefetch completed after ${waited}ms`);
-          }
+          // If still fetching, we'll set up polling to wait for it
         }
 
         // Use REFS to get the LATEST values (not stale closure values)
@@ -1833,14 +1744,11 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
         const nextTurn = currentPrefetch?.turn_number || (lastProcessedTurnRef.current + 1);
 
         if (nextTurn <= lastProcessedTurnRef.current) {
-          console.log(`⏭️ Skipping turn ${nextTurn} - already processed`);
           return;
         }
 
         // If prefetch is STILL in progress (even after 20s wait), set up polling instead of fetching
         if (isFetchingNextRef.current) {
-          console.log(`⏳ Prefetch STILL in progress - setting up polling instead of fetching fresh`);
-
           // Poll every 500ms to check if prefetch completes
           const pollInterval = setInterval(() => {
             const latestPrefetch = nextResponsePrefetchRef.current;
@@ -1848,11 +1756,8 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
             const latestPrefetchedId = prefetchedMessageIdRef.current;
             const stillFetching = isFetchingNextRef.current;
 
-            console.log(`🔄 Polling: prefetch=${latestPrefetch?.turn_number}, hasTTS=${latestTTS !== null}, stillFetching=${stillFetching}`);
-
             if (!latestPrefetch && !stillFetching) {
               // Prefetch failed or was cleared, fetch fresh
-              console.log(`⚠️ Prefetch failed, fetching fresh`);
               clearInterval(pollInterval);
               continueConversation();
               return;
@@ -1864,7 +1769,6 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
 
               if (latestHasTTS) {
                 // Prefetch completed!
-                console.log(`✅ Prefetch completed during polling for turn ${latestPrefetch.turn_number}, starting now!`);
                 clearInterval(pollInterval);
                 setPendingTTSMessage(latestPrefetch);
                 setNextResponsePrefetch(null);
@@ -1875,7 +1779,6 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
           // Stop polling after 60 seconds (safety timeout)
           setTimeout(() => {
             clearInterval(pollInterval);
-            console.log(`⏰ Polling timeout after 60s - giving up on prefetch`);
             // Last resort: fetch fresh if we still don't have anything
             if (!nextResponsePrefetchRef.current) {
               continueConversation();
@@ -1892,17 +1795,12 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
 
         if (isComplete && currentPrefetch) {
           // Use the COMPLETE prefetched response (response + TTS ready!)
-          console.log(`✅ Processing complete prefetched turn ${currentPrefetch.turn_number}`);
           setPendingTTSMessage(currentPrefetch);
           setNextResponsePrefetch(null);
           // NOTE: We do NOT clear nextTTSPrefetch/prefetchedMessageId here!
           // They will be cleared when the message actually uses the TTS
         } else if (currentPrefetch && !hasTTS) {
-          // Prefetch has response but TTS isn't ready yet
-          // Keep waiting and poll for completion
-          console.log(`⏳ Incomplete prefetch for turn ${currentPrefetch.turn_number} - TTS still generating. Setting up polling to check when it completes...`);
-
-          // Poll every 500ms to check if prefetch completes
+          // Prefetch has response but TTS isn't ready yet - poll for completion
           const pollInterval = setInterval(() => {
             const latestPrefetch = nextResponsePrefetchRef.current;
             const latestTTS = nextTTSPrefetchRef.current;
@@ -1910,7 +1808,6 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
 
             if (!latestPrefetch) {
               // Prefetch was cleared, stop polling
-              console.log(`⏹️ Prefetch cleared, stopping poll`);
               clearInterval(pollInterval);
               return;
             }
@@ -1920,7 +1817,6 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
 
             if (latestHasTTS && latestPrefetch) {
               // Prefetch completed!
-              console.log(`✅ Prefetch completed during polling for turn ${latestPrefetch.turn_number}, starting now!`);
               clearInterval(pollInterval);
               setPendingTTSMessage(latestPrefetch);
               setNextResponsePrefetch(null);
@@ -1930,11 +1826,9 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
           // Stop polling after 30 seconds (safety timeout)
           setTimeout(() => {
             clearInterval(pollInterval);
-            console.log(`⏰ Polling timeout after 30s`);
           }, 30000);
         } else {
-          // No prefetch at all - safe to fetch fresh
-          console.log(`⏳ No prefetch available, fetching fresh`);
+          // No prefetch at all - fetch fresh
           continueConversation();
         }
       }, delay);
@@ -1960,8 +1854,6 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
         // Capture qubeResponse early to satisfy TypeScript
         const qubeResponse = pendingUserMessage.qubeResponse;
         if (!qubeResponse) return;
-
-        console.log('✅ Speaker finished - displaying user message and Qube response');
 
         // Add user message to history
         setConversationHistory(prev => [...prev, pendingUserMessage.userMessageResponse!]);
@@ -2358,7 +2250,6 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
                             // Render local paths (convert to asset URLs)
                             const localImages = localPaths.map((path, index) => {
                               const assetUrl = convertToAssetUrl(path);
-                              console.log(`[Typewriter] Rendering local image: ${path} as ${assetUrl}`);
                               return (
                                 <img
                                   key={`local-img-${index}`}
@@ -2366,13 +2257,9 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
                                   alt="Generated image"
                                   className="max-w-full rounded-lg mb-3 block"
                                   style={{ maxHeight: '400px', objectFit: 'contain' }}
-                                  onLoad={() => {
-                                    console.log(`[Typewriter] Image loaded successfully: ${assetUrl}`);
-                                    scrollToBottom();
-                                  }}
+                                  onLoad={() => scrollToBottom()}
                                   onError={(e) => {
-                                    console.error(`[Typewriter] Image failed to load: ${assetUrl}`, e);
-                                    console.error(`[Typewriter] Original path: ${path}`);
+                                    console.error(`Image failed to load: ${assetUrl}`, e);
                                   }}
                                 />
                               );
@@ -2385,7 +2272,6 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
                             text={cleanContentForDisplay(msg.message)}
                             audioElement={audioElement}
                             onComplete={() => {
-                              console.log(`✅ Typewriter complete for ${messageId}, clearing processing flag`);
                               setActiveTypewriterMessageId(null);
                               processingMessageRef.current = null; // Clear processing flag NOW
                               setTimeout(scrollToBottom, 200);

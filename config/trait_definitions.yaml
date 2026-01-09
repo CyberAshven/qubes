@@ -1,0 +1,942 @@
+# Trait Definitions Configuration
+# Each trait maps to relationship metrics for detection
+# Categories: communication, social, emotional, energy, reliability, temperament, intellect, work, dynamics, warning
+
+traits:
+  # ============================================================
+  # COMMUNICATION TRAITS
+  # ============================================================
+
+  articulate:
+    category: communication
+    description: "Expresses ideas clearly and effectively"
+    icon: "💬"
+    color: "#3b82f6"
+    polarity: positive
+    primary_metrics: [verbosity, directness]
+    supporting_metrics: [engagement, depth]
+    negative_indicators: []
+    confidence_threshold: 65.0
+    evidence_required: 3
+    opposite_trait: inarticulate
+
+  verbose:
+    category: communication
+    description: "Uses many words, writes lengthy messages"
+    icon: "📝"
+    color: "#6366f1"
+    polarity: neutral
+    primary_metrics: [verbosity]
+    supporting_metrics: [engagement, openness]
+    negative_indicators: []
+    confidence_threshold: 70.0
+    evidence_required: 3
+    opposite_trait: terse
+
+  terse:
+    category: communication
+    description: "Uses few words, brief and to the point"
+    icon: "✂️"
+    color: "#64748b"
+    polarity: neutral
+    primary_metrics: []
+    supporting_metrics: [directness]
+    negative_indicators: [verbosity]
+    confidence_threshold: 70.0
+    evidence_required: 3
+    opposite_trait: verbose
+
+  direct:
+    category: communication
+    description: "Says things plainly without hints"
+    icon: "🎯"
+    color: "#22c55e"
+    polarity: positive
+    primary_metrics: [directness, honesty]
+    supporting_metrics: []
+    negative_indicators: []
+    confidence_threshold: 65.0
+    evidence_required: 3
+    opposite_trait: indirect
+
+  indirect:
+    category: communication
+    description: "Communicates through hints and suggestions"
+    icon: "🌀"
+    color: "#94a3b8"
+    polarity: neutral
+    primary_metrics: []
+    supporting_metrics: []
+    negative_indicators: [directness]
+    confidence_threshold: 65.0
+    evidence_required: 3
+    opposite_trait: direct
+
+  responsive:
+    category: communication
+    description: "Replies quickly and attentively"
+    icon: "⚡"
+    color: "#eab308"
+    polarity: positive
+    primary_metrics: [responsiveness]
+    supporting_metrics: [engagement]
+    negative_indicators: []
+    confidence_threshold: 70.0
+    evidence_required: 3
+    opposite_trait: unresponsive
+
+  unresponsive:
+    category: communication
+    description: "Slow to reply or doesn't respond"
+    icon: "🐌"
+    color: "#6b7280"
+    polarity: negative
+    primary_metrics: []
+    supporting_metrics: []
+    negative_indicators: [responsiveness]
+    confidence_threshold: 65.0
+    evidence_required: 3
+    opposite_trait: responsive
+
+  punctual:
+    category: communication
+    description: "Responds and shows up on time"
+    icon: "⏰"
+    color: "#22c55e"
+    polarity: positive
+    primary_metrics: [punctuality]
+    supporting_metrics: [reliability]
+    negative_indicators: []
+    confidence_threshold: 70.0
+    evidence_required: 4
+    opposite_trait: late
+
+  # ============================================================
+  # SOCIAL/INTERPERSONAL TRAITS
+  # ============================================================
+
+  warm:
+    category: social
+    description: "Emotionally accessible and welcoming"
+    icon: "🌞"
+    color: "#f97316"
+    polarity: positive
+    primary_metrics: [warmth, affection]
+    supporting_metrics: [friendliness, openness]
+    negative_indicators: [antagonism]
+    confidence_threshold: 65.0
+    evidence_required: 3
+    opposite_trait: cold
+
+  cold:
+    category: social
+    description: "Emotionally distant or reserved"
+    icon: "❄️"
+    color: "#64748b"
+    polarity: negative
+    primary_metrics: []
+    supporting_metrics: []
+    negative_indicators: [warmth, affection, friendliness]
+    confidence_threshold: 65.0
+    evidence_required: 3
+    opposite_trait: warm
+
+  supportive:
+    category: social
+    description: "Provides help and encouragement"
+    icon: "🤝"
+    color: "#22c55e"
+    polarity: positive
+    primary_metrics: [support, empowerment]
+    supporting_metrics: [patience, understanding]
+    negative_indicators: [dismissiveness]
+    confidence_threshold: 65.0
+    evidence_required: 3
+    opposite_trait: dismissive
+
+  dismissive:
+    category: social
+    description: "Disregards others' concerns or feelings"
+    icon: "👋"
+    color: "#ef4444"
+    polarity: negative
+    primary_metrics: [dismissiveness]
+    supporting_metrics: [condescension]
+    negative_indicators: [support, understanding]
+    confidence_threshold: 60.0
+    evidence_required: 3
+    opposite_trait: supportive
+
+  empathetic:
+    category: social
+    description: "Shows understanding and emotional awareness"
+    icon: "💜"
+    color: "#a855f7"
+    polarity: positive
+    primary_metrics: [understanding, warmth]
+    supporting_metrics: [patience, support]
+    negative_indicators: [condescension, dismissiveness]
+    confidence_threshold: 65.0
+    evidence_required: 3
+    opposite_trait: apathetic
+
+  apathetic:
+    category: social
+    description: "Lacks interest or emotional engagement"
+    icon: "😐"
+    color: "#6b7280"
+    polarity: negative
+    primary_metrics: []
+    supporting_metrics: []
+    negative_indicators: [engagement, understanding, warmth]
+    confidence_threshold: 65.0
+    evidence_required: 3
+    opposite_trait: empathetic
+
+  charming:
+    category: social
+    description: "Socially magnetic and likeable"
+    icon: "✨"
+    color: "#ec4899"
+    polarity: positive
+    primary_metrics: [humor, warmth, engagement]
+    supporting_metrics: [friendliness]
+    negative_indicators: [antagonism]
+    confidence_threshold: 70.0
+    evidence_required: 4
+    opposite_trait: off-putting
+
+  humble:
+    category: social
+    description: "Modest, not boastful"
+    icon: "🙏"
+    color: "#64748b"
+    polarity: positive
+    primary_metrics: [respect]
+    supporting_metrics: [openness]
+    negative_indicators: [condescension]
+    confidence_threshold: 65.0
+    evidence_required: 4
+    opposite_trait: arrogant
+
+  arrogant:
+    category: social
+    description: "Overly proud or self-important"
+    icon: "👑"
+    color: "#f97316"
+    polarity: negative
+    primary_metrics: [condescension]
+    supporting_metrics: []
+    negative_indicators: [respect, humility]
+    confidence_threshold: 65.0
+    evidence_required: 3
+    opposite_trait: humble
+
+  flirty:
+    category: social
+    description: "Playfully romantic or suggestive"
+    icon: "😏"
+    color: "#ec4899"
+    polarity: neutral
+    primary_metrics: [affection, humor]
+    supporting_metrics: [warmth, engagement]
+    negative_indicators: []
+    confidence_threshold: 70.0
+    evidence_required: 3
+
+  formal:
+    category: social
+    description: "Maintains professional distance"
+    icon: "🎩"
+    color: "#475569"
+    polarity: neutral
+    primary_metrics: [respect]
+    supporting_metrics: []
+    negative_indicators: [affection, humor]
+    confidence_threshold: 65.0
+    evidence_required: 3
+    opposite_trait: casual
+
+  casual:
+    category: social
+    description: "Relaxed and informal in interactions"
+    icon: "😎"
+    color: "#22c55e"
+    polarity: neutral
+    primary_metrics: [friendliness, humor]
+    supporting_metrics: [openness]
+    negative_indicators: []
+    confidence_threshold: 65.0
+    evidence_required: 3
+    opposite_trait: formal
+
+  # ============================================================
+  # RELIABILITY/TRUST TRAITS
+  # ============================================================
+
+  reliable:
+    category: reliability
+    description: "Consistently follows through on commitments"
+    icon: "🎯"
+    color: "#22c55e"
+    polarity: positive
+    primary_metrics: [reliability, honesty]
+    supporting_metrics: [punctuality, responsiveness]
+    negative_indicators: [betrayal]
+    confidence_threshold: 70.0
+    evidence_required: 4
+    opposite_trait: flaky
+
+  flaky:
+    category: reliability
+    description: "Inconsistent, doesn't follow through"
+    icon: "💨"
+    color: "#f97316"
+    polarity: negative
+    primary_metrics: []
+    supporting_metrics: []
+    negative_indicators: [reliability, punctuality]
+    confidence_threshold: 65.0
+    evidence_required: 3
+    opposite_trait: reliable
+
+  honest:
+    category: reliability
+    description: "Truthful and transparent"
+    icon: "💎"
+    color: "#06b6d4"
+    polarity: positive
+    primary_metrics: [honesty]
+    supporting_metrics: [openness, directness]
+    negative_indicators: [manipulation, betrayal]
+    confidence_threshold: 70.0
+    evidence_required: 4
+    opposite_trait: deceptive
+
+  deceptive:
+    category: reliability
+    description: "Misleads or lies to others"
+    icon: "🎭"
+    color: "#ef4444"
+    polarity: negative
+    primary_metrics: [manipulation]
+    supporting_metrics: [betrayal]
+    negative_indicators: [honesty]
+    confidence_threshold: 70.0
+    evidence_required: 3
+    is_warning: true
+    opposite_trait: honest
+
+  trustworthy:
+    category: reliability
+    description: "Overall dependable and safe to trust"
+    icon: "🛡️"
+    color: "#22c55e"
+    polarity: positive
+    primary_metrics: [honesty, reliability, loyalty]
+    supporting_metrics: [support, respect]
+    negative_indicators: [betrayal, manipulation, distrust]
+    confidence_threshold: 75.0
+    evidence_required: 5
+    opposite_trait: sketchy
+
+  sketchy:
+    category: reliability
+    description: "Seems untrustworthy or suspicious"
+    icon: "👀"
+    color: "#ef4444"
+    polarity: negative
+    primary_metrics: [distrust]
+    supporting_metrics: [manipulation]
+    negative_indicators: [honesty, reliability]
+    confidence_threshold: 65.0
+    evidence_required: 3
+    opposite_trait: trustworthy
+
+  loyal:
+    category: reliability
+    description: "Stands by others through difficulties"
+    icon: "🤞"
+    color: "#8b5cf6"
+    polarity: positive
+    primary_metrics: [loyalty, support]
+    supporting_metrics: [reliability]
+    negative_indicators: [betrayal]
+    confidence_threshold: 70.0
+    evidence_required: 4
+    opposite_trait: disloyal
+
+  disloyal:
+    category: reliability
+    description: "Betrays trust or abandons others"
+    icon: "🔪"
+    color: "#ef4444"
+    polarity: negative
+    primary_metrics: [betrayal]
+    supporting_metrics: []
+    negative_indicators: [loyalty]
+    confidence_threshold: 65.0
+    evidence_required: 2
+    is_warning: true
+    opposite_trait: loyal
+
+  # ============================================================
+  # EMOTIONAL TRAITS
+  # ============================================================
+
+  stable:
+    category: emotional
+    description: "Emotionally consistent and predictable"
+    icon: "⚖️"
+    color: "#22c55e"
+    polarity: positive
+    primary_metrics: [emotional_stability]
+    supporting_metrics: [patience]
+    negative_indicators: []
+    confidence_threshold: 70.0
+    evidence_required: 4
+    opposite_trait: volatile
+
+  volatile:
+    category: emotional
+    description: "Emotionally unpredictable"
+    icon: "🌪️"
+    color: "#ef4444"
+    polarity: negative
+    primary_metrics: []
+    supporting_metrics: []
+    negative_indicators: [emotional_stability, patience]
+    confidence_threshold: 60.0
+    evidence_required: 3
+    opposite_trait: stable
+
+  optimistic:
+    category: emotional
+    description: "Positive outlook on situations"
+    icon: "☀️"
+    color: "#eab308"
+    polarity: positive
+    primary_metrics: [warmth, humor]
+    supporting_metrics: [engagement]
+    negative_indicators: [resentment, antagonism]
+    confidence_threshold: 65.0
+    evidence_required: 3
+    opposite_trait: pessimistic
+
+  pessimistic:
+    category: emotional
+    description: "Negative outlook, expects the worst"
+    icon: "🌧️"
+    color: "#64748b"
+    polarity: negative
+    primary_metrics: [resentment]
+    supporting_metrics: []
+    negative_indicators: [warmth, humor]
+    confidence_threshold: 65.0
+    evidence_required: 3
+    opposite_trait: optimistic
+
+  patient:
+    category: emotional
+    description: "Tolerant and understanding under stress"
+    icon: "🕰️"
+    color: "#64748b"
+    polarity: positive
+    primary_metrics: [patience]
+    supporting_metrics: [understanding, support]
+    negative_indicators: [annoyance, tension]
+    confidence_threshold: 65.0
+    evidence_required: 3
+    opposite_trait: impatient
+
+  impatient:
+    category: emotional
+    description: "Quick to frustration, lacks tolerance"
+    icon: "⏱️"
+    color: "#f97316"
+    polarity: negative
+    primary_metrics: [annoyance]
+    supporting_metrics: [tension]
+    negative_indicators: [patience]
+    confidence_threshold: 65.0
+    evidence_required: 3
+    opposite_trait: patient
+
+  sensitive:
+    category: emotional
+    description: "Easily affected by emotions or criticism"
+    icon: "🦋"
+    color: "#a855f7"
+    polarity: neutral
+    primary_metrics: []
+    supporting_metrics: [understanding]
+    negative_indicators: [emotional_stability]
+    confidence_threshold: 65.0
+    evidence_required: 3
+    opposite_trait: thick-skinned
+
+  anxious:
+    category: emotional
+    description: "Prone to worry and nervousness"
+    icon: "😰"
+    color: "#f97316"
+    polarity: negative
+    primary_metrics: [tension]
+    supporting_metrics: []
+    negative_indicators: [emotional_stability]
+    confidence_threshold: 65.0
+    evidence_required: 3
+    opposite_trait: calm
+
+  calm:
+    category: emotional
+    description: "Stays composed under pressure"
+    icon: "🧘"
+    color: "#22c55e"
+    polarity: positive
+    primary_metrics: [emotional_stability, patience]
+    supporting_metrics: []
+    negative_indicators: [tension, annoyance]
+    confidence_threshold: 70.0
+    evidence_required: 4
+    opposite_trait: anxious
+
+  # ============================================================
+  # ENERGY/TEMPO TRAITS
+  # ============================================================
+
+  high-energy:
+    category: energy
+    description: "Active and enthusiastic"
+    icon: "⚡"
+    color: "#eab308"
+    polarity: neutral
+    primary_metrics: [energy_level, engagement]
+    supporting_metrics: []
+    negative_indicators: []
+    confidence_threshold: 70.0
+    evidence_required: 3
+    opposite_trait: low-energy
+
+  low-energy:
+    category: energy
+    description: "Calm, relaxed, or subdued"
+    icon: "🌙"
+    color: "#64748b"
+    polarity: neutral
+    primary_metrics: []
+    supporting_metrics: []
+    negative_indicators: [energy_level]
+    confidence_threshold: 70.0
+    evidence_required: 3
+    opposite_trait: high-energy
+
+  intense:
+    category: energy
+    description: "Highly engaged and focused"
+    icon: "🔥"
+    color: "#ef4444"
+    polarity: neutral
+    primary_metrics: [engagement, depth, energy_level]
+    supporting_metrics: []
+    negative_indicators: []
+    confidence_threshold: 70.0
+    evidence_required: 3
+    opposite_trait: laid-back
+
+  laid-back:
+    category: energy
+    description: "Relaxed and easygoing"
+    icon: "🏖️"
+    color: "#22c55e"
+    polarity: neutral
+    primary_metrics: [patience]
+    supporting_metrics: []
+    negative_indicators: [tension, energy_level]
+    confidence_threshold: 65.0
+    evidence_required: 3
+    opposite_trait: intense
+
+  # ============================================================
+  # INTELLECT/THINKING TRAITS
+  # ============================================================
+
+  analytical:
+    category: intellect
+    description: "Uses logical, systematic reasoning"
+    icon: "🔬"
+    color: "#3b82f6"
+    polarity: positive
+    primary_metrics: [expertise, depth]
+    supporting_metrics: [directness]
+    negative_indicators: []
+    confidence_threshold: 65.0
+    evidence_required: 3
+    opposite_trait: intuitive
+
+  intuitive:
+    category: intellect
+    description: "Relies on gut feelings and instincts"
+    icon: "🔮"
+    color: "#8b5cf6"
+    polarity: neutral
+    primary_metrics: []
+    supporting_metrics: [openness]
+    negative_indicators: []
+    confidence_threshold: 70.0
+    evidence_required: 4
+    opposite_trait: analytical
+
+  curious:
+    category: intellect
+    description: "Shows interest in learning and exploring"
+    icon: "🔍"
+    color: "#8b5cf6"
+    polarity: positive
+    primary_metrics: [engagement, depth, openness]
+    supporting_metrics: []
+    negative_indicators: []
+    confidence_threshold: 65.0
+    evidence_required: 3
+    opposite_trait: incurious
+
+  creative:
+    category: intellect
+    description: "Shows novel thinking and ideas"
+    icon: "🎨"
+    color: "#ec4899"
+    polarity: positive
+    primary_metrics: [depth, humor]
+    supporting_metrics: [openness, engagement]
+    negative_indicators: []
+    confidence_threshold: 70.0
+    evidence_required: 4
+    opposite_trait: conventional
+
+  knowledgeable:
+    category: intellect
+    description: "Demonstrates expertise and wisdom"
+    icon: "📚"
+    color: "#3b82f6"
+    polarity: positive
+    primary_metrics: [expertise, depth]
+    supporting_metrics: []
+    negative_indicators: []
+    confidence_threshold: 70.0
+    evidence_required: 4
+
+  opinionated:
+    category: intellect
+    description: "Has strong views and shares them freely"
+    icon: "📢"
+    color: "#f97316"
+    polarity: neutral
+    primary_metrics: [directness]
+    supporting_metrics: [engagement]
+    negative_indicators: [openness]
+    confidence_threshold: 65.0
+    evidence_required: 3
+
+  open-minded:
+    category: intellect
+    description: "Receptive to new ideas and perspectives"
+    icon: "🌈"
+    color: "#22c55e"
+    polarity: positive
+    primary_metrics: [openness]
+    supporting_metrics: [understanding, patience]
+    negative_indicators: [condescension]
+    confidence_threshold: 65.0
+    evidence_required: 3
+    opposite_trait: closed-minded
+
+  # ============================================================
+  # WORK/PROFESSIONAL TRAITS
+  # ============================================================
+
+  professional:
+    category: work
+    description: "Maintains appropriate boundaries and conduct"
+    icon: "💼"
+    color: "#3b82f6"
+    polarity: positive
+    primary_metrics: [respect, reliability]
+    supporting_metrics: [punctuality]
+    negative_indicators: []
+    confidence_threshold: 70.0
+    evidence_required: 4
+
+  competent:
+    category: work
+    description: "Demonstrates skill and capability"
+    icon: "🏆"
+    color: "#22c55e"
+    polarity: positive
+    primary_metrics: [expertise, reliability]
+    supporting_metrics: []
+    negative_indicators: []
+    confidence_threshold: 70.0
+    evidence_required: 4
+
+  helpful:
+    category: work
+    description: "Provides useful assistance"
+    icon: "🙌"
+    color: "#22c55e"
+    polarity: positive
+    primary_metrics: [support, empowerment]
+    supporting_metrics: [patience, responsiveness]
+    negative_indicators: [dismissiveness]
+    confidence_threshold: 65.0
+    evidence_required: 3
+
+  mentoring:
+    category: work
+    description: "Guides and teaches others"
+    icon: "🧑‍🏫"
+    color: "#8b5cf6"
+    polarity: positive
+    primary_metrics: [empowerment, expertise]
+    supporting_metrics: [patience, support]
+    negative_indicators: [condescension]
+    confidence_threshold: 70.0
+    evidence_required: 4
+
+  # ============================================================
+  # HUMOR/PERSONALITY TRAITS
+  # ============================================================
+
+  funny:
+    category: temperament
+    description: "Makes others laugh"
+    icon: "😂"
+    color: "#eab308"
+    polarity: positive
+    primary_metrics: [humor]
+    supporting_metrics: [engagement, warmth]
+    negative_indicators: []
+    confidence_threshold: 65.0
+    evidence_required: 3
+
+  sarcastic:
+    category: temperament
+    description: "Uses irony and wit, sometimes cutting"
+    icon: "😏"
+    color: "#64748b"
+    polarity: neutral
+    primary_metrics: [humor_style]
+    supporting_metrics: [directness]
+    negative_indicators: []
+    confidence_threshold: 70.0
+    evidence_required: 3
+
+  playful:
+    category: temperament
+    description: "Light-hearted and fun"
+    icon: "🎮"
+    color: "#ec4899"
+    polarity: positive
+    primary_metrics: [humor, engagement]
+    supporting_metrics: [warmth]
+    negative_indicators: [tension]
+    confidence_threshold: 65.0
+    evidence_required: 3
+
+  serious:
+    category: temperament
+    description: "Earnest and focused"
+    icon: "🎭"
+    color: "#475569"
+    polarity: neutral
+    primary_metrics: [depth]
+    supporting_metrics: []
+    negative_indicators: [humor]
+    confidence_threshold: 65.0
+    evidence_required: 3
+    opposite_trait: playful
+
+  # ============================================================
+  # WARNING TRAITS (Special handling: fewer evals, higher threshold)
+  # ============================================================
+
+  manipulative:
+    category: warning
+    description: "Uses others for personal gain through deception"
+    icon: "🎭"
+    color: "#ef4444"
+    polarity: warning
+    primary_metrics: [manipulation]
+    supporting_metrics: [betrayal]
+    negative_indicators: [honesty, loyalty]
+    confidence_threshold: 75.0
+    evidence_required: 2
+    is_warning: true
+
+  gaslighting:
+    category: warning
+    description: "Denies reality to confuse and control"
+    icon: "💨"
+    color: "#ef4444"
+    polarity: warning
+    primary_metrics: [manipulation, distrust]
+    supporting_metrics: [condescension]
+    negative_indicators: [honesty, support]
+    confidence_threshold: 75.0
+    evidence_required: 2
+    is_warning: true
+
+  love-bombing:
+    category: warning
+    description: "Excessive flattery or affection to manipulate"
+    icon: "💣"
+    color: "#ef4444"
+    polarity: warning
+    primary_metrics: [manipulation, affection]
+    supporting_metrics: []
+    negative_indicators: []
+    confidence_threshold: 75.0
+    evidence_required: 2
+    is_warning: true
+
+  ghosting:
+    category: warning
+    description: "Suddenly cuts off communication"
+    icon: "👻"
+    color: "#f97316"
+    polarity: warning
+    primary_metrics: []
+    supporting_metrics: []
+    negative_indicators: [responsiveness, reliability]
+    confidence_threshold: 70.0
+    evidence_required: 2
+    is_warning: true
+
+  breadcrumbing:
+    category: warning
+    description: "Gives minimal attention to string someone along"
+    icon: "🍞"
+    color: "#f97316"
+    polarity: warning
+    primary_metrics: [manipulation]
+    supporting_metrics: []
+    negative_indicators: [engagement, support]
+    confidence_threshold: 70.0
+    evidence_required: 3
+    is_warning: true
+
+  toxic:
+    category: warning
+    description: "Generally harmful to interact with"
+    icon: "☠️"
+    color: "#ef4444"
+    polarity: warning
+    primary_metrics: [antagonism, manipulation]
+    supporting_metrics: [resentment, condescension, dismissiveness]
+    negative_indicators: [warmth, support, respect]
+    confidence_threshold: 75.0
+    evidence_required: 2
+    is_warning: true
+
+  narcissistic:
+    category: warning
+    description: "Excessive self-focus, lacks empathy"
+    icon: "🪞"
+    color: "#ef4444"
+    polarity: warning
+    primary_metrics: [condescension]
+    supporting_metrics: [dismissiveness]
+    negative_indicators: [understanding, support]
+    confidence_threshold: 75.0
+    evidence_required: 3
+    is_warning: true
+
+  passive-aggressive:
+    category: warning
+    description: "Expresses hostility indirectly"
+    icon: "😤"
+    color: "#f97316"
+    polarity: warning
+    primary_metrics: [antagonism, resentment]
+    supporting_metrics: [tension]
+    negative_indicators: [directness, honesty]
+    confidence_threshold: 70.0
+    evidence_required: 2
+    is_warning: true
+
+  controlling:
+    category: warning
+    description: "Tries to dictate others' behavior"
+    icon: "🎮"
+    color: "#ef4444"
+    polarity: warning
+    primary_metrics: [condescension, manipulation]
+    supporting_metrics: [antagonism]
+    negative_indicators: [respect, empowerment]
+    confidence_threshold: 75.0
+    evidence_required: 2
+    is_warning: true
+
+  jealous:
+    category: warning
+    description: "Envious and possessive"
+    icon: "💢"
+    color: "#ef4444"
+    polarity: warning
+    primary_metrics: [resentment]
+    supporting_metrics: [antagonism, tension]
+    negative_indicators: [support, warmth]
+    confidence_threshold: 70.0
+    evidence_required: 2
+    is_warning: true
+
+  petty:
+    category: warning
+    description: "Focuses on small slights, holds grudges"
+    icon: "🦟"
+    color: "#f97316"
+    polarity: warning
+    primary_metrics: [resentment, annoyance]
+    supporting_metrics: [tension]
+    negative_indicators: [patience, understanding]
+    confidence_threshold: 65.0
+    evidence_required: 2
+    is_warning: true
+
+  two-faced:
+    category: warning
+    description: "Different behavior to different people"
+    icon: "🎭"
+    color: "#f97316"
+    polarity: warning
+    primary_metrics: [manipulation]
+    supporting_metrics: [distrust]
+    negative_indicators: [honesty]
+    confidence_threshold: 70.0
+    evidence_required: 3
+    is_warning: true
+
+  condescending:
+    category: warning
+    description: "Talks down to others"
+    icon: "🙄"
+    color: "#f97316"
+    polarity: warning
+    primary_metrics: [condescension]
+    supporting_metrics: [dismissiveness]
+    negative_indicators: [respect, understanding]
+    confidence_threshold: 65.0
+    evidence_required: 2
+    is_warning: true
+
+  antagonistic:
+    category: warning
+    description: "Actively hostile or combative"
+    icon: "⚔️"
+    color: "#ef4444"
+    polarity: warning
+    primary_metrics: [antagonism]
+    supporting_metrics: [tension, resentment]
+    negative_indicators: [warmth, support]
+    confidence_threshold: 65.0
+    evidence_required: 2
+    is_warning: true

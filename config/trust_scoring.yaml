@@ -95,3 +95,49 @@ compatibility_factors:
   topic_overlap: 0.35               # Shared interests
   communication_style_match: 0.20   # Similar communication styles
   timezone_alignment: 0.20          # Overlapping active hours
+
+# ============================================================
+# TRAIT DETECTION SETTINGS
+# ============================================================
+
+trait_detection:
+  # Base requirements (scaled by difficulty)
+  base_evidence_required: 4      # Evaluations needed before confident
+  confidence_threshold: 65.0     # Min score to display trait
+  evolution_log_threshold: 5.0   # Min change to log in evolution
+  max_traits_displayed: 8        # Limit on relationship card
+
+  # Difficulty multipliers (applied to base_evidence_required)
+  difficulty_multipliers:
+    quick: 0.5     # 2 evals
+    normal: 0.75   # 3 evals
+    long: 1.0      # 4 evals
+    extreme: 2.0   # 8 evals
+
+  # Confidence growth rates per difficulty
+  growth_rates:
+    quick: 1.0     # Full growth
+    normal: 0.8    # 80% growth
+    long: 0.5      # 50% growth
+    extreme: 0.2   # 20% growth
+
+  # Trait decay - traits fade without reinforcement
+  decay:
+    enabled: true
+    half_life_days:
+      quick: 30
+      normal: 60
+      long: 90
+      extreme: 180
+
+  # Warning trait special handling
+  warning_traits:
+    evidence_required: 2         # Fewer evals needed
+    confidence_threshold: 75.0   # Higher bar to confirm
+    show_emerging: true          # Show below threshold as heads-up
+    emerging_threshold: 40.0     # Min score to show as "emerging"
+
+  # Volatility detection
+  volatility:
+    window_size: 5               # Recent scores to analyze
+    high_volatility_threshold: 25.0  # Std dev above = volatile

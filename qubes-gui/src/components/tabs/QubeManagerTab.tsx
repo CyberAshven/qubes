@@ -100,6 +100,10 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
   }>>([]);
   const [selectedWalletQube, setSelectedWalletQube] = useState<string | null>(null);
 
+  // DEV ONLY: Reset qube state
+  const [qubeToReset, setQubeToReset] = useState<Qube | null>(null);
+  const [isResetting, setIsResetting] = useState(false);
+
   // Set up drag-and-drop sensors
   const sensors = useSensors(
     useSensor(PointerSensor),
@@ -175,6 +179,36 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
     setCurrentTab('dashboard');
     // Then select the qube (without Ctrl/Shift, so it's a single selection)
     toggleSelection(qube.qube_id, false, false);
+  };
+
+  // DEV ONLY: Handle reset qube confirmation and execution
+  const handleResetQube = async () => {
+    if (!qubeToReset || !userId) return;
+
+    setIsResetting(true);
+    try {
+      const result = await invoke<{ success: boolean; error?: string }>('reset_qube', {
+        userId,
+        qubeId: qubeToReset.qube_id,
+      });
+
+      if (result.success) {
+        console.log(`[DEV] Qube ${qubeToReset.name} reset to fresh state`);
+        // Emit event to refresh qube list
+        await emit('qube-reset', { qubeId: qubeToReset.qube_id });
+        // Refresh page to show updated state
+        window.location.reload();
+      } else {
+        console.error(`[DEV] Failed to reset qube: ${result.error}`);
+        alert(`Failed to reset qube: ${result.error}`);
+      }
+    } catch (error) {
+      console.error('[DEV] Reset qube error:', error);
+      alert(`Failed to reset qube: ${error}`);
+    } finally {
+      setIsResetting(false);
+      setQubeToReset(null);
+    }
   };
 
   // Construct avatar path from chain folder
@@ -593,6 +627,7 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
                     qube={qube}
                     onEdit={() => onEditQube(qube)}
                     onDelete={() => onDeleteQube(qube)}
+                    onReset={import.meta.env.DEV ? () => setQubeToReset(qube) : undefined}
                     onSelect={() => handleSelectQube(qube)}
                     onUpdateConfig={onUpdateQubeConfig}
                     getAvatarPath={getAvatarPath}
@@ -613,6 +648,7 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
                     qube={qube}
                     onEdit={() => onEditQube(qube)}
                     onDelete={() => onDeleteQube(qube)}
+                    onReset={import.meta.env.DEV ? () => setQubeToReset(qube) : undefined}
                     onSelect={() => handleSelectQube(qube)}
                     onUpdateConfig={onUpdateQubeConfig}
                     getAvatarPath={getAvatarPath}
@@ -634,6 +670,48 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
             )}
           </SortableContext>
         </DndContext>
+      )}
+
+      {/* DEV ONLY: Reset Confirmation Modal */}
+      {import.meta.env.DEV && qubeToReset && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="glass-card p-6 max-w-md w-full mx-4">
+            <h2 className="text-xl font-bold text-text-primary mb-2">Reset {qubeToReset.name}?</h2>
+            <p className="text-accent-warning text-sm mb-4 font-semibold">
+              DEV MODE: This will reset the qube to a fresh state.
+            </p>
+            <p className="text-text-secondary text-sm mb-4">
+              The following will be DELETED:
+            </p>
+            <ul className="text-text-secondary text-sm mb-4 list-disc list-inside space-y-1">
+              <li>All conversation blocks (except genesis)</li>
+              <li>All relationships and evaluations</li>
+              <li>All skill progress and history</li>
+              <li>Semantic search index</li>
+              <li>Snapshots and audio cache</li>
+            </ul>
+            <p className="text-text-secondary text-sm mb-6">
+              The genesis block, NFT info, and cryptographic identity will be preserved.
+            </p>
+
+            <div className="flex gap-3">
+              <button
+                onClick={() => setQubeToReset(null)}
+                disabled={isResetting}
+                className="flex-1 px-4 py-2 bg-surface-secondary text-text-secondary rounded-lg hover:bg-surface-tertiary transition-all"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleResetQube}
+                disabled={isResetting}
+                className="flex-1 px-4 py-2 bg-accent-warning/20 text-accent-warning rounded-lg hover:bg-accent-warning/30 transition-all font-medium"
+              >
+                {isResetting ? 'Resetting...' : 'Reset Qube'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Transfer Modal */}
@@ -849,6 +927,7 @@ interface QubeCardProps {
   qube: Qube;
   onEdit: () => void;
   onDelete: () => void;
+  onReset?: () => void;  // DEV ONLY: Reset qube to fresh state
   onSelect: () => void;
   onUpdateConfig: (qubeId: string, updates: { ai_model?: string; voice_model?: string; favorite_color?: string; tts_enabled?: boolean; evaluation_model?: string }) => Promise<void>;
   getAvatarPath: (qube: Qube) => string;
@@ -917,7 +996,7 @@ const BlockchainLink: React.FC<BlockchainLinkProps> = ({ value, type, network = 
   );
 };
 
-const QubeCard: React.FC<QubeCardProps> = ({ qube, onEdit, onDelete, onSelect, onUpdateConfig, getAvatarPath, dragHandleProps, setCurrentTab, toggleSelection, isSelected = false }) => {
+const QubeCard: React.FC<QubeCardProps> = ({ qube, onEdit, onDelete, onReset, onSelect, onUpdateConfig, getAvatarPath, dragHandleProps, setCurrentTab, toggleSelection, isSelected = false }) => {
   const { userId } = useAuth();
 
   // Infer provider from model if provider is unknown - MUST be defined before useState that uses it
@@ -1555,7 +1634,6 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, onEdit, onDelete, onSelect, o
       // and evaluation model is also Llama 3.2 (to avoid evaluating with the same model)
       const currentEvalModel = (qube as any).evaluation_model || 'llama3.2';
       if (selectedModel === 'llama3.2' && currentEvalModel === 'llama3.2') {
-        console.log('Auto-switching evaluation model to Mistral 7B (main model is Llama 3.2)');
         await onUpdateConfig(qube.qube_id, { evaluation_model: 'mistral:7b' });
       }
 
@@ -2016,6 +2094,15 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, onEdit, onDelete, onSelect, o
               >
                 Chat
               </button>
+              {/* DEV ONLY: Reset button */}
+              {import.meta.env.DEV && onReset && (
+                <button
+                  onClick={onReset}
+                  className="flex-1 px-4 py-2 bg-accent-warning/10 text-accent-warning rounded-lg hover:bg-accent-warning/20 transition-all text-sm font-medium"
+                >
+                  Reset
+                </button>
+              )}
               <button
                 onClick={onDelete}
                 className="flex-1 px-4 py-2 bg-accent-danger/10 text-accent-danger rounded-lg hover:bg-accent-danger/20 transition-all text-sm font-medium"
@@ -2650,7 +2737,7 @@ const SortableQubeListItem: React.FC<QubeCardProps> = (props) => {
 };
 
 // Qube List Item Component (List View)
-const QubeListItem: React.FC<QubeCardProps> = ({ qube, onEdit, onDelete, onSelect, getAvatarPath, dragHandleProps, setCurrentTab, toggleSelection, isSelected = false }) => {
+const QubeListItem: React.FC<QubeCardProps> = ({ qube, onEdit, onDelete, onReset, onSelect, getAvatarPath, dragHandleProps, setCurrentTab, toggleSelection, isSelected = false }) => {
   const statusColors = {
     active: 'bg-[#00ff88]', // Neon dark green
     inactive: 'bg-[#ff3366]', // Neon red
@@ -2764,6 +2851,15 @@ const QubeListItem: React.FC<QubeCardProps> = ({ qube, onEdit, onDelete, onSelec
           >
             Chat
           </button>
+          {/* DEV ONLY: Reset button */}
+          {import.meta.env.DEV && onReset && (
+            <button
+              onClick={onReset}
+              className="px-4 py-2 bg-accent-warning/10 text-accent-warning rounded-lg hover:bg-accent-warning/20 transition-all text-sm font-medium"
+            >
+              Reset
+            </button>
+          )}
           <button
             onClick={onDelete}
             className="px-4 py-2 bg-accent-danger/10 text-accent-danger rounded-lg hover:bg-accent-danger/20 transition-all text-sm font-medium"

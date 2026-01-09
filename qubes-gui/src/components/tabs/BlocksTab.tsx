@@ -179,22 +179,18 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
   };
 
   // Helper function to copy hash to clipboard
-  const copyToClipboard = async (text: string, label: string) => {
+  const copyToClipboard = async (text: string, _label: string) => {
     try {
       await navigator.clipboard.writeText(text);
-      // You could add a toast notification here if desired
-      console.log(`${label} copied to clipboard`);
     } catch (err) {
       console.error('Failed to copy:', err);
     }
   };
 
   const loadBlocks = async (): Promise<{ sessionCount: number; permanentCount: number } | null> => {
-    console.log('🔍 loadBlocks called, selectedQube:', selectedQube?.qube_id, 'userId:', userId, 'password:', password ? '***' : 'MISSING');
     if (!selectedQube) return null;
 
     setLoading(true);
-    console.log('🚀 About to invoke get_qube_blocks...');
     try {
       const params: any = {
         userId,
@@ -207,12 +203,10 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
       }
 
       const result = await invoke<any>('get_qube_blocks', params);
-      console.log('✅ get_qube_blocks returned:', result);
 
       if (result.success) {
         const sessionCount = result.session_blocks?.length || 0;
         const permanentCount = result.permanent_blocks?.length || 0;
-        console.log('Loaded blocks:', { session: sessionCount, permanent: permanentCount });
         setSessionBlocks(result.session_blocks || []);
         setPermanentBlocks(result.permanent_blocks || []);
 
@@ -329,13 +323,11 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
     setShowDiscardConfirm(false);
 
     try {
-      console.log('⚡ Proceeding with discard all...');
-      const result = await invoke('discard_session', {
+      await invoke('discard_session', {
         userId,
         qubeId: selectedQube.qube_id,
         password,
       });
-      console.log('✅ Discard all completed:', result);
       await loadBlocks();
       // Refresh context preview since blocks changed
       await loadContextPreview();
@@ -357,14 +349,12 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
     setShowDiscardConfirm(false);
 
     try {
-      console.log('⚡ Proceeding with discard selected block:', selectedBlock.block_number);
-      const result = await invoke('delete_session_block', {
+      await invoke('delete_session_block', {
         userId,
         qubeId: selectedQube.qube_id,
         blockNumber: selectedBlock.block_number,
         password,
       });
-      console.log('✅ Discard selected completed:', result);
       await loadBlocks();
       // Refresh context preview since blocks changed
       await loadContextPreview();
@@ -381,23 +371,13 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
   };
 
   const handleBlockClick = (block: Block, section: SelectionSection) => {
-    console.log('🔍 Block clicked:', {
-      block_number: block.block_number,
-      block_type: block.block_type,
-      section: section,
-      encrypted: block.encrypted,
-      content: block.content,
-      content_type: typeof block.content,
-      content_keys: block.content ? Object.keys(block.content) : 'null'
-    });
-
     try {
       setSelectedBlock(block);
       setSelectedSection(section);
       // All blocks are already decrypted since we prompted for password on load
       setDecryptedContent(block.content);
     } catch (error) {
-      console.error('❌ Error setting selected block:', error);
+      console.error('Error setting selected block:', error);
       alert(`Error displaying block: ${error}`);
     }
   };
@@ -1574,6 +1554,46 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                             ))}
                           </ul>
                         </details>
+                      )}
+
+                      {/* Trait Changes */}
+                      {evaluation.trait_changes && evaluation.trait_changes[entityId] && (
+                        (() => {
+                          const changes = evaluation.trait_changes[entityId];
+                          const hasChanges = changes.assigned?.length || changes.strengthened?.length ||
+                                            changes.weakened?.length || changes.removed?.length;
+                          if (!hasChanges) return null;
+
+                          return (
+                            <div className="mt-3 pt-3 border-t border-glass-border/30">
+                              <h5 className="text-xs text-text-secondary font-semibold mb-2 flex items-center gap-1">
+                                🧬 Trait Changes
+                              </h5>
+                              <div className="flex flex-wrap gap-1">
+                                {changes.assigned?.map((trait: string) => (
+                                  <span key={trait} className="px-2 py-0.5 text-xs bg-green-500/20 text-green-400 rounded-full border border-green-500/30">
+                                    +{trait} <span className="text-[10px]">(NEW)</span>
+                                  </span>
+                                ))}
+                                {changes.strengthened?.map((trait: string) => (
+                                  <span key={trait} className="px-2 py-0.5 text-xs bg-blue-500/20 text-blue-400 rounded-full border border-blue-500/30">
+                                    ↑{trait}
+                                  </span>
+                                ))}
+                                {changes.weakened?.map((trait: string) => (
+                                  <span key={trait} className="px-2 py-0.5 text-xs bg-orange-500/20 text-orange-400 rounded-full border border-orange-500/30">
+                                    ↓{trait}
+                                  </span>
+                                ))}
+                                {changes.removed?.map((trait: string) => (
+                                  <span key={trait} className="px-2 py-0.5 text-xs bg-red-500/20 text-red-400 rounded-full border border-red-500/30 line-through">
+                                    {trait}
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                          );
+                        })()
                       )}
                     </div>
                   ))}
