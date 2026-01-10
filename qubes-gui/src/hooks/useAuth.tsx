@@ -2,6 +2,37 @@ import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import type { NftAuthToken } from '../types';
 
+// Load auto-lock settings from localStorage (persists across restarts)
+const loadAutoLockSettings = () => {
+  try {
+    const saved = localStorage.getItem('qubes-autolock-settings');
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      return {
+        autoLockEnabled: parsed.autoLockEnabled ?? true,
+        autoLockTimeout: parsed.autoLockTimeout ?? 5,
+      };
+    }
+  } catch (e) {
+    console.error('Failed to load auto-lock settings:', e);
+  }
+  return { autoLockEnabled: true, autoLockTimeout: 5 };
+};
+
+// Save auto-lock settings to localStorage
+const saveAutoLockSettings = (enabled: boolean, timeout: number) => {
+  try {
+    localStorage.setItem('qubes-autolock-settings', JSON.stringify({
+      autoLockEnabled: enabled,
+      autoLockTimeout: timeout,
+    }));
+  } catch (e) {
+    console.error('Failed to save auto-lock settings:', e);
+  }
+};
+
+const initialAutoLock = loadAutoLockSettings();
+
 interface AuthState {
   isAuthenticated: boolean;
   isLocked: boolean;
@@ -34,8 +65,8 @@ export const useAuth = create<AuthState>()(
       userId: null,
       dataDir: null,
       password: null,
-      autoLockEnabled: true,
-      autoLockTimeout: 5, // 5 minutes default
+      autoLockEnabled: initialAutoLock.autoLockEnabled,
+      autoLockTimeout: initialAutoLock.autoLockTimeout,
       nftTokens: {},
 
       login: (userId: string, dataDir: string, password: string) =>
@@ -62,8 +93,10 @@ export const useAuth = create<AuthState>()(
         return false;
       },
 
-      setAutoLockSettings: (enabled: boolean, timeout: number) =>
-        set({ autoLockEnabled: enabled, autoLockTimeout: timeout }),
+      setAutoLockSettings: (enabled: boolean, timeout: number) => {
+        saveAutoLockSettings(enabled, timeout);
+        set({ autoLockEnabled: enabled, autoLockTimeout: timeout });
+      },
 
       setNftToken: (qubeId: string, token: string, expiresAt: number) =>
         set((state) => ({
