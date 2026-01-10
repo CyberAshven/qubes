@@ -628,6 +628,9 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes }) =
   }, [currentTab, selectedQubes.length]);
 
   const handleSend = async () => {
+    // Guard against double-sending (e.g., double-click, Enter key repeat)
+    if (isLoading) return;
+
     if ((!inputValue.trim() && uploadedFiles.length === 0) || selectedQubes.length === 0 || !userId) {
       return;
     }

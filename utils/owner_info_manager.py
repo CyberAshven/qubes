@@ -499,14 +499,23 @@ class OwnerInfoManager:
         if owner_info.get("dynamic"):
             categories_populated += 1
 
-        # Get top 5 fields (by confidence, excluding secret)
+        # Get all fields with category info for full display in UI
         top_fields = [
-            {"key": f["key"], "value": f["value"][:30], "sensitivity": f["sensitivity"]}
+            {
+                "key": f["key"],
+                "value": f["value"][:200],  # Allow longer values for detail view
+                "sensitivity": f["sensitivity"],
+                "category": f.get("category", "dynamic")
+            }
             for f in sorted(
-                [f for f in all_fields if f.get("sensitivity") != "secret"],
-                key=lambda x: x.get("confidence", 0),
-                reverse=True
-            )[:5]
+                all_fields,
+                key=lambda x: (
+                    # Sort order: private first, then public, then secret
+                    0 if x.get("sensitivity") == "private" else
+                    1 if x.get("sensitivity") == "public" else 2,
+                    -x.get("confidence", 0)  # Higher confidence first within each group
+                )
+            )
         ]
 
         return {

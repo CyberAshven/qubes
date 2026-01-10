@@ -306,6 +306,7 @@ class UserOrchestrator:
 
             # Register in orchestrator
             self.qubes[qube_id] = qube
+            qube._orchestrator = self  # Store reference for auto-approval
 
             # Save Qube to storage
             await self._save_qube(qube, private_key)
@@ -987,6 +988,7 @@ class UserOrchestrator:
 
             # Register in orchestrator
             self.qubes[qube_id] = qube
+            qube._orchestrator = self  # Store reference for auto-approval
 
             logger.info("qube_loaded_successfully", qube_id=qube_id[:16] + "...")
 
@@ -2538,3 +2540,118 @@ class UserOrchestrator:
 
         conversation = self.active_conversations[conversation_id]
         return conversation.get_participation_stats()
+
+    # ===== Wallet Security Methods =====
+
+    def save_owner_key(self, nft_address: str, owner_wif: str) -> bool:
+        """
+        Save encrypted owner WIF for an NFT address.
+        Works for all qubes at that address since they share the same owner key.
+
+        Args:
+            nft_address: The NFT/CashTokens address
+            owner_wif: Owner's private key in WIF format
+
+        Returns:
+            True on success
+        """
+        config = self.secure_settings.load_wallet_security()
+        config.owner_keys[nft_address] = owner_wif
+        self.secure_settings.save_wallet_security(config)
+        logger.info("owner_key_saved", nft_address=nft_address[:20] + "...")
+        return True
+
+    def delete_owner_key(self, nft_address: str) -> bool:
+        """
+        Delete stored owner WIF for an NFT address.
+
+        Args:
+            nft_address: The NFT/CashTokens address
+
+        Returns:
+            True on success
+        """
+        config = self.secure_settings.load_wallet_security()
+        if nft_address in config.owner_keys:
+            del config.owner_keys[nft_address]
+            self.secure_settings.save_wallet_security(config)
+            logger.info("owner_key_deleted", nft_address=nft_address[:20] + "...")
+        return True
+
+    def get_wallet_security(self) -> Dict[str, Any]:
+        """
+        Get wallet security config (WIFs redacted, shows which addresses have keys).
+
+        Returns:
+            Dictionary with addresses_with_keys and whitelists
+        """
+        config = self.secure_settings.load_wallet_security()
+        return {
+            'addresses_with_keys': list(config.owner_keys.keys()),  # Just addresses, not WIFs
+            'whitelists': config.whitelists  # qube_id -> [addresses]
+        }
+
+    def get_owner_wif_for_qube(self, qube_id: str) -> Optional[str]:
+        """
+        Get stored owner WIF for a Qube by looking up its NFT address (internal use).
+
+        Args:
+            qube_id: The Qube ID
+
+        Returns:
+            WIF string if found, None otherwise
+        """
+        # Get qube's NFT address (z address) from nft_metadata.json
+        if qube_id not in self.qubes:
+            return None
+        qube = self.qubes[qube_id]
+
+        # The NFT address (z address) is stored in nft_metadata.json as recipient_address
+        nft_metadata_path = Path(qube.data_dir) / "chain" / "nft_metadata.json"
+        nft_address = None
+
+        if nft_metadata_path.exists():
+            try:
+                import json
+                with open(nft_metadata_path, 'r') as f:
+                    nft_metadata = json.load(f)
+                nft_address = nft_metadata.get("recipient_address")
+            except Exception as e:
+                logger.warning("failed_to_read_nft_metadata", error=str(e))
+
+        if not nft_address:
+            return None
+
+        config = self.secure_settings.load_wallet_security()
+        return config.get_key_for_address(nft_address)
+
+    def update_whitelist(self, qube_id: str, whitelist: List[str]) -> bool:
+        """
+        Update auto-send whitelist for a Qube.
+
+        Args:
+            qube_id: The Qube ID
+            whitelist: List of addresses that can receive auto-approved sends
+
+        Returns:
+            True on success
+        """
+        config = self.secure_settings.load_wallet_security()
+        config.whitelists[qube_id] = whitelist
+        self.secure_settings.save_wallet_security(config)
+        logger.info("whitelist_updated", qube_id=qube_id[:16] + "...", count=len(whitelist))
+        return True
+
+    def is_address_whitelisted(self, qube_id: str, address: str) -> bool:
+        """
+        Check if address is whitelisted for auto-send from a Qube.
+
+        Args:
+            qube_id: The Qube ID
+            address: Address to check
+
+        Returns:
+            True if whitelisted
+        """
+        config = self.secure_settings.load_wallet_security()
+        return config.is_whitelisted(qube_id, address)

@@ -325,6 +325,7 @@ export const TabContent: React.FC<TabContentProps> = ({ qubes, setQubes, onQubes
             userId={userId || ''}
             password={password || ''}
             isActive={currentTab === 'blocks'}
+            onQubesChange={onQubesChange}
           />
         </div>
 

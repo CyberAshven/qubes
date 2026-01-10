@@ -4,6 +4,7 @@ import { QRCodeSVG } from 'qrcode.react';
 import { Qube } from '../../types';
 import { GlassCard, GlassButton } from '../glass';
 import { useAuth } from '../../hooks/useAuth';
+import { useWalletCache } from '../../hooks/useWalletCache';
 import { TransactionHistory } from '../wallet/TransactionHistory';
 
 interface EarningsTabProps {
@@ -30,8 +31,8 @@ interface PendingTransaction {
   total_amount: number;
   fee: number;
   status: string;
-  created_at: string;
-  expires_at: string | null;
+  created_at: string;  // ISO format string
+  expires_at: string | null;  // ISO format string
   memo: string | null;
 }
 
@@ -64,6 +65,7 @@ export const EarningsTab: React.FC<EarningsTabProps> = ({
   onQubeSelect,
 }) => {
   const { userId, password } = useAuth();
+  const { invalidateCache } = useWalletCache();
   const [walletInfo, setWalletInfo] = useState<WalletInfo | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -80,6 +82,18 @@ export const EarningsTab: React.FC<EarningsTabProps> = ({
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [sendSuccess, setSendSuccess] = useState<string | null>(null);
+  const [refetchTrigger, setRefetchTrigger] = useState(0);
+
+  // Wallet security state (for one-click approval)
+  const [walletSecurity, setWalletSecurity] = useState<{
+    addresses_with_keys: string[];
+    whitelists: Record<string, string[]>;
+  }>({ addresses_with_keys: [], whitelists: {} });
+  const [approving, setApproving] = useState<string | null>(null);
+  const [rejectingTx, setRejectingTx] = useState<string | null>(null);
+  const [wifModalOpen, setWifModalOpen] = useState(false);
+  const [pendingApprovalTx, setPendingApprovalTx] = useState<PendingTransaction | null>(null);
+  const [manualWif, setManualWif] = useState('');
 
   // Handle copy for balance card addresses
   const handleCopyAddress = async (address: string | undefined) => {
@@ -148,7 +162,7 @@ export const EarningsTab: React.FC<EarningsTabProps> = ({
     };
 
     fetchWalletInfo();
-  }, [selectedQube?.qube_id, userId, password]);
+  }, [selectedQube?.qube_id, userId, password, refetchTrigger]);
 
   // Handle copy address
   const handleCopy = async () => {
@@ -195,8 +209,10 @@ export const EarningsTab: React.FC<EarningsTabProps> = ({
         setSendAddress('');
         setSendAmount('');
         setOwnerWif('');
-        // Refresh wallet info
-        setTimeout(() => window.location.reload(), 2000);
+        // Invalidate cache and refresh wallet info
+        invalidateCache(selectedQube.qube_id);
+        // Trigger refetch after a short delay to allow blockchain to update
+        setTimeout(() => setRefetchTrigger(prev => prev + 1), 2000);
       } else {
         setSendError(result.error || 'Failed to send transaction');
       }
@@ -205,6 +221,137 @@ export const EarningsTab: React.FC<EarningsTabProps> = ({
       setSendError(e instanceof Error ? e.message : 'Failed to send transaction');
     } finally {
       setSending(false);
+    }
+  };
+
+  // Load wallet security on mount (for one-click approval)
+  useEffect(() => {
+    const loadWalletSecurity = async () => {
+      if (!userId || !password) return;
+      try {
+        const result = await invoke<{
+          success: boolean;
+          addresses_with_keys: string[];
+          whitelists: Record<string, string[]>;
+        }>('get_wallet_security', { userId, password });
+        if (result.success) {
+          setWalletSecurity({
+            addresses_with_keys: result.addresses_with_keys || [],
+            whitelists: result.whitelists || {},
+          });
+        }
+      } catch (e) {
+        console.error('Failed to load wallet security:', e);
+      }
+    };
+    loadWalletSecurity();
+  }, [userId, password]);
+
+  // Check if qube's NFT address (z) has a stored key
+  // Use nft_address from walletInfo or recipient_address from qube
+  const nftAddress = walletInfo?.nft_address || selectedQube?.recipient_address;
+  const hasStoredKey =
+    nftAddress && walletSecurity.addresses_with_keys.includes(nftAddress);
+
+  // Approve handler (one-click or manual)
+  const handleApprove = async (pendingTx: PendingTransaction) => {
+    console.log('[handleApprove] Called with:', { pendingTx, selectedQube: selectedQube?.qube_id, userId, hasPassword: !!password, hasStoredKey, nftAddress });
+    if (!selectedQube || !userId || !password) {
+      console.log('[handleApprove] Early return - missing:', { selectedQube: !selectedQube, userId: !userId, password: !password });
+      return;
+    }
+
+    if (hasStoredKey) {
+      // One-click approval using stored key
+      console.log('[handleApprove] Using stored key for one-click approval');
+      setApproving(pendingTx.tx_id);
+      try {
+        console.log('[handleApprove] Calling approve_wallet_tx_stored_key with:', {
+          userId,
+          qubeId: selectedQube.qube_id,
+          txId: pendingTx.tx_id,
+        });
+        const result = await invoke<{
+          success: boolean;
+          txid?: string;
+          error?: string;
+        }>('approve_wallet_tx_stored_key', {
+          userId,
+          qubeId: selectedQube.qube_id,
+          txId: pendingTx.tx_id,
+          password,
+        });
+        console.log('[handleApprove] Result:', result);
+        if (result.success) {
+          console.log('[handleApprove] Success! TXID:', result.txid);
+          invalidateCache(selectedQube.qube_id);
+          setRefetchTrigger((prev) => prev + 1);
+        } else {
+          console.log('[handleApprove] Failed:', result.error);
+          setSendError(result.error || 'Approval failed');
+        }
+      } catch (e) {
+        console.error('[handleApprove] Exception:', e);
+        setSendError(e instanceof Error ? e.message : 'Approval failed');
+      } finally {
+        setApproving(null);
+      }
+    } else {
+      // Show modal to enter WIF manually
+      console.log('[handleApprove] Opening WIF modal');
+      setPendingApprovalTx(pendingTx);
+      setWifModalOpen(true);
+    }
+  };
+
+  // Manual WIF approval
+  const handleManualApprove = async () => {
+    if (!pendingApprovalTx || !manualWif || !selectedQube || !userId || !password) return;
+    setApproving(pendingApprovalTx.tx_id);
+    try {
+      const result = await invoke<{
+        success: boolean;
+        txid?: string;
+        error?: string;
+      }>('approve_wallet_transaction', {
+        userId,
+        qubeId: selectedQube.qube_id,
+        txId: pendingApprovalTx.tx_id,
+        ownerWif: manualWif,
+        password,
+      });
+      if (result.success) {
+        setWifModalOpen(false);
+        setManualWif('');
+        setPendingApprovalTx(null);
+        invalidateCache(selectedQube.qube_id);
+        setRefetchTrigger((prev) => prev + 1);
+      } else {
+        setSendError(result.error || 'Approval failed');
+      }
+    } catch (e) {
+      setSendError(e instanceof Error ? e.message : 'Approval failed');
+    } finally {
+      setApproving(null);
+    }
+  };
+
+  // Reject handler
+  const handleReject = async (pendingTx: PendingTransaction) => {
+    if (!selectedQube || !userId || !password) return;
+    setRejectingTx(pendingTx.tx_id);
+    try {
+      await invoke('reject_wallet_transaction', {
+        userId,
+        qubeId: selectedQube.qube_id,
+        txId: pendingTx.tx_id,
+        password,
+      });
+      setRefetchTrigger((prev) => prev + 1);
+    } catch (e) {
+      setSendError(e instanceof Error ? e.message : 'Reject failed');
+    } finally {
+      setRejectingTx(null);
     }
   };
 
@@ -271,6 +418,47 @@ export const EarningsTab: React.FC<EarningsTabProps> = ({
           <h2 className="text-2xl font-bold text-text-primary">{selectedQube.name}'s Wallet</h2>
           <p className="text-text-tertiary text-sm mt-1">Manage balances and transactions</p>
         </div>
+
+        {/* Pending Approvals - Top Right */}
+        {walletInfo && walletInfo.pending_transactions.length > 0 && (
+          <div className="flex-shrink-0">
+            <GlassCard className="p-3 border-l-4 border-l-accent-warning">
+              <div className="text-xs text-accent-warning font-semibold mb-2 flex items-center gap-1">
+                <span>⏳</span> {walletInfo.pending_transactions.length} Pending
+              </div>
+              <div className="space-y-2 max-h-32 overflow-y-auto">
+                {walletInfo.pending_transactions.slice(0, 2).map((tx) => (
+                  <div key={tx.tx_id} className="text-xs">
+                    <div className="text-text-secondary mb-1">
+                      {formatBCH(tx.total_amount)} BCH → {tx.outputs[0]?.address.slice(0, 15)}...
+                    </div>
+                    <div className="flex gap-1">
+                      <button
+                        onClick={() => handleApprove(tx)}
+                        disabled={approving === tx.tx_id || rejectingTx === tx.tx_id}
+                        className="flex-1 px-2 py-1 bg-accent-success/20 text-accent-success text-[10px] rounded hover:bg-accent-success/30 disabled:opacity-50"
+                      >
+                        {approving === tx.tx_id ? '...' : hasStoredKey ? '✓ Approve' : '🔑 Approve'}
+                      </button>
+                      <button
+                        onClick={() => handleReject(tx)}
+                        disabled={approving === tx.tx_id || rejectingTx === tx.tx_id}
+                        className="px-2 py-1 bg-red-500/20 text-red-400 text-[10px] rounded hover:bg-red-500/30 disabled:opacity-50"
+                      >
+                        {rejectingTx === tx.tx_id ? '...' : '✕'}
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              {walletInfo.pending_transactions.length > 2 && (
+                <div className="text-[10px] text-text-tertiary mt-1 text-center">
+                  +{walletInfo.pending_transactions.length - 2} more below
+                </div>
+              )}
+            </GlassCard>
+          </div>
+        )}
       </div>
 
       {/* Balance Display - Three columns with enhanced styling */}
@@ -565,44 +753,6 @@ export const EarningsTab: React.FC<EarningsTabProps> = ({
         </GlassCard>
       </div>
 
-      {/* Pending Transactions */}
-      {walletInfo && walletInfo.pending_transactions.length > 0 && (
-        <GlassCard className="p-6 border-l-4 border-l-accent-warning">
-          <h3 className="text-lg font-semibold text-text-primary mb-4 flex items-center gap-2">
-            <span className="text-xl">⏳</span> Pending Approvals ({walletInfo.pending_transactions.length})
-          </h3>
-          <div className="space-y-3">
-            {walletInfo.pending_transactions.map((tx) => (
-              <div
-                key={tx.tx_id}
-                className="p-4 bg-bg-primary rounded-lg border border-glass-border hover:border-accent-warning/50 transition-colors"
-              >
-                <div className="flex justify-between items-start mb-2">
-                  <div>
-                    <span className="text-accent-warning text-sm font-medium">
-                      {formatBCH(tx.total_amount)} BCH
-                    </span>
-                    <span className="text-text-tertiary text-sm ml-2">
-                      ({tx.total_amount.toLocaleString()} sats)
-                    </span>
-                  </div>
-                  <span className="text-xs text-text-tertiary uppercase bg-accent-warning/20 px-2 py-0.5 rounded">{tx.status}</span>
-                </div>
-                {tx.memo && (
-                  <p className="text-sm text-text-secondary mb-2 italic">"{tx.memo}"</p>
-                )}
-                <div className="text-xs text-text-tertiary">
-                  To: {tx.outputs[0]?.address.slice(0, 20)}...
-                </div>
-                <div className="text-xs text-text-tertiary mt-1">
-                  Created: {new Date(tx.created_at).toLocaleString()}
-                </div>
-              </div>
-            ))}
-          </div>
-        </GlassCard>
-      )}
-
       {/* Transaction History & Wallet Details - Side by Side */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
         {/* Transaction History */}
@@ -663,6 +813,52 @@ export const EarningsTab: React.FC<EarningsTabProps> = ({
           )}
         </GlassCard>
       </div>
+
+      {/* WIF Modal for manual approval */}
+      {wifModalOpen && pendingApprovalTx && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
+          <GlassCard className="p-6 max-w-md w-full mx-4">
+            <h3 className="text-lg font-semibold text-text-primary mb-4 flex items-center gap-2">
+              <span>🔑</span> Enter Owner WIF to Approve
+            </h3>
+            <p className="text-sm text-text-secondary mb-4">
+              Approve sending {formatBCH(pendingApprovalTx.total_amount)} BCH to{' '}
+              {pendingApprovalTx.outputs[0]?.address.slice(0, 20)}...
+            </p>
+            <input
+              type="password"
+              value={manualWif}
+              onChange={(e) => setManualWif(e.target.value)}
+              placeholder="Enter WIF private key"
+              className="w-full bg-bg-primary border border-glass-border rounded-lg px-3 py-2 text-sm text-text-primary font-mono mb-4 focus:outline-none focus:ring-2 focus:ring-accent-primary/50"
+            />
+            <p className="text-[10px] text-text-tertiary mb-4">
+              Tip: Store your key in Dashboard → Qube Card → Wallet Security to enable one-click approvals.
+            </p>
+            <div className="flex gap-2">
+              <GlassButton
+                onClick={() => {
+                  setWifModalOpen(false);
+                  setManualWif('');
+                  setPendingApprovalTx(null);
+                }}
+                variant="secondary"
+                className="flex-1"
+              >
+                Cancel
+              </GlassButton>
+              <GlassButton
+                onClick={handleManualApprove}
+                disabled={!manualWif || approving !== null}
+                className="flex-1"
+                variant="primary"
+              >
+                {approving ? 'Approving...' : 'Approve'}
+              </GlassButton>
+            </div>
+          </GlassCard>
+        </div>
+      )}
     </div>
   );
 };

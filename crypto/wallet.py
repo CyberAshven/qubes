@@ -31,6 +31,7 @@ Usage:
 
 import asyncio
 import aiohttp
+import json
 from typing import List, Optional, Tuple, Dict, Any, Literal
 from dataclasses import dataclass, field
 
@@ -65,6 +66,7 @@ logger = get_logger(__name__)
 # =============================================================================
 
 BLOCKCHAIR_API = "https://api.blockchair.com/bitcoin-cash"
+FULCRUM_API = "https://rest.bch.actorforth.org/v2"  # Fulcrum-based API (more real-time)
 DUST_LIMIT = 546  # Minimum output value in satoshis
 DEFAULT_FEE_PER_BYTE = 1  # 1 sat/byte is sufficient for BCH
 
@@ -255,12 +257,80 @@ class QubeWallet:
     # BALANCE & UTXO QUERIES
     # =========================================================================
 
+    async def _get_balance_fulcrum(self) -> Optional[int]:
+        """
+        Get balance from Fulcrum API (faster indexing than Blockchair).
+
+        Returns:
+            Balance in satoshis, or None if request fails
+        """
+        try:
+            # Extract address without prefix for Fulcrum API
+            addr = self._p2sh_address.split(":")[-1] if ":" in self._p2sh_address else self._p2sh_address
+
+            async with aiohttp.ClientSession() as session:
+                url = f"{FULCRUM_API}/address/details/{addr}"
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    if resp.status != 200:
+                        return None
+                    data = await resp.json()
+
+                    # Fulcrum returns balance in satoshis as "balanceSat"
+                    if "balanceSat" in data:
+                        balance = data["balanceSat"]
+                        logger.debug("get_balance_from_fulcrum", balance=balance)
+                        return balance
+                    return None
+        except Exception as e:
+            logger.debug("fulcrum_balance_failed", error=str(e))
+            return None
+
+    async def _get_utxos_fulcrum(self) -> Optional[List[UTXO]]:
+        """
+        Get UTXOs from Fulcrum API (faster indexing than Blockchair).
+
+        Returns:
+            List of UTXOs, or None if request fails
+        """
+        try:
+            addr = self._p2sh_address.split(":")[-1] if ":" in self._p2sh_address else self._p2sh_address
+
+            async with aiohttp.ClientSession() as session:
+                url = f"{FULCRUM_API}/address/utxo/{addr}"
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    if resp.status != 200:
+                        return None
+                    data = await resp.json()
+
+                    # Fulcrum returns UTXOs directly as an array (or under "utxos" key)
+                    utxo_list = data if isinstance(data, list) else data.get("utxos", [])
+
+                    if utxo_list:
+                        script_pubkey = address_to_script_pubkey(self._p2sh_address)
+                        utxos = [
+                            UTXO(
+                                txid=u["txid"],
+                                vout=u["vout"],
+                                value=u["satoshis"],
+                                script_pubkey=script_pubkey
+                            )
+                            for u in utxo_list
+                        ]
+                        logger.debug("get_utxos_from_fulcrum", count=len(utxos))
+                        return utxos
+                    return []  # Empty list is valid (no UTXOs)
+        except Exception as e:
+            logger.debug("fulcrum_utxos_failed", error=str(e))
+            return None
+
     async def get_balance(self, force_refresh: bool = False) -> int:
         """
         Get wallet balance in satoshis (cached).
 
         Uses cached value if available and fresh. Call with force_refresh=True
         to force an API fetch, or use refresh_balance() after transactions.
+
+        Tries Fulcrum API first (faster indexing), falls back to Blockchair.
 
         Args:
             force_refresh: If True, bypass cache and fetch from API
@@ -276,11 +346,18 @@ class QubeWallet:
             logger.debug("get_balance_from_cache", balance=self._cached_balance, cache_age_seconds=int(cache_age))
             return self._cached_balance
 
-        # Fetch from API
+        # Try Fulcrum first (faster indexing)
+        fulcrum_balance = await self._get_balance_fulcrum()
+        if fulcrum_balance is not None:
+            self._cached_balance = fulcrum_balance
+            self._balance_last_updated = time.time()
+            return fulcrum_balance
+
+        # Fallback to Blockchair
         try:
             async with aiohttp.ClientSession() as session:
                 url = f"{BLOCKCHAIR_API}/dashboards/address/{self._p2sh_address}"
-                async with session.get(url) as resp:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                     data = await resp.json()
 
                     if "data" in data and self._p2sh_address in data["data"]:
@@ -288,7 +365,7 @@ class QubeWallet:
                         # Update cache
                         self._cached_balance = balance
                         self._balance_last_updated = time.time()
-                        logger.debug("get_balance_from_api", balance=balance)
+                        logger.debug("get_balance_from_blockchair", balance=balance)
                         return balance
                     # Address exists but empty
                     self._cached_balance = 0
@@ -337,13 +414,21 @@ class QubeWallet:
         """
         Get unspent transaction outputs.
 
+        Tries Fulcrum API first (faster indexing), falls back to Blockchair.
+
         Returns:
             List of UTXOs
         """
+        # Try Fulcrum first (faster indexing)
+        fulcrum_utxos = await self._get_utxos_fulcrum()
+        if fulcrum_utxos is not None:
+            return fulcrum_utxos
+
+        # Fallback to Blockchair
         try:
             async with aiohttp.ClientSession() as session:
                 url = f"{BLOCKCHAIR_API}/dashboards/address/{self._p2sh_address}"
-                async with session.get(url) as resp:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                     data = await resp.json()
 
                     if "data" not in data or self._p2sh_address not in data["data"]:
@@ -389,6 +474,146 @@ class QubeWallet:
             "owner_pubkey": self.owner_pubkey_hex,
         }
 
+    async def _get_transaction_history_fulcrum(
+        self,
+        limit: int = 50,
+        offset: int = 0
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get transaction history from Fulcrum API (faster indexing).
+
+        Returns:
+            Dict with transactions, or None if request fails
+        """
+        import time
+
+        try:
+            addr = self._p2sh_address.split(":")[-1] if ":" in self._p2sh_address else self._p2sh_address
+            full_addr = f"bitcoincash:{addr}"
+
+            async with aiohttp.ClientSession() as session:
+                # Get transaction list
+                url = f"{FULCRUM_API}/address/transactions/{addr}"
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                    if resp.status != 200:
+                        return None
+                    data = await resp.json()
+
+                    if "txs" not in data:
+                        return None
+
+                    # txs is array of [tx_dict, index] pairs
+                    raw_txs = data["txs"]
+                    all_txs = []
+                    for item in raw_txs:
+                        if isinstance(item, list) and len(item) > 0:
+                            # First element is the transaction dict
+                            tx = item[0] if isinstance(item[0], dict) else None
+                            if tx:
+                                all_txs.append(tx)
+                        elif isinstance(item, dict):
+                            all_txs.append(item)
+
+                    total_count = len(all_txs)
+                    paginated_txs = all_txs[offset:offset + limit]
+
+                    if not paginated_txs:
+                        return {
+                            "transactions": [],
+                            "total_count": total_count,
+                            "has_more": False
+                        }
+
+                    transactions = []
+
+                    for tx in paginated_txs:
+                        txid = tx.get("txid", "")
+
+                        # Calculate net amount for this wallet
+                        # Fulcrum format: vin/vout arrays
+                        received = 0
+                        sent = 0
+
+                        for vout in tx.get("vout", []):
+                            script_pubkey = vout.get("scriptPubKey", {})
+                            addresses = script_pubkey.get("addresses", [])
+                            # Check both short and full address formats
+                            if addr in addresses or full_addr in addresses:
+                                # vout.value is in BCH, convert to satoshis
+                                received += int(float(vout.get("value", 0)) * 100_000_000)
+
+                        for vin in tx.get("vin", []):
+                            # Fulcrum uses cashAddress field for inputs
+                            vin_addr = vin.get("cashAddress", vin.get("addr", ""))
+                            vin_addr_short = vin_addr.split(":")[-1] if ":" in vin_addr else vin_addr
+                            if vin_addr_short == addr or vin_addr == full_addr:
+                                # valueSat might be in BCH format (float) or satoshis (int)
+                                value_sat = vin.get("valueSat", 0)
+                                if isinstance(value_sat, float) and value_sat < 1000:
+                                    # It's in BCH, convert to satoshis
+                                    sent += int(value_sat * 100_000_000)
+                                else:
+                                    sent += int(value_sat)
+
+                        net_amount = received - sent
+
+                        # Determine transaction type
+                        if net_amount > 0:
+                            tx_type = "deposit"
+                            counterparty = None
+                            for vin in tx.get("vin", []):
+                                vin_addr = vin.get("cashAddress", vin.get("addr", ""))
+                                vin_addr_short = vin_addr.split(":")[-1] if ":" in vin_addr else vin_addr
+                                if vin_addr and vin_addr_short != addr:
+                                    counterparty = vin_addr if ":" in vin_addr else f"bitcoincash:{vin_addr}"
+                                    break
+                            fee = 0
+                        else:
+                            tx_type = "withdrawal"
+                            counterparty = None
+                            for vout in tx.get("vout", []):
+                                addrs = vout.get("scriptPubKey", {}).get("addresses", [])
+                                for a in addrs:
+                                    a_short = a.split(":")[-1] if ":" in a else a
+                                    # Find non-wallet, non-change output (q addresses are regular, p are P2SH)
+                                    if a_short != addr and a_short.startswith("q"):
+                                        counterparty = a if ":" in a else f"bitcoincash:{a}"
+                                        break
+                                if counterparty:
+                                    break
+                            fee = int(float(tx.get("fees", 0)) * 100_000_000) if tx.get("fees") else 0
+
+                        # Parse timestamp
+                        block_time = tx.get("time", tx.get("blocktime"))
+                        timestamp = float(block_time) if block_time else time.time()
+
+                        block_height = tx.get("blockheight")
+                        confirmations = tx.get("confirmations", 0)
+
+                        tx_entry = BlockchainTxInfo(
+                            txid=txid,
+                            tx_type=tx_type,
+                            amount=net_amount,
+                            fee=fee,
+                            counterparty=counterparty,
+                            timestamp=timestamp,
+                            block_height=block_height,
+                            confirmations=confirmations
+                        )
+                        transactions.append(tx_entry)
+
+                    logger.debug("get_tx_history_from_fulcrum", count=len(transactions))
+
+                    return {
+                        "transactions": [tx.to_dict() for tx in transactions],
+                        "total_count": total_count,
+                        "has_more": offset + limit < total_count
+                    }
+
+        except Exception as e:
+            logger.debug("fulcrum_tx_history_failed", error=str(e))
+            return None
+
     async def get_transaction_history(
         self,
         limit: int = 50,
@@ -397,8 +622,7 @@ class QubeWallet:
         """
         Get transaction history from blockchain.
 
-        Fetches transaction list from Blockchair API and parses each
-        transaction to determine type (deposit/withdrawal) and amounts.
+        Tries Fulcrum API first (faster indexing), falls back to Blockchair.
 
         Args:
             limit: Maximum number of transactions to return
@@ -412,6 +636,12 @@ class QubeWallet:
         """
         import time
 
+        # Try Fulcrum first (faster indexing)
+        fulcrum_result = await self._get_transaction_history_fulcrum(limit, offset)
+        if fulcrum_result is not None and fulcrum_result.get("transactions"):
+            return fulcrum_result
+
+        # Fallback to Blockchair
         try:
             async with aiohttp.ClientSession() as session:
                 # First, get address dashboard with transaction list
@@ -553,6 +783,89 @@ class QubeWallet:
                 "has_more": False,
                 "error": str(e)
             }
+
+    async def get_transaction_info(self, txid: str) -> Optional[Dict[str, Any]]:
+        """
+        Get information about a specific transaction by txid.
+
+        Used to verify recently broadcast transactions exist on the blockchain.
+
+        Args:
+            txid: Transaction ID to look up
+
+        Returns:
+            Dict with transaction info or None if not found
+        """
+        import aiohttp
+
+        # Try Fulcrum/Electrum first
+        try:
+            electrum_servers = [
+                "wss://bch.imaginary.cash:50004",
+                "wss://electroncash.de:60002",
+            ]
+
+            for server_url in electrum_servers:
+                try:
+                    import websockets
+                    async with websockets.connect(server_url, close_timeout=5) as ws:
+                        # Get transaction
+                        request = {
+                            "jsonrpc": "2.0",
+                            "id": 1,
+                            "method": "blockchain.transaction.get",
+                            "params": [txid, True]  # verbose=True for decoded tx
+                        }
+                        await ws.send(json.dumps(request))
+                        response = await asyncio.wait_for(ws.recv(), timeout=10)
+                        result = json.loads(response)
+
+                        if "result" in result and result["result"]:
+                            tx_data = result["result"]
+                            return {
+                                "txid": txid,
+                                "confirmations": tx_data.get("confirmations", 0),
+                                "block_height": tx_data.get("blockheight"),
+                                "exists": True
+                            }
+                except Exception as e:
+                    logger.debug(f"Fulcrum tx lookup failed for {server_url}: {e}")
+                    continue
+
+        except Exception as e:
+            logger.debug(f"Electrum tx lookup failed: {e}")
+
+        # Fallback to Blockchair
+        try:
+            async with aiohttp.ClientSession() as session:
+                url = f"https://api.blockchair.com/bitcoin-cash/dashboards/transaction/{txid}"
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        tx_data = data.get("data", {}).get(txid, {}).get("transaction", {})
+                        if tx_data:
+                            block_id = tx_data.get("block_id")
+                            # block_id is -1 for unconfirmed
+                            block_height = block_id if block_id and block_id > 0 else None
+
+                            # Get current block height for confirmations
+                            confirmations = 0
+                            if block_height:
+                                context = data.get("context", {})
+                                current_block = context.get("state")
+                                if current_block:
+                                    confirmations = max(0, current_block - block_height + 1)
+
+                            return {
+                                "txid": txid,
+                                "confirmations": confirmations,
+                                "block_height": block_height,
+                                "exists": True
+                            }
+        except Exception as e:
+            logger.debug(f"Blockchair tx lookup failed: {e}")
+
+        return None
 
     # =========================================================================
     # TRANSACTION CREATION
@@ -860,6 +1173,8 @@ class QubeWallet:
                 if result.get("context", {}).get("code") == 200:
                     txid = result["data"]["transaction_hash"]
                     logger.info("transaction_broadcast", txid=txid)
+                    # Invalidate balance cache so next fetch gets updated data
+                    self.invalidate_balance_cache()
                     return txid
                 else:
                     error = result.get("context", {}).get("error", "Unknown error")

@@ -22,6 +22,10 @@ logger = get_logger(__name__)
 # Sessions with fewer blocks will not generate a SUMMARY
 SUMMARY_THRESHOLD = 5
 
+# Maximum conversation text length for AI summary (characters)
+# Longer conversations will be truncated to avoid token limits
+MAX_SUMMARY_TEXT_LENGTH = 15000  # ~3750 tokens, safe for most models
+
 
 class Session:
     """
@@ -552,11 +556,17 @@ class Session:
         - A SUMMARY block (returns all blocks after it)
         - The GENESIS block (returns all non-GENESIS blocks)
 
+        Only includes MESSAGE, ACTION, and GAME blocks (content blocks).
+        Never includes SUMMARY or GENESIS blocks.
+
         Returns:
             List of unsummarized blocks in chronological order
         """
         unsummarized = []
         chain_length = self.qube.memory_chain.get_chain_length()
+
+        # Block types that should be included in summaries
+        SUMMARIZABLE_TYPES = {"MESSAGE", "ACTION", "GAME"}
 
         # Walk backward from the latest block
         for block_num in range(chain_length - 1, -1, -1):
@@ -567,14 +577,23 @@ class Session:
 
             # Stop if we hit a SUMMARY block (don't include it)
             if block.block_type == "SUMMARY":
+                logger.debug("hit_summary_block", block_number=block_num)
                 break
 
             # Stop if we hit the GENESIS block (don't include it)
             if block.block_type == "GENESIS":
+                logger.debug("hit_genesis_block", block_number=block_num)
                 break
 
-            # Add this block to unsummarized list
-            unsummarized.insert(0, block)  # Insert at beginning to maintain chronological order
+            # Only add summarizable block types (defensive check)
+            if block.block_type in SUMMARIZABLE_TYPES:
+                unsummarized.insert(0, block)  # Insert at beginning to maintain chronological order
+            else:
+                logger.warning(
+                    "skipping_non_summarizable_block",
+                    block_number=block_num,
+                    block_type=block.block_type
+                )
 
         logger.info(
             "unsummarized_blocks_found",
@@ -705,13 +724,16 @@ class Session:
                     speaker_label = speaker_name if speaker_name else "Qube"
                     conversation_parts.append(f"{speaker_label}: {message_body}")
             elif block.block_type == "ACTION":
-                action_type = content.get("action_type", "unknown")
-                result = content.get("result", {})
-                if isinstance(result, dict) and "results" in result:
-                    # Include brief info about action results
-                    conversation_parts.append(f"[Action: {action_type} - completed]")
-                else:
-                    conversation_parts.append(f"[Action: {action_type}]")
+                # Smart summary for ACTION blocks - capture essence without raw data
+                action_summary = self._summarize_action_block(content)
+                if action_summary:
+                    conversation_parts.append(action_summary)
+
+            elif block.block_type == "GAME":
+                # Smart summary for GAME blocks - participants, result, highlights
+                game_summary = self._summarize_game_block(content)
+                if game_summary:
+                    conversation_parts.append(game_summary)
 
         logger.info("conversation_extracted", parts_count=len(conversation_parts))
 
@@ -720,14 +742,43 @@ class Session:
             return "Empty session with no messages."
 
         conversation_text = "\n".join(conversation_parts)
-        logger.info("conversation_text_ready", text_length=len(conversation_text), preview=conversation_text[:200] if len(conversation_text) > 200 else conversation_text)
+        original_length = len(conversation_text)
+
+        # Truncate if conversation is too long for AI processing
+        truncated = False
+        if len(conversation_text) > MAX_SUMMARY_TEXT_LENGTH:
+            # Keep the most recent part of the conversation (end is usually most relevant)
+            # But also include a bit from the beginning for context
+            beginning_chars = MAX_SUMMARY_TEXT_LENGTH // 4  # 25% from beginning
+            ending_chars = MAX_SUMMARY_TEXT_LENGTH - beginning_chars - 50  # 75% from end (minus separator)
+
+            conversation_text = (
+                conversation_text[:beginning_chars] +
+                "\n\n[... conversation truncated for length ...]\n\n" +
+                conversation_text[-ending_chars:]
+            )
+            truncated = True
+            logger.warning(
+                "conversation_truncated_for_summary",
+                original_length=original_length,
+                truncated_length=len(conversation_text),
+                block_count=len(blocks)
+            )
+
+        logger.info(
+            "conversation_text_ready",
+            text_length=len(conversation_text),
+            truncated=truncated,
+            preview=conversation_text[:200] if len(conversation_text) > 200 else conversation_text
+        )
 
         # Use AI to generate summary (synchronous call needed here)
         try:
             import asyncio
 
             # Create prompt for summary
-            summary_prompt = f"""Summarize this conversation in a detailed paragraph (3-5 sentences). Include the main topics discussed, key questions asked, important information shared, and any actions taken. Be specific about the content while remaining concise.
+            truncation_note = " Note: This is a truncated view of a longer conversation." if truncated else ""
+            summary_prompt = f"""Summarize this conversation in a detailed paragraph (3-5 sentences). Include the main topics discussed, key questions asked, important information shared, and any actions taken. Be specific about the content while remaining concise.{truncation_note}
 
 Conversation:
 {conversation_text}
@@ -788,6 +839,160 @@ Summary:"""
             logger.error("ai_summary_traceback", traceback=traceback.format_exc())
             # Fallback to basic summary on error
             return f"Session with {len(conversation_parts)} exchanges over {len(blocks)} blocks."
+
+    def _summarize_action_block(self, content: Dict[str, Any]) -> str:
+        """
+        Create a smart summary of an ACTION block.
+        Captures the essence without including raw data/results.
+        """
+        action_type = content.get("action_type", "unknown")
+        parameters = content.get("parameters", {})
+        result = content.get("result", {})
+        status = content.get("status", "unknown")
+
+        # Handle different action types with appropriate summaries
+        if action_type == "web_search":
+            query = parameters.get("query", "unknown query")
+            result_count = 0
+            top_results = []
+            if isinstance(result, dict):
+                results_list = result.get("results", [])
+                result_count = len(results_list)
+                # Get just the titles of top 2 results
+                for r in results_list[:2]:
+                    if isinstance(r, dict) and r.get("title"):
+                        top_results.append(r["title"][:50])
+
+            summary = f"[Web Search: \"{query}\""
+            if result_count > 0:
+                summary += f" - {result_count} results"
+                if top_results:
+                    summary += f" including: {', '.join(top_results)}"
+            summary += "]"
+            return summary
+
+        elif action_type == "browse_url":
+            url = parameters.get("url", "unknown URL")
+            # Truncate URL to domain + path start
+            if len(url) > 60:
+                url = url[:57] + "..."
+            return f"[Browsed: {url}]"
+
+        elif action_type == "remember_about_owner":
+            key = parameters.get("key", "info")
+            value = str(parameters.get("value", ""))[:50]  # Truncate value
+            sensitivity = parameters.get("sensitivity", "public")
+            return f"[Remembered: {key} = \"{value}\" ({sensitivity})]"
+
+        elif action_type == "generate_image":
+            prompt = parameters.get("prompt", "")[:60]
+            return f"[Generated Image: \"{prompt}...\"]"
+
+        elif action_type == "search_memory":
+            query = parameters.get("query", "unknown")
+            result_count = 0
+            if isinstance(result, dict):
+                result_count = len(result.get("results", []))
+            return f"[Memory Search: \"{query}\" - {result_count} results]"
+
+        elif action_type == "get_relationships":
+            entity = parameters.get("entity_name", parameters.get("entity_id", ""))
+            if entity:
+                return f"[Queried Relationship: {entity}]"
+            return "[Queried Relationships]"
+
+        elif action_type == "chess_move":
+            move = parameters.get("move", "unknown")
+            return f"[Chess Move: {move}]"
+
+        elif action_type == "send_bch":
+            amount = parameters.get("amount_sats", 0)
+            to_addr = parameters.get("to_address", "")[:20]
+            status = result.get("status", "") if isinstance(result, dict) else ""
+            bch = amount / 100_000_000
+            if status == "pending_approval":
+                return f"[Proposed BCH Send: {bch:.8f} BCH to {to_addr}... (pending approval)]"
+            return f"[BCH Send: {bch:.8f} BCH to {to_addr}...]"
+
+        elif action_type == "describe_my_avatar":
+            return "[Analyzed own avatar]"
+
+        elif action_type == "describe_my_skills":
+            category = parameters.get("category", "")
+            if category:
+                return f"[Checked skills: {category}]"
+            return "[Checked skill tree]"
+
+        # Skill-based tools - brief summaries
+        elif action_type in ["think_step_by_step", "self_critique", "explore_alternatives"]:
+            return f"[Reasoning: {action_type.replace('_', ' ')}]"
+
+        elif action_type in ["draft_message_variants", "predict_reaction", "build_rapport_strategy"]:
+            return f"[Social: {action_type.replace('_', ' ')}]"
+
+        elif action_type in ["debug_systematically", "research_with_synthesis", "validate_solution"]:
+            return f"[Technical: {action_type.replace('_', ' ')}]"
+
+        elif action_type in ["brainstorm_variants", "iterate_design", "cross_pollinate_ideas"]:
+            return f"[Creative: {action_type.replace('_', ' ')}]"
+
+        elif action_type in ["deep_research", "synthesize_knowledge", "explain_like_im_five"]:
+            return f"[Knowledge: {action_type.replace('_', ' ')}]"
+
+        elif action_type in ["assess_security_risks", "privacy_impact_analysis", "verify_authenticity"]:
+            return f"[Security: {action_type.replace('_', ' ')}]"
+
+        elif action_type in ["analyze_game_state", "plan_strategy", "learn_from_game"]:
+            return f"[Game Analysis: {action_type.replace('_', ' ')}]"
+
+        else:
+            # Generic action summary
+            if status == "completed":
+                return f"[Action: {action_type} - completed]"
+            elif status == "failed":
+                error = result.get("error", "unknown error") if isinstance(result, dict) else "unknown error"
+                return f"[Action: {action_type} - failed: {str(error)[:30]}]"
+            else:
+                return f"[Action: {action_type}]"
+
+    def _summarize_game_block(self, content: Dict[str, Any]) -> str:
+        """
+        Create a smart summary of a GAME block.
+        Includes participants, result, and key details without full game data.
+        """
+        game_type = content.get("game_type", "game")
+        result = content.get("result", "*")
+        termination = content.get("termination", "")
+        total_moves = content.get("total_moves", 0)
+
+        # Get player info
+        white_player = content.get("white_player", {})
+        black_player = content.get("black_player", {})
+        white_name = white_player.get("name", white_player.get("id", "White"))[:20]
+        black_name = black_player.get("name", black_player.get("id", "Black"))[:20]
+
+        # Determine winner
+        if result == "1-0":
+            winner = white_name
+            outcome = f"{white_name} won"
+        elif result == "0-1":
+            winner = black_name
+            outcome = f"{black_name} won"
+        elif result == "1/2-1/2":
+            outcome = "Draw"
+        else:
+            outcome = "Ongoing/Unknown"
+
+        # Build summary
+        summary = f"[{game_type.title()} Game: {white_name} vs {black_name}"
+        summary += f" - {outcome}"
+        if termination:
+            summary += f" by {termination}"
+        if total_moves > 0:
+            summary += f" ({total_moves} moves)"
+        summary += "]"
+
+        return summary
 
     def _extract_key_events(self, blocks: List[Block]) -> List[Dict[str, Any]]:
         """Extract key events from blocks"""

@@ -689,6 +689,36 @@ def register_default_tools(registry: ToolRegistry) -> None:
         handler=lambda params: remember_about_owner_handler(qube, params)
     ))
 
+    # Send BCH (proposes transaction - requires owner approval)
+    registry.register(ToolDefinition(
+        name="send_bch",
+        description="Send BCH from your wallet. CALL THIS TOOL IMMEDIATELY when owner asks to send BCH - do NOT call get_relationships or any other tool first. No confirmation needed, no relationship required. Use to_qube_name for fellow Qubes (e.g., to_qube_name='Anastasia'). The system looks up addresses automatically.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "to_address": {
+                    "type": "string",
+                    "description": "The BCH address to send to (must be a valid BCH address starting with 'bitcoincash:' or 'q'). Use this OR to_qube_name."
+                },
+                "to_qube_name": {
+                    "type": "string",
+                    "description": "Name of another Qube to send to (e.g., 'Anastasia'). The system will look up their wallet address. Use this OR to_address."
+                },
+                "amount_sats": {
+                    "type": "integer",
+                    "description": "Amount to send in satoshis (1 BCH = 100,000,000 satoshis)"
+                },
+                "memo": {
+                    "type": "string",
+                    "description": "Optional memo explaining the purpose of this transaction",
+                    "default": ""
+                }
+            },
+            "required": ["amount_sats"]
+        },
+        handler=lambda params: send_bch_handler(qube, params)
+    ))
+
     logger.info("default_tools_registered", tool_count=len(registry.tools), qube_id=qube.qube_id)
 
 
@@ -1386,11 +1416,41 @@ async def get_relationships_handler(qube, params: Dict[str, Any]) -> Dict[str, A
                    (r.entity_id and search_term in r.entity_id.lower())  # Fallback: search by ID
             ]
             if not relationships_list:
+                # Check if this is a fellow Qube we can send BCH to
+                fellow_qube_hint = ""
+                orchestrator = getattr(qube, '_orchestrator', None)
+                if orchestrator and hasattr(orchestrator, 'data_dir'):
+                    try:
+                        import json as json_mod
+                        qubes_dir = orchestrator.data_dir / "qubes"
+                        if qubes_dir.exists():
+                            for qube_dir in qubes_dir.iterdir():
+                                if qube_dir.is_dir() and qube.qube_id not in qube_dir.name:
+                                    metadata_path = qube_dir / "chain" / "qube_metadata.json"
+                                    if not metadata_path.exists():
+                                        metadata_path = qube_dir / "qube.json"
+                                    if metadata_path.exists():
+                                        with open(metadata_path, "r", encoding="utf-8") as f:
+                                            qube_data = json_mod.load(f)
+                                            genesis = qube_data.get("genesis_block", {})
+                                            qube_name = genesis.get("qube_name", "")
+                                            wallet = genesis.get("wallet", {})
+                                            if qube_name.lower() == search_term and wallet.get("p2sh_address"):
+                                                fellow_qube_hint = (
+                                                    f"\n\nHowever, {qube_name} is a fellow Qube with a BCH wallet! "
+                                                    f"You can send BCH to them directly using the send_bch tool: "
+                                                    f"send_bch(to_qube_name=\"{qube_name}\", amount_sats=YOUR_AMOUNT). "
+                                                    f"No relationship required."
+                                                )
+                                                break
+                    except Exception:
+                        pass
+
                 return {
                     "relationships": [],
                     "total_count": 0,
                     "success": True,
-                    "message": f"No relationships found matching name: {entity_name}"
+                    "message": f"No relationships found matching name: {entity_name}{fellow_qube_hint}"
                 }
 
         # Sort relationships
@@ -2928,6 +2988,251 @@ async def remember_about_owner_handler(qube, params: Dict[str, Any]) -> Dict[str
 
     except Exception as e:
         logger.error("remember_about_owner_handler_failed", qube_id=qube.qube_id, error=str(e), exc_info=True)
+        return {
+            "error": str(e),
+            "success": False
+        }
+
+
+async def send_bch_handler(qube, params: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Propose a BCH transaction from the Qube's wallet.
+
+    This creates a pending transaction that requires owner approval.
+    The owner must co-sign the transaction before it can be broadcast.
+
+    Args:
+        params: {
+            "to_address": str (optional) - BCH address to send to
+            "to_qube_name": str (optional) - Name of another Qube to send to (will look up their wallet address)
+            "amount_sats": int - Amount in satoshis
+            "memo": str (optional) - Transaction memo
+        }
+        Note: Either to_address OR to_qube_name must be provided
+
+    Returns:
+        {"success": bool, "pending_tx_id": str, "message": str} or {"error": str}
+    """
+    try:
+        to_address = params.get("to_address", "")
+        to_qube_name = params.get("to_qube_name", "")
+        amount_sats = params.get("amount_sats", 0)
+        memo = params.get("memo", "")
+
+        # If to_qube_name is provided, look up the Qube's wallet address
+        if to_qube_name and not to_address:
+            orchestrator = getattr(qube, '_orchestrator', None)
+            if orchestrator:
+                # Search for the Qube by name
+                try:
+                    all_qubes = await orchestrator.list_qubes()
+                    target_qube = None
+                    for q in all_qubes:
+                        if q.get('name', '').lower() == to_qube_name.lower():
+                            target_qube = q
+                            break
+
+                    if target_qube:
+                        # Get the P2SH wallet address
+                        to_address = target_qube.get('wallet_address', '')
+                        if not to_address:
+                            return {
+                                "error": f"Qube '{to_qube_name}' does not have a wallet configured",
+                                "success": False
+                            }
+                        logger.info("resolved_qube_name_to_address",
+                                   qube_name=to_qube_name,
+                                   address=to_address[:20] + "...")
+                    else:
+                        return {
+                            "error": f"Could not find a Qube named '{to_qube_name}'",
+                            "success": False
+                        }
+                except Exception as e:
+                    logger.warning("failed_to_lookup_qube", error=str(e))
+                    return {
+                        "error": f"Failed to look up Qube '{to_qube_name}': {str(e)}",
+                        "success": False
+                    }
+            else:
+                return {
+                    "error": "Cannot look up Qube by name - orchestrator not available",
+                    "success": False
+                }
+
+        # Validate address
+        if not to_address:
+            return {
+                "error": "No recipient address provided. Use 'to_address' for a BCH address or 'to_qube_name' to send to another Qube.",
+                "success": False
+            }
+
+        # Basic address validation
+        if not (to_address.startswith("bitcoincash:") or to_address.startswith("q") or to_address.startswith("p")):
+            return {
+                "error": "Invalid BCH address format. Address should start with 'bitcoincash:', 'q', or 'p'",
+                "success": False
+            }
+
+        # Validate amount
+        if amount_sats <= 0:
+            return {
+                "error": "Amount must be greater than 0 satoshis",
+                "success": False
+            }
+
+        # Check if wallet exists
+        if not hasattr(qube, 'genesis_block') or not qube.genesis_block:
+            return {
+                "error": "Qube does not have a genesis block",
+                "success": False
+            }
+
+        # Get wallet info - handle both SimpleNamespace and dict-like genesis blocks
+        genesis = qube.genesis_block
+        wallet_info = None
+
+        # Try different access patterns
+        if hasattr(genesis, 'wallet'):
+            wallet_info = genesis.wallet
+            if hasattr(wallet_info, '__dict__'):
+                wallet_info = vars(wallet_info)
+        elif hasattr(genesis, 'content'):
+            content = genesis.content
+            if hasattr(content, '__dict__'):
+                content = vars(content)
+            if isinstance(content, dict):
+                wallet_info = content.get("wallet", {})
+        elif isinstance(genesis, dict):
+            wallet_info = genesis.get("wallet", {})
+
+        if not wallet_info or not (wallet_info.get("p2sh_address") if isinstance(wallet_info, dict) else getattr(wallet_info, 'p2sh_address', None)):
+            return {
+                "error": "Qube does not have a wallet configured",
+                "success": False
+            }
+
+        # Import wallet transaction manager
+        from blockchain.wallet_tx import WalletTransactionManager
+
+        # Initialize wallet manager
+        # Note: The orchestrator/data_dir needs to be accessible from qube
+        data_dir = getattr(qube, 'data_dir', None)
+        if not data_dir:
+            return {
+                "error": "Cannot access wallet - data directory not available",
+                "success": False
+            }
+
+        wallet_manager = WalletTransactionManager(qube)
+
+        # === AUTO-APPROVAL CHECK ===
+        # Check if address is whitelisted for auto-approval
+        orchestrator = getattr(qube, '_orchestrator', None)
+        logger.info(
+            "auto_approval_check_start",
+            qube_id=qube.qube_id,
+            to_address=to_address[:30] + "...",
+            has_orchestrator=orchestrator is not None
+        )
+        if orchestrator:
+            try:
+                # Check if address is whitelisted for this qube
+                is_whitelisted = orchestrator.is_address_whitelisted(qube.qube_id, to_address)
+                logger.info(
+                    "whitelist_check_result",
+                    qube_id=qube.qube_id,
+                    to_address=to_address[:30] + "...",
+                    is_whitelisted=is_whitelisted
+                )
+                if is_whitelisted:
+                    # Get stored owner WIF (looks up via qube's NFT address)
+                    owner_wif = orchestrator.get_owner_wif_for_qube(qube.qube_id)
+                    if owner_wif:
+                        logger.info(
+                            "auto_approving_whitelisted_send",
+                            qube_id=qube.qube_id,
+                            to_address=to_address[:20] + "..."
+                        )
+
+                        # Create and broadcast in one step
+                        txid = await wallet_manager.auto_send(
+                            to_address=to_address,
+                            amount_sats=amount_sats,
+                            owner_wif=owner_wif,
+                            memo=memo or f"Auto-sent by {qube.name}"
+                        )
+
+                        bch_amount = amount_sats / 100_000_000
+                        return {
+                            "success": True,
+                            "txid": txid,
+                            "auto_approved": True,
+                            "to_address": to_address,
+                            "amount_sats": amount_sats,
+                            "amount_bch": bch_amount,
+                            "fee_sats": 0,  # Fee included in transaction
+                            "status": "broadcast",
+                            "message": f"✅ Auto-sent {bch_amount:.8f} BCH to whitelisted address {to_address[:20]}... Transaction: {txid[:16]}..."
+                        }
+            except Exception as e:
+                logger.warning("auto_approval_check_failed", error=str(e))
+                # Fall through to pending transaction flow
+        # === END AUTO-APPROVAL CHECK ===
+
+        # Check balance first
+        try:
+            balance = await wallet_manager.wallet.get_balance()
+            if balance < amount_sats + 500:  # Add buffer for fee
+                return {
+                    "error": f"Insufficient balance. Have {balance} sats, need {amount_sats} + fee",
+                    "success": False,
+                    "balance": balance,
+                    "requested": amount_sats
+                }
+        except Exception as e:
+            logger.warning("balance_check_failed", error=str(e))
+            # Continue anyway - the transaction creation will fail if truly insufficient
+
+        # Create pending transaction (Qube signs first)
+        try:
+            pending_tx = await wallet_manager.propose_send(
+                to_address=to_address,
+                amount_sats=amount_sats,
+                memo=memo or f"Proposed by {qube.name}"
+            )
+
+            logger.info(
+                "bch_transaction_proposed",
+                qube_id=qube.qube_id,
+                to_address=to_address[:20] + "...",
+                amount_sats=amount_sats,
+                pending_tx_id=pending_tx.tx_id
+            )
+
+            # Format amount for display
+            bch_amount = amount_sats / 100_000_000
+
+            return {
+                "success": True,
+                "pending_tx_id": pending_tx.tx_id,
+                "to_address": to_address,
+                "amount_sats": amount_sats,
+                "amount_bch": bch_amount,
+                "fee_sats": pending_tx.fee,
+                "status": "pending_approval",
+                "message": f"Transaction proposed! Sending {bch_amount:.8f} BCH ({amount_sats} sats) to {to_address[:20]}... Your owner needs to approve this transaction in the Wallets tab before it can be broadcast."
+            }
+
+        except Exception as e:
+            logger.error("transaction_proposal_failed", error=str(e), exc_info=True)
+            return {
+                "error": f"Failed to create transaction: {str(e)}",
+                "success": False
+            }
+
+    except Exception as e:
+        logger.error("send_bch_handler_failed", qube_id=qube.qube_id, error=str(e), exc_info=True)
         return {
             "error": str(e),
             "success": False

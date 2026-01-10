@@ -1,7 +1,8 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { GlassCard, GlassButton } from '../glass';
 import { useAuth } from '../../hooks/useAuth';
+import { useWalletCache } from '../../hooks/useWalletCache';
 import { TransactionHistoryEntry, TransactionHistoryResponse } from '../../types';
 
 interface TransactionHistoryProps {
@@ -72,7 +73,7 @@ const getConfirmationStyle = (isConfirmed: boolean, confirmations: number) => {
     color: '#22c55e',
     bgColor: 'rgba(34, 197, 94, 0.15)',
     borderColor: 'rgba(34, 197, 94, 0.4)',
-    label: `${confirmations}+ confirmed`,
+    label: `${confirmations} confirmed`,
     icon: '✓',
     pulse: false,
   };
@@ -83,18 +84,37 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
   walletAddress,
 }) => {
   const { userId, password } = useAuth();
-  const [transactions, setTransactions] = useState<TransactionHistoryEntry[]>([]);
+  const { getWalletData, setTransactions: setCachedTransactions, setError: setCachedError } = useWalletCache();
+
+  // Get cached data
+  const cachedData = getWalletData(qubeId);
+
+  const [transactions, setTransactions] = useState<TransactionHistoryEntry[]>(
+    cachedData?.transactions || []
+  );
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [hasMore, setHasMore] = useState(false);
-  const [totalCount, setTotalCount] = useState(0);
+  const [error, setError] = useState<string | null>(cachedData?.error || null);
+  const [hasMore, setHasMore] = useState(cachedData?.hasMoreTx || false);
+  const [totalCount, setTotalCount] = useState(cachedData?.totalTxCount || 0);
   const [expanded, setExpanded] = useState(false);
+
+  // Track if we've already fetched for this qubeId
+  const hasFetchedRef = useRef<string | null>(null);
 
   const PAGE_SIZE = 20;
 
-  const fetchTransactions = useCallback(async (offset: number = 0, append: boolean = false) => {
+  const fetchTransactions = useCallback(async (offset: number = 0, append: boolean = false, forceRefresh: boolean = false) => {
     if (!userId || !password || !qubeId) return;
+
+    // Skip fetch if we have cached data and this isn't a refresh or load-more
+    if (!forceRefresh && offset === 0 && cachedData && cachedData.transactions && cachedData.transactions.length > 0) {
+      // Use cached data
+      setTransactions(cachedData.transactions);
+      setTotalCount(cachedData.totalTxCount);
+      setHasMore(cachedData.hasMoreTx);
+      return;
+    }
 
     if (offset === 0) {
       setLoading(true);
@@ -116,8 +136,24 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
         const txList = result.transactions || [];
         if (append) {
           setTransactions(prev => [...prev, ...txList]);
+          // Update cache with appended transactions
+          setCachedTransactions(
+            qubeId,
+            [...transactions, ...txList],
+            result.total_count || 0,
+            result.has_more || false,
+            false
+          );
         } else {
           setTransactions(txList);
+          // Update cache
+          setCachedTransactions(
+            qubeId,
+            txList,
+            result.total_count || 0,
+            result.has_more || false,
+            false
+          );
         }
         setHasMore(result.has_more || false);
         setTotalCount(result.total_count || 0);
@@ -127,27 +163,40 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
           console.warn('Transaction count mismatch: total_count =', result.total_count, 'but transactions array is empty');
         }
       } else {
-        setError(result.error || 'Failed to fetch transaction history');
+        const errorMsg = result.error || 'Failed to fetch transaction history';
+        setError(errorMsg);
+        setCachedError(qubeId, errorMsg);
       }
     } catch (e) {
       console.error('Failed to fetch transactions:', e);
-      setError('Failed to fetch transaction history');
+      const errorMsg = 'Failed to fetch transaction history';
+      setError(errorMsg);
+      setCachedError(qubeId, errorMsg);
     } finally {
       setLoading(false);
       setLoadingMore(false);
     }
-  }, [userId, password, qubeId]);
+  }, [userId, password, qubeId, cachedData, transactions, setCachedTransactions, setCachedError]);
 
   useEffect(() => {
-    fetchTransactions(0, false);
-  }, [fetchTransactions]);
+    // Only fetch if we haven't fetched for this qubeId yet and don't have cached data
+    if (hasFetchedRef.current !== qubeId && (!cachedData || cachedData.transactions.length === 0)) {
+      hasFetchedRef.current = qubeId;
+      fetchTransactions(0, false, true);
+    } else if (cachedData && cachedData.transactions.length > 0) {
+      // Sync local state with cache
+      setTransactions(cachedData.transactions);
+      setTotalCount(cachedData.totalTxCount);
+      setHasMore(cachedData.hasMoreTx);
+    }
+  }, [qubeId, cachedData, fetchTransactions]);
 
   const handleLoadMore = () => {
-    fetchTransactions(transactions.length, true);
+    fetchTransactions(transactions.length, true, true);
   };
 
   const handleRefresh = () => {
-    fetchTransactions(0, false);
+    fetchTransactions(0, false, true);
   };
 
   return (
@@ -293,8 +342,8 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
 
                     {/* Transaction link */}
                     <div className="mt-2 pt-2 border-t border-glass-border/50 flex justify-between items-center">
-                      <span className="text-xs text-text-disabled font-mono">
-                        {tx.txid.slice(0, 16)}...{tx.txid.slice(-8)}
+                      <span className="text-xs text-text-disabled font-mono break-all">
+                        {tx.txid}
                       </span>
                       <a
                         href={tx.explorer_url}

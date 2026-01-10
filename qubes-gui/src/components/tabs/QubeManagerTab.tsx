@@ -5,9 +5,11 @@ import { open } from '@tauri-apps/plugin-shell';
 import { readTextFile } from '@tauri-apps/plugin-fs';
 import { Qube, Tab } from '../../types';
 import { GlassCard, GlassButton } from '../glass';
+import { WalletSecurityModal } from '../dialogs/WalletSecurityModal';
 import { useAuth } from '../../hooks/useAuth';
 import { useQubeOrder } from '../../hooks/useQubeOrder';
 import { useQubeSelection } from '../../hooks/useQubeSelection';
+import { useWalletCache } from '../../hooks/useWalletCache';
 // import { useModels } from '../../hooks/useModels'; // Temporarily disabled for debugging
 import {
   DndContext,
@@ -228,7 +230,7 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
     return convertFileSrc(filePath);
   };
 
-  // Sync to Pinata handler - syncs selected Qube to IPFS via Pinata
+  // Sync to IPFS handler - syncs selected Qube to IPFS via Pinata
   const handleSyncToChain = async () => {
     const selectedId = selectedQubeIds[0];
     const qubeToSync = selectedId ? qubes.find(q => q.qube_id === selectedId) : null;
@@ -552,7 +554,7 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
                 : 'Backup selected Qube to IPFS'
             }
           >
-            {isSyncing ? 'Syncing...' : 'Sync to Pinata'}
+            {isSyncing ? 'Syncing...' : 'Sync to IPFS'}
           </GlassButton>
           <GlassButton
             variant="secondary"
@@ -626,6 +628,7 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
                   <SortableQubeCard
                     key={qube.qube_id}
                     qube={qube}
+                    allQubes={qubes}
                     onEdit={() => onEditQube(qube)}
                     onDelete={() => onDeleteQube(qube)}
                     onReset={import.meta.env.DEV ? () => setQubeToReset(qube) : undefined}
@@ -647,6 +650,7 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
                   <SortableQubeListItem
                     key={qube.qube_id}
                     qube={qube}
+                    allQubes={qubes}
                     onEdit={() => onEditQube(qube)}
                     onDelete={() => onDeleteQube(qube)}
                     onReset={import.meta.env.DEV ? () => setQubeToReset(qube) : undefined}
@@ -926,6 +930,7 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
 // Qube Card Component (Grid View)
 interface QubeCardProps {
   qube: Qube;
+  allQubes: Qube[];  // For wallet security whitelist selection
   onEdit: () => void;
   onDelete: () => void;
   onReset?: () => void;  // DEV ONLY: Reset qube to fresh state
@@ -997,8 +1002,52 @@ const BlockchainLink: React.FC<BlockchainLinkProps> = ({ value, type, network = 
   );
 };
 
-const QubeCard: React.FC<QubeCardProps> = ({ qube, onEdit, onDelete, onReset, onSelect, onUpdateConfig, getAvatarPath, dragHandleProps, setCurrentTab, toggleSelection, isSelected = false }) => {
-  const { userId } = useAuth();
+const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, onReset, onSelect, onUpdateConfig, getAvatarPath, dragHandleProps, setCurrentTab, toggleSelection, isSelected = false }) => {
+  const { userId, password: masterPassword } = useAuth();
+  const { getWalletData, setBalance: setCachedBalance } = useWalletCache();
+
+  // Wallet Security state
+  const [walletSecurityModalOpen, setWalletSecurityModalOpen] = useState(false);
+  const [walletSecurity, setWalletSecurity] = useState<{
+    addresses_with_keys: string[];
+    whitelists: Record<string, string[]>;
+  }>({
+    addresses_with_keys: [],
+    whitelists: {},
+  });
+
+  // Check if this qube's NFT address (z) has a stored key
+  const hasStoredKey = qube.recipient_address
+    ? walletSecurity.addresses_with_keys.includes(qube.recipient_address)
+    : false;
+
+  // Load wallet security when blockchain side is shown
+  const loadWalletSecurity = async () => {
+    if (!userId || !masterPassword) return;
+    try {
+      const result = await invoke<{
+        success: boolean;
+        addresses_with_keys: string[];
+        whitelists: Record<string, string[]>;
+      }>('get_wallet_security', { userId, password: masterPassword });
+      if (result.success) {
+        setWalletSecurity({
+          addresses_with_keys: result.addresses_with_keys || [],
+          whitelists: result.whitelists || {},
+        });
+      }
+    } catch (e) {
+      console.error('Failed to load wallet security:', e);
+    }
+  };
+
+  // Refresh wallet security after modal saves
+  const handleWalletSecuritySave = () => {
+    loadWalletSecurity();
+  };
+
+  // Get cached wallet data for this qube
+  const cachedWalletData = getWalletData(qube.qube_id);
 
   // Static fallback data while useModels hook is being debugged
   const providers = [
@@ -1170,14 +1219,11 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, onEdit, onDelete, onReset, on
     return inferProvider(evalModel);
   });
 
-  // Wallet balance state
-  const [walletBalance, setWalletBalance] = useState<number | null>(null);  // P2SH wallet
-  const [nftBalance, setNftBalance] = useState<number | null>(null);  // NFT address ('z')
+  // Wallet balance state - initialize from cache if available
+  const [walletBalance, setWalletBalance] = useState<number | null>(cachedWalletData?.balance ?? null);  // P2SH wallet
+  const [nftBalance, setNftBalance] = useState<number | null>(cachedWalletData?.nftBalance ?? null);  // NFT address ('z')
   const [walletBalanceLoading, setWalletBalanceLoading] = useState(false);
-  const [walletBalanceError, setWalletBalanceError] = useState<string | null>(null);
-
-  // Get master password from auth
-  const { password: masterPassword } = useAuth();
+  const [walletBalanceError, setWalletBalanceError] = useState<string | null>(cachedWalletData?.error ?? null);
 
   // Format BCH amount for display (always show 8 decimal places)
   const formatBCH = (sats: number) => {
@@ -1191,7 +1237,7 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, onEdit, onDelete, onReset, on
       // Only fetch if:
       // 1. We're on the blockchain side (flipState === 1)
       // 2. Qube has a wallet address
-      // 3. We haven't already loaded the balance
+      // 3. We haven't already loaded the balance (local state or cache)
       // 4. We have credentials
       if (flipState !== 1 || !qube.wallet_address || walletBalance !== null || !userId || !masterPassword) {
         return;
@@ -1213,12 +1259,15 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, onEdit, onDelete, onReset, on
         });
 
         if (result.success) {
-          if (result.balance_sats !== undefined) {
-            setWalletBalance(result.balance_sats);
-          }
-          if (result.nft_balance_sats !== undefined) {
-            setNftBalance(result.nft_balance_sats);
-          }
+          const balance = result.balance_sats ?? 0;
+          const nftBal = result.nft_balance_sats ?? 0;
+
+          // Update local state
+          setWalletBalance(balance);
+          setNftBalance(nftBal);
+
+          // Update cache
+          setCachedBalance(qube.qube_id, balance, nftBal);
         } else {
           setWalletBalanceError(result.error || 'Failed to fetch balance');
         }
@@ -1231,7 +1280,14 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, onEdit, onDelete, onReset, on
     };
 
     fetchWalletBalance();
-  }, [flipState, qube.wallet_address, qube.qube_id, userId, masterPassword, walletBalance]);
+  }, [flipState, qube.wallet_address, qube.qube_id, userId, masterPassword, walletBalance, setCachedBalance]);
+
+  // Load wallet security when flipping to blockchain side
+  useEffect(() => {
+    if (flipState === 1 && qube.recipient_address && userId && masterPassword) {
+      loadWalletSecurity();
+    }
+  }, [flipState, qube.recipient_address, userId, masterPassword]);
 
   const handleFlip = () => {
     const newFlipState = (flipState + 1) % 3;
@@ -2367,6 +2423,24 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, onEdit, onDelete, onReset, on
                   </div>
                 </div>
               )}
+
+              {/* Private Key Button - show if NFT address exists */}
+              {qube.recipient_address && (
+                <div className="pt-3 border-t border-glass-border/30">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setWalletSecurityModalOpen(true);
+                    }}
+                    className="w-full py-2.5 px-4 bg-accent-primary/10 hover:bg-accent-primary/20 border border-accent-primary/40 rounded-lg flex items-center justify-center gap-2 text-sm font-medium transition-all hover:shadow-lg hover:shadow-accent-primary/10"
+                  >
+                    <span>🔑</span>
+                    <span className="text-accent-primary">
+                      {hasStoredKey ? 'Private Key ✓' : 'Private Key'}
+                    </span>
+                  </button>
+                </div>
+              )}
             </div>
 
             {/* Flip hint */}
@@ -2660,6 +2734,18 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, onEdit, onDelete, onReset, on
           </div>
         </div>
       )}
+
+      {/* Wallet Security Modal - outside rotating container */}
+      <WalletSecurityModal
+        isOpen={walletSecurityModalOpen}
+        qube={qube}
+        qubes={allQubes}
+        walletSecurity={walletSecurity}
+        userId={userId || ''}
+        password={masterPassword || ''}
+        onClose={() => setWalletSecurityModalOpen(false)}
+        onSave={handleWalletSecuritySave}
+      />
     </div>
   );
 };
@@ -2827,7 +2913,7 @@ const SortableQubeListItem: React.FC<QubeCardProps> = (props) => {
 };
 
 // Qube List Item Component (List View)
-const QubeListItem: React.FC<QubeCardProps> = ({ qube, onEdit, onDelete, onReset, onSelect, getAvatarPath, dragHandleProps, setCurrentTab, toggleSelection, isSelected = false }) => {
+const QubeListItem: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, onReset, onSelect, getAvatarPath, dragHandleProps, setCurrentTab, toggleSelection, isSelected = false }) => {
   const statusColors = {
     active: 'bg-[#00ff88]', // Neon dark green
     inactive: 'bg-[#ff3366]', // Neon red

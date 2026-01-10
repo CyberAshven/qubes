@@ -5856,7 +5856,7 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
                 return {"success": False, "error": "Wallet address not found in genesis block"}
 
             # Initialize wallet transaction manager
-            wallet_manager = WalletTransactionManager(qube, self.orchestrator.data_dir)
+            wallet_manager = WalletTransactionManager(qube)
             pending_txs = wallet_manager.get_pending_transactions()
 
             # Get owner pubkey and derive NFT address
@@ -6088,7 +6088,7 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
                 # Try to fetch balance and transactions
                 try:
                     from blockchain.wallet_tx import WalletTransactionManager
-                    wallet_manager = WalletTransactionManager(qube, self.orchestrator.data_dir)
+                    wallet_manager = WalletTransactionManager(qube)
 
                     # Get balance with persistent caching (loads from disk if API fails)
                     balance_sats = await asyncio.wait_for(
@@ -6478,7 +6478,7 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
                 return {"success": False, "error": "Qube does not have a wallet configured"}
 
             # Initialize wallet transaction manager
-            wallet_manager = WalletTransactionManager(qube, self.orchestrator.data_dir)
+            wallet_manager = WalletTransactionManager(qube)
 
             # Propose the transaction (Qube signs, waits for owner approval)
             pending_tx = await wallet_manager.propose_send(to_address, amount_satoshis, memo)
@@ -6535,7 +6535,7 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
                 return {"success": False, "error": "Qube does not have a wallet configured"}
 
             # Initialize wallet transaction manager
-            wallet_manager = WalletTransactionManager(qube, self.orchestrator.data_dir)
+            wallet_manager = WalletTransactionManager(qube)
 
             # Approve and broadcast (owner co-signs)
             txid = await wallet_manager.owner_approve(pending_tx_id, owner_wif)
@@ -6582,7 +6582,7 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
                 return {"success": False, "error": "Qube does not have a wallet configured"}
 
             # Initialize wallet transaction manager
-            wallet_manager = WalletTransactionManager(qube, self.orchestrator.data_dir)
+            wallet_manager = WalletTransactionManager(qube)
 
             # Reject the transaction
             wallet_manager.owner_reject(pending_tx_id)
@@ -6635,7 +6635,7 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
                 return {"success": False, "error": "Qube does not have a wallet configured"}
 
             # Initialize wallet transaction manager
-            wallet_manager = WalletTransactionManager(qube, self.orchestrator.data_dir)
+            wallet_manager = WalletTransactionManager(qube)
 
             # Owner withdraw (uses IF branch - owner alone)
             if amount_satoshis == 0:
@@ -6693,7 +6693,7 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
             p2sh_address = wallet_info.get("p2sh_address")
 
             # Initialize wallet transaction manager
-            wallet_manager = WalletTransactionManager(qube, self.orchestrator.data_dir)
+            wallet_manager = WalletTransactionManager(qube)
 
             # Get pending transactions
             pending_txs = wallet_manager.get_pending_transactions()
@@ -10088,6 +10088,157 @@ async def main():
                 offset=args.offset
             )
             print(json.dumps(result))
+
+        # ==================== Wallet Security CLI Commands ====================
+
+        elif command == "save-owner-key":
+            # Save encrypted owner WIF for an NFT address
+            if len(sys.argv) < 3:
+                print(json.dumps({"success": False, "error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("command")
+            parser.add_argument("user_id")
+            parser.add_argument("--nft-address", required=True)
+            parser.add_argument("--password", default=None)
+
+            args = parser.parse_args()
+            password = get_secret("password", required=False) or args.password
+            owner_wif = get_secret("owner_wif", required=True)
+
+            try:
+                user_bridge = GUIBridge(user_id=user_id)
+                user_bridge.orchestrator.set_master_key(password)
+                result = user_bridge.orchestrator.save_owner_key(args.nft_address, owner_wif)
+                print(json.dumps({"success": result}))
+            except Exception as e:
+                print(json.dumps({"success": False, "error": str(e)}))
+
+        elif command == "delete-owner-key":
+            # Delete stored owner WIF for an NFT address
+            if len(sys.argv) < 3:
+                print(json.dumps({"success": False, "error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("command")
+            parser.add_argument("user_id")
+            parser.add_argument("--nft-address", required=True)
+            parser.add_argument("--password", default=None)
+
+            args = parser.parse_args()
+            password = get_secret("password", required=False) or args.password
+
+            try:
+                user_bridge = GUIBridge(user_id=user_id)
+                user_bridge.orchestrator.set_master_key(password)
+                result = user_bridge.orchestrator.delete_owner_key(args.nft_address)
+                print(json.dumps({"success": result}))
+            except Exception as e:
+                print(json.dumps({"success": False, "error": str(e)}))
+
+        elif command == "get-wallet-security":
+            # Get wallet security config (WIFs redacted)
+            if len(sys.argv) < 3:
+                print(json.dumps({"success": False, "error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("command")
+            parser.add_argument("user_id")
+            parser.add_argument("--password", default=None)
+
+            args = parser.parse_args()
+            password = get_secret("password", required=False) or args.password
+
+            try:
+                user_bridge = GUIBridge(user_id=user_id)
+                user_bridge.orchestrator.set_master_key(password)
+                result = user_bridge.orchestrator.get_wallet_security()
+                print(json.dumps({"success": True, **result}))
+            except Exception as e:
+                print(json.dumps({"success": False, "error": str(e)}))
+
+        elif command == "update-whitelist":
+            # Update whitelist for a Qube
+            if len(sys.argv) < 3:
+                print(json.dumps({"success": False, "error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("command")
+            parser.add_argument("user_id")
+            parser.add_argument("--qube-id", required=True)
+            parser.add_argument("--whitelist", required=True)  # JSON array
+            parser.add_argument("--password", default=None)
+
+            args = parser.parse_args()
+            password = get_secret("password", required=False) or args.password
+            whitelist = json.loads(args.whitelist)
+
+            try:
+                user_bridge = GUIBridge(user_id=user_id)
+                user_bridge.orchestrator.set_master_key(password)
+                result = user_bridge.orchestrator.update_whitelist(args.qube_id, whitelist)
+                print(json.dumps({"success": result}))
+            except Exception as e:
+                print(json.dumps({"success": False, "error": str(e)}))
+
+        elif command == "approve-wallet-tx-stored-key":
+            # Approve using stored WIF (one-click approval)
+            if len(sys.argv) < 3:
+                print(json.dumps({"success": False, "error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("command")
+            parser.add_argument("user_id")
+            parser.add_argument("--qube-id", required=True)
+            parser.add_argument("--tx-id", required=True)
+            parser.add_argument("--password", default=None)
+
+            args = parser.parse_args()
+            password = get_secret("password", required=False) or args.password
+
+            try:
+                user_bridge = GUIBridge(user_id=user_id)
+                user_bridge.orchestrator.set_master_key(password)
+
+                # Load qube first to get NFT address
+                await user_bridge.orchestrator.load_qube(args.qube_id)
+
+                # Get stored WIF via qube's NFT address
+                owner_wif = user_bridge.orchestrator.get_owner_wif_for_qube(args.qube_id)
+                if not owner_wif:
+                    print(json.dumps({"success": False, "error": "No stored key for this Qube's NFT address"}))
+                    sys.exit(1)
+
+                # Use existing approve method
+                result = await user_bridge.approve_wallet_transaction(
+                    qube_id=args.qube_id,
+                    pending_tx_id=args.tx_id,
+                    owner_wif=owner_wif,
+                    password=password
+                )
+                print(json.dumps(result))
+            except Exception as e:
+                print(json.dumps({"success": False, "error": str(e)}))
 
         # ==================== Clearance Profile CLI Commands ====================
 

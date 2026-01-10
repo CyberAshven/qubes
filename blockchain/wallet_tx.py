@@ -160,7 +160,7 @@ class WalletTransactionManager:
         )
 
         # Storage directory
-        self.data_dir = data_dir or Path(qube.qube_dir)
+        self.data_dir = data_dir or Path(qube.data_dir)
         self.pending_tx_file = self.data_dir / "pending_transactions.json"
         self.tx_history_file = self.data_dir / "transaction_history.json"
         self.balance_cache_file = self.data_dir / "balance_cache.json"
@@ -560,6 +560,91 @@ class WalletTransactionManager:
         return txid
 
     # =========================================================================
+    # AUTO-SEND (WHITELISTED)
+    # =========================================================================
+
+    async def auto_send(
+        self,
+        to_address: str,
+        amount_sats: int,
+        owner_wif: str,
+        memo: str = ""
+    ) -> str:
+        """
+        Create, sign, and broadcast a transaction in one step.
+        Used for whitelisted auto-approval - bypasses pending transaction flow.
+
+        Args:
+            to_address: Destination address
+            amount_sats: Amount in satoshis
+            owner_wif: Owner's private key in WIF format
+            memo: Optional memo for history
+
+        Returns:
+            Transaction ID (txid)
+        """
+        # Validate address
+        if not validate_address(to_address):
+            raise ValueError(f"Invalid address: {to_address}")
+
+        # Get UTXOs
+        utxos = await self.wallet.get_utxos()
+        if not utxos:
+            raise ValueError("No funds available")
+
+        # Create outputs
+        outputs = [TxOutput(address=to_address, value=amount_sats)]
+
+        # Create unsigned transaction and get Qube's signature
+        try:
+            proposed = self.wallet.propose_transaction(
+                outputs=outputs,
+                utxos=utxos,
+                memo=memo
+            )
+        except ValueError as e:
+            raise ValueError(f"Failed to create transaction: {e}")
+
+        # Convert WIF to private key bytes
+        owner_privkey = self._wif_to_privkey(owner_wif)
+
+        # Owner signs and finalize
+        tx_hex = self.wallet.finalize_multisig(
+            proposed.unsigned_tx,
+            proposed.qube_signature,
+            owner_privkey
+        )
+
+        # Broadcast
+        try:
+            txid = await self.wallet.broadcast(tx_hex)
+        except Exception as e:
+            logger.error("auto_send_broadcast_failed", error=str(e))
+            raise ValueError(f"Broadcast failed: {e}")
+
+        # Log to history
+        self._add_to_history(TxHistoryEntry(
+            txid=txid,
+            tx_type="qube_spend",
+            amount=-amount_sats,
+            fee=proposed.unsigned_tx.fee,
+            counterparty=to_address,
+            timestamp=time.time(),
+            block_height=None,
+            memo=memo or "Auto-approved (whitelisted)"
+        ))
+
+        logger.info(
+            "auto_send_completed",
+            qube_id=self.qube_id,
+            txid=txid,
+            amount=amount_sats,
+            to=to_address
+        )
+
+        return txid
+
+    # =========================================================================
     # PENDING TRANSACTIONS
     # =========================================================================
 
@@ -672,6 +757,9 @@ class WalletTransactionManager:
         local_history = self.get_transaction_history(limit=1000)
         local_by_txid = {entry.txid: entry for entry in local_history}
 
+        # Track which blockchain txids we've seen
+        blockchain_txids = {bc_tx["txid"] for bc_tx in blockchain_txs}
+
         # Merge blockchain data with local metadata
         merged_transactions = []
         for bc_tx in blockchain_txs:
@@ -703,6 +791,39 @@ class WalletTransactionManager:
                 explorer_url=explorer_url
             )
             merged_transactions.append(merged)
+
+        # Check for local transactions not yet in blockchain address history
+        # These may be recently broadcast - verify by querying txid directly
+        for local_entry in local_history:
+            if local_entry.txid not in blockchain_txids:
+                # Query blockchain to verify this txid exists
+                tx_info = await self.wallet.get_transaction_info(local_entry.txid)
+                if tx_info and not tx_info.get("error"):
+                    # Transaction exists on blockchain - add it
+                    explorer_url = f"https://blockchair.com/bitcoin-cash/transaction/{local_entry.txid}"
+                    merged = MergedTxHistoryEntry(
+                        txid=local_entry.txid,
+                        tx_type=local_entry.tx_type,
+                        amount=local_entry.amount,
+                        fee=local_entry.fee,
+                        counterparty=local_entry.counterparty,
+                        timestamp=local_entry.timestamp,
+                        block_height=tx_info.get("block_height"),
+                        confirmations=tx_info.get("confirmations", 0),
+                        memo=local_entry.memo,
+                        is_confirmed=tx_info.get("confirmations", 0) > 0,
+                        explorer_url=explorer_url
+                    )
+                    # Insert at appropriate position based on timestamp
+                    inserted = False
+                    for i, existing in enumerate(merged_transactions):
+                        if local_entry.timestamp > existing.timestamp:
+                            merged_transactions.insert(i, merged)
+                            inserted = True
+                            break
+                    if not inserted:
+                        merged_transactions.append(merged)
+                    total_count += 1
 
         return {
             "transactions": [tx.to_dict() for tx in merged_transactions],

@@ -345,6 +345,9 @@ export const P2PChatInterface: React.FC<P2PChatInterfaceProps> = ({ selectedQube
 
   // Send message using new backend commands (same logic as local multi-qube)
   const handleSendMessage = async () => {
+    // Guard against double-sending (e.g., double-click, Enter key repeat)
+    if (isLoading) return;
+
     if (!inputValue.trim() || !session || !primaryQube || !userId || !password) return;
 
     const messageContent = inputValue.trim();

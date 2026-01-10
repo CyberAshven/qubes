@@ -34,6 +34,8 @@ ALWAYS_AVAILABLE_TOOLS: Set[str] = {
     "browse_url",
     # Games (runtime check for active game)
     "chess_move",
+    # Wallet operations (core functionality for BCH-enabled qubes)
+    "send_bch",
 }
 
 

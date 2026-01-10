@@ -5241,6 +5241,143 @@ async fn get_wallet_transactions(
     Ok(response)
 }
 
+// ==================== Wallet Security Commands ====================
+
+#[tauri::command]
+async fn save_owner_key(
+    user_id: String,
+    nft_address: String,
+    owner_wif: String,
+    password: String,
+) -> Result<serde_json::Value, String> {
+    check_rate_limit("save_owner_key")?;
+    validate_identifier(&user_id, "user_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("save-owner-key")
+        .arg(&user_id)
+        .arg("--nft-address")
+        .arg(&nft_address);
+
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
+    secrets.insert("owner_wif", owner_wif.as_str());
+
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn delete_owner_key(
+    user_id: String,
+    nft_address: String,
+    password: String,
+) -> Result<serde_json::Value, String> {
+    validate_identifier(&user_id, "user_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("delete-owner-key")
+        .arg(&user_id)
+        .arg("--nft-address")
+        .arg(&nft_address);
+
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
+
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn get_wallet_security(
+    user_id: String,
+    password: String,
+) -> Result<serde_json::Value, String> {
+    validate_identifier(&user_id, "user_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("get-wallet-security").arg(&user_id);
+
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
+
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn update_whitelist(
+    user_id: String,
+    qube_id: String,
+    whitelist: Vec<String>,
+    password: String,
+) -> Result<serde_json::Value, String> {
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let whitelist_json = serde_json::to_string(&whitelist)
+        .map_err(|e| format!("Failed to serialize whitelist: {}", e))?;
+
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("update-whitelist")
+        .arg(&user_id)
+        .arg("--qube-id")
+        .arg(&qube_id)
+        .arg("--whitelist")
+        .arg(&whitelist_json);
+
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
+
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn approve_wallet_tx_stored_key(
+    user_id: String,
+    qube_id: String,
+    tx_id: String,
+    password: String,
+) -> Result<serde_json::Value, String> {
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("approve-wallet-tx-stored-key")
+        .arg(&user_id)
+        .arg("--qube-id")
+        .arg(&qube_id)
+        .arg("--tx-id")
+        .arg(&tx_id);
+
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
+
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -5391,7 +5528,13 @@ pub fn run() {
             approve_wallet_transaction,
             reject_wallet_transaction,
             owner_withdraw_from_wallet,
-            get_wallet_transactions
+            get_wallet_transactions,
+            // Wallet Security Commands
+            save_owner_key,
+            delete_owner_key,
+            get_wallet_security,
+            update_whitelist,
+            approve_wallet_tx_stored_key
         ])
         .setup(|app| {
             // Get the main and splash windows

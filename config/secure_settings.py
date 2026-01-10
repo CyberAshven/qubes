@@ -8,8 +8,8 @@ API keys are stored encrypted with AES-256-GCM using user's master password.
 import json
 import secrets
 from pathlib import Path
-from typing import Dict, Optional, Any
-from dataclasses import dataclass, asdict
+from typing import Dict, Optional, Any, List
+from dataclasses import dataclass, asdict, field
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -46,6 +46,47 @@ class APIKeys:
     def is_empty(self) -> bool:
         """Check if all keys are None"""
         return all(v is None for v in asdict(self).values())
+
+
+@dataclass
+class WalletSecurityConfig:
+    """
+    Wallet security settings for storing owner keys and auto-send whitelists.
+
+    Keys are stored by NFT ADDRESS (multiple qubes at same address share key).
+    Whitelists are stored by QUBE_ID (each qube has its own permissions).
+    """
+    # NFT address -> WIF (shared by all qubes at that address)
+    owner_keys: Dict[str, str] = field(default_factory=dict)
+
+    # qube_id -> list of whitelisted addresses (per-qube permissions)
+    whitelists: Dict[str, List[str]] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'owner_keys': self.owner_keys,
+            'whitelists': self.whitelists
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'WalletSecurityConfig':
+        return cls(
+            owner_keys=data.get('owner_keys', {}),
+            whitelists=data.get('whitelists', {})
+        )
+
+    def has_key_for_address(self, nft_address: str) -> bool:
+        """Check if we have a stored key for this NFT address."""
+        return nft_address in self.owner_keys and bool(self.owner_keys[nft_address])
+
+    def get_key_for_address(self, nft_address: str) -> Optional[str]:
+        """Get stored WIF for NFT address."""
+        return self.owner_keys.get(nft_address)
+
+    def is_whitelisted(self, qube_id: str, address: str) -> bool:
+        """Check if address is whitelisted for this qube."""
+        whitelist = self.whitelists.get(qube_id, [])
+        return address in whitelist
 
 
 class SecureSettingsManager:
@@ -727,3 +768,85 @@ class SecureSettingsManager:
                 "message": f"Connection error: {str(e)}",
                 "details": {"error": str(e)}
             }
+
+    def save_wallet_security(self, config: WalletSecurityConfig) -> None:
+        """
+        Save encrypted wallet security config (owner keys and whitelists).
+
+        Args:
+            config: WalletSecurityConfig instance with keys and whitelists
+
+        Raises:
+            EncryptionError: If encryption fails
+        """
+        try:
+            # Get encryption key (same pattern as save_api_keys)
+            key = self._derive_encryption_key()
+
+            # Convert to JSON
+            plaintext = json.dumps(config.to_dict(), sort_keys=True).encode()
+
+            # Encrypt using AES-256-GCM
+            aesgcm = AESGCM(key)
+            nonce = secrets.token_bytes(12)  # 96-bit nonce for GCM
+            ciphertext = aesgcm.encrypt(nonce, plaintext, None)
+
+            # Store nonce + ciphertext
+            wallet_file = self.user_data_dir / "wallet_security.enc"
+            with open(wallet_file, 'w') as f:
+                json.dump({
+                    'nonce': nonce.hex(),
+                    'ciphertext': ciphertext.hex(),
+                    'algorithm': 'AES-256-GCM',
+                    'version': '1.0'
+                }, f, indent=2)
+
+            logger.info("wallet_security_saved")
+
+        except Exception as e:
+            logger.error("wallet_security_save_failed", exc_info=True)
+            raise EncryptionError(
+                "Failed to save wallet security config",
+                context={"file": str(self.user_data_dir / "wallet_security.enc")},
+                cause=e
+            )
+
+    def load_wallet_security(self) -> WalletSecurityConfig:
+        """
+        Load and decrypt wallet security config.
+
+        Returns:
+            WalletSecurityConfig instance with decrypted keys and whitelists
+
+        Raises:
+            DecryptionError: If decryption fails or master password incorrect
+        """
+        wallet_file = self.user_data_dir / "wallet_security.enc"
+
+        if not wallet_file.exists():
+            return WalletSecurityConfig()
+
+        try:
+            with open(wallet_file, 'r') as f:
+                data = json.load(f)
+
+            # Get encryption key
+            key = self._derive_encryption_key()
+
+            # Decrypt using AES-256-GCM
+            aesgcm = AESGCM(key)
+            nonce = bytes.fromhex(data['nonce'])
+            ciphertext = bytes.fromhex(data['ciphertext'])
+
+            plaintext = aesgcm.decrypt(nonce, ciphertext, None)
+            config_data = json.loads(plaintext.decode('utf-8'))
+
+            return WalletSecurityConfig.from_dict(config_data)
+
+        except Exception as e:
+            logger.error("wallet_security_load_failed", exc_info=True)
+            raise DecryptionError(
+                "Failed to load wallet security config",
+                context={"file": str(wallet_file)},
+                cause=e
+            )

@@ -1305,6 +1305,48 @@ Example: Instead of "Here is the image you requested", say something like "![My 
 
             context += f"\nI can use the get_relationships tool to query specific relationship details during conversation.\n"
 
+            # Add Fellow Qubes section (for BCH transfers by name)
+            try:
+                orchestrator = getattr(self.qube, '_orchestrator', None)
+                if orchestrator and hasattr(orchestrator, 'data_dir'):
+                    import json
+                    from pathlib import Path
+
+                    qubes_dir = orchestrator.data_dir / "qubes"
+                    fellow_qubes = []
+
+                    if qubes_dir.exists():
+                        for qube_dir in qubes_dir.iterdir():
+                            if qube_dir.is_dir():
+                                # Skip self - directory name format is "Name_QubeID"
+                                if self.qube.qube_id in qube_dir.name:
+                                    continue
+
+                                # Try to read qube metadata
+                                metadata_path = qube_dir / "chain" / "qube_metadata.json"
+                                if not metadata_path.exists():
+                                    metadata_path = qube_dir / "qube.json"
+
+                                if metadata_path.exists():
+                                    try:
+                                        with open(metadata_path, "r", encoding="utf-8") as f:
+                                            qube_data = json.load(f)
+                                            genesis = qube_data.get("genesis_block", {})
+                                            wallet = genesis.get("wallet", {})
+                                            if wallet.get("p2sh_address"):
+                                                fellow_qubes.append(genesis.get("qube_name", "Unknown"))
+                                    except Exception as read_err:
+                                        logger.debug("fellow_qube_read_failed", dir=qube_dir.name, error=str(read_err))
+
+                    if fellow_qubes:
+                        context += "\n# Fellow Qubes You Can Send BCH To:\n"
+                        context += "CRITICAL INSTRUCTION: When owner asks to send BCH to these Qubes, call send_bch IMMEDIATELY.\n"
+                        context += "DO NOT call get_relationships first. DO NOT ask for confirmation. Just call send_bch.\n"
+                        context += "The system handles address lookup automatically. No relationship needed.\n"
+                        context += "Fellow Qubes: " + ", ".join(fellow_qubes) + "\n"
+            except Exception as e:
+                logger.debug("failed_to_add_fellow_qubes_context", error=str(e))
+
             return context
 
         except Exception as e:
@@ -1946,6 +1988,39 @@ Multiple entities present. Be careful about what you share.
                         context += f"  • {amount_bch:.8f} BCH{memo}\n"
             except Exception as e:
                 logger.debug(f"pending_tx_fetch_failed: {e}")
+
+            # Add Fellow Qubes for easy BCH transfers
+            try:
+                orchestrator = getattr(self.qube, '_orchestrator', None)
+                if orchestrator and hasattr(orchestrator, 'data_dir'):
+                    import json as json_module
+                    qubes_dir = orchestrator.data_dir / "qubes"
+                    fellow_qubes = []
+
+                    if qubes_dir.exists():
+                        for qube_dir in qubes_dir.iterdir():
+                            # Skip self - directory name format is "Name_QubeID"
+                            if qube_dir.is_dir() and self.qube.qube_id not in qube_dir.name:
+                                metadata_path = qube_dir / "chain" / "qube_metadata.json"
+                                if not metadata_path.exists():
+                                    metadata_path = qube_dir / "qube.json"
+                                if metadata_path.exists():
+                                    try:
+                                        with open(metadata_path, "r", encoding="utf-8") as f:
+                                            qube_data = json_module.load(f)
+                                            genesis = qube_data.get("genesis_block", {})
+                                            wallet = genesis.get("wallet", {})
+                                            if wallet.get("p2sh_address"):
+                                                fellow_qubes.append(genesis.get("qube_name", "Unknown"))
+                                    except Exception:
+                                        pass
+
+                    if fellow_qubes:
+                        context += f"\n**Send BCH to Fellow Qubes:** {', '.join(fellow_qubes)}\n"
+                        context += "CRITICAL: Do NOT call get_relationships before sending BCH. Just call send_bch directly.\n"
+                        context += "Example: send_bch(to_qube_name=\"Anastasia\", amount_sats=10000)\n"
+            except Exception as e:
+                logger.debug("fellow_qubes_wallet_context_failed", error=str(e))
 
             # Add wallet awareness note
             context += "\n💰 **Wallet Awareness:** You have a BCH wallet! You can mention your balance naturally, "

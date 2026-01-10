@@ -5,7 +5,7 @@ import { GlassCard, GlassButton } from '../glass';
 import { Qube } from '../../types';
 import { BlockContentViewer } from '../blocks/BlockContentViewer';
 import { SKILL_DEFINITIONS } from '../../data/skillDefinitions';
-import { ActiveContextPanel } from '../context';
+import { ActiveContextPanel, ContextSectionType, ContextSectionData } from '../context';
 
 // Helper to get skill name from ID
 const getSkillName = (skillId: string): string => {
@@ -50,6 +50,7 @@ interface BlocksTabProps {
   userId: string;
   password: string;
   isActive?: boolean;
+  onQubesChange?: () => void;
 }
 
 // Unified color scheme for block types and sections
@@ -121,7 +122,7 @@ const getAvatarPath = (qube: Qube, userId: string): string | null => {
 // Selection section types
 type SelectionSection = 'recalled' | 'recent' | 'session' | 'permanent';
 
-export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, password, isActive = false }) => {
+export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, password, isActive = false, onQubesChange }) => {
   const [sessionBlocks, setSessionBlocks] = useState<Block[]>([]);
   const [permanentBlocks, setPermanentBlocks] = useState<Block[]>([]);
 
@@ -138,6 +139,7 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
   const [filterType, setFilterType] = useState<string>('all');
   const [decryptedContent, setDecryptedContent] = useState<any>(null);
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
+  const [showAnchorConfirm, setShowAnchorConfirm] = useState(false);
   const [isAnchoring, setIsAnchoring] = useState(false);
   const [cryptoExpanded, setCryptoExpanded] = useState(false);
   const [contentExpanded, setContentExpanded] = useState(false);
@@ -154,6 +156,27 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
   // Collapsible panel state (collapsed by default)
   const [shortTermExpanded, setShortTermExpanded] = useState(false);
   const [longTermExpanded, setLongTermExpanded] = useState(false);
+
+  // Context section selection (for right panel display)
+  const [selectedContextSection, setSelectedContextSection] = useState<ContextSectionData | null>(null);
+
+  // Owner info section collapsed states (both default to collapsed)
+  const [ownerInfoPrivateExpanded, setOwnerInfoPrivateExpanded] = useState(false);
+  const [ownerInfoPublicExpanded, setOwnerInfoPublicExpanded] = useState(false);
+  // Track which categories are expanded (default all collapsed)
+  const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
+
+  const toggleCategory = (category: string) => {
+    setExpandedCategories(prev => {
+      const next = new Set(prev);
+      if (next.has(category)) {
+        next.delete(category);
+      } else {
+        next.add(category);
+      }
+      return next;
+    });
+  };
 
   // Context preview state
   const [contextPreview, setContextPreview] = useState<any>(null);
@@ -291,9 +314,15 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedQube?.qube_id]);
 
-  const handleAnchorSession = async () => {
+  const handleAnchorClick = () => {
+    if (!selectedQube || sessionBlocks.length === 0) return;
+    setShowAnchorConfirm(true);
+  };
+
+  const confirmAnchor = async () => {
     if (!selectedQube) return;
 
+    setShowAnchorConfirm(false);
     setIsAnchoring(true);
     try {
       await invoke('anchor_session', {
@@ -304,12 +333,18 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
       await loadBlocks();
       // Refresh context preview since blocks changed
       await loadContextPreview();
+      // Refresh qubes list to update chain_length on cards
+      onQubesChange?.();
     } catch (error) {
       console.error('Failed to anchor session:', error);
       alert(`Failed to anchor session: ${error}`);
     } finally {
       setIsAnchoring(false);
     }
+  };
+
+  const cancelAnchor = () => {
+    setShowAnchorConfirm(false);
   };
 
   const handleDiscardClick = () => {
@@ -374,6 +409,8 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
     try {
       setSelectedBlock(block);
       setSelectedSection(section);
+      // Clear context section selection when selecting a block
+      setSelectedContextSection(null);
       // All blocks are already decrypted since we prompted for password on load
       setDecryptedContent(block.content);
     } catch (error) {
@@ -526,6 +563,15 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                 shortTermMemory={contextPreview?.short_term_memory}
                 loading={contextLoading && !contextPreview}
                 favoriteColor={selectedQube?.favorite_color}
+                selectedSection={selectedContextSection?.type}
+                onSectionSelect={(section) => {
+                  setSelectedContextSection(section);
+                  // Clear block selection when selecting a context section
+                  if (section) {
+                    setSelectedBlock(null);
+                    setSelectedSection(null);
+                  }
+                }}
               />
               <div className="border-b border-glass-border my-4" />
             </>
@@ -670,7 +716,7 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                 <div className="flex gap-2 mb-3">
                   <GlassButton
                     variant="primary"
-                    onClick={handleAnchorSession}
+                    onClick={handleAnchorClick}
                     className="flex-1 text-sm"
                   >
                     ⚓ Anchor Session
@@ -843,10 +889,416 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
         </div>
       </div>
 
-      {/* Right Panel - Block Detail Viewer */}
+      {/* Right Panel - Block/Context Detail Viewer */}
       <div className="flex-1 flex flex-col overflow-hidden">
         <div className="flex-1 overflow-y-auto p-6">
-        {!selectedBlock ? (
+        {selectedContextSection ? (
+          /* Context Section Detail View */
+          <div className="space-y-4 max-w-4xl">
+            <GlassCard className="p-6">
+              <h2 className="text-xl font-display text-accent-primary mb-4 flex items-center gap-2">
+                <span className="text-2xl">{selectedContextSection.icon}</span>
+                {selectedContextSection.title}
+              </h2>
+
+              {/* Owner Info */}
+              {selectedContextSection.type === 'owner_info' && (
+                <div className="space-y-3">
+                  {selectedContextSection.data && selectedContextSection.data.total_fields > 0 ? (
+                    (() => {
+                      // Separate fields by sensitivity
+                      const allFields = selectedContextSection.data.top_fields || [];
+                      const privateFields = allFields.filter((f: any) => f.sensitivity === 'private' || f.sensitivity === 'secret');
+                      const publicFields = allFields.filter((f: any) => f.sensitivity === 'public');
+
+                      // Category display info - distinct colors that don't clash with Private (yellow) or Public (emerald)
+                      const categoryInfo: Record<string, { icon: string; label: string; color: string; bg: string }> = {
+                        standard: { icon: '📋', label: 'Basic Info', color: 'text-slate-300', bg: 'bg-slate-500/15' },
+                        physical: { icon: '🏠', label: 'Physical', color: 'text-orange-400', bg: 'bg-orange-500/15' },
+                        preferences: { icon: '⭐', label: 'Preferences', color: 'text-fuchsia-400', bg: 'bg-fuchsia-500/15' },
+                        people: { icon: '👥', label: 'People', color: 'text-cyan-400', bg: 'bg-cyan-500/15' },
+                        dates: { icon: '📅', label: 'Important Dates', color: 'text-rose-400', bg: 'bg-rose-500/15' },
+                        dynamic: { icon: '✨', label: 'Other', color: 'text-indigo-400', bg: 'bg-indigo-500/15' },
+                      };
+
+                      // Group fields by category
+                      const groupByCategory = (fields: any[]) => {
+                        const groups: Record<string, any[]> = {};
+                        fields.forEach((f: any) => {
+                          const cat = f.category || 'dynamic';
+                          if (!groups[cat]) groups[cat] = [];
+                          groups[cat].push(f);
+                        });
+                        return groups;
+                      };
+
+                      // Render a field row with stacked layout
+                      const renderField = (field: any, idx: number, isPrivate: boolean) => (
+                        <div key={idx} className="py-2 px-3 bg-glass-bg/30 rounded-lg">
+                          <div className="text-xs text-text-tertiary capitalize mb-1">
+                            {field.key.replace(/_/g, ' ')}
+                          </div>
+                          <div className={`text-sm ${isPrivate ? 'text-yellow-300' : 'text-text-primary'}`}>
+                            {field.value}
+                          </div>
+                        </div>
+                      );
+
+                      // Render fields grouped by category (collapsible)
+                      const renderGroupedFields = (fields: any[], isPrivate: boolean) => {
+                        const grouped = groupByCategory(fields);
+                        const categoryOrder = ['standard', 'physical', 'preferences', 'people', 'dates', 'dynamic'];
+
+                        return categoryOrder
+                          .filter(cat => grouped[cat] && grouped[cat].length > 0)
+                          .map(cat => {
+                            const catInfo = categoryInfo[cat] || { icon: '📌', label: cat, color: 'text-text-tertiary', bg: 'bg-glass-bg/20' };
+                            const isExpanded = expandedCategories.has(cat);
+
+                            return (
+                              <div key={cat} className="mb-2 last:mb-0 rounded-lg overflow-hidden border border-glass-border/20">
+                                <button
+                                  onClick={() => toggleCategory(cat)}
+                                  className={`w-full flex items-center justify-between p-2 ${catInfo.bg} hover:brightness-110 transition-all`}
+                                >
+                                  <span className={`text-sm font-medium flex items-center gap-2 ${catInfo.color}`}>
+                                    <span>{catInfo.icon}</span>
+                                    <span>{catInfo.label}</span>
+                                    <span className="text-xs opacity-60">({grouped[cat].length})</span>
+                                  </span>
+                                  <span className={`text-xs ${catInfo.color}`}>
+                                    {isExpanded ? '▼' : '▶'}
+                                  </span>
+                                </button>
+                                {isExpanded && (
+                                  <div className="p-2 space-y-2">
+                                    {grouped[cat].map((field: any, idx: number) => renderField(field, idx, isPrivate))}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          });
+                      };
+
+                      return (
+                        <div className="space-y-4">
+                          {/* Private Section (on top, collapsible) */}
+                          <div className="border border-yellow-500/30 rounded-lg overflow-hidden">
+                            <button
+                              onClick={() => setOwnerInfoPrivateExpanded(!ownerInfoPrivateExpanded)}
+                              className="w-full flex items-center justify-between p-3 bg-yellow-500/10 hover:bg-yellow-500/20 transition-colors"
+                            >
+                              <span className="flex items-center gap-2 text-yellow-400 font-medium">
+                                <span>🔒</span>
+                                Private
+                                <span className="text-xs bg-yellow-500/20 px-2 py-0.5 rounded">
+                                  {selectedContextSection.data.private_fields + (selectedContextSection.data.secret_fields || 0)} fields
+                                </span>
+                              </span>
+                              <span className="text-yellow-400 text-xs">
+                                {ownerInfoPrivateExpanded ? '▼' : '▶'}
+                              </span>
+                            </button>
+                            {ownerInfoPrivateExpanded && (
+                              <div className="p-4 bg-glass-bg/20">
+                                {privateFields.length > 0 ? (
+                                  renderGroupedFields(privateFields, true)
+                                ) : (
+                                  <div className="text-text-tertiary text-sm text-center py-2">
+                                    No private fields stored yet
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Public Section (collapsible) */}
+                          <div className="border border-emerald-500/30 rounded-lg overflow-hidden">
+                            <button
+                              onClick={() => setOwnerInfoPublicExpanded(!ownerInfoPublicExpanded)}
+                              className="w-full flex items-center justify-between p-3 bg-emerald-500/10 hover:bg-emerald-500/20 transition-colors"
+                            >
+                              <span className="flex items-center gap-2 text-emerald-400 font-medium">
+                                <span>🌐</span>
+                                Public
+                                <span className="text-xs bg-emerald-500/20 px-2 py-0.5 rounded">
+                                  {selectedContextSection.data.public_fields} fields
+                                </span>
+                              </span>
+                              <span className="text-emerald-400 text-xs">
+                                {ownerInfoPublicExpanded ? '▼' : '▶'}
+                              </span>
+                            </button>
+                            {ownerInfoPublicExpanded && (
+                              <div className="p-4 bg-glass-bg/20">
+                                {publicFields.length > 0 ? (
+                                  renderGroupedFields(publicFields, false)
+                                ) : (
+                                  <div className="text-text-tertiary text-sm text-center py-2">
+                                    No public fields stored yet
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })()
+                  ) : (
+                    <div className="text-text-tertiary p-4 bg-glass-bg/20 rounded-lg text-center">
+                      <div className="text-4xl mb-2">👤</div>
+                      <p>No owner info recorded yet.</p>
+                      <p className="text-sm mt-1">Chat with your Qube and share personal details - they'll remember!</p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Genesis Identity */}
+              {selectedContextSection.type === 'genesis' && selectedContextSection.data && (
+                <div className="space-y-4">
+                  <div className="grid grid-cols-2 gap-4 text-sm">
+                    <div>
+                      <span className="text-text-tertiary">Name:</span>
+                      <div className="text-text-primary mt-1 font-medium">{selectedContextSection.data.name}</div>
+                    </div>
+                    <div>
+                      <span className="text-text-tertiary">Qube ID:</span>
+                      <div className="text-text-primary mt-1 font-mono text-xs">{selectedContextSection.data.qube_id}</div>
+                    </div>
+                    <div>
+                      <span className="text-text-tertiary">Born:</span>
+                      <div className="text-text-primary mt-1">{selectedContextSection.data.birth_date || 'Unknown'}</div>
+                    </div>
+                    <div>
+                      <span className="text-text-tertiary">Creator:</span>
+                      <div className="text-text-primary mt-1">{selectedContextSection.data.creator}</div>
+                    </div>
+                    <div>
+                      <span className="text-text-tertiary">AI Model:</span>
+                      <div className="text-text-primary mt-1">{selectedContextSection.data.ai_model}</div>
+                    </div>
+                    <div>
+                      <span className="text-text-tertiary">Voice Model:</span>
+                      <div className="text-text-primary mt-1">{selectedContextSection.data.voice_model || 'None'}</div>
+                    </div>
+                    {selectedContextSection.data.nft_category_id && (
+                      <div className="col-span-2">
+                        <span className="text-text-tertiary">NFT Status:</span>
+                        <div className="text-emerald-400 mt-1">✓ Minted</div>
+                      </div>
+                    )}
+                  </div>
+                  <div>
+                    <span className="text-text-tertiary text-sm">Genesis Prompt:</span>
+                    <div className="mt-2 p-3 bg-glass-bg/30 rounded-lg text-text-secondary text-sm">
+                      {selectedContextSection.data.genesis_prompt}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Relationships */}
+              {selectedContextSection.type === 'relationships' && (
+                <div className="space-y-3">
+                  {selectedContextSection.data?.top_relationships?.length > 0 ? (
+                    selectedContextSection.data.top_relationships.map((rel: any, idx: number) => (
+                      <div key={idx} className="p-3 bg-glass-bg/30 rounded-lg">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-text-primary font-medium flex items-center gap-2">
+                            <span>{rel.status === 'connected' ? '🤝' : rel.status === 'friend' ? '💚' : rel.status === 'blocked' ? '🚫' : '👤'}</span>
+                            {rel.name}
+                          </span>
+                          <span className="text-xs text-text-tertiary capitalize">{rel.status}</span>
+                        </div>
+                        <div className="flex gap-4 text-sm">
+                          <span>
+                            <span className="text-text-tertiary">Trust: </span>
+                            <span className={rel.trust_level >= 0.8 ? 'text-emerald-400' : rel.trust_level >= 0.6 ? 'text-accent-primary' : 'text-yellow-400'}>
+                              {Math.round(rel.trust_level * 100)}%
+                            </span>
+                          </span>
+                          <span>
+                            <span className="text-text-tertiary">Interactions: </span>
+                            <span className="text-text-secondary">{rel.interaction_count}</span>
+                          </span>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="text-text-tertiary p-4 bg-glass-bg/20 rounded-lg text-center">
+                      <div className="text-4xl mb-2">👥</div>
+                      <p>No relationships yet.</p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Skills */}
+              {selectedContextSection.type === 'skills' && (
+                <div className="space-y-3">
+                  <div className="flex gap-4 text-sm text-text-tertiary mb-4">
+                    <span>Total XP: {selectedContextSection.data?.totals?.total_xp || 0}</span>
+                    <span>Unlocked: {selectedContextSection.data?.totals?.unlocked_skills || 0}</span>
+                    <span>Categories: {selectedContextSection.data?.totals?.categories || 0}</span>
+                  </div>
+                  {selectedContextSection.data?.top_skills?.length > 0 ? (
+                    selectedContextSection.data.top_skills.map((skill: any, idx: number) => (
+                      <div key={idx} className="flex items-center justify-between p-3 bg-glass-bg/30 rounded-lg">
+                        <span className="text-text-primary capitalize">{skill.skill_id.replace(/_/g, ' ')}</span>
+                        <div className="flex items-center gap-3">
+                          <span className="text-accent-primary">Level {skill.level}</span>
+                          <span className="text-text-tertiary">{skill.total_xp} XP</span>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="text-text-tertiary p-4 bg-glass-bg/20 rounded-lg text-center">
+                      <div className="text-4xl mb-2">⚡</div>
+                      <p>No skills recorded yet.</p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Wallet */}
+              {selectedContextSection.type === 'wallet' && selectedContextSection.data && (
+                <div className="space-y-4">
+                  <div className="p-3 bg-glass-bg/30 rounded-lg">
+                    <span className="text-text-tertiary text-sm">P2SH Address:</span>
+                    <div className="text-text-primary font-mono text-xs mt-1 break-all">
+                      {selectedContextSection.data.p2sh_address}
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="p-3 bg-glass-bg/30 rounded-lg">
+                      <span className="text-text-tertiary text-sm">Balance:</span>
+                      <div className="text-emerald-400 text-lg mt-1">
+                        {(selectedContextSection.data.balance_sats || 0) / 100_000_000} BCH
+                      </div>
+                    </div>
+                  </div>
+                  {selectedContextSection.data.recent_transactions?.length > 0 && (
+                    <div>
+                      <span className="text-text-tertiary text-sm">Recent Transactions:</span>
+                      <div className="mt-2 space-y-2">
+                        {selectedContextSection.data.recent_transactions.map((tx: any, idx: number) => (
+                          <div key={idx} className="flex items-center justify-between p-2 bg-glass-bg/20 rounded">
+                            <span className={tx.type === 'received' ? 'text-emerald-400' : 'text-red-400'}>
+                              {tx.type === 'received' ? '↓ Received' : '↑ Sent'}
+                            </span>
+                            <span className={tx.type === 'received' ? 'text-emerald-400' : 'text-red-400'}>
+                              {tx.type === 'received' ? '+' : '-'}{Math.abs(tx.amount_sats) / 100_000_000} BCH
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Semantic Recalls */}
+              {selectedContextSection.type === 'semantic_recalls' && (
+                <div className="space-y-2">
+                  {selectedContextSection.data?.blocks?.length > 0 ? (
+                    selectedContextSection.data.blocks.map((block: any, idx: number) => (
+                      <div key={idx} className="p-3 bg-glass-bg/30 rounded-lg">
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="flex items-center gap-2">
+                            <span className={`text-xs px-2 py-0.5 rounded ${
+                              block.block_type === 'MESSAGE' ? 'bg-emerald-400/20 text-emerald-400' :
+                              block.block_type === 'SUMMARY' ? 'bg-fuchsia-400/20 text-fuchsia-400' :
+                              'bg-glass-bg/50 text-text-secondary'
+                            }`}>
+                              {block.block_type}
+                            </span>
+                            <span className="text-text-tertiary text-sm">#{block.block_number}</span>
+                          </div>
+                          {block.relevance_score !== undefined && (
+                            <span className={`text-sm ${
+                              block.relevance_score >= 0.8 ? 'text-emerald-400' :
+                              block.relevance_score >= 0.6 ? 'text-accent-primary' :
+                              'text-yellow-400'
+                            }`}>
+                              {Math.round(block.relevance_score * 100)}% match
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-text-secondary text-sm">{block.preview}</p>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="text-text-tertiary p-4 bg-glass-bg/20 rounded-lg text-center">
+                      <div className="text-4xl mb-2">🔮</div>
+                      <p>No relevant memories recalled.</p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Recent Permanent */}
+              {selectedContextSection.type === 'recent_permanent' && (
+                <div className="space-y-2">
+                  {selectedContextSection.data?.blocks?.length > 0 ? (
+                    selectedContextSection.data.blocks.map((block: any, idx: number) => (
+                      <div key={idx} className="p-3 bg-glass-bg/30 rounded-lg">
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="flex items-center gap-2">
+                            <span className={`text-xs px-2 py-0.5 rounded ${
+                              block.block_type === 'MESSAGE' ? 'bg-emerald-400/20 text-emerald-400' :
+                              block.block_type === 'SUMMARY' ? 'bg-fuchsia-400/20 text-fuchsia-400' :
+                              'bg-glass-bg/50 text-text-secondary'
+                            }`}>
+                              {block.block_type}
+                            </span>
+                            <span className="text-text-tertiary text-sm">#{block.block_number}</span>
+                          </div>
+                        </div>
+                        <p className="text-text-secondary text-sm">{block.preview}</p>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="text-text-tertiary p-4 bg-glass-bg/20 rounded-lg text-center">
+                      <div className="text-4xl mb-2">📚</div>
+                      <p>No recent permanent blocks.</p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Session Blocks */}
+              {selectedContextSection.type === 'session' && (
+                <div className="space-y-2">
+                  {selectedContextSection.data?.blocks?.length > 0 ? (
+                    selectedContextSection.data.blocks.map((block: any, idx: number) => (
+                      <div key={idx} className="p-3 bg-glass-bg/30 rounded-lg border-l-2 border-dashed border-sky-400/50">
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="flex items-center gap-2">
+                            <span className={`text-xs px-2 py-0.5 rounded ${
+                              block.block_type === 'MESSAGE' ? 'bg-emerald-400/20 text-emerald-400' :
+                              block.block_type === 'SUMMARY' ? 'bg-fuchsia-400/20 text-fuchsia-400' :
+                              'bg-glass-bg/50 text-text-secondary'
+                            }`}>
+                              {block.block_type}
+                            </span>
+                            <span className="text-text-tertiary text-sm">#{block.block_number}</span>
+                          </div>
+                        </div>
+                        <p className="text-text-secondary text-sm">{block.preview}</p>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="text-text-tertiary p-4 bg-glass-bg/20 rounded-lg text-center">
+                      <div className="text-4xl mb-2">⚡</div>
+                      <p>No session blocks yet.</p>
+                    </div>
+                  )}
+                </div>
+              )}
+            </GlassCard>
+          </div>
+        ) : !selectedBlock ? (
           <div className="flex items-center justify-center h-full">
             <div className="text-center">
               <div className="text-6xl mb-4">📄</div>
@@ -854,7 +1306,7 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                 No Block Selected
               </h2>
               <p className="text-text-secondary">
-                Click on a block to view its details
+                Click on a block or context section to view details
               </p>
             </div>
           </div>
@@ -1674,6 +2126,44 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                 onClick={confirmDiscardAll}
               >
                 Discard All
+              </GlassButton>
+            </div>
+          </GlassCard>
+        </div>
+      )}
+
+      {/* Anchor Confirmation Modal */}
+      {showAnchorConfirm && selectedQube && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50">
+          <GlassCard className="p-6 max-w-md mx-4">
+            <h2 className="text-xl font-display text-accent-primary mb-4">
+              ⚓ Anchor Session to Chain?
+            </h2>
+
+            <div className="mb-4 p-3 bg-accent-primary/10 border border-accent-primary/30 rounded-lg">
+              <div className="text-sm text-text-secondary mb-1">Session Blocks to Anchor:</div>
+              <div className="text-lg font-mono text-accent-primary">
+                {sessionBlocks.length} block{sessionBlocks.length !== 1 ? 's' : ''}
+              </div>
+            </div>
+
+            <p className="text-text-primary mb-6">
+              This will permanently commit {sessionBlocks.length} session block{sessionBlocks.length !== 1 ? 's' : ''} to <span className="font-semibold text-accent-primary">{selectedQube.name}</span>'s memory chain. These memories will become part of their permanent identity and cannot be undone.
+            </p>
+
+            <div className="flex gap-3 justify-end">
+              <GlassButton
+                variant="secondary"
+                onClick={cancelAnchor}
+              >
+                Cancel
+              </GlassButton>
+
+              <GlassButton
+                variant="primary"
+                onClick={confirmAnchor}
+              >
+                ⚓ Anchor to Chain
               </GlassButton>
             </div>
           </GlassCard>
