@@ -41,6 +41,8 @@ class OllamaModel(AIModelInterface):
         "codellama:7b",      # Code-focused, no function calling
         "codellama:13b",
         "codellama:34b",
+        "llama3.2:1b",       # Very small, limited tool support
+        "gemma2:9b",         # Gemma has weak native tool support
     }
 
     def __init__(self, model_name: str, api_key: str = "ollama", base_url: str = "http://localhost:11434/v1", **kwargs):

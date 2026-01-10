@@ -42,31 +42,68 @@ class VeniceModel(AIModelInterface):
     PRICING = {
         "venice-uncensored": {"input": 0.20, "output": 0.20},
         "llama-3.3-70b": {"input": 0.35, "output": 0.40},
-        "qwen3-235b": {"input": 0.50, "output": 0.50},
+        "llama-3.2-3b": {"input": 0.05, "output": 0.05},
+        "qwen3-235b-a22b-instruct-2507": {"input": 0.50, "output": 0.50},
+        "qwen3-235b-a22b-thinking-2507": {"input": 0.60, "output": 0.60},
+        "qwen3-next-80b": {"input": 0.40, "output": 0.45},
+        "qwen3-coder-480b-a35b-instruct": {"input": 0.70, "output": 0.75},
         "qwen3-4b": {"input": 0.05, "output": 0.05},
-        "deepseek-r1-llama-70b": {"input": 0.35, "output": 0.40},
         "mistral-31-24b": {"input": 0.15, "output": 0.15},
+        "claude-opus-45": {"input": 1.50, "output": 7.50},
+        "openai-gpt-52": {"input": 1.75, "output": 7.00},
+        "openai-gpt-oss-120b": {"input": 0.50, "output": 0.50},
+        "gemini-3-pro-preview": {"input": 1.00, "output": 2.00},
+        "gemini-3-flash-preview": {"input": 0.30, "output": 0.60},
+        "grok-41-fast": {"input": 0.50, "output": 0.50},
+        "grok-code-fast-1": {"input": 0.50, "output": 0.50},
+        "zai-org-glm-4.7": {"input": 0.40, "output": 0.45},
+        "kimi-k2-thinking": {"input": 0.50, "output": 0.60},
+        "minimax-m21": {"input": 0.30, "output": 0.35},
+        "deepseek-v3.2": {"input": 0.35, "output": 0.40},
+        "google-gemma-3-27b-it": {"input": 0.15, "output": 0.20},
+        "hermes-3-llama-3.1-405b": {"input": 0.60, "output": 0.70},
         # Legacy aliases
         "dolphin-2.9.3-mistral-7b": {"input": 0.20, "output": 0.20},
     }
 
     CONTEXT_WINDOWS = {
         "venice-uncensored": 131072,
-        "llama-3.3-70b": 65536,
-        "qwen3-235b": 131072,
+        "llama-3.3-70b": 131072,
+        "llama-3.2-3b": 131072,
+        "qwen3-235b-a22b-instruct-2507": 131072,
+        "qwen3-235b-a22b-thinking-2507": 131072,
+        "qwen3-next-80b": 131072,
+        "qwen3-coder-480b-a35b-instruct": 131072,
         "qwen3-4b": 131072,
-        "deepseek-r1-llama-70b": 131072,
         "mistral-31-24b": 131072,
+        "claude-opus-45": 200000,
+        "openai-gpt-52": 256000,
+        "openai-gpt-oss-120b": 131072,
+        "gemini-3-pro-preview": 1000000,
+        "gemini-3-flash-preview": 1000000,
+        "grok-41-fast": 131072,
+        "grok-code-fast-1": 131072,
+        "zai-org-glm-4.7": 131072,
+        "kimi-k2-thinking": 131072,
+        "minimax-m21": 131072,
+        "deepseek-v3.2": 131072,
+        "google-gemma-3-27b-it": 131072,
+        "hermes-3-llama-3.1-405b": 131072,
         # Legacy aliases
         "dolphin-2.9.3-mistral-7b": 131072,
     }
 
     # Models that DON'T support tool/function calling
     # Most Venice models DO support tools - these are the exceptions
+    # These will use prompt-based tool calling instead
     TOOL_INCAPABLE_MODELS = {
         "venice-uncensored",
         "hermes-3-llama-3.1-405b",
         "deepseek-v3.2",
+        "grok-code-fast-1",         # Code-focused, no native tools
+        "llama-3.2-3b",             # Small model, limited tool support
+        "qwen3-4b",                 # Small model, limited tool support
+        "google-gemma-3-27b-it",    # Gemma has weak native tool support
         # Legacy aliases
         "dolphin-2.9.3-mistral-7b",
     }

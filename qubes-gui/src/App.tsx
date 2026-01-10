@@ -34,6 +34,7 @@ function App() {
 
   // Initialize auto-lock (monitors activity and locks after timeout)
   useAutoLock();
+
   const [qubes, setQubes] = useState<Qube[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);

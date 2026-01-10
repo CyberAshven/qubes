@@ -5,12 +5,16 @@
 export function formatModelName(modelId: string): string {
   // Common model mappings - includes both full API names and short aliases
   const modelMap: Record<string, string> = {
-    // OpenAI
+    // OpenAI - GPT 5.x series (2025-2026)
+    'gpt-5.2': 'GPT-5.2',
+    'gpt-5.2-pro': 'GPT-5.2 Pro',
+    'gpt-5.2-chat-latest': 'GPT-5.2 Instant',
+    'gpt-5.2-codex': 'GPT-5.2 Codex',
+    'gpt-5.1': 'GPT-5.1',
+    'gpt-5.1-chat-latest': 'GPT-5.1 Instant',
     'gpt-5-turbo': 'GPT-5 Turbo',
     'gpt-5': 'GPT-5',
     'gpt-5-mini': 'GPT-5 Mini',
-    'gpt-5-nano': 'GPT-5 Nano',
-    'gpt-5-codex': 'GPT-5 Codex',
     'gpt-4.1': 'GPT-4.1',
     'gpt-4.1-mini': 'GPT-4.1 Mini',
     'o4': 'GPT-O4',
@@ -35,9 +39,13 @@ export function formatModelName(modelId: string): string {
     'claude-3.5-sonnet': 'Claude 3.5 Sonnet',
     'claude-3.5-haiku': 'Claude 3.5 Haiku',
     'claude-3-haiku': 'Claude 3 Haiku',
-    // Google
+    // Google - Gemini 3.x and 2.5 series (2025-2026)
+    'gemini-3-pro-preview': 'Gemini 3 Pro',
+    'gemini-3-flash-preview': 'Gemini 3 Flash',
+    'gemini-3-pro-image-preview': 'Gemini 3 Pro Image',
     'gemini-2.5-pro': 'Gemini 2.5 Pro',
     'gemini-2.5-flash': 'Gemini 2.5 Flash',
+    'gemini-2.5-flash-preview-09-2025': 'Gemini 2.5 Flash Preview',
     'gemini-2.5-flash-lite': 'Gemini 2.5 Flash Lite',
     'gemini-2.0-flash': 'Gemini 2.0 Flash',
     'gemini-1.5-pro': 'Gemini 1.5 Pro',
@@ -50,15 +58,27 @@ export function formatModelName(modelId: string): string {
     // DeepSeek
     'deepseek-chat': 'DeepSeek Chat',
     'deepseek-reasoner': 'DeepSeek Reasoner',
-    // Venice
+    // Venice - Privacy AI (2025-2026)
     'venice-uncensored': 'Venice Uncensored',
     'llama-3.3-70b': 'Llama 3.3 70B',
+    'llama-3.2-3b': 'Llama 3.2 3B',
     'qwen3-235b-a22b-instruct-2507': 'Qwen3 235B Instruct',
-    'qwen3-4b': 'Qwen3 4B',
-    'mistral-31-24b': 'Mistral 3.1 24B',
-    'claude-opus-45': 'Claude Opus 4.5',
-    'gemini-3-flash-preview': 'Gemini 3 Flash',
+    'qwen3-235b-a22b-thinking-2507': 'Qwen3 235B Thinking',
+    'qwen3-next-80b': 'Qwen3 Next 80B',
+    'qwen3-coder-480b-a35b-instruct': 'Qwen3 Coder 480B',
+    'qwen3-4b': 'Venice Small',
+    'mistral-31-24b': 'Venice Medium',
+    'claude-opus-45': 'Claude Opus 4.5 (Venice)',
+    'openai-gpt-52': 'GPT-5.2 (Venice)',
+    'openai-gpt-oss-120b': 'GPT OSS 120B (Venice)',
     'grok-41-fast': 'Grok 4.1 Fast',
+    'grok-code-fast-1': 'Grok Code Fast 1',
+    'zai-org-glm-4.7': 'GLM 4.7',
+    'kimi-k2-thinking': 'Kimi K2 Thinking',
+    'minimax-m21': 'MiniMax M2.1',
+    'deepseek-v3.2': 'DeepSeek V3.2',
+    'google-gemma-3-27b-it': 'Gemma 3 27B',
+    'hermes-3-llama-3.1-405b': 'Hermes 3 405B',
     'dolphin-2.9.3-mistral-7b': 'Venice Uncensored',
     // Ollama models
     'llama3.3:70b': 'Llama 3.3 70B',

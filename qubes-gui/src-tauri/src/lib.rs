@@ -197,6 +197,26 @@ struct AuthResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+struct ModelInfo {
+    value: String,
+    label: String,
+    description: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ProviderInfo {
+    value: String,
+    label: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct AvailableModelsResponse {
+    providers: Vec<ProviderInfo>,
+    models: std::collections::HashMap<String, Vec<ModelInfo>>,
+    defaults: std::collections::HashMap<String, String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 struct ChatResponse {
     success: bool,
     qube_id: Option<String>,
@@ -1080,6 +1100,31 @@ async fn authenticate(username: String, password: String) -> Result<AuthResponse
         .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
 
     Ok(auth_response)
+}
+
+#[tauri::command]
+async fn get_available_models() -> Result<AvailableModelsResponse, String> {
+    // No authentication required - this is public model metadata
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("get-available-models");
+
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    let output = cmd
+        .output()
+        .map_err(|e| format!("Failed to execute Python: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    if !output.status.success() {
+        return Err(sanitize_backend_error(&stderr, "Get available models"));
+    }
+
+    let response: AvailableModelsResponse = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse models response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
 }
 
 #[tauri::command]
@@ -5208,6 +5253,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             greet,
             authenticate,
+            get_available_models,
             list_qubes,
             create_qube,
             prepare_qube_for_minting,

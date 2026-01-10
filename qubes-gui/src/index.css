@@ -182,3 +182,21 @@ circle[fill="#fff"] {
 .react-flow svg[height="100%"] circle {
   display: none !important;
 }
+
+/* Scrollable select dropdowns - limit visible options */
+select.scrollable-select {
+  /* These may help on some browsers but native selects have limited styling */
+  overflow-y: auto;
+}
+
+/* For WebKit/Chromium browsers - attempt to style the dropdown */
+select.scrollable-select option {
+  padding: 4px 8px;
+}
+
+/* When using size attribute for scrollable behavior */
+select[size] {
+  overflow-y: auto;
+  background: rgba(20, 20, 35, 0.95);
+  border-color: rgba(0, 255, 136, 0.2);
+}

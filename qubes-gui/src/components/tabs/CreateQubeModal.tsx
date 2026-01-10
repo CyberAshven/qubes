@@ -5,6 +5,7 @@ import { QRCodeSVG } from 'qrcode.react';
 import { GlassCard, GlassButton, GlassInput } from '../glass';
 import { PendingMintingResult, MintingStatusResult, MintingStatus } from '../../types';
 import { useAuth } from '../../hooks/useAuth';
+import { useModels } from '../../hooks/useModels';
 
 interface CreateQubeModalProps {
   isOpen: boolean;
@@ -71,6 +72,146 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
   onQubesChange,
 }) => {
   const { userId, password } = useAuth();
+  const { providers: dynamicProviders, getModelsForProvider, getDefaultModel, isLoaded: modelsLoaded, fetchModels } = useModels();
+
+  // Fetch models when modal opens
+  useEffect(() => {
+    if (isOpen && !modelsLoaded) {
+      fetchModels();
+    }
+  }, [isOpen, modelsLoaded, fetchModels]);
+
+  // Fallback providers if dynamic data hasn't loaded yet
+  const fallbackProviders = [
+    { value: 'openai', label: 'OpenAI' },
+    { value: 'anthropic', label: 'Anthropic' },
+    { value: 'google', label: 'Google' },
+    { value: 'perplexity', label: 'Perplexity' },
+    { value: 'deepseek', label: 'DeepSeek' },
+    { value: 'venice', label: 'Venice (Private)' },
+    { value: 'ollama', label: 'Ollama (Local)' },
+  ];
+
+  // Fallback models by provider (matches backend ModelRegistry)
+  const fallbackModels: Record<string, { value: string; label: string }[]> = {
+    openai: [
+      { value: 'gpt-5.2', label: 'GPT-5.2 ' },
+      { value: 'gpt-5.2-pro', label: 'GPT-5.2 Pro' },
+      { value: 'gpt-5.2-chat-latest', label: 'GPT-5.2 Instant' },
+      { value: 'gpt-5.2-codex', label: 'GPT-5.2 Codex' },
+      { value: 'gpt-5.1', label: 'GPT-5.1' },
+      { value: 'gpt-5.1-chat-latest', label: 'GPT-5.1 Instant' },
+      { value: 'gpt-5-turbo', label: 'GPT-5 Turbo' },
+      { value: 'gpt-5', label: 'GPT-5' },
+      { value: 'gpt-5-mini', label: 'GPT-5 Mini' },
+      { value: 'gpt-4.1', label: 'GPT-4.1' },
+      { value: 'gpt-4.1-mini', label: 'GPT-4.1 Mini' },
+      { value: 'gpt-4o', label: 'GPT-4o' },
+      { value: 'gpt-4o-mini', label: 'GPT-4o Mini' },
+      { value: 'o4', label: 'o4 (Reasoning)' },
+      { value: 'o4-mini', label: 'o4-mini (Reasoning)' },
+      { value: 'o3-mini', label: 'o3-mini (Reasoning)' },
+      { value: 'o1', label: 'o1 (Reasoning)' },
+    ],
+    anthropic: [
+      { value: 'claude-sonnet-4-5-20250929', label: 'Claude Sonnet 4.5' },
+      { value: 'claude-opus-4-1-20250805', label: 'Claude Opus 4.1' },
+      { value: 'claude-opus-4-20250514', label: 'Claude Opus 4' },
+      { value: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4' },
+      { value: 'claude-3-7-sonnet-20250219', label: 'Claude 3.7 Sonnet' },
+      { value: 'claude-3-5-haiku-20241022', label: 'Claude 3.5 Haiku' },
+      { value: 'claude-3-haiku-20240307', label: 'Claude 3 Haiku' },
+    ],
+    google: [
+      { value: 'gemini-3-pro-preview', label: 'Gemini 3 Pro ' },
+      { value: 'gemini-3-flash-preview', label: 'Gemini 3 Flash' },
+      { value: 'gemini-3-pro-image-preview', label: 'Gemini 3 Pro Image' },
+      { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
+      { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
+      { value: 'gemini-2.5-flash-preview-09-2025', label: 'Gemini 2.5 Flash Preview' },
+      { value: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash Lite' },
+      { value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash' },
+      { value: 'gemini-1.5-pro', label: 'Gemini 1.5 Pro' },
+    ],
+    perplexity: [
+      { value: 'sonar-pro', label: 'Sonar Pro' },
+      { value: 'sonar', label: 'Sonar' },
+      { value: 'sonar-reasoning-pro', label: 'Sonar Reasoning Pro' },
+      { value: 'sonar-reasoning', label: 'Sonar Reasoning' },
+      { value: 'sonar-deep-research', label: 'Sonar Deep Research' },
+    ],
+    deepseek: [
+      { value: 'deepseek-chat', label: 'DeepSeek Chat (V3.2)' },
+      { value: 'deepseek-reasoner', label: 'DeepSeek Reasoner (R1)' },
+    ],
+    venice: [
+      { value: 'venice-uncensored', label: 'Venice Uncensored' },
+      { value: 'llama-3.3-70b', label: 'Llama 3.3 70B' },
+      { value: 'llama-3.2-3b', label: 'Llama 3.2 3B (Fast)' },
+      { value: 'qwen3-235b-a22b-instruct-2507', label: 'Qwen3 235B Instruct' },
+      { value: 'qwen3-235b-a22b-thinking-2507', label: 'Qwen3 235B Thinking' },
+      { value: 'qwen3-next-80b', label: 'Qwen3 Next 80B' },
+      { value: 'qwen3-coder-480b-a35b-instruct', label: 'Qwen3 Coder 480B' },
+      { value: 'qwen3-4b', label: 'Qwen3 4B (Fast)' },
+      { value: 'mistral-31-24b', label: 'Mistral 3.1 24B' },
+      { value: 'claude-opus-45', label: 'Claude Opus 4.5 (Venice)' },
+      { value: 'openai-gpt-52', label: 'GPT-5.2 (Venice)' },
+      { value: 'openai-gpt-oss-120b', label: 'GPT OSS 120B (Venice)' },
+      { value: 'gemini-3-pro-preview', label: 'Gemini 3 Pro (Venice)' },
+      { value: 'gemini-3-flash-preview', label: 'Gemini 3 Flash (Venice)' },
+      { value: 'grok-41-fast', label: 'Grok 4.1 Fast' },
+      { value: 'grok-code-fast-1', label: 'Grok Code Fast' },
+      { value: 'zai-org-glm-4.7', label: 'GLM 4.7' },
+      { value: 'kimi-k2-thinking', label: 'Kimi K2 Thinking' },
+      { value: 'minimax-m21', label: 'MiniMax M2.1' },
+      { value: 'deepseek-v3.2', label: 'DeepSeek V3.2 (Venice)' },
+      { value: 'google-gemma-3-27b-it', label: 'Gemma 3 27B' },
+      { value: 'hermes-3-llama-3.1-405b', label: 'Hermes 3 Llama 405B' },
+    ],
+    ollama: [
+      { value: 'llama3.3:70b', label: 'Llama 3.3 70B' },
+      { value: 'llama3.2', label: 'Llama 3.2' },
+      { value: 'llama3.2:1b', label: 'Llama 3.2 1B' },
+      { value: 'llama3.2:3b', label: 'Llama 3.2 3B' },
+      { value: 'llama3.2-vision:11b', label: 'Llama 3.2 Vision 11B' },
+      { value: 'llama3.2-vision:90b', label: 'Llama 3.2 Vision 90B' },
+      { value: 'qwen3:235b', label: 'Qwen3 235B' },
+      { value: 'qwen3:30b', label: 'Qwen3 30B' },
+      { value: 'qwen2.5:7b', label: 'Qwen 2.5 7B' },
+      { value: 'deepseek-r1:8b', label: 'DeepSeek R1 8B' },
+      { value: 'phi4:14b', label: 'Phi-4 14B' },
+      { value: 'gemma2:9b', label: 'Gemma 2 9B' },
+      { value: 'mistral:7b', label: 'Mistral 7B' },
+      { value: 'codellama:7b', label: 'CodeLlama 7B' },
+    ],
+  };
+
+  const fallbackDefaults: Record<string, string> = {
+    openai: 'gpt-5.2',
+    anthropic: 'claude-sonnet-4-5-20250929',
+    google: 'gemini-3-pro-preview',
+    perplexity: 'sonar-pro',
+    deepseek: 'deepseek-chat',
+    venice: 'venice-uncensored',
+    ollama: 'llama3.3:70b',
+  };
+
+  // Use dynamic data if loaded, otherwise fallback
+  const providers = modelsLoaded && dynamicProviders.length > 0 ? dynamicProviders : fallbackProviders;
+  const getModels = (provider: string) => {
+    if (modelsLoaded) {
+      const dynamicModels = getModelsForProvider(provider);
+      if (dynamicModels.length > 0) return dynamicModels;
+    }
+    return fallbackModels[provider] || [];
+  };
+  const getDefault = (provider: string) => {
+    if (modelsLoaded) {
+      const dynamicDefault = getDefaultModel(provider);
+      if (dynamicDefault) return dynamicDefault;
+    }
+    return fallbackDefaults[provider] || '';
+  };
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
@@ -91,7 +232,7 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
     name: '',
     genesisPrompt: '',
     aiProvider: 'openai',
-    aiModel: 'gpt-4',
+    aiModel: 'gpt-5.2',
     voiceModel: 'google:en-US-Neural2-A',  // Default to Google Cloud TTS Neural2!
     ownerPubkey: '',  // NFT address derived automatically from this
     encryptGenesis: false,
@@ -130,20 +271,13 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
 
   // Update model when AI provider changes
   useEffect(() => {
-    const defaultModels: Record<string, string> = {
-      'openai': 'gpt-5-turbo',
-      'anthropic': 'claude-sonnet-4-5-20250929',
-      'google': 'gemini-2.5-flash',
-      'perplexity': 'sonar',
-      'deepseek': 'deepseek-chat',
-      'venice': 'llama-3.3-70b',
-      'ollama': 'llama3.3:70b'
-    };
-
-    if (formData.aiProvider && defaultModels[formData.aiProvider]) {
-      setFormData(prev => ({ ...prev, aiModel: defaultModels[prev.aiProvider] }));
+    if (formData.aiProvider && modelsLoaded) {
+      const defaultModel = getDefaultModel(formData.aiProvider);
+      if (defaultModel) {
+        setFormData(prev => ({ ...prev, aiModel: defaultModel }));
+      }
     }
-  }, [formData.aiProvider]);
+  }, [formData.aiProvider, modelsLoaded, getDefaultModel]);
 
   // Update voice when voice provider changes
   useEffect(() => {
@@ -363,7 +497,7 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
       name: '',
       genesisPrompt: '',
       aiProvider: 'openai',
-      aiModel: 'gpt-5-turbo',
+      aiModel: 'gpt-5.2',
       voiceModel: 'google:en-US-Neural2-A',  // Default to Google Cloud TTS Neural2!
       ownerPubkey: '',  // NFT address derived automatically from this
       encryptGenesis: false,
@@ -599,16 +733,18 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
               </label>
               <select
                 value={formData.aiProvider}
-                onChange={(e) => setFormData({ ...formData, aiProvider: e.target.value })}
+                onChange={(e) => {
+                  const newProvider = e.target.value;
+                  const defaultModel = getDefault(newProvider);
+                  setFormData({ ...formData, aiProvider: newProvider, aiModel: defaultModel });
+                }}
                 className="w-full px-4 py-2 bg-glass-bg backdrop-blur-glass border border-glass-border rounded-lg text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-primary/50"
               >
-                <option value="openai">OpenAI</option>
-                <option value="anthropic">Anthropic</option>
-                <option value="google">Google</option>
-                <option value="perplexity">Perplexity</option>
-                <option value="deepseek">DeepSeek</option>
-                <option value="venice">Venice (Private)</option>
-                <option value="ollama">Ollama (Local)</option>
+                {providers.map(provider => (
+                  <option key={provider.value} value={provider.value}>
+                    {provider.label}
+                  </option>
+                ))}
               </select>
             </div>
 
@@ -619,81 +755,14 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
               <select
                 value={formData.aiModel}
                 onChange={(e) => setFormData({ ...formData, aiModel: e.target.value })}
-                className="w-full px-4 py-2 bg-glass-bg backdrop-blur-glass border border-glass-border rounded-lg text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-primary/50"
+                className="w-full px-4 py-2 bg-glass-bg backdrop-blur-glass border border-glass-border rounded-lg text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-primary/50 scrollable-select"
+                size={Math.min(8, getModels(formData.aiProvider).length)}
               >
-                {formData.aiProvider === 'openai' && (
-                  <>
-                    <option value="gpt-5-turbo">GPT-5 Turbo</option>
-                    <option value="gpt-5">GPT-5</option>
-                    <option value="o4">GPT-O4</option>
-                    <option value="o4-mini">GPT-O4 Mini</option>
-                    <option value="gpt-4o">GPT-4o</option>
-                    <option value="gpt-4o-mini">GPT-4o Mini</option>
-                  </>
-                )}
-                {formData.aiProvider === 'anthropic' && (
-                  <>
-                    <option value="claude-sonnet-4-5-20250929">Claude Sonnet 4.5 (Sep 2025)</option>
-                    <option value="claude-opus-4-1-20250805">Claude Opus 4.1 (Aug 2025)</option>
-                    <option value="claude-sonnet-4-20250514">Claude Sonnet 4 (May 2025)</option>
-                    <option value="claude-3-7-sonnet-20250219">Claude 3.7 Sonnet (Feb 2025)</option>
-                    <option value="claude-3-5-haiku-20241022">Claude 3.5 Haiku (Oct 2024)</option>
-                  </>
-                )}
-                {formData.aiProvider === 'google' && (
-                  <>
-                    <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
-                    <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
-                    <option value="gemini-2.5-flash-lite">Gemini 2.5 Flash Lite</option>
-                    <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
-                    <option value="gemini-1.5-pro">Gemini 1.5 Pro</option>
-                  </>
-                )}
-                {formData.aiProvider === 'perplexity' && (
-                  <>
-                    <option value="sonar">Sonar (Fast)</option>
-                    <option value="sonar-pro">Sonar Pro (Deep Search)</option>
-                    <option value="sonar-reasoning">Sonar Reasoning</option>
-                    <option value="sonar-reasoning-pro">Sonar Reasoning Pro</option>
-                    <option value="sonar-deep-research">Sonar Deep Research</option>
-                  </>
-                )}
-                {formData.aiProvider === 'deepseek' && (
-                  <>
-                    <option value="deepseek-chat">DeepSeek Chat (V3.2)</option>
-                    <option value="deepseek-reasoner">DeepSeek Reasoner (R1)</option>
-                  </>
-                )}
-                {formData.aiProvider === 'venice' && (
-                  <>
-                    <option value="llama-3.3-70b">Llama 3.3 70B</option>
-                    <option value="qwen3-235b-a22b-instruct-2507">Qwen3 235B Instruct</option>
-                    <option value="qwen3-4b">Qwen3 4B (Fast)</option>
-                    <option value="mistral-31-24b">Mistral 3.1 24B</option>
-                    <option value="claude-opus-45">Claude Opus 4.5</option>
-                    <option value="gemini-3-flash-preview">Gemini 3 Flash</option>
-                    <option value="grok-41-fast">Grok 4.1 Fast</option>
-                    <option value="venice-uncensored">Venice Uncensored</option>
-                  </>
-                )}
-                {formData.aiProvider === 'ollama' && (
-                  <>
-                    <option value="llama3.3:70b">Llama 3.3 70B</option>
-                    <option value="llama3.2">Llama 3.2</option>
-                    <option value="llama3.2:1b">Llama 3.2 1B</option>
-                    <option value="llama3.2:3b">Llama 3.2 3B</option>
-                    <option value="llama3.2-vision:11b">Llama 3.2 Vision 11B</option>
-                    <option value="llama3.2-vision:90b">Llama 3.2 Vision 90B</option>
-                    <option value="qwen3:235b">Qwen 3 235B</option>
-                    <option value="qwen3:30b">Qwen 3 30B</option>
-                    <option value="qwen2.5:7b">Qwen 2.5 7B</option>
-                    <option value="deepseek-r1:8b">DeepSeek R1 8B (Local)</option>
-                    <option value="phi4:14b">Phi 4 14B</option>
-                    <option value="gemma2:9b">Gemma 2 9B</option>
-                    <option value="mistral:7b">Mistral 7B</option>
-                    <option value="codellama:7b">CodeLlama 7B</option>
-                  </>
-                )}
+                {getModels(formData.aiProvider).map(model => (
+                  <option key={model.value} value={model.value}>
+                    {model.label}
+                  </option>
+                ))}
               </select>
             </div>
           </div>

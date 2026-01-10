@@ -6896,6 +6896,12 @@ async def main():
             result = await bridge.authenticate(user_id, password)
             print(json.dumps(result))
 
+        elif command == "get-available-models":
+            # No authentication required - this is public model metadata
+            from ai.model_registry import ModelRegistry
+            models_data = ModelRegistry.get_models_for_frontend()
+            print(json.dumps(models_data))
+
         elif command == "list-qubes":
             if len(sys.argv) < 3:
                 print(json.dumps({"error": "User ID required"}), file=sys.stderr)

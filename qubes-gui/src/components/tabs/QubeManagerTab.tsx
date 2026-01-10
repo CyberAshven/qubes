@@ -8,6 +8,7 @@ import { GlassCard, GlassButton } from '../glass';
 import { useAuth } from '../../hooks/useAuth';
 import { useQubeOrder } from '../../hooks/useQubeOrder';
 import { useQubeSelection } from '../../hooks/useQubeSelection';
+// import { useModels } from '../../hooks/useModels'; // Temporarily disabled for debugging
 import {
   DndContext,
   closestCenter,
@@ -999,6 +1000,124 @@ const BlockchainLink: React.FC<BlockchainLinkProps> = ({ value, type, network = 
 const QubeCard: React.FC<QubeCardProps> = ({ qube, onEdit, onDelete, onReset, onSelect, onUpdateConfig, getAvatarPath, dragHandleProps, setCurrentTab, toggleSelection, isSelected = false }) => {
   const { userId } = useAuth();
 
+  // Static fallback data while useModels hook is being debugged
+  const providers = [
+    { value: 'openai', label: 'OpenAI' },
+    { value: 'anthropic', label: 'Anthropic' },
+    { value: 'google', label: 'Google' },
+    { value: 'perplexity', label: 'Perplexity' },
+    { value: 'deepseek', label: 'DeepSeek' },
+    { value: 'venice', label: 'Venice (Private)' },
+    { value: 'ollama', label: 'Ollama (Local)' },
+  ];
+
+  // Static fallback models by provider (matches backend ModelRegistry)
+  const fallbackModels: Record<string, { value: string; label: string }[]> = {
+    openai: [
+      { value: 'gpt-5.2', label: 'GPT-5.2 ' },
+      { value: 'gpt-5.2-pro', label: 'GPT-5.2 Pro' },
+      { value: 'gpt-5.2-chat-latest', label: 'GPT-5.2 Instant' },
+      { value: 'gpt-5.2-codex', label: 'GPT-5.2 Codex' },
+      { value: 'gpt-5.1', label: 'GPT-5.1' },
+      { value: 'gpt-5.1-chat-latest', label: 'GPT-5.1 Instant' },
+      { value: 'gpt-5-turbo', label: 'GPT-5 Turbo' },
+      { value: 'gpt-5', label: 'GPT-5' },
+      { value: 'gpt-5-mini', label: 'GPT-5 Mini' },
+      { value: 'gpt-4.1', label: 'GPT-4.1' },
+      { value: 'gpt-4.1-mini', label: 'GPT-4.1 Mini' },
+      { value: 'gpt-4o', label: 'GPT-4o' },
+      { value: 'gpt-4o-mini', label: 'GPT-4o Mini' },
+      { value: 'o4', label: 'o4 (Reasoning)' },
+      { value: 'o4-mini', label: 'o4-mini (Reasoning)' },
+      { value: 'o3-mini', label: 'o3-mini (Reasoning)' },
+      { value: 'o1', label: 'o1 (Reasoning)' },
+    ],
+    anthropic: [
+      { value: 'claude-sonnet-4-5-20250929', label: 'Claude Sonnet 4.5' },
+      { value: 'claude-opus-4-1-20250805', label: 'Claude Opus 4.1' },
+      { value: 'claude-opus-4-20250514', label: 'Claude Opus 4' },
+      { value: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4' },
+      { value: 'claude-3-7-sonnet-20250219', label: 'Claude 3.7 Sonnet' },
+      { value: 'claude-3-5-haiku-20241022', label: 'Claude 3.5 Haiku' },
+      { value: 'claude-3-haiku-20240307', label: 'Claude 3 Haiku' },
+    ],
+    google: [
+      { value: 'gemini-3-pro-preview', label: 'Gemini 3 Pro ' },
+      { value: 'gemini-3-flash-preview', label: 'Gemini 3 Flash' },
+      { value: 'gemini-3-pro-image-preview', label: 'Gemini 3 Pro Image' },
+      { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
+      { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
+      { value: 'gemini-2.5-flash-preview-09-2025', label: 'Gemini 2.5 Flash Preview' },
+      { value: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash Lite' },
+      { value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash' },
+      { value: 'gemini-1.5-pro', label: 'Gemini 1.5 Pro' },
+    ],
+    perplexity: [
+      { value: 'sonar-pro', label: 'Sonar Pro' },
+      { value: 'sonar', label: 'Sonar' },
+      { value: 'sonar-reasoning-pro', label: 'Sonar Reasoning Pro' },
+      { value: 'sonar-reasoning', label: 'Sonar Reasoning' },
+      { value: 'sonar-deep-research', label: 'Sonar Deep Research' },
+    ],
+    deepseek: [
+      { value: 'deepseek-chat', label: 'DeepSeek Chat (V3.2)' },
+      { value: 'deepseek-reasoner', label: 'DeepSeek Reasoner (R1)' },
+    ],
+    venice: [
+      { value: 'venice-uncensored', label: 'Venice Uncensored' },
+      { value: 'llama-3.3-70b', label: 'Llama 3.3 70B' },
+      { value: 'llama-3.2-3b', label: 'Llama 3.2 3B (Fast)' },
+      { value: 'qwen3-235b-a22b-instruct-2507', label: 'Qwen3 235B Instruct' },
+      { value: 'qwen3-235b-a22b-thinking-2507', label: 'Qwen3 235B Thinking' },
+      { value: 'qwen3-next-80b', label: 'Qwen3 Next 80B' },
+      { value: 'qwen3-coder-480b-a35b-instruct', label: 'Qwen3 Coder 480B' },
+      { value: 'qwen3-4b', label: 'Qwen3 4B (Fast)' },
+      { value: 'mistral-31-24b', label: 'Mistral 3.1 24B' },
+      { value: 'claude-opus-45', label: 'Claude Opus 4.5 (Venice)' },
+      { value: 'openai-gpt-52', label: 'GPT-5.2 (Venice)' },
+      { value: 'openai-gpt-oss-120b', label: 'GPT OSS 120B (Venice)' },
+      { value: 'gemini-3-pro-preview', label: 'Gemini 3 Pro (Venice)' },
+      { value: 'gemini-3-flash-preview', label: 'Gemini 3 Flash (Venice)' },
+      { value: 'grok-41-fast', label: 'Grok 4.1 Fast' },
+      { value: 'grok-code-fast-1', label: 'Grok Code Fast' },
+      { value: 'zai-org-glm-4.7', label: 'GLM 4.7' },
+      { value: 'kimi-k2-thinking', label: 'Kimi K2 Thinking' },
+      { value: 'minimax-m21', label: 'MiniMax M2.1' },
+      { value: 'deepseek-v3.2', label: 'DeepSeek V3.2 (Venice)' },
+      { value: 'google-gemma-3-27b-it', label: 'Gemma 3 27B' },
+      { value: 'hermes-3-llama-3.1-405b', label: 'Hermes 3 Llama 405B' },
+    ],
+    ollama: [
+      { value: 'llama3.3:70b', label: 'Llama 3.3 70B' },
+      { value: 'llama3.2', label: 'Llama 3.2' },
+      { value: 'llama3.2:1b', label: 'Llama 3.2 1B' },
+      { value: 'llama3.2:3b', label: 'Llama 3.2 3B' },
+      { value: 'llama3.2-vision:11b', label: 'Llama 3.2 Vision 11B' },
+      { value: 'llama3.2-vision:90b', label: 'Llama 3.2 Vision 90B' },
+      { value: 'qwen3:235b', label: 'Qwen3 235B' },
+      { value: 'qwen3:30b', label: 'Qwen3 30B' },
+      { value: 'qwen2.5:7b', label: 'Qwen 2.5 7B' },
+      { value: 'deepseek-r1:8b', label: 'DeepSeek R1 8B' },
+      { value: 'phi4:14b', label: 'Phi-4 14B' },
+      { value: 'gemma2:9b', label: 'Gemma 2 9B' },
+      { value: 'mistral:7b', label: 'Mistral 7B' },
+      { value: 'codellama:7b', label: 'CodeLlama 7B' },
+    ],
+  };
+
+  const fallbackDefaults: Record<string, string> = {
+    openai: 'gpt-5.2',
+    anthropic: 'claude-sonnet-4-5-20250929',
+    google: 'gemini-3-flash-preview',
+    perplexity: 'sonar',
+    deepseek: 'deepseek-chat',
+    venice: 'venice-uncensored',
+    ollama: 'llama3.3:70b',
+  };
+
+  const getModelsForProvider = (provider: string) => fallbackModels[provider] || [];
+  const getDefaultModel = (provider: string) => fallbackDefaults[provider] || '';
+
   // Infer provider from model if provider is unknown - MUST be defined before useState that uses it
   const inferProvider = (model: string): string => {
     if (model.startsWith('gpt-') || model.startsWith('o')) return 'openai';
@@ -1268,14 +1387,13 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, onEdit, onDelete, onReset, on
 
   // Format model ID to display name
   const formatModelName = (modelId: string): string => {
-    // Search through all model options to find the label
-    for (const provider of Object.values(modelOptions)) {
-      const found = provider.find(m => m.value === modelId);
+    // First, search through fallbackModels to find the label
+    for (const providerModels of Object.values(fallbackModels)) {
+      const found = providerModels.find(m => m.value === modelId);
       if (found) return found.label;
     }
 
-    // Fallback: Try to make it readable
-    // Handle common patterns
+    // Fallback: Try to make it readable using patterns
     if (modelId.startsWith('gpt-')) {
       return modelId.toUpperCase().replace('GPT-', 'GPT-');
     }
@@ -1388,68 +1506,7 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, onEdit, onDelete, onReset, on
     }
   }, [qube.qube_id]);
 
-  // Model options by provider
-  const modelOptions: Record<string, { label: string; value: string }[]> = {
-    openai: [
-      { label: 'GPT-5 Turbo', value: 'gpt-5-turbo' },
-      { label: 'GPT-5', value: 'gpt-5' },
-      { label: 'GPT-O4', value: 'o4' },
-      { label: 'GPT-O4 Mini', value: 'o4-mini' },
-      { label: 'GPT-4o', value: 'gpt-4o' },
-      { label: 'GPT-4o Mini', value: 'gpt-4o-mini' },
-    ],
-    anthropic: [
-      { label: 'Claude Sonnet 4.5', value: 'claude-sonnet-4-5-20250929' },
-      { label: 'Claude Opus 4.1', value: 'claude-opus-4-1-20250805' },
-      { label: 'Claude Sonnet 4', value: 'claude-sonnet-4-20250514' },
-      { label: 'Claude 3.7 Sonnet', value: 'claude-3-7-sonnet-20250219' },
-      { label: 'Claude 3.5 Haiku', value: 'claude-3-5-haiku-20241022' },
-    ],
-    google: [
-      { label: 'Gemini 2.5 Pro', value: 'gemini-2.5-pro' },
-      { label: 'Gemini 2.5 Flash', value: 'gemini-2.5-flash' },
-      { label: 'Gemini 2.5 Flash Lite', value: 'gemini-2.5-flash-lite' },
-      { label: 'Gemini 2.0 Flash', value: 'gemini-2.0-flash' },
-      { label: 'Gemini 1.5 Pro', value: 'gemini-1.5-pro' },
-    ],
-    perplexity: [
-      { label: 'Sonar (Fast)', value: 'sonar' },
-      { label: 'Sonar Pro', value: 'sonar-pro' },
-      { label: 'Sonar Reasoning', value: 'sonar-reasoning' },
-      { label: 'Sonar Reasoning Pro', value: 'sonar-reasoning-pro' },
-      { label: 'Sonar Deep Research', value: 'sonar-deep-research' },
-    ],
-    deepseek: [
-      { label: 'DeepSeek Chat (V3.2)', value: 'deepseek-chat' },
-      { label: 'DeepSeek Reasoner (R1)', value: 'deepseek-reasoner' },
-    ],
-    venice: [
-      { label: 'Llama 3.3 70B', value: 'llama-3.3-70b' },
-      { label: 'Qwen3 235B Instruct', value: 'qwen3-235b-a22b-instruct-2507' },
-      { label: 'Qwen3 4B (Fast)', value: 'qwen3-4b' },
-      { label: 'Mistral 3.1 24B', value: 'mistral-31-24b' },
-      { label: 'Claude Opus 4.5', value: 'claude-opus-45' },
-      { label: 'Gemini 3 Flash', value: 'gemini-3-flash-preview' },
-      { label: 'Grok 4.1 Fast', value: 'grok-41-fast' },
-      { label: 'Venice Uncensored', value: 'venice-uncensored' },
-    ],
-    ollama: [
-      { label: 'Llama 3.3 70B', value: 'llama3.3:70b' },
-      { label: 'Llama 3.2', value: 'llama3.2' },
-      { label: 'Llama 3.2 1B', value: 'llama3.2:1b' },
-      { label: 'Llama 3.2 3B', value: 'llama3.2:3b' },
-      { label: 'Llama 3.2 Vision 11B', value: 'llama3.2-vision:11b' },
-      { label: 'Llama 3.2 Vision 90B', value: 'llama3.2-vision:90b' },
-      { label: 'Qwen 3 235B', value: 'qwen3:235b' },
-      { label: 'Qwen 3 30B', value: 'qwen3:30b' },
-      { label: 'Qwen 2.5 7B', value: 'qwen2.5:7b' },
-      { label: 'DeepSeek R1 8B (Local)', value: 'deepseek-r1:8b' },
-      { label: 'Phi 4 14B', value: 'phi4:14b' },
-      { label: 'Gemma 2 9B', value: 'gemma2:9b' },
-      { label: 'Mistral 7B', value: 'mistral:7b' },
-      { label: 'CodeLlama 7B', value: 'codellama:7b' },
-    ],
-  };
+  // Model options now come from useModels hook via getModelsForProvider()
 
   // Helper function to get voice gender labels
   const getVoiceGender = (voiceId: string): string => {
@@ -1588,30 +1645,12 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, onEdit, onDelete, onReset, on
     elevenlabs: 'elevenlabs:default',
   };
 
-  const providerOptions = [
-    { label: 'OpenAI', value: 'openai' },
-    { label: 'Anthropic', value: 'anthropic' },
-    { label: 'Google', value: 'google' },
-    { label: 'Perplexity', value: 'perplexity' },
-    { label: 'DeepSeek', value: 'deepseek' },
-    { label: 'Venice (Private)', value: 'venice' },
-    { label: 'Ollama (Local)', value: 'ollama' },
-  ];
-
-  const defaultModels: Record<string, string> = {
-    openai: 'gpt-5-turbo',
-    anthropic: 'claude-sonnet-4-5-20250929',
-    google: 'gemini-2.5-flash',
-    perplexity: 'sonar',
-    deepseek: 'deepseek-chat',
-    venice: 'llama-3.3-70b',
-    ollama: 'llama3.3:70b',
-  };
+  // Use dynamic providers from useModels hook (providers is already available from the hook)
 
   const handleProviderChange = (newProvider: string) => {
     setSelectedProvider(newProvider);
     // Auto-select default model for new provider
-    const defaultModel = defaultModels[newProvider];
+    const defaultModel = getDefaultModel(newProvider);
     if (defaultModel) {
       setSelectedModel(defaultModel);
     }
@@ -1667,7 +1706,7 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, onEdit, onDelete, onReset, on
   const handleEvalProviderChange = (newProvider: string) => {
     setSelectedEvalProvider(newProvider);
     // Auto-select default model for new provider
-    const defaultModel = defaultModels[newProvider];
+    const defaultModel = getDefaultModel(newProvider);
     if (defaultModel) {
       setSelectedEvalModel(defaultModel);
     }
@@ -1832,7 +1871,7 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, onEdit, onDelete, onReset, on
                   onChange={(e) => handleProviderChange(e.target.value)}
                   className="flex-1 px-2 py-1 bg-bg-tertiary border border-glass-border rounded text-xs text-text-primary focus:outline-none focus:ring-1 focus:ring-accent-primary/50"
                 >
-                  {providerOptions.map((option) => (
+                  {providers.map((option) => (
                     <option key={option.value} value={option.value}>
                       {option.label}
                     </option>
@@ -1843,9 +1882,10 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, onEdit, onDelete, onReset, on
                 <select
                   value={selectedModel}
                   onChange={(e) => setSelectedModel(e.target.value)}
-                  className="flex-1 px-2 py-1 bg-bg-tertiary border border-glass-border rounded text-xs text-text-primary focus:outline-none focus:ring-1 focus:ring-accent-primary/50"
+                  className="flex-1 px-2 py-1 bg-bg-tertiary border border-glass-border rounded text-xs text-text-primary focus:outline-none focus:ring-1 focus:ring-accent-primary/50 scrollable-select"
+                  size={Math.min(8, getModelsForProvider(selectedProvider).length)}
                 >
-                  {(modelOptions[selectedProvider] || []).map((option) => (
+                  {getModelsForProvider(selectedProvider).map((option) => (
                     <option key={option.value} value={option.value}>
                       {option.label}
                     </option>
@@ -2017,7 +2057,7 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, onEdit, onDelete, onReset, on
                   onChange={(e) => handleEvalProviderChange(e.target.value)}
                   className="flex-1 px-2 py-1 bg-bg-tertiary border border-glass-border rounded text-xs text-text-primary focus:outline-none focus:ring-1 focus:ring-accent-primary/50"
                 >
-                  {providerOptions.map((option) => (
+                  {providers.map((option) => (
                     <option key={option.value} value={option.value}>
                       {option.label}
                     </option>
@@ -2028,9 +2068,10 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, onEdit, onDelete, onReset, on
                 <select
                   value={selectedEvalModel}
                   onChange={(e) => setSelectedEvalModel(e.target.value)}
-                  className="flex-1 px-2 py-1 bg-bg-tertiary border border-glass-border rounded text-xs text-text-primary focus:outline-none focus:ring-1 focus:ring-accent-primary/50"
+                  className="flex-1 px-2 py-1 bg-bg-tertiary border border-glass-border rounded text-xs text-text-primary focus:outline-none focus:ring-1 focus:ring-accent-primary/50 scrollable-select"
+                  size={Math.min(8, getModelsForProvider(selectedEvalProvider).length)}
                 >
-                  {(modelOptions[selectedEvalProvider] || []).map((option) => (
+                  {getModelsForProvider(selectedEvalProvider).map((option) => (
                     <option key={option.value} value={option.value}>
                       {option.label}
                     </option>
@@ -2627,39 +2668,88 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, onEdit, onDelete, onReset, on
 const formatModelDisplay = (modelId: string): string => {
   // Common model mappings
   const modelMap: Record<string, string> = {
+    // OpenAI - GPT 5.x series
+    'gpt-5.2': 'GPT-5.2',
+    'gpt-5.2-pro': 'GPT-5.2 Pro',
+    'gpt-5.2-chat-latest': 'GPT-5.2 Instant',
+    'gpt-5.2-codex': 'GPT-5.2 Codex',
+    'gpt-5.1': 'GPT-5.1',
+    'gpt-5.1-chat-latest': 'GPT-5.1 Instant',
     'gpt-5-turbo': 'GPT-5 Turbo',
     'gpt-5': 'GPT-5',
+    'gpt-5-mini': 'GPT-5 Mini',
+    'gpt-4.1': 'GPT-4.1',
+    'gpt-4.1-mini': 'GPT-4.1 Mini',
     'o4': 'GPT-O4',
     'o4-mini': 'GPT-O4 Mini',
+    'o3-mini': 'GPT-O3 Mini',
+    'o1': 'GPT-O1',
     'gpt-4o': 'GPT-4o',
     'gpt-4o-mini': 'GPT-4o Mini',
+    // Anthropic
     'claude-sonnet-4-5-20250929': 'Claude Sonnet 4.5',
     'claude-opus-4-1-20250805': 'Claude Opus 4.1',
+    'claude-opus-4-20250514': 'Claude Opus 4',
     'claude-sonnet-4-20250514': 'Claude Sonnet 4',
     'claude-3-7-sonnet-20250219': 'Claude 3.7 Sonnet',
     'claude-3-5-haiku-20241022': 'Claude 3.5 Haiku',
+    'claude-3-haiku-20240307': 'Claude 3 Haiku',
+    // Google - Gemini 3.x and 2.5
+    'gemini-3-pro-preview': 'Gemini 3 Pro',
+    'gemini-3-flash-preview': 'Gemini 3 Flash',
+    'gemini-3-pro-image-preview': 'Gemini 3 Pro Image',
     'gemini-2.5-pro': 'Gemini 2.5 Pro',
     'gemini-2.5-flash': 'Gemini 2.5 Flash',
+    'gemini-2.5-flash-preview-09-2025': 'Gemini 2.5 Flash Preview',
     'gemini-2.5-flash-lite': 'Gemini 2.5 Flash Lite',
     'gemini-2.0-flash': 'Gemini 2.0 Flash',
     'gemini-1.5-pro': 'Gemini 1.5 Pro',
+    // Perplexity
     'sonar': 'Sonar (Fast)',
     'sonar-pro': 'Sonar Pro',
     'sonar-reasoning': 'Sonar Reasoning',
     'sonar-reasoning-pro': 'Sonar Reasoning Pro',
     'sonar-deep-research': 'Sonar Deep Research',
+    // DeepSeek
     'deepseek-chat': 'DeepSeek Chat (V3.2)',
     'deepseek-reasoner': 'DeepSeek Reasoner (R1)',
     // Venice
     'venice-uncensored': 'Venice Uncensored',
     'llama-3.3-70b': 'Llama 3.3 70B',
+    'llama-3.2-3b': 'Llama 3.2 3B',
     'qwen3-235b-a22b-instruct-2507': 'Qwen3 235B Instruct',
-    'qwen3-4b': 'Qwen3 4B',
-    'mistral-31-24b': 'Mistral 3.1 24B',
-    'claude-opus-45': 'Claude Opus 4.5',
-    'gemini-3-flash-preview': 'Gemini 3 Flash',
+    'qwen3-235b-a22b-thinking-2507': 'Qwen3 235B Thinking',
+    'qwen3-next-80b': 'Qwen3 Next 80B',
+    'qwen3-coder-480b-a35b-instruct': 'Qwen3 Coder 480B',
+    'qwen3-4b': 'Venice Small',
+    'mistral-31-24b': 'Venice Medium',
+    'claude-opus-45': 'Claude Opus 4.5 (Venice)',
+    'openai-gpt-52': 'GPT-5.2 (Venice)',
+    'openai-gpt-oss-120b': 'GPT OSS 120B (Venice)',
     'grok-41-fast': 'Grok 4.1 Fast',
+    'grok-code-fast-1': 'Grok Code Fast 1',
+    'zai-org-glm-4.7': 'GLM 4.7',
+    'kimi-k2-thinking': 'Kimi K2 Thinking',
+    'minimax-m21': 'MiniMax M2.1',
+    'deepseek-v3.2': 'DeepSeek V3.2',
+    'google-gemma-3-27b-it': 'Gemma 3 27B',
+    'hermes-3-llama-3.1-405b': 'Hermes 3 405B',
     'dolphin-2.9.3-mistral-7b': 'Venice Uncensored',
+    // Ollama
+    'llama3.3:70b': 'Llama 3.3 70B',
+    'llama3.2': 'Llama 3.2',
+    'llama3.2:1b': 'Llama 3.2 1B',
+    'llama3.2:3b': 'Llama 3.2 3B',
+    'llama3.2-vision:11b': 'Llama 3.2 Vision 11B',
+    'llama3.2-vision:90b': 'Llama 3.2 Vision 90B',
+    'qwen3:235b': 'Qwen 3 235B',
+    'qwen3:30b': 'Qwen 3 30B',
+    'qwen2.5:7b': 'Qwen 2.5 7B',
+    'deepseek-r1:8b': 'DeepSeek R1 8B',
+    'phi4:14b': 'Phi 4 14B',
+    'gemma2:9b': 'Gemma 2 9B',
+    'mistral:7b': 'Mistral 7B',
+    'codellama:7b': 'CodeLlama 7B',
   };
 
   if (modelMap[modelId]) return modelMap[modelId];
