@@ -21,6 +21,7 @@ ALWAYS_AVAILABLE_TOOLS: Set[str] = {
     # Memory operations (essential)
     "search_memory",
     "get_recent_memories",
+    "remember_about_owner",  # Learning about owner is core functionality
     # Basic information
     "get_current_time",
     "describe_my_skills",
