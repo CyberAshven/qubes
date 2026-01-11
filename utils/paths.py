@@ -93,13 +93,14 @@ def get_app_data_dir() -> Path:
     platform = sys.platform
 
     if platform == 'win32':
-        # Windows: Use APPDATA
-        appdata = os.environ.get('APPDATA')
-        if appdata:
-            data_dir = Path(appdata) / APP_NAME
+        # Windows: Use LOCALAPPDATA/Qubes/data to match existing installs
+        # (Tauri installs the app to LOCALAPPDATA, and old versions stored data there)
+        localappdata = os.environ.get('LOCALAPPDATA')
+        if localappdata:
+            data_dir = Path(localappdata) / APP_NAME / 'data'
         else:
             # Fallback to user home
-            data_dir = Path.home() / 'AppData' / 'Roaming' / APP_NAME
+            data_dir = Path.home() / 'AppData' / 'Local' / APP_NAME / 'data'
 
     elif platform == 'darwin':
         # macOS: Use Application Support
