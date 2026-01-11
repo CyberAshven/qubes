@@ -24,7 +24,7 @@ class BlockPreferences:
 
     # Group chat settings
     group_auto_anchor: bool = True
-    group_anchor_threshold: int = 5  # Anchor more frequently in group chats
+    group_anchor_threshold: int = 20  # Anchor threshold for group chats
 
 
 @dataclass

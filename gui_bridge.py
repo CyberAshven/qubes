@@ -73,6 +73,7 @@ configure_logging(
 
 from orchestrator.user_orchestrator import UserOrchestrator
 from utils.input_validation import validate_user_id, validate_qube_id, validate_qube_name, validate_message, sanitize_filename
+from utils.paths import get_app_data_dir, get_users_dir, get_user_data_dir, get_user_qubes_dir
 
 logger = structlog.get_logger(__name__)
 
@@ -1393,7 +1394,7 @@ class GUIBridge:
 
                 # Find qube data directory
                 user_id_to_use = self.user_id if hasattr(self, 'user_id') and self.user_id else self.orchestrator.user_id
-                qube_data_dir = Path(f"data/users/{user_id_to_use}/qubes")
+                qube_data_dir = get_user_qubes_dir(user_id_to_use)
                 matching_dirs = [d for d in qube_data_dir.iterdir() if d.is_dir() and qube_id in d.name]
 
                 if not matching_dirs:
@@ -1558,7 +1559,7 @@ class GUIBridge:
             else:
                 # Access snapshots directory directly
                 from pathlib import Path
-                qube_data_dir = Path(f"data/users/{user_id_for_creator_check}/qubes")
+                qube_data_dir = get_user_qubes_dir(user_id_for_creator_check)
                 matching_dirs = [d for d in qube_data_dir.iterdir() if d.is_dir() and qube_id in d.name]
 
                 if not matching_dirs:
@@ -2802,7 +2803,7 @@ class GUIBridge:
     def _find_qube_dir(self, qube_id: str) -> Optional[Path]:
         """Helper to find qube directory without loading."""
         user_id = self.user_id if hasattr(self, 'user_id') else self.orchestrator.user_id
-        qubes_dir = Path("data") / "users" / user_id / "qubes"
+        qubes_dir = get_user_qubes_dir(user_id)
 
         if not qubes_dir.exists():
             return None
@@ -6778,15 +6779,21 @@ async def main():
     # (GUIBridge creates default user directory which interferes with first-run detection)
     if command == "check-first-run":
         # Check if this is the first run (no users exist)
-        data_dir = Path("data/users")
-        if not data_dir.exists():
-            print(json.dumps({"is_first_run": True, "users": []}))
+        # Use platform-aware path (critical for Linux AppImage)
+        users_dir = get_users_dir()
+        if not users_dir.exists():
+            print(json.dumps({
+                "is_first_run": True,
+                "users": [],
+                "data_dir": str(get_app_data_dir())
+            }))
         else:
-            # List existing users (directories in data/users)
-            users = [d.name for d in data_dir.iterdir() if d.is_dir()]
+            # List existing users (directories in users dir)
+            users = [d.name for d in users_dir.iterdir() if d.is_dir()]
             print(json.dumps({
                 "is_first_run": len(users) == 0,
-                "users": users
+                "users": users,
+                "data_dir": str(get_app_data_dir())
             }))
         return
 
@@ -6800,13 +6807,13 @@ async def main():
         # Password from stdin (secure) or argv fallback (backwards compat)
         password = get_secret("password", argv_index=3)
 
-        # Create data directory for user
-        data_dir = Path(f"data/users/{user_id}")
-        if data_dir.exists():
+        # Create data directory for user using platform-aware path
+        # (critical for Linux AppImage - avoids read-only mount)
+        user_data_dir = get_user_data_dir(user_id)
+        if (user_data_dir / "password_verifier.enc").exists():
             print(json.dumps({"success": False, "error": "User already exists"}))
         else:
-            # Create user directory and initialize with password
-            data_dir.mkdir(parents=True, exist_ok=True)
+            # User directory already created by get_user_data_dir
 
             # Create orchestrator for user and set master key (generates salt)
             orchestrator = UserOrchestrator(user_id=user_id)
@@ -6817,7 +6824,7 @@ async def main():
             import secrets
             from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-            verifier_file = data_dir / "password_verifier.enc"
+            verifier_file = user_data_dir / "password_verifier.enc"
             aesgcm = AESGCM(orchestrator.master_key)
             nonce = secrets.token_bytes(12)
             plaintext = b"QUBES_PASSWORD_VERIFIED"
@@ -6836,7 +6843,7 @@ async def main():
             print(json.dumps({
                 "success": True,
                 "user_id": user_id,
-                "data_dir": str(data_dir.absolute())
+                "data_dir": str(user_data_dir.absolute())
             }))
         return
 
@@ -7065,7 +7072,7 @@ async def main():
             user_bridge = GUIBridge(user_id=user_id)
 
             # Check if qube has session blocks
-            qube_dir = Path(f"data/users/{user_id}/qubes")
+            qube_dir = get_user_qubes_dir(user_id)
 
             # Find the qube directory (format: {name}_{qube_id})
             qube_dirs = list(qube_dir.glob(f"*_{qube_id}"))
@@ -8109,7 +8116,7 @@ async def main():
                 from config.user_preferences import UserPreferencesManager
 
                 # Get user data directory
-                data_dir = Path("data") / "users" / user_id
+                data_dir = get_user_data_dir(user_id)
                 prefs_manager = UserPreferencesManager(data_dir)
 
                 # Get Google TTS path from preferences
@@ -8133,7 +8140,7 @@ async def main():
                 from config.user_preferences import UserPreferencesManager
 
                 # Get user data directory
-                data_dir = Path("data") / "users" / user_id
+                data_dir = get_user_data_dir(user_id)
                 prefs_manager = UserPreferencesManager(data_dir)
 
                 # Set Google TTS path (empty string = clear the path)
@@ -8160,7 +8167,7 @@ async def main():
                 from dataclasses import asdict
 
                 # Get user data directory
-                data_dir = Path("data") / "users" / user_id
+                data_dir = get_user_data_dir(user_id)
                 prefs_manager = UserPreferencesManager(data_dir)
 
                 # Get decision config from preferences
@@ -8187,7 +8194,7 @@ async def main():
                 from config.user_preferences import UserPreferencesManager
 
                 # Get user data directory
-                data_dir = Path("data") / "users" / user_id
+                data_dir = get_user_data_dir(user_id)
                 prefs_manager = UserPreferencesManager(data_dir)
 
                 # Parse config data
@@ -8221,7 +8228,7 @@ async def main():
                 from dataclasses import asdict
 
                 # Get user data directory
-                data_dir = Path("data") / "users" / user_id
+                data_dir = get_user_data_dir(user_id)
                 prefs_manager = UserPreferencesManager(data_dir)
 
                 # Get memory config from preferences
@@ -8248,7 +8255,7 @@ async def main():
                 from config.user_preferences import UserPreferencesManager
 
                 # Get user data directory
-                data_dir = Path("data") / "users" / user_id
+                data_dir = get_user_data_dir(user_id)
                 prefs_manager = UserPreferencesManager(data_dir)
 
                 # Parse config data
@@ -8281,7 +8288,7 @@ async def main():
                 from config.user_preferences import UserPreferencesManager
                 from dataclasses import asdict
 
-                data_dir = Path("data") / "users" / user_id
+                data_dir = get_user_data_dir(user_id)
                 prefs_manager = UserPreferencesManager(data_dir)
 
                 onboarding = prefs_manager.get_onboarding_preferences()
@@ -8306,7 +8313,7 @@ async def main():
             try:
                 from config.user_preferences import UserPreferencesManager
 
-                data_dir = Path("data") / "users" / user_id
+                data_dir = get_user_data_dir(user_id)
                 prefs_manager = UserPreferencesManager(data_dir)
 
                 prefs_manager.mark_tutorial_seen(tab_name)
@@ -8331,7 +8338,7 @@ async def main():
             try:
                 from config.user_preferences import UserPreferencesManager
 
-                data_dir = Path("data") / "users" / user_id
+                data_dir = get_user_data_dir(user_id)
                 prefs_manager = UserPreferencesManager(data_dir)
 
                 prefs_manager.reset_tutorial(tab_name)
@@ -8355,7 +8362,7 @@ async def main():
             try:
                 from config.user_preferences import UserPreferencesManager
 
-                data_dir = Path("data") / "users" / user_id
+                data_dir = get_user_data_dir(user_id)
                 prefs_manager = UserPreferencesManager(data_dir)
 
                 prefs_manager.reset_all_tutorials()
@@ -8380,7 +8387,7 @@ async def main():
             try:
                 from config.user_preferences import UserPreferencesManager
 
-                data_dir = Path("data") / "users" / user_id
+                data_dir = get_user_data_dir(user_id)
                 prefs_manager = UserPreferencesManager(data_dir)
 
                 prefs_manager.update_show_tutorials(show)
@@ -8602,7 +8609,7 @@ async def main():
 
             try:
                 # Find qube directory
-                data_dir = Path("data") / "users" / user_id / "qubes"
+                data_dir = get_user_qubes_dir(user_id)
                 qube_dir = None
                 for dir_path in data_dir.iterdir():
                     if dir_path.is_dir() and qube_id in dir_path.name:
@@ -8650,7 +8657,7 @@ async def main():
 
             try:
                 # Find qube directory
-                data_dir = Path("data") / "users" / user_id / "qubes"
+                data_dir = get_user_qubes_dir(user_id)
                 qube_dir = None
                 for dir_path in data_dir.iterdir():
                     if dir_path.is_dir() and qube_id in dir_path.name:
@@ -8687,7 +8694,7 @@ async def main():
                 from utils.file_lock import FileLock
 
                 # Find qube directory
-                data_dir = Path("data") / "users" / user_id / "qubes"
+                data_dir = get_user_qubes_dir(user_id)
                 qube_dir = None
                 for dir_path in data_dir.iterdir():
                     if dir_path.is_dir() and qube_id in dir_path.name:
@@ -8737,7 +8744,7 @@ async def main():
                     sys.exit(1)
 
                 # Find qube directory
-                data_dir = Path("data") / "users" / user_id / "qubes"
+                data_dir = get_user_qubes_dir(user_id)
                 qube_dir = None
                 for dir_path in data_dir.iterdir():
                     if dir_path.is_dir() and qube_id in dir_path.name:

@@ -852,36 +852,80 @@ fn is_bundled_distribution() -> bool {
     get_bundled_backend_path().is_some()
 }
 
-// Get path to the bundled backend executable (Tauri sidecar)
-// In dev mode, always use Python directly for faster iteration
-fn get_bundled_backend_path() -> Option<PathBuf> {
+// Diagnostic info for backend path resolution
+#[derive(Debug, Clone, Serialize)]
+struct BackendDiagnostics {
+    exe_path: String,
+    exe_dir: String,
+    sidecar_name: String,
+    paths_checked: Vec<String>,
+    found_path: Option<String>,
+    is_dev_mode: bool,
+    #[cfg(not(target_os = "windows"))]
+    is_executable: Option<bool>,
+}
+
+// Get path to the bundled backend executable (Tauri sidecar) with diagnostics
+fn get_bundled_backend_path_with_diagnostics() -> (Option<PathBuf>, BackendDiagnostics) {
+    let mut diagnostics = BackendDiagnostics {
+        exe_path: String::new(),
+        exe_dir: String::new(),
+        sidecar_name: String::new(),
+        paths_checked: Vec::new(),
+        found_path: None,
+        is_dev_mode: cfg!(dev),
+        #[cfg(not(target_os = "windows"))]
+        is_executable: None,
+    };
+
     // Skip bundled backend in dev mode - Python is much faster for development
     if cfg!(dev) {
-        return None;
+        return (None, diagnostics);
     }
 
-    if let Ok(exe_path) = std::env::current_exe() {
-        if let Some(exe_dir) = exe_path.parent() {
-            // Check for Tauri sidecar (placed next to main exe)
-            #[cfg(target_os = "windows")]
-            let sidecar_name = "qubes-backend.exe";
-            #[cfg(not(target_os = "windows"))]
-            let sidecar_name = "qubes-backend";
+    #[cfg(target_os = "windows")]
+    let sidecar_name = "qubes-backend.exe";
+    #[cfg(not(target_os = "windows"))]
+    let sidecar_name = "qubes-backend";
 
+    diagnostics.sidecar_name = sidecar_name.to_string();
+
+    if let Ok(exe_path) = std::env::current_exe() {
+        diagnostics.exe_path = exe_path.display().to_string();
+
+        if let Some(exe_dir) = exe_path.parent() {
+            diagnostics.exe_dir = exe_dir.display().to_string();
+
+            // Check for Tauri sidecar (placed next to main exe)
             let sidecar_path = exe_dir.join(sidecar_name);
+            diagnostics.paths_checked.push(format!("{} (exists: {})", sidecar_path.display(), sidecar_path.exists()));
+
             if sidecar_path.exists() {
-                return Some(sidecar_path);
+                diagnostics.found_path = Some(sidecar_path.display().to_string());
+
+                // On Unix, check if it's executable
+                #[cfg(not(target_os = "windows"))]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Ok(metadata) = std::fs::metadata(&sidecar_path) {
+                        let mode = metadata.permissions().mode();
+                        diagnostics.is_executable = Some(mode & 0o111 != 0);
+                    }
+                }
+
+                return (Some(sidecar_path), diagnostics);
             }
 
             // Also check macOS bundle location (inside .app/Contents/MacOS/)
             #[cfg(target_os = "macos")]
             {
-                // exe_dir is already Contents/MacOS/ on macOS, so sidecar should be there
-                // Already checked above, but let's also check Resources just in case
                 if let Some(contents_dir) = exe_dir.parent() {
                     let resources_path = contents_dir.join("Resources").join(sidecar_name);
+                    diagnostics.paths_checked.push(format!("{} (exists: {})", resources_path.display(), resources_path.exists()));
+
                     if resources_path.exists() {
-                        return Some(resources_path);
+                        diagnostics.found_path = Some(resources_path.display().to_string());
+                        return (Some(resources_path), diagnostics);
                     }
                 }
             }
@@ -892,12 +936,23 @@ fn get_bundled_backend_path() -> Option<PathBuf> {
             #[cfg(not(target_os = "windows"))]
             let legacy_path = exe_dir.join("qubes-backend").join("qubes-backend");
 
+            diagnostics.paths_checked.push(format!("{} (exists: {})", legacy_path.display(), legacy_path.exists()));
+
             if legacy_path.exists() {
-                return Some(legacy_path);
+                diagnostics.found_path = Some(legacy_path.display().to_string());
+                return (Some(legacy_path), diagnostics);
             }
         }
     }
-    None
+
+    (None, diagnostics)
+}
+
+// Get path to the bundled backend executable (Tauri sidecar)
+// In dev mode, always use Python directly for faster iteration
+fn get_bundled_backend_path() -> Option<PathBuf> {
+    let (path, _) = get_bundled_backend_path_with_diagnostics();
+    path
 }
 
 // Get the path to the Python project directory
@@ -1046,10 +1101,38 @@ fn execute_with_secrets(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    // Spawn the process
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("Failed to spawn Python process: {}", e))?;
+    // Spawn the process with detailed error logging
+    let mut child = cmd.spawn().map_err(|e| {
+        // Get diagnostic info about the backend path
+        let (backend_path, diagnostics) = get_bundled_backend_path_with_diagnostics();
+
+        let backend_info = match backend_path {
+            Some(p) => format!("Backend path: {}", p.display()),
+            None => "Backend path: NOT FOUND (will use Python fallback)".to_string(),
+        };
+
+        // Log detailed diagnostics
+        eprintln!("[BACKEND SPAWN ERROR] Failed to spawn process: {}", e);
+        eprintln!("[BACKEND SPAWN ERROR] Error kind: {:?}", e.kind());
+        eprintln!("[BACKEND SPAWN ERROR] {}", backend_info);
+        eprintln!("[BACKEND SPAWN ERROR] Exe path: {}", diagnostics.exe_path);
+        eprintln!("[BACKEND SPAWN ERROR] Exe dir: {}", diagnostics.exe_dir);
+        eprintln!("[BACKEND SPAWN ERROR] Sidecar name: {}", diagnostics.sidecar_name);
+        eprintln!("[BACKEND SPAWN ERROR] Paths checked: {:?}", diagnostics.paths_checked);
+        eprintln!("[BACKEND SPAWN ERROR] Found path: {:?}", diagnostics.found_path);
+        eprintln!("[BACKEND SPAWN ERROR] Is dev mode: {}", diagnostics.is_dev_mode);
+
+        #[cfg(not(target_os = "windows"))]
+        eprintln!("[BACKEND SPAWN ERROR] Is executable: {:?}", diagnostics.is_executable);
+
+        // Return a more helpful error message
+        format!(
+            "Backend failed to start: {} ({}). Backend path: {:?}. Check if the backend executable exists and is runnable.",
+            e,
+            e.kind(),
+            diagnostics.found_path.unwrap_or_else(|| "not found".to_string())
+        )
+    })?;
 
     // Write secrets as JSON to stdin
     if let Some(mut stdin) = child.stdin.take() {
@@ -4213,6 +4296,78 @@ async fn create_user_account(user_id: String, password: String) -> Result<Create
     }
 }
 
+/// Get backend diagnostics - useful for debugging startup issues on Linux/macOS
+#[tauri::command]
+async fn get_backend_diagnostics() -> Result<serde_json::Value, String> {
+    let (backend_path, diagnostics) = get_bundled_backend_path_with_diagnostics();
+
+    // Try to get more info about the backend if found
+    let mut backend_info = serde_json::json!({
+        "backend_found": backend_path.is_some(),
+        "backend_path": diagnostics.found_path,
+        "exe_path": diagnostics.exe_path,
+        "exe_dir": diagnostics.exe_dir,
+        "sidecar_name": diagnostics.sidecar_name,
+        "paths_checked": diagnostics.paths_checked,
+        "is_dev_mode": diagnostics.is_dev_mode,
+        "os": std::env::consts::OS,
+        "arch": std::env::consts::ARCH,
+    });
+
+    // Add Unix-specific executable check
+    #[cfg(not(target_os = "windows"))]
+    {
+        backend_info["is_executable"] = serde_json::json!(diagnostics.is_executable);
+
+        // Try running a simple command to test if backend can execute
+        if let Some(ref path) = backend_path {
+            let test_result = Command::new(path)
+                .arg("--version")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output();
+
+            match test_result {
+                Ok(output) => {
+                    backend_info["test_run_success"] = serde_json::json!(output.status.success());
+                    backend_info["test_run_stdout"] = serde_json::json!(
+                        String::from_utf8_lossy(&output.stdout).to_string()
+                    );
+                    backend_info["test_run_stderr"] = serde_json::json!(
+                        String::from_utf8_lossy(&output.stderr).to_string()
+                    );
+                }
+                Err(e) => {
+                    backend_info["test_run_success"] = serde_json::json!(false);
+                    backend_info["test_run_error"] = serde_json::json!(format!("{}: {:?}", e, e.kind()));
+                }
+            }
+        }
+    }
+
+    // On Windows, just try to check if the file exists and is accessible
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(ref path) = backend_path {
+            if let Ok(metadata) = std::fs::metadata(path) {
+                backend_info["file_size"] = serde_json::json!(metadata.len());
+                backend_info["is_file"] = serde_json::json!(metadata.is_file());
+            }
+        }
+    }
+
+    // Add current working directory
+    if let Ok(cwd) = std::env::current_dir() {
+        backend_info["current_dir"] = serde_json::json!(cwd.display().to_string());
+    }
+
+    // Add project path that would be used
+    let project_path = get_python_project_path();
+    backend_info["project_path"] = serde_json::json!(project_path.display().to_string());
+
+    Ok(backend_info)
+}
+
 /// Check Ollama status
 #[tauri::command]
 async fn check_ollama_status() -> Result<OllamaStatusResponse, String> {
@@ -5496,6 +5651,7 @@ pub fn run() {
             check_first_run,
             create_user_account,
             check_ollama_status,
+            get_backend_diagnostics,
             start_ollama,
             create_qube_for_minting,
             pre_register_qube,

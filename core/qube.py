@@ -895,6 +895,10 @@ class Qube:
             estimated_cost_usd=estimated_cost
         )
 
+        # Check for auto-anchor after creating blocks
+        if self.current_session:
+            await self.current_session.check_and_auto_anchor()
+
         return response
 
     async def describe_my_appearance(self, model_override: Optional[str] = None) -> str:

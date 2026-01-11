@@ -4,6 +4,7 @@ Session Management with Negative Indexing
 From docs/05_Data_Structures.md Section 2.3
 """
 
+import asyncio
 import json
 import os
 from typing import List, Dict, Any, Optional
@@ -60,6 +61,9 @@ class Session:
             "cached_results": {},
             "insights": []
         }
+        # Flag to track if auto-anchor should be triggered (set by sync create_block, checked by async callers)
+        self._auto_anchor_pending = False
+        self._auto_anchor_is_group = False
 
         # Update chain state
         self.qube.chain_state.start_session(self.session_id)
@@ -182,18 +186,31 @@ class Session:
         self._save_session_block(block)
 
         # Check for auto-anchor (use dynamic threshold based on conversation type)
-        # TODO: Auto-anchor is currently disabled because anchor_to_chain is async
-        # and create_block is sync. Need to refactor this.
-        # active_threshold = self.get_active_threshold()
-        # if self.qube.auto_anchor_enabled and len(self.session_blocks) >= active_threshold:
-        #     is_group = self.is_group_conversation()
-        #     logger.info(
-        #         "auto_anchor_triggered",
-        #         block_count=len(self.session_blocks),
-        #         threshold=active_threshold,
-        #         is_group_chat=is_group
-        #     )
-        #     await self.anchor_to_chain(create_summary=True)
+        # Sets a flag that async callers should check via check_and_auto_anchor()
+        active_threshold = self.get_active_threshold()
+        block_count = len(self.session_blocks)
+
+        # Diagnostic logging
+        logger.info(
+            "auto_anchor_check",
+            qube_name=self.qube.name,
+            auto_anchor_enabled=self.qube.auto_anchor_enabled,
+            block_count=block_count,
+            threshold=active_threshold,
+            should_trigger=self.qube.auto_anchor_enabled and block_count >= active_threshold
+        )
+
+        if self.qube.auto_anchor_enabled and block_count >= active_threshold:
+            is_group = self.is_group_conversation()
+            logger.info(
+                "auto_anchor_pending",
+                block_count=len(self.session_blocks),
+                threshold=active_threshold,
+                is_group_chat=is_group
+            )
+            # Set flag for async caller to trigger anchor
+            self._auto_anchor_pending = True
+            self._auto_anchor_is_group = is_group
 
         logger.debug(
             "session_block_created",
@@ -203,6 +220,79 @@ class Session:
         )
 
         return block
+
+    async def check_and_auto_anchor(self) -> bool:
+        """
+        Check if auto-anchor is pending and spawn it in the background if so.
+
+        This async method should be called by async callers after create_block()
+        to handle the auto-anchor that create_block() (sync) cannot await.
+
+        IMPORTANT: Anchoring runs in the BACKGROUND to avoid blocking conversation.
+        The anchor process includes AI calls (skill scanning, relationship/self evaluation)
+        that can take a long time.
+
+        Returns:
+            True if anchoring was spawned, False otherwise
+        """
+        logger.info(
+            "check_and_auto_anchor_called",
+            qube_id=self.qube.qube_id,
+            pending_flag=self._auto_anchor_pending
+        )
+
+        if not self._auto_anchor_pending:
+            return False
+
+        # Clear flag first to prevent re-entry
+        self._auto_anchor_pending = False
+        is_group = self._auto_anchor_is_group
+
+        logger.info(
+            "auto_anchor_spawning_background",
+            block_count=len(self.session_blocks),
+            is_group_chat=is_group,
+            qube_id=self.qube.qube_id
+        )
+
+        # Spawn anchor in background - don't await to avoid blocking conversation
+        asyncio.create_task(self._run_auto_anchor_background(is_group))
+
+        return True
+
+    async def _run_auto_anchor_background(self, is_group: bool) -> None:
+        """
+        Run auto-anchor in the background.
+
+        This is a fire-and-forget task that won't block the conversation.
+        Any errors are logged but don't affect the conversation.
+        Session cleanup always runs to prevent orphaned session blocks.
+        """
+        try:
+            logger.info(
+                "auto_anchor_background_started",
+                qube_id=self.qube.qube_id,
+                is_group_chat=is_group
+            )
+            await self.anchor_to_chain(create_summary=True)
+            logger.info(
+                "auto_anchor_background_completed",
+                qube_id=self.qube.qube_id,
+                is_group_chat=is_group
+            )
+        except Exception as e:
+            logger.error(
+                "auto_anchor_background_failed",
+                error=str(e),
+                qube_id=self.qube.qube_id,
+                exc_info=True
+            )
+            # Even if anchor failed, clear session to prevent orphaned blocks
+            # (blocks may have been partially converted)
+            logger.info("auto_anchor_cleanup_after_failure", qube_id=self.qube.qube_id)
+            self.session_blocks = []
+            self.next_negative_index = -1
+            self.cleanup()
 
     def get_block(self, index: int) -> Optional[Block]:
         """
@@ -378,6 +468,18 @@ class Session:
 
                 converted_blocks.append(permanent_block)
 
+            # CLEAR SESSION IMMEDIATELY after conversion
+            # This ensures session blocks are removed even if optional processing below fails/is interrupted
+            session_block_count = len(self.session_blocks)
+            self.session_blocks = []
+            self.next_negative_index = -1
+            self.cleanup()
+            logger.info(
+                "session_cleared_after_conversion",
+                blocks_converted=session_block_count,
+                qube_id=self.qube.qube_id
+            )
+
             # APPLY SKILL XP (after conversion so we have real block numbers)
             if skill_detections:
                 logger.info("=== APPLYING SKILL XP ===")
@@ -533,16 +635,12 @@ class Session:
             )
             self.qube.chain_state.end_session()
 
-            # Clear session
-            block_count = len(self.session_blocks)
-            self.session_blocks = []
-            self.next_negative_index = -1
-            self.cleanup()
-
+            # Session was already cleared immediately after conversion (line 471-481)
+            # Just log completion
             logger.info(
                 "session_anchored",
                 session_id=self.session_id,
-                blocks_anchored=block_count,
+                blocks_anchored=len(converted_blocks),
                 new_chain_length=final_chain_length
             )
 

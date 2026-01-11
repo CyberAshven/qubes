@@ -98,10 +98,41 @@ const CreateAccountStep: React.FC<CreateAccountStepProps> = ({
         });
         onNext();
       } else {
-        setError(result.error || 'Failed to create account');
+        // On error, try to get backend diagnostics for debugging
+        let errorMsg = result.error || 'Failed to create account';
+        try {
+          const diagnostics = await invoke<Record<string, unknown>>('get_backend_diagnostics');
+          console.error('[CreateAccount] Backend diagnostics:', diagnostics);
+          // Add key diagnostic info to error message for Linux users
+          if (diagnostics.os === 'linux' || diagnostics.os === 'macos') {
+            if (!diagnostics.backend_found) {
+              errorMsg += ` [Backend not found. Checked: ${diagnostics.paths_checked}]`;
+            } else if (diagnostics.is_executable === false) {
+              errorMsg += ` [Backend found but not executable: ${diagnostics.backend_path}]`;
+            } else if (diagnostics.test_run_error) {
+              errorMsg += ` [Backend test failed: ${diagnostics.test_run_error}]`;
+            }
+          }
+        } catch (diagErr) {
+          console.error('[CreateAccount] Failed to get diagnostics:', diagErr);
+        }
+        setError(errorMsg);
       }
     } catch (err: any) {
-      setError(err.message || 'Failed to create account');
+      // On catch error, try to get backend diagnostics
+      let errorMsg = err.message || 'Failed to create account';
+      try {
+        const diagnostics = await invoke<Record<string, unknown>>('get_backend_diagnostics');
+        console.error('[CreateAccount] Backend diagnostics on error:', diagnostics);
+        if (!diagnostics.backend_found) {
+          errorMsg += ` [Backend not found at: ${diagnostics.exe_dir}]`;
+        } else if (diagnostics.test_run_error) {
+          errorMsg += ` [${diagnostics.test_run_error}]`;
+        }
+      } catch {
+        // Ignore diagnostic errors
+      }
+      setError(errorMsg);
     } finally {
       setLoading(false);
     }

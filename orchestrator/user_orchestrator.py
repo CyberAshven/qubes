@@ -22,6 +22,7 @@ from config import SecureSettingsManager, APIKeys
 from config.user_preferences import UserPreferencesManager, UserPreferences, BlockPreferences
 from utils.logging import get_logger
 from utils.input_validation import validate_user_id, validate_qube_id, validate_qube_name
+from utils.paths import get_user_data_dir
 from core.exceptions import QubesError
 
 logger = get_logger(__name__)
@@ -64,7 +65,7 @@ class UserOrchestrator:
 
         Args:
             user_id: Unique identifier for the user
-            data_dir: Optional custom data directory (defaults to data/users/{user_id})
+            data_dir: Optional custom data directory (uses platform-aware default)
 
         Raises:
             QubesError: If user_id validation fails
@@ -73,7 +74,8 @@ class UserOrchestrator:
         validated_user_id = validate_user_id(user_id)
 
         self.user_id = validated_user_id
-        self.data_dir = data_dir or Path(f"data/users/{validated_user_id}")
+        # Use platform-aware data directory (critical for Linux AppImage)
+        self.data_dir = data_dir or get_user_data_dir(validated_user_id)
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
         self.qubes: Dict[str, Qube] = {}  # qube_id -> Qube instance

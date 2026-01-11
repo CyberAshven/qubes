@@ -106,6 +106,8 @@ class MultiQubeConversation:
         first_qube = self.qubes[0]
         if first_qube.current_session:
             first_qube.current_session.create_block(user_message_block)
+            # Check for auto-anchor after block creation
+            await first_qube.current_session.check_and_auto_anchor()
             logger.debug(
                 "initial_message_created",
                 block_number=user_message_block.block_number,
@@ -601,6 +603,8 @@ class MultiQubeConversation:
             # Add to speaker's session FIRST (updates their chain_state)
             # This ensures their next_negative_index advances before distribution
             next_speaker.current_session.create_block(response_block)
+            # Check for auto-anchor after block creation
+            await next_speaker.current_session.check_and_auto_anchor()
 
         except Exception as e:
             logger.error(
@@ -971,6 +975,8 @@ class MultiQubeConversation:
             first_qube = self.qubes[0]
             if first_qube.current_session:
                 first_qube.current_session.create_block(user_block)
+                # Check for auto-anchor after block creation
+                await first_qube.current_session.check_and_auto_anchor()
                 logger.debug(
                     "user_message_created",
                     block_number=user_block.block_number,
@@ -1472,6 +1478,8 @@ Now respond as {speaker.name}:"""
 
             # Add to session (preserves the shared block number)
             qube.current_session.create_block(qube_block)
+            # Check for auto-anchor after block creation
+            await qube.current_session.check_and_auto_anchor()
             logger.debug(
                 "block_added_to_qube_session",
                 qube_id=qube.qube_id,
