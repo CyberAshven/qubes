@@ -462,6 +462,7 @@ export const SettingsTab: React.FC = () => {
   };
 
   const handleKeyChange = (provider: string, value: string) => {
+    console.log(`[API Key] handleKeyChange called for ${provider}, value length: ${value?.length || 0}`);
     setApiKeys(prev => ({ ...prev, [provider]: value }));
 
     // Clear validation status when user changes the key

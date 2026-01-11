@@ -5996,6 +5996,31 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
         genesis = qube.genesis_block
 
         # Genesis Identity
+        # Get wallet info if available
+        wallet_info = self._get_wallet_info_from_genesis(genesis)
+        p2sh_address = wallet_info.get("p2sh_address") if wallet_info else None
+
+        # Determine AI provider from model name
+        ai_provider = "Unknown"
+        ai_model_lower = (genesis.ai_model or "").lower()
+        if "claude" in ai_model_lower or "anthropic" in ai_model_lower:
+            ai_provider = "Anthropic"
+        elif "gpt" in ai_model_lower or "openai" in ai_model_lower:
+            ai_provider = "OpenAI"
+        elif "gemini" in ai_model_lower or "google" in ai_model_lower:
+            ai_provider = "Google"
+        elif "venice" in ai_model_lower:
+            ai_provider = "Venice"
+        elif "grok" in ai_model_lower or "xai" in ai_model_lower:
+            ai_provider = "xAI"
+        elif "deepseek" in ai_model_lower:
+            ai_provider = "DeepSeek"
+        elif "mistral" in ai_model_lower:
+            ai_provider = "Mistral"
+
+        # Get available tools
+        available_tools = getattr(genesis, 'tools', []) or []
+
         genesis_identity = {
             "name": genesis.qube_name,
             "qube_id": qube.qube_id,
@@ -6003,10 +6028,14 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
             "genesis_prompt": genesis.genesis_prompt,
             "favorite_color": genesis.favorite_color or "#4A90E2",
             "ai_model": genesis.ai_model,
+            "ai_provider": ai_provider,
             "voice_model": genesis.voice_model,
             "creator": genesis.creator,
             "nft_category_id": getattr(genesis, 'nft_category_id', None),
-            "mint_txid": getattr(genesis, 'mint_txid', None)
+            "mint_txid": getattr(genesis, 'mint_txid', None),
+            "qube_wallet_address": p2sh_address,
+            "blockchain": "Bitcoin Cash" if p2sh_address else None,
+            "available_tools": available_tools
         }
 
         # Relationships (top 5 by interaction count)

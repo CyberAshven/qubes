@@ -43,6 +43,7 @@ class IPFSUploader:
         self.ipfs_api = ipfs_api
         self.client = None
         self.use_pinata = use_pinata
+        self.last_error: Optional[str] = None  # Store last error for better user feedback
 
         # Get Pinata credentials from args or environment
         self.pinata_api_key = pinata_api_key or os.getenv("PINATA_API_KEY")
@@ -320,6 +321,7 @@ class IPFSUploader:
                             )
 
                             ipfs_uri = f"ipfs://{cid}"
+                            self.last_error = None  # Clear any previous error
 
                             import sys
                             print(f"\n📤 File uploaded to Pinata!", file=sys.stderr)
@@ -331,6 +333,15 @@ class IPFSUploader:
                             return ipfs_uri
                         else:
                             error_text = await response.text()
+                            # Store detailed error for user feedback
+                            if response.status == 401:
+                                self.last_error = "Pinata authentication failed. Your JWT may have expired or lack pinning permissions."
+                            elif response.status == 403:
+                                self.last_error = "Pinata access forbidden. Ensure your JWT has 'pinFileToIPFS' permission enabled."
+                            elif response.status == 429:
+                                self.last_error = "Pinata rate limit exceeded. Please wait and try again."
+                            else:
+                                self.last_error = f"Pinata error ({response.status}): {error_text[:200]}"
                             logger.error(
                                 "pinata_file_upload_failed",
                                 status=response.status,
@@ -340,10 +351,12 @@ class IPFSUploader:
                             return None
 
         except ImportError:
+            self.last_error = "aiohttp library not installed. Please reinstall the application."
             logger.error("aiohttp_not_installed_for_pinata")
             return None
 
         except Exception as e:
+            self.last_error = f"Upload error: {str(e)}"
             logger.error(
                 "pinata_file_upload_error",
                 error=str(e),

@@ -9,10 +9,14 @@ interface GenesisIdentity {
   genesis_prompt: string;
   favorite_color: string;
   ai_model: string;
+  ai_provider: string;
   voice_model: string;
   creator: string;
   nft_category_id: string | null;
   mint_txid: string | null;
+  qube_wallet_address: string | null;
+  blockchain: string | null;
+  available_tools: string[];
 }
 
 interface Relationship {

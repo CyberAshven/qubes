@@ -314,6 +314,17 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedQube?.qube_id]);
 
+  // Reload blocks when tab becomes active (e.g., switching from Chat tab)
+  // This ensures new blocks created in Chat are visible when switching to Blocks tab
+  useEffect(() => {
+    if (isActive && selectedQube && hasInitiallyLoaded.current && loadedQubeId.current === selectedQube.qube_id) {
+      // Tab became active and we already have data for this qube - refresh it
+      loadBlocks();
+      loadContextPreview();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isActive]);
+
   const handleAnchorClick = () => {
     if (!selectedQube || sessionBlocks.length === 0) return;
     setShowAnchorConfirm(true);
@@ -1057,44 +1068,98 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
               {/* Genesis Identity */}
               {selectedContextSection.type === 'genesis' && selectedContextSection.data && (
                 <div className="space-y-4">
-                  <div className="grid grid-cols-2 gap-4 text-sm">
-                    <div>
-                      <span className="text-text-tertiary">Name:</span>
-                      <div className="text-text-primary mt-1 font-medium">{selectedContextSection.data.name}</div>
-                    </div>
-                    <div>
-                      <span className="text-text-tertiary">Qube ID:</span>
-                      <div className="text-text-primary mt-1 font-mono text-xs">{selectedContextSection.data.qube_id}</div>
-                    </div>
-                    <div>
-                      <span className="text-text-tertiary">Born:</span>
-                      <div className="text-text-primary mt-1">{selectedContextSection.data.birth_date || 'Unknown'}</div>
-                    </div>
-                    <div>
-                      <span className="text-text-tertiary">Creator:</span>
-                      <div className="text-text-primary mt-1">{selectedContextSection.data.creator}</div>
-                    </div>
-                    <div>
-                      <span className="text-text-tertiary">AI Model:</span>
-                      <div className="text-text-primary mt-1">{selectedContextSection.data.ai_model}</div>
-                    </div>
-                    <div>
-                      <span className="text-text-tertiary">Voice Model:</span>
-                      <div className="text-text-primary mt-1">{selectedContextSection.data.voice_model || 'None'}</div>
-                    </div>
-                    {selectedContextSection.data.nft_category_id && (
-                      <div className="col-span-2">
-                        <span className="text-text-tertiary">NFT Status:</span>
-                        <div className="text-emerald-400 mt-1">✓ Minted</div>
-                      </div>
-                    )}
-                  </div>
+                  {/* Genesis Prompt */}
                   <div>
                     <span className="text-text-tertiary text-sm">Genesis Prompt:</span>
                     <div className="mt-2 p-3 bg-glass-bg/30 rounded-lg text-text-secondary text-sm">
                       {selectedContextSection.data.genesis_prompt}
                     </div>
                   </div>
+
+                  {/* Configuration */}
+                  <div className="p-3 bg-glass-bg/20 rounded-lg border border-glass-border">
+                    <div className="text-text-tertiary text-xs uppercase tracking-wider mb-3">Configuration</div>
+                    <div className="grid grid-cols-2 gap-3 text-sm">
+                      <div>
+                        <span className="text-text-tertiary">Qube ID</span>
+                        <div className="text-text-primary font-mono text-xs mt-1">{selectedContextSection.data.qube_id}</div>
+                      </div>
+                      <div>
+                        <span className="text-text-tertiary">AI Provider</span>
+                        <div className="text-text-primary mt-1">{selectedContextSection.data.ai_provider || 'Unknown'}</div>
+                      </div>
+                      <div>
+                        <span className="text-text-tertiary">AI Model</span>
+                        <div className="text-text-primary mt-1">{selectedContextSection.data.ai_model}</div>
+                      </div>
+                      <div>
+                        <span className="text-text-tertiary">Voice</span>
+                        <div className="text-text-primary mt-1">{selectedContextSection.data.voice_model || 'None'}</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Network (if NFT minted) */}
+                  {selectedContextSection.data.nft_category_id && (
+                    <div className="p-3 bg-glass-bg/20 rounded-lg border border-glass-border">
+                      <div className="flex items-center gap-2 mb-3">
+                        <span className="text-text-tertiary text-xs uppercase tracking-wider">Network</span>
+                        <span className="text-xs px-2 py-0.5 bg-emerald-500/20 text-emerald-400 rounded-full border border-emerald-500/30">
+                          NFT Minted
+                        </span>
+                      </div>
+                      <div className="space-y-2 text-sm">
+                        <div className="flex justify-between">
+                          <span className="text-text-tertiary">Blockchain</span>
+                          <span className="text-text-primary flex items-center gap-1">
+                            <span className="text-emerald-400">●</span>
+                            {selectedContextSection.data.blockchain || 'Bitcoin Cash'}
+                          </span>
+                        </div>
+                        {selectedContextSection.data.qube_wallet_address && (
+                          <div>
+                            <span className="text-text-tertiary">Qube Wallet</span>
+                            <div className="text-text-primary font-mono text-xs mt-1 break-all">
+                              {selectedContextSection.data.qube_wallet_address}
+                            </div>
+                          </div>
+                        )}
+                        <div>
+                          <span className="text-text-tertiary">Category</span>
+                          <div className="text-text-primary font-mono text-xs mt-1 break-all">
+                            {selectedContextSection.data.nft_category_id}
+                          </div>
+                        </div>
+                        {selectedContextSection.data.mint_txid && (
+                          <div>
+                            <span className="text-text-tertiary">Mint TX</span>
+                            <div className="text-text-primary font-mono text-xs mt-1 break-all">
+                              {selectedContextSection.data.mint_txid}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Tools */}
+                  {selectedContextSection.data.available_tools && selectedContextSection.data.available_tools.length > 0 && (
+                    <div className="p-3 bg-glass-bg/20 rounded-lg border border-glass-border">
+                      <div className="text-text-tertiary text-xs uppercase tracking-wider mb-3">
+                        Tools ({selectedContextSection.data.available_tools.length} available)
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {selectedContextSection.data.available_tools.map((tool: string, idx: number) => (
+                          <span
+                            key={idx}
+                            className="text-xs px-2 py-1 bg-accent-primary/20 text-accent-primary rounded border border-accent-primary/30"
+                          >
+                            {tool.replace(/_/g, ' ')}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 

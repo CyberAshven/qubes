@@ -6,6 +6,7 @@ interface GlassInputProps {
   type?: 'text' | 'password' | 'email' | 'number';
   value?: string;
   onChange?: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  onPaste?: (e: React.ClipboardEvent<HTMLInputElement>) => void;
   error?: string;
   disabled?: boolean;
   className?: string;

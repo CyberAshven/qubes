@@ -1712,8 +1712,9 @@ class UserOrchestrator:
 
             # Ensure IPFS upload succeeded
             if not ipfs_uri:
+                error_detail = uploader.last_error or "Unknown error"
                 raise QubesError(
-                    "Failed to upload avatar to IPFS. Please check your Pinata API key and try again.",
+                    f"Failed to upload avatar to IPFS: {error_detail}",
                     context={"qube_id": qube_id, "avatar_path": str(local_avatar_path)}
                 )
 
@@ -1786,8 +1787,9 @@ class UserOrchestrator:
 
             # Ensure IPFS upload succeeded
             if not avatar_data.get("ipfs_cid"):
+                error_detail = ipfs_uploader.last_error or "Unknown error"
                 raise QubesError(
-                    "Failed to upload generated avatar to IPFS. Please check your Pinata API key and try again.",
+                    f"Failed to upload generated avatar to IPFS: {error_detail}",
                     context={"qube_id": qube_id, "avatar_path": avatar_data.get("local_path")}
                 )
 

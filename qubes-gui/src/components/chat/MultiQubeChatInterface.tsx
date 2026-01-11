@@ -1113,8 +1113,9 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
       if (!pendingTTSMessage && !activeTypewriterMessageId) {
         setPendingTTSMessage(nextResponsePrefetch);
         setNextResponsePrefetch(null);
-        setNextTTSPrefetch(null);
-        setPrefetchedMessageId(null);
+        // NOTE: Keep nextTTSPrefetch and prefetchedMessageId intact!
+        // The playMessageTTS effect needs them to use the prefetched audio.
+        // It will clear them after successfully playing.
       }
       // else: Don't clear the prefetch - let it play after current message finishes
     } else {
@@ -1682,8 +1683,8 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
       if (nextResponsePrefetch) {
         setPendingTTSMessage(nextResponsePrefetch);
         setNextResponsePrefetch(null);
-        setNextTTSPrefetch(null);
-        setPrefetchedMessageId(null);
+        // NOTE: Keep nextTTSPrefetch and prefetchedMessageId intact!
+        // The playMessageTTS effect needs them to use the prefetched audio.
         setNextResponseStatus({ stage: 'idle' });
         // Keep pauseAfterCurrentMessageRef.current = true so it pauses after THIS message
         return;

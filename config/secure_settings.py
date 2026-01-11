@@ -10,6 +10,7 @@ import secrets
 from pathlib import Path
 from typing import Dict, Optional, Any, List
 from dataclasses import dataclass, asdict, field
+from datetime import datetime
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -620,35 +621,99 @@ class SecureSettingsManager:
             }
 
     async def _validate_pinata(self, jwt_token: str) -> Dict[str, Any]:
-        """Validate Pinata JWT token"""
+        """Validate Pinata JWT token by testing both authentication AND pinning capability"""
         import httpx
 
         try:
             async with httpx.AsyncClient() as client:
-                response = await client.get(
+                # Step 1: Test basic authentication
+                auth_response = await client.get(
                     "https://api.pinata.cloud/data/testAuthentication",
                     headers={"Authorization": f"Bearer {jwt_token}"},
                     timeout=10.0
                 )
 
-                if response.status_code == 200:
-                    return {
-                        "valid": True,
-                        "message": "Pinata JWT is valid",
-                        "details": response.json()
-                    }
-                elif response.status_code == 401:
+                if auth_response.status_code == 401:
                     return {
                         "valid": False,
-                        "message": "Invalid Pinata JWT",
+                        "message": "Invalid Pinata JWT - authentication failed",
                         "details": {"status_code": 401}
                     }
-                else:
+                elif auth_response.status_code != 200:
                     return {
                         "valid": False,
-                        "message": f"Pinata API error: {response.status_code}",
-                        "details": {"status_code": response.status_code}
+                        "message": f"Pinata authentication error: {auth_response.status_code}",
+                        "details": {"status_code": auth_response.status_code}
                     }
+
+                # Step 2: Test pinning capability by uploading a tiny JSON test
+                # This catches JWTs that authenticate but lack pinFileToIPFS permission
+                test_json = {"test": "qubes_validation", "timestamp": str(datetime.now())}
+                pin_response = await client.post(
+                    "https://api.pinata.cloud/pinning/pinJSONToIPFS",
+                    headers={
+                        "Authorization": f"Bearer {jwt_token}",
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "pinataContent": test_json,
+                        "pinataMetadata": {"name": "qubes_test_validation"}
+                    },
+                    timeout=15.0
+                )
+
+                if pin_response.status_code == 200:
+                    result = pin_response.json()
+                    test_cid = result.get("IpfsHash", "")
+
+                    # Clean up: unpin the test file (optional, ignore errors)
+                    try:
+                        await client.delete(
+                            f"https://api.pinata.cloud/pinning/unpin/{test_cid}",
+                            headers={"Authorization": f"Bearer {jwt_token}"},
+                            timeout=5.0
+                        )
+                    except:
+                        pass  # Cleanup failure is not critical
+
+                    return {
+                        "valid": True,
+                        "message": "Pinata JWT is valid (authentication + pinning verified)",
+                        "details": {"test_cid": test_cid, "capabilities": ["auth", "pin"]}
+                    }
+                elif pin_response.status_code == 401:
+                    return {
+                        "valid": False,
+                        "message": "Pinata JWT lacks pinning permission. Regenerate with 'pinFileToIPFS' enabled.",
+                        "details": {"status_code": 401, "issue": "missing_pin_permission"}
+                    }
+                elif pin_response.status_code == 403:
+                    return {
+                        "valid": False,
+                        "message": "Pinata access forbidden. Check your account status or JWT permissions.",
+                        "details": {"status_code": 403}
+                    }
+                elif pin_response.status_code == 429:
+                    # Rate limited but key is valid - still pass the test
+                    return {
+                        "valid": True,
+                        "message": "Pinata JWT is valid (rate limited during test, but should work)",
+                        "details": {"status_code": 429, "warning": "rate_limited"}
+                    }
+                else:
+                    error_text = pin_response.text[:200] if pin_response.text else "No details"
+                    return {
+                        "valid": False,
+                        "message": f"Pinata pinning test failed ({pin_response.status_code}): {error_text}",
+                        "details": {"status_code": pin_response.status_code, "error": error_text}
+                    }
+
+        except httpx.TimeoutException:
+            return {
+                "valid": False,
+                "message": "Connection timeout - check your internet connection",
+                "details": {"error": "timeout"}
+            }
         except Exception as e:
             return {
                 "valid": False,
