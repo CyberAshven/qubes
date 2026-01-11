@@ -1057,6 +1057,7 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
     { value: 'perplexity', label: 'Perplexity' },
     { value: 'deepseek', label: 'DeepSeek' },
     { value: 'venice', label: 'Venice (Private)' },
+    { value: 'nanogpt', label: 'NanoGPT (Pay-per-prompt)' },
     { value: 'ollama', label: 'Ollama (Local)' },
   ];
 
@@ -1136,6 +1137,16 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
       { value: 'google-gemma-3-27b-it', label: 'Gemma 3 27B' },
       { value: 'hermes-3-llama-3.1-405b', label: 'Hermes 3 Llama 405B' },
     ],
+    nanogpt: [
+      { value: 'nanogpt/gpt-4o', label: 'GPT-4o (NanoGPT)' },
+      { value: 'nanogpt/gpt-4o-mini', label: 'GPT-4o Mini (NanoGPT)' },
+      { value: 'nanogpt/claude-3-5-sonnet', label: 'Claude 3.5 Sonnet (NanoGPT)' },
+      { value: 'nanogpt/claude-3-haiku', label: 'Claude 3 Haiku (NanoGPT)' },
+      { value: 'nanogpt/llama-3.1-70b', label: 'Llama 3.1 70B (NanoGPT)' },
+      { value: 'nanogpt/llama-3.1-8b', label: 'Llama 3.1 8B (NanoGPT)' },
+      { value: 'nanogpt/mistral-large', label: 'Mistral Large (NanoGPT)' },
+      { value: 'nanogpt/mixtral-8x7b', label: 'Mixtral 8x7B (NanoGPT)' },
+    ],
     ollama: [
       { value: 'llama3.3:70b', label: 'Llama 3.3 70B' },
       { value: 'llama3.2', label: 'Llama 3.2' },
@@ -1161,6 +1172,7 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
     perplexity: 'sonar',
     deepseek: 'deepseek-chat',
     venice: 'venice-uncensored',
+    nanogpt: 'nanogpt/gpt-4o-mini',
     ollama: 'llama3.3:70b',
   };
 
@@ -1169,6 +1181,7 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
 
   // Infer provider from model if provider is unknown - MUST be defined before useState that uses it
   const inferProvider = (model: string): string => {
+    if (model.startsWith('nanogpt/')) return 'nanogpt'; // NanoGPT models use nanogpt/ prefix
     if (model.startsWith('gpt-') || model.startsWith('o')) return 'openai';
     if (model.startsWith('claude-')) return 'anthropic';
     if (model.startsWith('gemini-')) return 'google';
@@ -2821,6 +2834,15 @@ const formatModelDisplay = (modelId: string): string => {
     'google-gemma-3-27b-it': 'Gemma 3 27B',
     'hermes-3-llama-3.1-405b': 'Hermes 3 405B',
     'dolphin-2.9.3-mistral-7b': 'Venice Uncensored',
+    // NanoGPT
+    'nanogpt/gpt-4o': 'GPT-4o (NanoGPT)',
+    'nanogpt/gpt-4o-mini': 'GPT-4o Mini (NanoGPT)',
+    'nanogpt/claude-3-5-sonnet': 'Claude 3.5 Sonnet (NanoGPT)',
+    'nanogpt/claude-3-haiku': 'Claude 3 Haiku (NanoGPT)',
+    'nanogpt/llama-3.1-70b': 'Llama 3.1 70B (NanoGPT)',
+    'nanogpt/llama-3.1-8b': 'Llama 3.1 8B (NanoGPT)',
+    'nanogpt/mistral-large': 'Mistral Large (NanoGPT)',
+    'nanogpt/mixtral-8x7b': 'Mixtral 8x7B (NanoGPT)',
     // Ollama
     'llama3.3:70b': 'Llama 3.3 70B',
     'llama3.2': 'Llama 3.2',

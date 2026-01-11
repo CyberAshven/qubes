@@ -90,6 +90,7 @@ export const SettingsTab: React.FC = () => {
     deepseek: '',
     perplexity: '',
     venice: '',
+    nanogpt: '',
     pinata_jwt: '',
     elevenlabs: '',
     deepgram: '',
@@ -204,6 +205,7 @@ export const SettingsTab: React.FC = () => {
     deepseek: 'DeepSeek',
     perplexity: 'Perplexity',
     venice: 'Venice (Private AI)',
+    nanogpt: 'NanoGPT (Pay-per-prompt)',
     pinata_jwt: 'Pinata IPFS',
     elevenlabs: 'ElevenLabs (TTS)',
     deepgram: 'Deepgram (STT)',
@@ -216,6 +218,7 @@ export const SettingsTab: React.FC = () => {
     deepseek: 'sk-...',
     perplexity: 'pplx-...',
     venice: '...',
+    nanogpt: '...',
     pinata_jwt: 'eyJ...',
     elevenlabs: '...',
     deepgram: '...',
@@ -885,6 +888,9 @@ export const SettingsTab: React.FC = () => {
                   </a>
                   <a href="https://venice.ai/settings/api" target="_blank" rel="noopener noreferrer" className="text-accent-primary hover:underline">
                     Venice
+                  </a>
+                  <a href="https://nano-gpt.com/api" target="_blank" rel="noopener noreferrer" className="text-accent-primary hover:underline">
+                    NanoGPT
                   </a>
                   <a href="https://app.pinata.cloud/developers/api-keys" target="_blank" rel="noopener noreferrer" className="text-accent-primary hover:underline">
                     Pinata

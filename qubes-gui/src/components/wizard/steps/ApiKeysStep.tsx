@@ -211,6 +211,19 @@ const ApiKeysStep: React.FC<ApiKeysStepProps> = ({
             onChange={(e) => updateApiKey('venice', e.target.value)}
           />
         </div>
+
+        <div className="api-key-item">
+          <label className="api-key-label">
+            NanoGPT <span className="api-key-optional">(Pay-per-prompt)</span>
+          </label>
+          <input
+            type="password"
+            className="wizard-input"
+            placeholder="..."
+            value={apiKeys.nanogpt || ''}
+            onChange={(e) => updateApiKey('nanogpt', e.target.value)}
+          />
+        </div>
       </div>
 
       <div className="wizard-buttons">

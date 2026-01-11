@@ -15,7 +15,8 @@ from ai.providers import (
     PerplexityModel,
     OllamaModel,
     DeepSeekModel,
-    VeniceModel
+    VeniceModel,
+    NanoGPTModel
 )
 from core.exceptions import AIError
 from utils.logging import get_logger
@@ -125,6 +126,17 @@ class ModelRegistry:
         "gemma2:9b": {"provider": "ollama", "class": OllamaModel, "description": "Google"},
         "mistral:7b": {"provider": "ollama", "class": OllamaModel, "description": "Popular"},
         "codellama:7b": {"provider": "ollama", "class": OllamaModel, "description": "Code-specialized"},
+
+        # NanoGPT - Pay-per-prompt service with 760+ models (2025)
+        # Access to multiple providers through single API
+        "nanogpt/gpt-4o": {"provider": "nanogpt", "class": NanoGPTModel, "description": "GPT-4o via NanoGPT"},
+        "nanogpt/gpt-4o-mini": {"provider": "nanogpt", "class": NanoGPTModel, "description": "GPT-4o Mini via NanoGPT"},
+        "nanogpt/claude-3-5-sonnet": {"provider": "nanogpt", "class": NanoGPTModel, "description": "Claude 3.5 Sonnet via NanoGPT"},
+        "nanogpt/claude-3-haiku": {"provider": "nanogpt", "class": NanoGPTModel, "description": "Claude 3 Haiku via NanoGPT"},
+        "nanogpt/llama-3.1-70b": {"provider": "nanogpt", "class": NanoGPTModel, "description": "Llama 3.1 70B via NanoGPT"},
+        "nanogpt/llama-3.1-8b": {"provider": "nanogpt", "class": NanoGPTModel, "description": "Llama 3.1 8B via NanoGPT"},
+        "nanogpt/mistral-large": {"provider": "nanogpt", "class": NanoGPTModel, "description": "Mistral Large via NanoGPT"},
+        "nanogpt/mixtral-8x7b": {"provider": "nanogpt", "class": NanoGPTModel, "description": "Mixtral 8x7B via NanoGPT"},
     }
 
     @classmethod
@@ -243,11 +255,12 @@ class ModelRegistry:
             "perplexity": "Perplexity",
             "deepseek": "DeepSeek",
             "venice": "Venice (Private)",
-            "ollama": "Ollama (Local)"
+            "ollama": "Ollama (Local)",
+            "nanogpt": "NanoGPT (Pay-per-prompt)"
         }
 
         # Provider order for UI
-        provider_order = ["openai", "anthropic", "google", "perplexity", "deepseek", "venice", "ollama"]
+        provider_order = ["openai", "anthropic", "google", "perplexity", "deepseek", "venice", "nanogpt", "ollama"]
 
         defaults = {
             "openai": "gpt-5.2",
@@ -256,6 +269,7 @@ class ModelRegistry:
             "perplexity": "sonar",
             "deepseek": "deepseek-chat",
             "venice": "openai-gpt-52",
+            "nanogpt": "nanogpt/gpt-4o-mini",
             "ollama": "llama3.3:70b"
         }
 

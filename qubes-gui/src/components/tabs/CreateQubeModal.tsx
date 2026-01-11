@@ -89,6 +89,7 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
     { value: 'perplexity', label: 'Perplexity' },
     { value: 'deepseek', label: 'DeepSeek' },
     { value: 'venice', label: 'Venice (Private)' },
+    { value: 'nanogpt', label: 'NanoGPT (Pay-per-prompt)' },
     { value: 'ollama', label: 'Ollama (Local)' },
   ];
 
@@ -168,6 +169,16 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
       { value: 'google-gemma-3-27b-it', label: 'Gemma 3 27B' },
       { value: 'hermes-3-llama-3.1-405b', label: 'Hermes 3 Llama 405B' },
     ],
+    nanogpt: [
+      { value: 'nanogpt/gpt-4o', label: 'GPT-4o (NanoGPT)' },
+      { value: 'nanogpt/gpt-4o-mini', label: 'GPT-4o Mini (NanoGPT)' },
+      { value: 'nanogpt/claude-3-5-sonnet', label: 'Claude 3.5 Sonnet (NanoGPT)' },
+      { value: 'nanogpt/claude-3-haiku', label: 'Claude 3 Haiku (NanoGPT)' },
+      { value: 'nanogpt/llama-3.1-70b', label: 'Llama 3.1 70B (NanoGPT)' },
+      { value: 'nanogpt/llama-3.1-8b', label: 'Llama 3.1 8B (NanoGPT)' },
+      { value: 'nanogpt/mistral-large', label: 'Mistral Large (NanoGPT)' },
+      { value: 'nanogpt/mixtral-8x7b', label: 'Mixtral 8x7B (NanoGPT)' },
+    ],
     ollama: [
       { value: 'llama3.3:70b', label: 'Llama 3.3 70B' },
       { value: 'llama3.2', label: 'Llama 3.2' },
@@ -193,6 +204,7 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
     perplexity: 'sonar-pro',
     deepseek: 'deepseek-chat',
     venice: 'venice-uncensored',
+    nanogpt: 'nanogpt/gpt-4o-mini',
     ollama: 'llama3.3:70b',
   };
 

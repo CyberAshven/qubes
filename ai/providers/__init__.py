@@ -12,6 +12,7 @@ from ai.providers.perplexity_provider import PerplexityModel
 from ai.providers.ollama_provider import OllamaModel
 from ai.providers.deepseek_provider import DeepSeekModel
 from ai.providers.venice_provider import VeniceModel
+from ai.providers.nanogpt_provider import NanoGPTModel
 
 __all__ = [
     "AIModelInterface",
@@ -23,4 +24,5 @@ __all__ = [
     "OllamaModel",
     "DeepSeekModel",
     "VeniceModel",
+    "NanoGPTModel",
 ]
