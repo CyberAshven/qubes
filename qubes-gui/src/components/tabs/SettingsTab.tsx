@@ -659,7 +659,8 @@ export const SettingsTab: React.FC = () => {
     field: 'individual_anchor_threshold' | 'group_anchor_threshold',
     inputValue: string
   ) => {
-    const value = parseInt(inputValue) || 1;
+    const parsed = parseInt(inputValue) || 5;
+    const value = Math.max(5, Math.min(50, parsed));
 
     // Don't save if value hasn't changed
     if (value === blockPreferences[field]) {
@@ -1011,8 +1012,8 @@ export const SettingsTab: React.FC = () => {
                         <div className="flex items-center gap-1">
                           <input
                             type="number"
-                            min="1"
-                            max="100"
+                            min="5"
+                            max="50"
                             value={individualThresholdInput}
                             onChange={(e) => setIndividualThresholdInput(e.target.value)}
                             onBlur={(e) => handleThresholdBlur('individual_anchor_threshold', e.target.value)}
@@ -1046,8 +1047,8 @@ export const SettingsTab: React.FC = () => {
                         <div className="flex items-center gap-1">
                           <input
                             type="number"
-                            min="1"
-                            max="100"
+                            min="5"
+                            max="50"
                             value={groupThresholdInput}
                             onChange={(e) => setGroupThresholdInput(e.target.value)}
                             onBlur={(e) => handleThresholdBlur('group_anchor_threshold', e.target.value)}

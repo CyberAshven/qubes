@@ -717,7 +717,13 @@ class GUIBridge:
             raise
 
     async def send_message(self, qube_id: str, message: str, password: str = None) -> Dict[str, Any]:
-        """Send a message to a qube and get response"""
+        """Send a message to a qube and get response
+
+        Args:
+            qube_id: The qube to send the message to
+            message: The message content
+            password: Optional password for decryption
+        """
         try:
             # Set master key if password provided
             if password:
@@ -6054,16 +6060,40 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
             )[:5]
 
             for rel in sorted_rels:
-                # Use entity_name if available, otherwise entity_id
-                name = getattr(rel, 'entity_name', None) or rel.entity_id
+                entity_type = getattr(rel, 'entity_type', 'qube')
+                entity_id = rel.entity_id
+
+                # Determine display name based on entity type
+                name = entity_id  # Default fallback
+                if entity_type == "qube":
+                    if entity_id in self.orchestrator.qubes:
+                        # It's another Qube that's loaded - use their name
+                        name = self.orchestrator.qubes[entity_id].name
+                    else:
+                        # Try to find Qube name from filesystem (directory pattern: {name}_{id})
+                        qubes_dir = self.orchestrator.data_dir / "qubes"
+                        if qubes_dir.exists():
+                            for qube_dir in qubes_dir.iterdir():
+                                if qube_dir.is_dir() and qube_dir.name.endswith(f"_{entity_id}"):
+                                    # Extract name from directory (everything before _ID)
+                                    name = qube_dir.name[:-len(f"_{entity_id}")]
+                                    break
+                        # If still not found, check entity_name on relationship
+                        if name == entity_id and getattr(rel, 'entity_name', None):
+                            name = rel.entity_name
+                elif getattr(rel, 'entity_name', None):
+                    # Entity name is stored on the relationship
+                    name = rel.entity_name
+
                 # Trust is 0-100, convert to 0-1 for display
                 trust = getattr(rel, 'trust', 0) / 100.0
                 # Calculate interaction count from messages
                 interaction_count = (getattr(rel, 'messages_sent', 0) or 0) + (getattr(rel, 'messages_received', 0) or 0)
 
                 relationships.append({
-                    "entity_id": rel.entity_id[:16] + "..." if len(rel.entity_id) > 16 else rel.entity_id,
+                    "entity_id": entity_id,
                     "name": name,
+                    "entity_type": entity_type,
                     "status": getattr(rel, 'status', 'unknown') or "unknown",
                     "trust_level": round(trust, 2),
                     "interaction_count": interaction_count
@@ -6071,37 +6101,49 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
         except Exception as e:
             logger.warning(f"Failed to load relationships for context preview: {e}")
 
-        # Skills summary
-        skills = []
+        # Skills - return all skills organized by category
+        skills_by_category = {}
         skills_total = {"total_xp": 0, "unlocked_skills": 0, "categories": 0}
         try:
             from utils.skills_manager import SkillsManager
             skills_manager = SkillsManager(qube.data_dir)
-            skills_manager.load_skills()
+            skills_data = skills_manager.load_skills()
             summary = skills_manager.get_skill_summary()
 
-            # Get top categories by unlocked count - use correct keys
-            top_categories = sorted(
-                summary.get("by_category", {}).items(),
-                key=lambda x: x[1].get("unlocked", 0),
-                reverse=True
-            )[:5]
+            # Organize all skills by category
+            for skill in skills_data.get("skills", []):
+                category = skill.get("category", "unknown")
+                if category not in skills_by_category:
+                    skills_by_category[category] = {
+                        "category_id": category,
+                        "category_name": category.replace("_", " ").title(),
+                        "total_xp": 0,
+                        "skills": []
+                    }
 
-            for category_id, stats in top_categories:
-                if stats.get("unlocked", 0) > 0:  # Only show if has unlocked skills
-                    skills.append({
-                        "skill_id": category_id,
-                        "total_xp": 0,  # XP is per-skill, not per-category in this structure
-                        "unlocked": stats.get("unlocked", 0),
-                        "total": stats.get("total", 0),
-                        "level": 1  # Categories don't have levels
-                    })
+                skill_info = {
+                    "skill_id": skill.get("id", ""),
+                    "name": skill.get("name", skill.get("id", "").replace("_", " ").title()),
+                    "xp": skill.get("xp", 0),
+                    "level": skill.get("level", 1),
+                    "unlocked": skill.get("unlocked", False),
+                    "tier": skill.get("tier", "moon"),
+                    "parent_skill": skill.get("parentSkill"),
+                    "tool_unlock": skill.get("toolUnlock")
+                }
+                skills_by_category[category]["skills"].append(skill_info)
+                skills_by_category[category]["total_xp"] += skill.get("xp", 0)
 
-            # Add total stats - use correct keys from SkillsManager.get_skill_summary()
+            # Sort skills within each category by tier (sun > planet > moon) then by XP
+            tier_order = {"sun": 0, "planet": 1, "moon": 2}
+            for category in skills_by_category.values():
+                category["skills"].sort(key=lambda s: (tier_order.get(s["tier"], 3), -s["xp"]))
+
+            # Add total stats
             skills_total = {
                 "total_xp": summary.get("total_xp", 0),
                 "unlocked_skills": summary.get("unlocked_skills", 0),
-                "categories": len(summary.get("by_category", {}))
+                "categories": len(skills_by_category)
             }
         except Exception as e:
             logger.warning(f"Failed to load skills for context preview: {e}")
@@ -6190,7 +6232,7 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
             },
             "skills": {
                 "totals": skills_total,
-                "top_skills": skills
+                "categories": skills_by_category
             },
             "owner_info": owner_info,
             "wallet": wallet
@@ -6448,16 +6490,38 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
             return content[:100] + "..." if len(content) > 100 else content
 
         block_type = block.get("block_type", "")
+
+        # SUMMARY block
         if block_type == "SUMMARY":
-            summary = content.get("summary", "")
+            summary = content.get("summary_text") or content.get("summary", "")
             return summary[:100] + "..." if len(summary) > 100 else summary
 
-        # MESSAGE block
-        msg = content.get("message", content.get("response", ""))
-        if msg:
-            return msg[:100] + "..." if len(msg) > 100 else msg
+        # MESSAGE block - try various field names (message_body is the standard field)
+        # Skip generic/placeholder values
+        skip_values = {'default', 'none', 'null', 'undefined', 'n/a', 'na', ''}
 
-        return "[No preview available]"
+        for field in ['message_body', 'message', 'response', 'user_message', 'assistant_message', 'text']:
+            msg = content.get(field)
+            if msg and isinstance(msg, str) and msg.strip().lower() not in skip_values:
+                return msg[:100] + "..." if len(msg) > 100 else msg
+
+        # Skip these metadata fields when looking for preview content
+        skip_fields = {
+            'role', 'type', 'block_type', 'message_type', 'recipient_id',
+            'sender_id', 'conversation_id', 'requires_response', 'participants',
+            'turn_number', 'speaker_id', 'speaker_name', 'message_encrypted_for_recipient',
+            'session_id', 'timestamp', 'encrypted', 'qube_id', 'block_number'
+        }
+
+        # Try to get any meaningful string value from the content dict
+        if isinstance(content, dict):
+            for key, val in content.items():
+                if key not in skip_fields and isinstance(val, str):
+                    val_lower = val.strip().lower()
+                    if val_lower not in skip_values and len(val.strip()) > 5:
+                        return val[:100] + "..." if len(val) > 100 else val
+
+        return ""
 
     def _calculate_skill_level(self, xp: int) -> int:
         """Calculate skill level from XP."""
@@ -7034,6 +7098,52 @@ async def main():
             result = await user_bridge.send_message(qube_id, message, password)
             print(json.dumps(result))
 
+            # Check if auto-anchor is pending - if so, spawn a detached subprocess to handle it
+            # This allows the main process to exit immediately (so frontend can start audio)
+            # while the auto-anchor runs concurrently in the background
+            qube = user_bridge.orchestrator.qubes.get(qube_id)
+            if qube and qube.current_session and qube.current_session._pending_anchor_task:
+                logger.info("spawning_detached_auto_anchor_subprocess")
+                import subprocess
+                import os
+
+                # Cancel the in-process task since we'll use subprocess instead
+                qube.current_session._pending_anchor_task.cancel()
+                qube.current_session._pending_anchor_task = None
+
+                # Spawn detached subprocess to handle auto-anchor
+                # Using CREATE_NEW_PROCESS_GROUP and DETACHED_PROCESS on Windows
+                # to ensure the subprocess continues after parent exits
+                cmd = [sys.executable, __file__, "auto-anchor-background", user_id, qube_id]
+
+                # Pass password via environment variable (more secure than argv)
+                env = os.environ.copy()
+                env["QUBES_PASSWORD"] = password
+
+                if sys.platform == "win32":
+                    # Windows: Use CREATE_NEW_PROCESS_GROUP and DETACHED_PROCESS
+                    DETACHED_PROCESS = 0x00000008
+                    CREATE_NEW_PROCESS_GROUP = 0x00000200
+                    subprocess.Popen(
+                        cmd,
+                        env=env,
+                        creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL
+                    )
+                else:
+                    # Unix: Use start_new_session
+                    subprocess.Popen(
+                        cmd,
+                        env=env,
+                        start_new_session=True,
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL
+                    )
+                logger.info("detached_auto_anchor_subprocess_spawned")
+
         elif command == "anchor-session":
             if len(sys.argv) < 4:
                 print(json.dumps({"error": "User ID and Qube ID required"}), file=sys.stderr)
@@ -7058,6 +7168,79 @@ async def main():
             blocks_anchored = await qube.anchor_session()
 
             print(json.dumps({"success": True, "blocks_anchored": blocks_anchored}))
+
+        elif command == "auto-anchor-background":
+            # This command is spawned as a detached subprocess from send-message
+            # It runs the auto-anchor with summary creation while audio plays
+            if len(sys.argv) < 4:
+                logger.error("auto_anchor_background_missing_args")
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            qube_id = validate_qube_id(sys.argv[3])
+
+            # Get password from environment variable (set by parent process)
+            import os
+            password = os.environ.get("QUBES_PASSWORD", "")
+            if not password:
+                logger.error("auto_anchor_background_no_password")
+                sys.exit(1)
+
+            logger.info("auto_anchor_background_starting", qube_id=qube_id)
+
+            # DEBUG: Write to separate file to track subprocess execution
+            from pathlib import Path
+            debug_file = Path.home() / ".qubes" / "logs" / "auto_anchor_debug.log"
+            debug_file.parent.mkdir(parents=True, exist_ok=True)
+            def debug_log(msg):
+                from datetime import datetime, timezone
+                with open(debug_file, "a", encoding="utf-8") as f:
+                    f.write(f"{datetime.now(timezone.utc).isoformat()} | SUBPROCESS | {msg}\n")
+
+            try:
+                debug_log(f"=== AUTO-ANCHOR SUBPROCESS STARTED ===")
+                debug_log(f"user_id={user_id}, qube_id={qube_id}")
+
+                # Create bridge and load qube
+                user_bridge = GUIBridge(user_id=user_id)
+                user_bridge.orchestrator.set_master_key(password)
+
+                if qube_id not in user_bridge.orchestrator.qubes:
+                    debug_log(f"Loading qube {qube_id}...")
+                    await user_bridge.orchestrator.load_qube(qube_id)
+
+                qube = user_bridge.orchestrator.qubes.get(qube_id)
+                if not qube:
+                    debug_log(f"ERROR: Qube not found after loading")
+                    logger.error("auto_anchor_background_qube_not_found", qube_id=qube_id)
+                    sys.exit(1)
+
+                debug_log(f"Calling anchor_session(create_summary=True)...")
+
+                # Run anchor with summary creation
+                blocks_anchored = await qube.anchor_session(create_summary=True)
+
+                debug_log(f"anchor_session returned: blocks_anchored={blocks_anchored}")
+                debug_log(f"=== AUTO-ANCHOR SUBPROCESS COMPLETED ===")
+
+                logger.info(
+                    "auto_anchor_background_completed",
+                    qube_id=qube_id,
+                    blocks_anchored=blocks_anchored
+                )
+
+            except Exception as e:
+                import traceback
+                tb = traceback.format_exc()
+                debug_log(f"ERROR: {type(e).__name__}: {e}")
+                debug_log(f"Traceback:\n{tb}")
+                logger.error(
+                    "auto_anchor_background_failed",
+                    error=str(e),
+                    qube_id=qube_id,
+                    traceback=tb
+                )
+                sys.exit(1)
 
         elif command == "check-sessions":
             if len(sys.argv) < 4:

@@ -56,6 +56,7 @@ blockchain/test-wallet/
 tmp/
 temp/
 *.tmp
+tmpclaude-*
 
 # Node.js
 node_modules/

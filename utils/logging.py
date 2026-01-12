@@ -234,7 +234,7 @@ def configure_logging(
         log_file.parent.mkdir(parents=True, exist_ok=True)
         file_handler = logging.handlers.RotatingFileHandler(
             log_file,
-            maxBytes=10 * 1024 * 1024,  # 10 MB
+            maxBytes=500 * 1024 * 1024,  # 500 MB
             backupCount=5,               # Keep 5 backup files
             encoding='utf-8',            # Use UTF-8 for emoji and Unicode support
         )

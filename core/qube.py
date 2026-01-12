@@ -895,9 +895,9 @@ class Qube:
             estimated_cost_usd=estimated_cost
         )
 
-        # Check for auto-anchor after creating blocks
+        # Check for auto-anchor after creating blocks (spawns as background task)
         if self.current_session:
-            await self.current_session.check_and_auto_anchor()
+            await self.current_session.check_and_auto_anchor(await_completion=False)
 
         return response
 

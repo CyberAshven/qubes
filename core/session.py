@@ -64,6 +64,7 @@ class Session:
         # Flag to track if auto-anchor should be triggered (set by sync create_block, checked by async callers)
         self._auto_anchor_pending = False
         self._auto_anchor_is_group = False
+        self._pending_anchor_task: Optional[asyncio.Task] = None
 
         # Update chain state
         self.qube.chain_state.start_session(self.session_id)
@@ -91,8 +92,12 @@ class Session:
         Uses group_anchor_threshold for group chats, individual_anchor_threshold otherwise.
         Falls back to session's auto_anchor_threshold if preferences not available.
 
+        IMPORTANT: Returns at least SUMMARY_THRESHOLD to ensure summaries can be created.
+        If user sets threshold lower than SUMMARY_THRESHOLD, auto-anchor would trigger
+        but summary would be skipped (requiring 5+ blocks), leaving orphaned blocks.
+
         Returns:
-            Threshold value for current conversation type
+            Threshold value for current conversation type (minimum SUMMARY_THRESHOLD)
         """
         # Try to get user preferences
         try:
@@ -107,13 +112,16 @@ class Session:
 
             # Use group or individual threshold based on conversation type
             if self.is_group_conversation():
-                return prefs.group_anchor_threshold
+                threshold = prefs.group_anchor_threshold
             else:
-                return prefs.individual_anchor_threshold
+                threshold = prefs.individual_anchor_threshold
+
+            # Enforce minimum threshold to ensure summary creation
+            return max(threshold, SUMMARY_THRESHOLD)
         except Exception as e:
             # Fall back to session's threshold if preferences unavailable
             logger.debug(f"Could not load preferences, using session threshold: {e}")
-            return self.auto_anchor_threshold
+            return max(self.auto_anchor_threshold, SUMMARY_THRESHOLD)
 
     def create_block(self, block: Block) -> Block:
         """
@@ -190,6 +198,14 @@ class Session:
         active_threshold = self.get_active_threshold()
         block_count = len(self.session_blocks)
 
+        # DEBUG: Write to separate file
+        from pathlib import Path
+        debug_file = Path(self.qube.data_dir).parent.parent.parent / "logs" / "auto_anchor_debug.log"
+        debug_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(debug_file, "a", encoding="utf-8") as f:
+            should_trigger = self.qube.auto_anchor_enabled and block_count >= active_threshold
+            f.write(f"{datetime.now(timezone.utc).isoformat()} | create_block: auto_anchor_enabled={self.qube.auto_anchor_enabled}, blocks={block_count}, threshold={active_threshold}, should_trigger={should_trigger}\n")
+
         # Diagnostic logging
         logger.info(
             "auto_anchor_check",
@@ -221,7 +237,7 @@ class Session:
 
         return block
 
-    async def check_and_auto_anchor(self) -> bool:
+    async def check_and_auto_anchor(self, await_completion: bool = False) -> Optional[asyncio.Task]:
         """
         Check if auto-anchor is pending and spawn it in the background if so.
 
@@ -232,9 +248,21 @@ class Session:
         The anchor process includes AI calls (skill scanning, relationship/self evaluation)
         that can take a long time.
 
+        Args:
+            await_completion: If True, await the anchor task before returning.
+                              Use this in single-command processes (like gui_bridge)
+                              to ensure the anchor completes before process exit.
+
         Returns:
-            True if anchoring was spawned, False otherwise
+            The anchor task if spawned (can be awaited by caller), None otherwise
         """
+        # DEBUG: Write to separate file
+        from pathlib import Path
+        debug_file = Path(self.qube.data_dir).parent.parent.parent / "logs" / "auto_anchor_debug.log"
+        debug_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(debug_file, "a", encoding="utf-8") as f:
+            f.write(f"{datetime.now(timezone.utc).isoformat()} | check_and_auto_anchor called: pending={self._auto_anchor_pending}, blocks={len(self.session_blocks)}\n")
+
         logger.info(
             "check_and_auto_anchor_called",
             qube_id=self.qube.qube_id,
@@ -242,7 +270,7 @@ class Session:
         )
 
         if not self._auto_anchor_pending:
-            return False
+            return None
 
         # Clear flag first to prevent re-entry
         self._auto_anchor_pending = False
@@ -255,10 +283,18 @@ class Session:
             qube_id=self.qube.qube_id
         )
 
-        # Spawn anchor in background - don't await to avoid blocking conversation
-        asyncio.create_task(self._run_auto_anchor_background(is_group))
+        # Spawn anchor in background
+        task = asyncio.create_task(self._run_auto_anchor_background(is_group))
 
-        return True
+        # Store task reference so it can be awaited later
+        self._pending_anchor_task = task
+
+        # Optionally await completion (for single-command processes like gui_bridge)
+        if await_completion:
+            await task
+            self._pending_anchor_task = None
+
+        return task
 
     async def _run_auto_anchor_background(self, is_group: bool) -> None:
         """
@@ -266,25 +302,56 @@ class Session:
 
         This is a fire-and-forget task that won't block the conversation.
         Any errors are logged but don't affect the conversation.
-        Session cleanup always runs to prevent orphaned session blocks.
+
+        IMPORTANT: Uses qube.anchor_session() to ensure identical code path
+        as manual anchor from GUI.
         """
+        # DEBUG: Write to separate file to bypass logging issues
+        from pathlib import Path
+        debug_file = Path(self.qube.data_dir).parent.parent.parent / "logs" / "auto_anchor_debug.log"
+        debug_file.parent.mkdir(parents=True, exist_ok=True)
+        def debug_log(msg):
+            with open(debug_file, "a", encoding="utf-8") as f:
+                f.write(f"{datetime.now(timezone.utc).isoformat()} | {msg}\n")
+
         try:
+            debug_log(f"=== AUTO-ANCHOR STARTED ===")
+            debug_log(f"qube_id={self.qube.qube_id}, is_group={is_group}")
+            debug_log(f"self (Session) id={id(self)}, session_blocks={len(self.session_blocks)}")
+            debug_log(f"qube.current_session id={id(self.qube.current_session) if self.qube.current_session else 'None'}")
+            debug_log(f"same_session={self is self.qube.current_session}")
+
             logger.info(
                 "auto_anchor_background_started",
                 qube_id=self.qube.qube_id,
-                is_group_chat=is_group
+                is_group_chat=is_group,
+                session_blocks=len(self.session_blocks)
             )
-            await self.anchor_to_chain(create_summary=True)
+
+            # Use qube.anchor_session() for identical behavior to manual anchor
+            # This ensures the same code path is used for both manual and auto anchor
+            debug_log(f"Calling qube.anchor_session(create_summary=True)...")
+            blocks_anchored = await self.qube.anchor_session(create_summary=True)
+            debug_log(f"anchor_session returned: blocks_anchored={blocks_anchored}")
+            debug_log(f"=== AUTO-ANCHOR COMPLETED ===")
+
             logger.info(
                 "auto_anchor_background_completed",
                 qube_id=self.qube.qube_id,
-                is_group_chat=is_group
+                is_group_chat=is_group,
+                blocks_anchored=blocks_anchored
             )
         except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            debug_log(f"❌ AUTO-ANCHOR FAILED: {type(e).__name__}: {e}")
+            debug_log(f"Traceback:\n{tb}")
             logger.error(
                 "auto_anchor_background_failed",
                 error=str(e),
+                error_type=type(e).__name__,
                 qube_id=self.qube.qube_id,
+                traceback=tb,
                 exc_info=True
             )
             # Even if anchor failed, clear session to prevent orphaned blocks
@@ -515,13 +582,35 @@ class Session:
 
             # Optionally create SUMMARY block (only if threshold met)
             # Find all unsummarized blocks since last SUMMARY (or GENESIS)
+            # DEBUG: Log summary creation decision
+            from pathlib import Path as PathLib
+            debug_file = PathLib(self.qube.data_dir).parent.parent.parent / "logs" / "auto_anchor_debug.log"
+            debug_file.parent.mkdir(parents=True, exist_ok=True)
+            def debug_log(msg):
+                with open(debug_file, "a", encoding="utf-8") as f:
+                    f.write(f"{datetime.now(timezone.utc).isoformat()} | {msg}\n")
+
+            debug_log(f"=== SUMMARY CREATION CHECK ===")
+            debug_log(f"create_summary={create_summary}")
+
             if create_summary:
                 unsummarized_blocks = self._get_unsummarized_blocks()
                 total_unsummarized = len(unsummarized_blocks)
+                debug_log(f"unsummarized_blocks={total_unsummarized}, SUMMARY_THRESHOLD={SUMMARY_THRESHOLD}")
+                debug_log(f"will_create_summary={total_unsummarized >= SUMMARY_THRESHOLD}")
 
                 if total_unsummarized >= SUMMARY_THRESHOLD:
+                    debug_log(f"Creating summary block for {total_unsummarized} blocks...")
                     # Create SUMMARY covering ALL unsummarized blocks
-                    summary_block = self.generate_summary_block(unsummarized_blocks)
+                    try:
+                        debug_log(f"Calling generate_summary_block...")
+                        summary_block = await self.generate_summary_block(unsummarized_blocks)
+                        debug_log(f"generate_summary_block returned: block_number={summary_block.block_number if summary_block else 'None'}")
+                    except Exception as e:
+                        import traceback
+                        debug_log(f"❌ generate_summary_block FAILED: {type(e).__name__}: {e}")
+                        debug_log(f"Traceback:\n{traceback.format_exc()}")
+                        raise
 
                     # AI-DRIVEN RELATIONSHIP EVALUATION
                     # Evaluate relationships with AI before encrypting
@@ -584,6 +673,7 @@ class Session:
                         relationships=relationship_snapshot
                     )
 
+                    debug_log(f"✅ SUMMARY BLOCK CREATED! block_number={summary_block.block_number}")
                     logger.info(
                         "summary_block_created",
                         session_id=self.session_id,
@@ -594,6 +684,7 @@ class Session:
                         relationship_snapshot_saved=len(relationship_snapshot)
                     )
                 else:
+                    debug_log(f"❌ SUMMARY SKIPPED: only {total_unsummarized} blocks, need {SUMMARY_THRESHOLD}")
                     logger.info(
                         "summary_skipped_threshold",
                         session_id=self.session_id,
@@ -673,24 +764,27 @@ class Session:
             if not block:
                 continue
 
+            # Normalize block_type to string (could be enum or string)
+            block_type_str = block.block_type if isinstance(block.block_type, str) else block.block_type.value
+
             # Stop if we hit a SUMMARY block (don't include it)
-            if block.block_type == "SUMMARY":
+            if block_type_str == "SUMMARY":
                 logger.debug("hit_summary_block", block_number=block_num)
                 break
 
             # Stop if we hit the GENESIS block (don't include it)
-            if block.block_type == "GENESIS":
+            if block_type_str == "GENESIS":
                 logger.debug("hit_genesis_block", block_number=block_num)
                 break
 
             # Only add summarizable block types (defensive check)
-            if block.block_type in SUMMARIZABLE_TYPES:
+            if block_type_str in SUMMARIZABLE_TYPES:
                 unsummarized.insert(0, block)  # Insert at beginning to maintain chronological order
             else:
                 logger.warning(
                     "skipping_non_summarizable_block",
                     block_number=block_num,
-                    block_type=block.block_type
+                    block_type=block_type_str
                 )
 
         logger.info(
@@ -720,7 +814,7 @@ class Session:
         logger.info("session_discarded", session_id=self.session_id, blocks=block_count)
         return block_count
 
-    def generate_summary_block(self, converted_blocks: List[Block]) -> Block:
+    async def generate_summary_block(self, converted_blocks: List[Block]) -> Block:
         """
         Generate SUMMARY block for blocks being summarized
 
@@ -728,6 +822,15 @@ class Session:
 
         From docs Section 2.2 - Session-specific summary
         """
+        # DEBUG logging
+        from pathlib import Path
+        debug_file = Path(self.qube.data_dir).parent.parent.parent / "logs" / "auto_anchor_debug.log"
+        def debug_log(msg):
+            with open(debug_file, "a", encoding="utf-8") as f:
+                f.write(f"{datetime.now(timezone.utc).isoformat()} | [generate_summary_block] {msg}\n")
+
+        debug_log(f"Started with {len(converted_blocks)} blocks")
+
         from core.block import create_summary_block
 
         summarized_block_numbers = [b.block_number for b in converted_blocks]
@@ -737,6 +840,11 @@ class Session:
         start_time = min(b.timestamp for b in converted_blocks)
         end_time = max(b.timestamp for b in converted_blocks)
         duration_seconds = end_time - start_time
+
+        debug_log(f"Calling _generate_conversation_summary...")
+        # Generate summary text asynchronously
+        summary_text = await self._generate_conversation_summary(converted_blocks)
+        debug_log(f"_generate_conversation_summary returned: {len(summary_text) if summary_text else 0} chars")
 
         summary_block = create_summary_block(
             qube_id=self.qube.qube_id,
@@ -750,7 +858,7 @@ class Session:
                 "duration_hours": duration_seconds / 3600
             },
             summary_type="session",
-            summary_text=self._generate_conversation_summary(converted_blocks),
+            summary_text=summary_text,
             session_id=self.session_id,
             key_events=self._extract_key_events(converted_blocks),
             sentiment_analysis=self._analyze_sentiment(converted_blocks),
@@ -764,12 +872,22 @@ class Session:
 
         return summary_block
 
-    def _generate_conversation_summary(self, blocks: List[Block]) -> str:
+    async def _generate_conversation_summary(self, blocks: List[Block]) -> str:
         """Generate AI-powered text summary of conversation"""
+        # DEBUG logging
+        from pathlib import Path
+        debug_file = Path(self.qube.data_dir).parent.parent.parent / "logs" / "auto_anchor_debug.log"
+        def debug_log(msg):
+            with open(debug_file, "a", encoding="utf-8") as f:
+                f.write(f"{datetime.now(timezone.utc).isoformat()} | [_generate_conversation_summary] {msg}\n")
+
+        debug_log(f"Started with {len(blocks)} blocks")
         logger.info("generate_summary_start", block_count=len(blocks))
 
         # If qube doesn't have AI initialized, fall back to basic summary
-        if not hasattr(self.qube, 'reasoner') or not self.qube.reasoner:
+        has_reasoner = hasattr(self.qube, 'reasoner') and self.qube.reasoner is not None
+        debug_log(f"has_reasoner={has_reasoner}")
+        if not has_reasoner:
             logger.warning("no_reasoner_for_summary", qube_has_reasoner=hasattr(self.qube, 'reasoner'))
             message_count = sum(1 for b in blocks if b.block_type == "MESSAGE")
             action_count = sum(1 for b in blocks if b.block_type == "ACTION")
@@ -789,7 +907,9 @@ class Session:
         # NOTE: At this point, blocks are already encrypted as permanent blocks
         # We need to decrypt them to read the content for summary
         conversation_parts = []
-        logger.info("extracting_conversation", encrypted_blocks=sum(1 for b in blocks if b.encrypted))
+        encrypted_count = sum(1 for b in blocks if b.encrypted)
+        debug_log(f"Starting extraction, encrypted_blocks={encrypted_count}")
+        logger.info("extracting_conversation", encrypted_blocks=encrypted_count)
 
         for block in blocks:
             # Decrypt block content if it's encrypted
@@ -833,13 +953,16 @@ class Session:
                 if game_summary:
                     conversation_parts.append(game_summary)
 
+        debug_log(f"Extraction complete, parts_count={len(conversation_parts)}")
         logger.info("conversation_extracted", parts_count=len(conversation_parts))
 
         if not conversation_parts:
+            debug_log("Empty conversation - returning fallback")
             logger.warning("empty_conversation_for_summary")
             return "Empty session with no messages."
 
         conversation_text = "\n".join(conversation_parts)
+        debug_log(f"Conversation text ready, length={len(conversation_text)}")
         original_length = len(conversation_text)
 
         # Truncate if conversation is too long for AI processing
@@ -870,10 +993,8 @@ class Session:
             preview=conversation_text[:200] if len(conversation_text) > 200 else conversation_text
         )
 
-        # Use AI to generate summary (synchronous call needed here)
+        # Use AI to generate summary (now properly async)
         try:
-            import asyncio
-
             # Create prompt for summary
             truncation_note = " Note: This is a truncated view of a longer conversation." if truncated else ""
             summary_prompt = f"""Summarize this conversation in a detailed paragraph (3-5 sentences). Include the main topics discussed, key questions asked, important information shared, and any actions taken. Be specific about the content while remaining concise.{truncation_note}
@@ -883,58 +1004,39 @@ Conversation:
 
 Summary:"""
 
+            debug_log(f"AI summary starting, prompt_length={len(summary_prompt)}")
             logger.info("ai_summary_starting", prompt_length=len(summary_prompt))
 
-            # Run async summary generation
-            try:
-                loop = asyncio.get_event_loop()
-                logger.debug("got_event_loop", is_running=loop.is_running())
-            except RuntimeError:
-                logger.warning("no_event_loop_creating_new")
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-
-            if loop.is_running():
-                logger.info("loop_running_using_thread_executor")
-                # If we're already in an async context, we need to use run_until_complete in a thread
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(
-                        asyncio.run,
-                        self.qube.reasoner.model.generate(
-                            messages=[{"role": "user", "content": summary_prompt}],
-                            tools=[],
-                            temperature=0.3
-                        )
-                    )
-                    response = future.result(timeout=30)
-                    logger.info("ai_summary_response_received", has_content=response is not None and hasattr(response, 'content'))
-            else:
-                logger.info("loop_not_running_using_run_until_complete")
-                response = loop.run_until_complete(
-                    self.qube.reasoner.model.generate(
-                        messages=[{"role": "user", "content": summary_prompt}],
-                        tools=[],
-                        temperature=0.3
-                    )
-                )
-                logger.info("ai_summary_response_received", has_content=response is not None and hasattr(response, 'content'))
+            # Properly await the async AI call (now that this method is async)
+            debug_log(f"Calling model.generate()...")
+            response = await self.qube.reasoner.model.generate(
+                messages=[{"role": "user", "content": summary_prompt}],
+                tools=[],
+                temperature=0.3
+            )
+            debug_log(f"model.generate() returned, has_content={response is not None and hasattr(response, 'content')}")
+            logger.info("ai_summary_response_received", has_content=response is not None and hasattr(response, 'content'))
 
             summary = response.content.strip() if response and response.content else None
             logger.info("ai_summary_extracted", summary_length=len(summary) if summary else 0, summary_preview=summary[:100] if summary and len(summary) > 100 else summary)
 
             if summary and len(summary) > 10:
+                debug_log(f"✅ AI summary SUCCESS, length={len(summary)}")
                 logger.info("ai_summary_success", summary_length=len(summary))
                 return summary
             else:
                 # Fallback if AI summary is too short
+                debug_log(f"⚠️ AI summary too short, length={len(summary) if summary else 0}")
                 logger.warning("ai_summary_too_short", summary_length=len(summary) if summary else 0)
                 return f"Conversation covering {len(conversation_parts)} exchanges."
 
         except Exception as e:
-            logger.error("ai_summary_failed", error=str(e), error_type=type(e).__name__)
             import traceback
-            logger.error("ai_summary_traceback", traceback=traceback.format_exc())
+            tb = traceback.format_exc()
+            debug_log(f"❌ AI summary FAILED: {type(e).__name__}: {e}")
+            debug_log(f"Traceback:\n{tb}")
+            logger.error("ai_summary_failed", error=str(e), error_type=type(e).__name__)
+            logger.error("ai_summary_traceback", traceback=tb)
             # Fallback to basic summary on error
             return f"Session with {len(conversation_parts)} exchanges over {len(blocks)} blocks."
 

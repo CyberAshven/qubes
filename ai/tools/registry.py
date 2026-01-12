@@ -32,6 +32,8 @@ ALWAYS_AVAILABLE_TOOLS: Set[str] = {
     # Web access (fundamental capability)
     "web_search",
     "browse_url",
+    # Image generation (creative capability)
+    "generate_image",
     # Games (runtime check for active game)
     "chess_move",
     # Wallet operations (core functionality for BCH-enabled qubes)

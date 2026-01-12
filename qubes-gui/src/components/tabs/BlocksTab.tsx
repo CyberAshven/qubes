@@ -17,6 +17,83 @@ const getSkillName = (skillId: string): string => {
   return skillId.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 };
 
+// Category icons for skills
+const CATEGORY_ICONS: Record<string, string> = {
+  'ai_reasoning': '🧠',
+  'social_intelligence': '🤝',
+  'technical_expertise': '💻',
+  'creative_expression': '🎨',
+  'knowledge_domains': '📚',
+  'security_privacy': '🛡️',
+  'games': '🎮'
+};
+
+// Tier icons for skills
+const TIER_ICONS: Record<string, string> = {
+  'sun': '☀️',
+  'planet': '🪐',
+  'moon': '🌙'
+};
+
+// Expandable skill category component
+const ExpandableSkillCategory: React.FC<{ category: any }> = ({ category }) => {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const categoryIcon = CATEGORY_ICONS[category.category_id] || '⚡';
+
+  return (
+    <div className="bg-glass-bg/30 rounded-lg overflow-hidden">
+      {/* Category Header - clickable to expand */}
+      <button
+        onClick={() => setIsExpanded(!isExpanded)}
+        className="w-full flex items-center justify-between p-3 hover:bg-glass-bg/50 transition-colors"
+      >
+        <span className="text-text-primary font-medium flex items-center gap-2">
+          <span>{categoryIcon}</span>
+          {category.category_name}
+          <span className="text-xs text-text-tertiary">({category.skills?.length || 0} skills)</span>
+        </span>
+        <div className="flex items-center gap-3">
+          <span className="text-accent-primary text-sm">{category.total_xp} XP</span>
+          <span className="text-text-tertiary text-xs">{isExpanded ? '▼' : '▶'}</span>
+        </div>
+      </button>
+
+      {/* Expanded Skills List */}
+      {isExpanded && category.skills && (
+        <div className="border-t border-glass-border">
+          {category.skills.map((skill: any, idx: number) => (
+            <div
+              key={skill.skill_id || idx}
+              className={`flex items-center justify-between px-4 py-2 text-sm ${
+                idx % 2 === 0 ? 'bg-glass-bg/10' : ''
+              } ${!skill.unlocked ? 'opacity-50' : ''}`}
+            >
+              <span className="flex items-center gap-2">
+                <span className="text-xs">{TIER_ICONS[skill.tier] || '🌙'}</span>
+                <span className={skill.unlocked ? 'text-text-primary' : 'text-text-tertiary'}>
+                  {getSkillName(skill.skill_id) || skill.name}
+                </span>
+                {skill.tool_unlock && (
+                  <span className="text-xs px-1.5 py-0.5 bg-purple-500/20 text-purple-400 rounded" title={`Unlocks: ${skill.tool_unlock}`}>
+                    🔧
+                  </span>
+                )}
+                {!skill.unlocked && (
+                  <span className="text-xs text-text-tertiary">🔒</span>
+                )}
+              </span>
+              <div className="flex items-center gap-3 text-xs">
+                <span className="text-accent-primary">Lv {skill.level}</span>
+                <span className="text-text-tertiary w-16 text-right">{skill.xp} XP</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
 interface Block {
   block_number: number;
   block_hash: string;
@@ -299,6 +376,7 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
     setSelectedBlock(null);
     setSelectedSection(null);
     setContextPreview(null);
+    setSelectedContextSection(null);  // Clear right panel selection
     hasInitiallyLoaded.current = false;
     loadedQubeId.current = null;
 
@@ -1068,6 +1146,15 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
               {/* Genesis Identity */}
               {selectedContextSection.type === 'genesis' && selectedContextSection.data && (
                 <div className="space-y-4">
+                  {/* Qube Name */}
+                  <div className="flex items-center gap-3 pb-3 border-b border-glass-border">
+                    <span className="text-3xl">🤖</span>
+                    <div>
+                      <h3 className="text-xl font-display text-text-primary">{selectedContextSection.data.name}</h3>
+                      <span className="text-text-tertiary text-sm">Sovereign AI Entity</span>
+                    </div>
+                  </div>
+
                   {/* Genesis Prompt */}
                   <div>
                     <span className="text-text-tertiary text-sm">Genesis Prompt:</span>
@@ -1167,29 +1254,68 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
               {selectedContextSection.type === 'relationships' && (
                 <div className="space-y-3">
                   {selectedContextSection.data?.top_relationships?.length > 0 ? (
-                    selectedContextSection.data.top_relationships.map((rel: any, idx: number) => (
-                      <div key={idx} className="p-3 bg-glass-bg/30 rounded-lg">
-                        <div className="flex items-center justify-between mb-2">
-                          <span className="text-text-primary font-medium flex items-center gap-2">
-                            <span>{rel.status === 'connected' ? '🤝' : rel.status === 'friend' ? '💚' : rel.status === 'blocked' ? '🚫' : '👤'}</span>
-                            {rel.name}
-                          </span>
-                          <span className="text-xs text-text-tertiary capitalize">{rel.status}</span>
-                        </div>
-                        <div className="flex gap-4 text-sm">
-                          <span>
-                            <span className="text-text-tertiary">Trust: </span>
-                            <span className={rel.trust_level >= 0.8 ? 'text-emerald-400' : rel.trust_level >= 0.6 ? 'text-accent-primary' : 'text-yellow-400'}>
-                              {Math.round(rel.trust_level * 100)}%
+                    selectedContextSection.data.top_relationships.map((rel: any, idx: number) => {
+                      // Use entity_type from backend, fallback to ID format detection
+                      const entityId = rel.entity_id || rel.name;
+                      const entityType = rel.entity_type || (/^[0-9A-Fa-f]{8}$/.test(entityId) ? 'qube' : 'human');
+                      const isOwner = entityId === userId || rel.name === userId;
+
+                      // Format the display name
+                      let displayName = rel.name;
+                      let entityLabel = '';
+                      let entityIcon = '👤';
+
+                      if (entityType === 'qube') {
+                        // It's a Qube - show "Name (ID)" if name differs from ID
+                        entityIcon = '🤖';
+                        if (rel.name && rel.name !== entityId) {
+                          displayName = `${rel.name} (${entityId})`;
+                        } else {
+                          displayName = entityId;
+                        }
+                      } else if (isOwner) {
+                        // It's the owner
+                        entityLabel = '(owner)';
+                        entityIcon = '👑';
+                      } else {
+                        // It's another human
+                        entityLabel = '(human)';
+                      }
+
+                      // Status icon override
+                      if (rel.status === 'connected') entityIcon = '🤝';
+                      else if (rel.status === 'friend') entityIcon = '💚';
+                      else if (rel.status === 'close_friend') entityIcon = '💜';
+                      else if (rel.status === 'best_friend') entityIcon = '💛';
+                      else if (rel.status === 'blocked') entityIcon = '🚫';
+
+                      return (
+                        <div key={idx} className="p-3 bg-glass-bg/30 rounded-lg">
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="text-text-primary font-medium flex items-center gap-2">
+                              <span>{entityIcon}</span>
+                              {displayName}
+                              {entityLabel && (
+                                <span className="text-xs text-text-tertiary">{entityLabel}</span>
+                              )}
                             </span>
-                          </span>
-                          <span>
-                            <span className="text-text-tertiary">Interactions: </span>
-                            <span className="text-text-secondary">{rel.interaction_count}</span>
-                          </span>
+                            <span className="text-xs text-text-tertiary capitalize">{rel.status}</span>
+                          </div>
+                          <div className="flex gap-4 text-sm">
+                            <span>
+                              <span className="text-text-tertiary">Trust: </span>
+                              <span className={rel.trust_level >= 0.8 ? 'text-emerald-400' : rel.trust_level >= 0.6 ? 'text-accent-primary' : 'text-yellow-400'}>
+                                {Math.round(rel.trust_level * 100)}%
+                              </span>
+                            </span>
+                            <span>
+                              <span className="text-text-tertiary">Interactions: </span>
+                              <span className="text-text-secondary">{rel.interaction_count}</span>
+                            </span>
+                          </div>
                         </div>
-                      </div>
-                    ))
+                      );
+                    })
                   ) : (
                     <div className="text-text-tertiary p-4 bg-glass-bg/20 rounded-lg text-center">
                       <div className="text-4xl mb-2">👥</div>
@@ -1203,19 +1329,13 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
               {selectedContextSection.type === 'skills' && (
                 <div className="space-y-3">
                   <div className="flex gap-4 text-sm text-text-tertiary mb-4">
-                    <span>Total XP: {selectedContextSection.data?.totals?.total_xp || 0}</span>
-                    <span>Unlocked: {selectedContextSection.data?.totals?.unlocked_skills || 0}</span>
-                    <span>Categories: {selectedContextSection.data?.totals?.categories || 0}</span>
+                    <span>Total XP: <span className="text-accent-primary">{selectedContextSection.data?.totals?.total_xp || 0}</span></span>
+                    <span>Unlocked: <span className="text-accent-primary">{selectedContextSection.data?.totals?.unlocked_skills || 0}</span></span>
+                    <span>Categories: <span className="text-accent-primary">{selectedContextSection.data?.totals?.categories || 0}</span></span>
                   </div>
-                  {selectedContextSection.data?.top_skills?.length > 0 ? (
-                    selectedContextSection.data.top_skills.map((skill: any, idx: number) => (
-                      <div key={idx} className="flex items-center justify-between p-3 bg-glass-bg/30 rounded-lg">
-                        <span className="text-text-primary capitalize">{skill.skill_id.replace(/_/g, ' ')}</span>
-                        <div className="flex items-center gap-3">
-                          <span className="text-accent-primary">Level {skill.level}</span>
-                          <span className="text-text-tertiary">{skill.total_xp} XP</span>
-                        </div>
-                      </div>
+                  {selectedContextSection.data?.categories && Object.keys(selectedContextSection.data.categories).length > 0 ? (
+                    Object.values(selectedContextSection.data.categories).map((category: any) => (
+                      <ExpandableSkillCategory key={category.category_id} category={category} />
                     ))
                   ) : (
                     <div className="text-text-tertiary p-4 bg-glass-bg/20 rounded-lg text-center">

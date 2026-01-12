@@ -206,16 +206,21 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes }) =
     }
   };
 
-  // Helper function to clean content by removing image URLs
+  // Helper function to clean content by removing image URLs and paths
   const cleanContentForDisplay = (content: string): string => {
     // Regular expression to detect image URLs (including DALL-E Azure Blob Storage URLs)
     const imageUrlRegex = /(https?:\/\/[^\s\)]+?(?:\.(?:png|jpg|jpeg|gif|webp)|blob\.core\.windows\.net\/[^\s\)]+))/gi;
+    // Regular expression to detect local file paths (Windows and Unix)
+    const localPathRegex = /([A-Za-z]:[\\\/][^\s\)]+\.(?:png|jpg|jpeg|gif|webp)|\/[^\s\)]+\.(?:png|jpg|jpeg|gif|webp))/gi;
 
-    // Remove complete markdown image syntax ![...](url)
+    // Remove complete markdown image syntax ![...](url or path)
     let cleaned = content.replace(/!\[([^\]]*)\]\([^\)]+\)/gi, '');
 
     // Remove any remaining image URLs (standalone)
     cleaned = cleaned.replace(imageUrlRegex, '');
+
+    // Remove any remaining local file paths (standalone)
+    cleaned = cleaned.replace(localPathRegex, '');
 
     // Remove any standalone markdown image syntax ![...]
     cleaned = cleaned.replace(/!\[([^\]]*)\]/g, '');
@@ -262,11 +267,20 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes }) =
   const renderMessageContent = (content: string) => {
     // Regular expression to detect image URLs (including DALL-E Azure Blob Storage URLs)
     const imageUrlRegex = /(https?:\/\/[^\s\)]+?(?:\.(?:png|jpg|jpeg|gif|webp)|blob\.core\.windows\.net\/[^\s\)]+))/gi;
+    // Regular expression to detect local file paths (Windows and Unix)
+    const localPathRegex = /([A-Za-z]:[\\\/][^\s\)]+\.(?:png|jpg|jpeg|gif|webp)|\/[^\s\)]+\.(?:png|jpg|jpeg|gif|webp))/gi;
     // Regular expression to detect any URLs
     const anyUrlRegex = /(https?:\/\/[^\s\)]+)/gi;
 
-    // Extract all image URLs first
-    const imageUrls = content.match(imageUrlRegex) || [];
+    // Extract all image URLs first (both web URLs and local paths)
+    const webImageUrls = content.match(imageUrlRegex) || [];
+    const localImagePaths = content.match(localPathRegex) || [];
+
+    // Convert local paths to asset:// URLs using Tauri's convertFileSrc
+    const convertedLocalUrls = localImagePaths.map(path => convertFileSrc(path));
+
+    // Combine all image sources
+    const imageUrls = [...webImageUrls, ...convertedLocalUrls];
 
     // Get cleaned text content (without image URLs)
     let textContent = cleanContentForDisplay(content);
