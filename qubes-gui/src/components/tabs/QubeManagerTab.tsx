@@ -103,7 +103,7 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
   }>>([]);
   const [selectedWalletQube, setSelectedWalletQube] = useState<string | null>(null);
 
-  // DEV ONLY: Reset qube state
+  // Reset qube state (new save slot)
   const [qubeToReset, setQubeToReset] = useState<Qube | null>(null);
   const [isResetting, setIsResetting] = useState(false);
 
@@ -196,17 +196,17 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
       });
 
       if (result.success) {
-        console.log(`[DEV] Qube ${qubeToReset.name} reset to fresh state`);
+        console.log(`Qube ${qubeToReset.name} reset to fresh state`);
         // Emit event to refresh qube list
         await emit('qube-reset', { qubeId: qubeToReset.qube_id });
         // Refresh page to show updated state
         window.location.reload();
       } else {
-        console.error(`[DEV] Failed to reset qube: ${result.error}`);
+        console.error(`Failed to reset qube: ${result.error}`);
         alert(`Failed to reset qube: ${result.error}`);
       }
     } catch (error) {
-      console.error('[DEV] Reset qube error:', error);
+      console.error('Reset qube error:', error);
       alert(`Failed to reset qube: ${error}`);
     } finally {
       setIsResetting(false);
@@ -631,7 +631,7 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
                     allQubes={qubes}
                     onEdit={() => onEditQube(qube)}
                     onDelete={() => onDeleteQube(qube)}
-                    onReset={import.meta.env.DEV ? () => setQubeToReset(qube) : undefined}
+                    onReset={() => setQubeToReset(qube)}
                     onSelect={() => handleSelectQube(qube)}
                     onUpdateConfig={onUpdateQubeConfig}
                     getAvatarPath={getAvatarPath}
@@ -653,7 +653,7 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
                     allQubes={qubes}
                     onEdit={() => onEditQube(qube)}
                     onDelete={() => onDeleteQube(qube)}
-                    onReset={import.meta.env.DEV ? () => setQubeToReset(qube) : undefined}
+                    onReset={() => setQubeToReset(qube)}
                     onSelect={() => handleSelectQube(qube)}
                     onUpdateConfig={onUpdateQubeConfig}
                     getAvatarPath={getAvatarPath}
@@ -677,13 +677,13 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
         </DndContext>
       )}
 
-      {/* DEV ONLY: Reset Confirmation Modal */}
-      {import.meta.env.DEV && qubeToReset && (
+      {/* Reset Confirmation Modal */}
+      {qubeToReset && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50">
           <div className="glass-card p-6 max-w-md w-full mx-4">
             <h2 className="text-xl font-bold text-text-primary mb-2">Reset {qubeToReset.name}?</h2>
             <p className="text-accent-warning text-sm mb-4 font-semibold">
-              DEV MODE: This will reset the qube to a fresh state.
+              This will reset the qube to a fresh state (like a new save slot).
             </p>
             <p className="text-text-secondary text-sm mb-4">
               The following will be DELETED:
@@ -933,7 +933,7 @@ interface QubeCardProps {
   allQubes: Qube[];  // For wallet security whitelist selection
   onEdit: () => void;
   onDelete: () => void;
-  onReset?: () => void;  // DEV ONLY: Reset qube to fresh state
+  onReset?: () => void;  // Reset qube to fresh state (new save slot)
   onSelect: () => void;
   onUpdateConfig: (qubeId: string, updates: { ai_model?: string; voice_model?: string; favorite_color?: string; tts_enabled?: boolean; evaluation_model?: string }) => Promise<void>;
   getAvatarPath: (qube: Qube) => string;
@@ -2204,8 +2204,7 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
               >
                 Chat
               </button>
-              {/* DEV ONLY: Reset button */}
-              {import.meta.env.DEV && onReset && (
+              {onReset && (
                 <button
                   onClick={onReset}
                   className="flex-1 px-4 py-2 bg-accent-warning/10 text-accent-warning rounded-lg hover:bg-accent-warning/20 transition-all text-sm font-medium"
@@ -3049,8 +3048,7 @@ const QubeListItem: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelet
           >
             Chat
           </button>
-          {/* DEV ONLY: Reset button */}
-          {import.meta.env.DEV && onReset && (
+          {onReset && (
             <button
               onClick={onReset}
               className="px-4 py-2 bg-accent-warning/10 text-accent-warning rounded-lg hover:bg-accent-warning/20 transition-all text-sm font-medium"
