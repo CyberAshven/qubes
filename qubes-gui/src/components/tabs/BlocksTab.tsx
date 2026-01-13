@@ -40,22 +40,36 @@ const ExpandableSkillCategory: React.FC<{ category: any }> = ({ category }) => {
   const [isExpanded, setIsExpanded] = useState(false);
   const categoryIcon = CATEGORY_ICONS[category.category_id] || '⚡';
 
+  // Get skills that have XP > 0 for the preview
+  const skillsWithXP = (category.skills || []).filter((s: any) => s.xp > 0);
+  const xpPreview = skillsWithXP.length > 0
+    ? skillsWithXP.slice(0, 3).map((s: any) => `${getSkillName(s.skill_id) || s.name}: ${s.xp}`).join(', ')
+    : null;
+
   return (
     <div className="bg-glass-bg/30 rounded-lg overflow-hidden">
       {/* Category Header - clickable to expand */}
       <button
         onClick={() => setIsExpanded(!isExpanded)}
-        className="w-full flex items-center justify-between p-3 hover:bg-glass-bg/50 transition-colors"
+        className="w-full flex flex-col p-3 hover:bg-glass-bg/50 transition-colors text-left"
       >
-        <span className="text-text-primary font-medium flex items-center gap-2">
-          <span>{categoryIcon}</span>
-          {category.category_name}
-          <span className="text-xs text-text-tertiary">({category.skills?.length || 0} skills)</span>
-        </span>
-        <div className="flex items-center gap-3">
-          <span className="text-accent-primary text-sm">{category.total_xp} XP</span>
-          <span className="text-text-tertiary text-xs">{isExpanded ? '▼' : '▶'}</span>
+        <div className="flex items-center justify-between w-full">
+          <span className="text-text-primary font-medium flex items-center gap-2">
+            <span>{categoryIcon}</span>
+            {category.category_name}
+            <span className="text-xs text-text-tertiary">({category.skills?.length || 0} skills)</span>
+          </span>
+          <div className="flex items-center gap-3">
+            <span className="text-accent-primary text-sm">{category.total_xp} XP</span>
+            <span className="text-text-tertiary text-xs">{isExpanded ? '▼' : '▶'}</span>
+          </div>
         </div>
+        {/* XP breakdown preview - shows which skills contributed */}
+        {xpPreview && !isExpanded && (
+          <div className="text-xs text-text-tertiary mt-1 ml-6">
+            {xpPreview}{skillsWithXP.length > 3 ? ` +${skillsWithXP.length - 3} more` : ''}
+          </div>
+        )}
       </button>
 
       {/* Expanded Skills List */}

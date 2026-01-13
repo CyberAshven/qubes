@@ -246,6 +246,42 @@ class SkillsManager:
             skill["level"] = 100
             skill["xp"] = max_xp
 
+        # PROPAGATE XP TO CHILDREN: When a parent skill gains XP, children should too
+        # This ensures Moon skills get XP when their parent Planet skill is used
+        children_updated = []
+        for child_skill in skills_data["skills"]:
+            if child_skill.get("parentSkill") == skill_id:
+                # Give child the same XP amount
+                child_old_xp = child_skill["xp"]
+                child_old_level = child_skill["level"]
+                child_skill["xp"] += xp_amount
+
+                # Check for child level-up
+                child_max_xp = child_skill["maxXP"]
+                child_leveled_up = False
+                child_new_levels = 0
+
+                while child_skill["xp"] >= child_max_xp and child_skill["level"] < 100:
+                    child_skill["xp"] -= child_max_xp
+                    child_skill["level"] += 1
+                    child_new_levels += 1
+                    child_leveled_up = True
+
+                # Cap at max level
+                if child_skill["level"] >= 100:
+                    child_skill["level"] = 100
+                    child_skill["xp"] = child_max_xp
+
+                children_updated.append({
+                    "skill_id": child_skill["id"],
+                    "xp_gained": xp_amount,
+                    "old_level": child_old_level,
+                    "new_level": child_skill["level"],
+                    "leveled_up": child_leveled_up
+                })
+
+                logger.debug(f"Propagated {xp_amount} XP to child skill {child_skill['id']}")
+
         # Save updated skills
         self.save_skills(skills_data)
 
@@ -277,6 +313,10 @@ class SkillsManager:
         if tool_details:
             event_data["tool_details"] = tool_details
 
+        # Include children in event data
+        if children_updated:
+            event_data["children_updated"] = children_updated
+
         self._log_skill_event(event_data)
 
         result = {
@@ -290,6 +330,11 @@ class SkillsManager:
             "leveled_up": leveled_up,
             "levels_gained": new_levels
         }
+
+        # Include children that also received XP
+        if children_updated:
+            result["children_updated"] = children_updated
+            logger.info(f"XP propagated to {len(children_updated)} child skill(s): {[c['skill_id'] for c in children_updated]}")
 
         # Check if skill is now maxed and should unlock a tool
         if skill["level"] == 100 and skill.get("toolCallReward"):
