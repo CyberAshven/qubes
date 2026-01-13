@@ -1351,13 +1351,19 @@ class UserOrchestrator:
                 shutil.rmtree(relationships_dir)
                 logger.debug("deleted_relationships_dir")
 
-            # 3. Delete snapshots folder
+            # 3. Delete owner_info folder (learned info about owner)
+            owner_info_dir = qube_dir / "owner_info"
+            if owner_info_dir.exists():
+                shutil.rmtree(owner_info_dir)
+                logger.debug("deleted_owner_info_dir")
+
+            # 4. Delete snapshots folder
             snapshots_dir = qube_dir / "snapshots"
             if snapshots_dir.exists():
                 shutil.rmtree(snapshots_dir)
                 logger.debug("deleted_snapshots_dir")
 
-            # 4. Delete semantic index files
+            # 5. Delete semantic index files
             chain_dir = qube_dir / "chain"
             semantic_index = chain_dir / "semantic_index.faiss"
             semantic_mapping = chain_dir / "semantic_mapping.npy"
@@ -1368,19 +1374,19 @@ class UserOrchestrator:
                 semantic_mapping.unlink()
                 logger.debug("deleted_semantic_mapping")
 
-            # 5. Delete audio cache
+            # 6. Delete audio cache
             audio_dir = qube_dir / "audio"
             if audio_dir.exists():
                 shutil.rmtree(audio_dir)
                 logger.debug("deleted_audio_dir")
 
-            # 6. Delete visualizer settings
+            # 7. Delete visualizer settings
             visualizer_settings = qube_dir / "visualizer_settings.json"
             if visualizer_settings.exists():
                 visualizer_settings.unlink()
                 logger.debug("deleted_visualizer_settings")
 
-            # 7. Delete session lock files
+            # 8. Delete session lock files
             for lock_file in qube_dir.glob("*.lock"):
                 lock_file.unlink()
                 logger.debug("deleted_lock_file", file=lock_file.name)
@@ -1388,7 +1394,7 @@ class UserOrchestrator:
                 lock_file.unlink()
                 logger.debug("deleted_chain_lock_file", file=lock_file.name)
 
-            # 8. Delete root-level chain_state.json if exists (duplicate)
+            # 9. Delete root-level chain_state.json if exists (duplicate)
             root_chain_state = qube_dir / "chain_state.json"
             if root_chain_state.exists():
                 root_chain_state.unlink()
