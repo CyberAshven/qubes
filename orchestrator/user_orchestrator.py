@@ -1271,6 +1271,15 @@ class UserOrchestrator:
             import shutil
             shutil.rmtree(qube_dir)
 
+            # Remove from BCMR registry via minting API
+            try:
+                async with MintingAPIClient() as client:
+                    await client.unregister_qube(qube_id)
+                    logger.info("qube_unregistered_from_bcmr", qube_id=qube_id[:16] + "...")
+            except Exception as bcmr_error:
+                # Don't fail deletion if BCMR removal fails
+                logger.warning("bcmr_unregister_failed", qube_id=qube_id[:16] + "...", error=str(bcmr_error))
+
             logger.info("qube_deleted_successfully", qube_id=qube_id[:16] + "...")
 
             return True

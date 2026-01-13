@@ -301,6 +301,82 @@ class BCMRRegistryManager:
 
         return registry
 
+    def remove_qube_from_registry(self, qube_id: str) -> bool:
+        """
+        Remove a Qube from the BCMR registry
+
+        Args:
+            qube_id: The qube_id to remove (can be short or full form)
+
+        Returns:
+            True if removed successfully, False if not found or error
+        """
+        logger.info("removing_qube_from_registry", qube_id=qube_id[:16] + "...")
+
+        # Load existing registry
+        if not self.registry_file.exists():
+            logger.warning("registry_not_found_cannot_remove")
+            return False
+
+        try:
+            with open(self.registry_file, 'r') as f:
+                registry = json.load(f)
+        except Exception as e:
+            logger.error("failed_to_load_registry", error=str(e))
+            return False
+
+        # Navigate to identities.category_id
+        identities = registry.get("identities", {})
+        category_data = identities.get(self.category_id, {})
+
+        if not category_data:
+            logger.warning("category_not_found_in_registry")
+            return False
+
+        # Get latest timestamp revision
+        latest_timestamp = max(category_data.keys())
+        latest_revision = category_data[latest_timestamp]
+
+        # Get parse.types
+        nft_types = latest_revision.get("nfts", {}).get("parse", {}).get("types", {})
+
+        if not nft_types:
+            logger.warning("no_nft_types_in_registry")
+            return False
+
+        # Find and remove the qube entry
+        # The key could be the full qube_id or a commitment hash
+        removed = False
+        keys_to_remove = []
+
+        for key in nft_types:
+            # Check if key matches qube_id (full or partial)
+            if key == qube_id or key.upper().startswith(qube_id.upper()[:8]):
+                keys_to_remove.append(key)
+                removed = True
+                logger.info("found_qube_to_remove", key=key[:16] + "...")
+
+        for key in keys_to_remove:
+            del nft_types[key]
+
+        if not removed:
+            logger.warning("qube_not_found_in_registry", qube_id=qube_id[:16] + "...")
+            return False
+
+        # Update latestRevision timestamp
+        new_timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        registry["latestRevision"] = new_timestamp
+
+        # Save updated registry
+        try:
+            with open(self.registry_file, 'w') as f:
+                json.dump(registry, f, indent=2)
+            logger.info("qube_removed_from_registry", qube_id=qube_id[:16] + "...")
+            return True
+        except Exception as e:
+            logger.error("failed_to_save_registry", error=str(e))
+            return False
+
     def sync_to_server(
         self,
         server_host: str = "",

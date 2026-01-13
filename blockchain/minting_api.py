@@ -375,6 +375,22 @@ class MintingAPIClient:
         logger.info("cancelling_registration", registration_id=registration_id)
         return await self._request("DELETE", f"/v2/register/{registration_id}")
 
+    async def unregister_qube(self, qube_id: str) -> Dict[str, Any]:
+        """
+        Unregister a Qube from the BCMR registry
+
+        Called when a user deletes their Qube. Removes the Qube
+        from the public BCMR registry on qube.cash.
+
+        Args:
+            qube_id: The Qube ID to unregister (full 64-char or short 8-char)
+
+        Returns:
+            {"status": "removed", "qube_id": "..."}
+        """
+        logger.info("unregistering_qube", qube_id=qube_id[:16] + "...")
+        return await self._request("DELETE", f"/v2/qube/{qube_id}")
+
     async def wait_for_completion(
         self,
         registration_id: str,
