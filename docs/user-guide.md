@@ -1097,7 +1097,7 @@ Security and privacy settings.
 Manage application updates.
 
 **Display:**
-- **Current Version**: Shows installed version (e.g., "0.2.14")
+- **Current Version**: Shows installed version (e.g., "0.2.15")
 - **Update Status**: Shows if updates are available
 
 **Actions:**
