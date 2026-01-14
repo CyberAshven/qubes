@@ -36,6 +36,7 @@ class APIKeys:
     deepseek: Optional[str] = None
     perplexity: Optional[str] = None
     venice: Optional[str] = None
+    nanogpt: Optional[str] = None
     pinata_jwt: Optional[str] = None
     elevenlabs: Optional[str] = None
     deepgram: Optional[str] = None
@@ -395,6 +396,8 @@ class SecureSettingsManager:
                 return await self._validate_perplexity(api_key)
             elif provider == "venice":
                 return await self._validate_venice(api_key)
+            elif provider == "nanogpt":
+                return await self._validate_nanogpt(api_key)
             elif provider == "pinata_jwt":
                 return await self._validate_pinata(api_key)
             elif provider == "elevenlabs":
@@ -825,6 +828,45 @@ class SecureSettingsManager:
                     return {
                         "valid": False,
                         "message": f"Venice API error: {response.status_code}",
+                        "details": {"status_code": response.status_code}
+                    }
+        except Exception as e:
+            return {
+                "valid": False,
+                "message": f"Connection error: {str(e)}",
+                "details": {"error": str(e)}
+            }
+
+    async def _validate_nanogpt(self, api_key: str) -> Dict[str, Any]:
+        """Validate NanoGPT API key"""
+        import httpx
+
+        try:
+            async with httpx.AsyncClient() as client:
+                # NanoGPT uses OpenAI-compatible API
+                response = await client.get(
+                    "https://nano-gpt.com/api/v1/models",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    timeout=10.0
+                )
+
+                if response.status_code == 200:
+                    models = response.json().get("data", [])
+                    return {
+                        "valid": True,
+                        "message": "NanoGPT API key is valid",
+                        "details": {"models_available": len(models)}
+                    }
+                elif response.status_code == 401:
+                    return {
+                        "valid": False,
+                        "message": "Invalid NanoGPT API key",
+                        "details": {"status_code": 401}
+                    }
+                else:
+                    return {
+                        "valid": False,
+                        "message": f"NanoGPT API error: {response.status_code}",
                         "details": {"status_code": response.status_code}
                     }
         except Exception as e:
