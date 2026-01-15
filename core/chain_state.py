@@ -97,7 +97,15 @@ class ChainState:
 
             # Avatar description (cached vision analysis)
             "avatar_description": None,
-            "avatar_description_generated_at": None
+            "avatar_description_generated_at": None,
+
+            # Model preferences and switching
+            "model_preferences": {},  # task_type -> {model, reason, set_at}
+            "current_model_override": None,  # Persists model switch across sessions
+            "model_locked": False,  # User lock - prevents Qube from switching
+            "model_locked_to": None,  # When locked, forced to this model
+            "revolver_mode_enabled": False,  # Privacy mode - rotate providers
+            "revolver_last_index": 0  # Track rotation position
         }
 
         self._save()
@@ -120,27 +128,53 @@ class ChainState:
 
     def _save(self) -> None:
         """Save state to disk with file locking to prevent concurrent write conflicts"""
-        lock = FileLock(self.lock_file, timeout=5.0)
+        import time
 
-        try:
-            with lock:
-                # Update last_updated timestamp
-                self.state["last_updated"] = int(datetime.now(timezone.utc).timestamp())
+        max_retries = 3
+        last_error = None
 
-                # Ensure parent directory exists
-                self.state_file.parent.mkdir(parents=True, exist_ok=True)
+        for attempt in range(max_retries):
+            try:
+                lock = FileLock(self.lock_file, timeout=5.0)
 
-                # Write atomically (write to temp, then rename)
-                temp_file = self.state_file.with_suffix('.json.tmp')
-                with open(temp_file, 'w') as f:
-                    json.dump(self.state, f, indent=2)
+                with lock:
+                    # Update last_updated timestamp
+                    self.state["last_updated"] = int(datetime.now(timezone.utc).timestamp())
 
-                temp_file.replace(self.state_file)
+                    # Ensure parent directory exists
+                    self.state_file.parent.mkdir(parents=True, exist_ok=True)
 
-                logger.debug("chain_state_saved", qube_id=self.qube_id)
+                    # Write atomically (write to temp, then rename)
+                    temp_file = self.state_file.with_suffix('.json.tmp')
+                    with open(temp_file, 'w') as f:
+                        json.dump(self.state, f, indent=2)
+                        f.flush()  # Ensure data is written
+                        import os
+                        os.fsync(f.fileno())  # Force OS to flush to disk
 
-        except Exception as e:
-            logger.error("chain_state_save_failed", error=str(e), exc_info=True)
+                    temp_file.replace(self.state_file)
+
+                    logger.debug("chain_state_saved", qube_id=self.qube_id)
+                    return  # Success
+
+            except Exception as e:
+                last_error = e
+                logger.warning(
+                    "chain_state_save_retry",
+                    attempt=attempt + 1,
+                    max_retries=max_retries,
+                    error=str(e)
+                )
+                if attempt < max_retries - 1:
+                    time.sleep(0.1 * (attempt + 1))  # Exponential backoff
+
+        # All retries failed
+        logger.error(
+            "chain_state_save_failed_all_retries",
+            error=str(last_error),
+            qube_id=self.qube_id,
+            exc_info=True
+        )
 
     # =============================================================================
     # Chain State Updates
@@ -358,3 +392,177 @@ class ChainState:
         self._save()
 
         logger.info("avatar_description_cleared", qube_id=self.qube_id)
+
+    # =============================================================================
+    # Model Preferences
+    # =============================================================================
+
+    def set_model_preference(self, task_type: str, model_name: str, reason: str = None) -> None:
+        """
+        Save a model preference for a task type.
+
+        Args:
+            task_type: Category of task (e.g., 'coding', 'creative_writing', 'research')
+            model_name: Model to use for this task type
+            reason: Optional reason for this preference
+        """
+        # Initialize if missing (backward compatibility)
+        if "model_preferences" not in self.state:
+            self.state["model_preferences"] = {}
+
+        self.state["model_preferences"][task_type] = {
+            "model": model_name,
+            "reason": reason,
+            "set_at": int(datetime.now(timezone.utc).timestamp())
+        }
+
+        self._save()
+
+        logger.info(
+            "model_preference_set",
+            qube_id=self.qube_id,
+            task_type=task_type,
+            model=model_name
+        )
+
+    def get_model_preference(self, task_type: str) -> Optional[Dict[str, Any]]:
+        """
+        Get model preference for a task type.
+
+        Args:
+            task_type: Category of task
+
+        Returns:
+            Dict with model, reason, set_at or None if not set
+        """
+        preferences = self.state.get("model_preferences", {})
+        return preferences.get(task_type)
+
+    def get_all_model_preferences(self) -> Dict[str, Dict[str, Any]]:
+        """Get all stored model preferences."""
+        return self.state.get("model_preferences", {}).copy()
+
+    def clear_model_preference(self, task_type: str) -> None:
+        """Clear preference for a specific task type."""
+        preferences = self.state.get("model_preferences", {})
+        if task_type in preferences:
+            del preferences[task_type]
+            self.state["model_preferences"] = preferences
+            self._save()
+
+            logger.info("model_preference_cleared", qube_id=self.qube_id, task_type=task_type)
+
+    def clear_all_model_preferences(self) -> None:
+        """Clear all model preferences."""
+        self.state["model_preferences"] = {}
+        self._save()
+
+        logger.info("all_model_preferences_cleared", qube_id=self.qube_id)
+
+    # =============================================================================
+    # Model Override
+    # =============================================================================
+
+    def set_current_model_override(self, model_name: str) -> None:
+        """
+        Set model override (persists across sessions).
+
+        Args:
+            model_name: Model to use as override
+        """
+        self.state["current_model_override"] = model_name
+        self._save()
+
+        logger.info("model_override_set", qube_id=self.qube_id, model=model_name)
+
+    def get_current_model_override(self) -> Optional[str]:
+        """Get current model override, if any."""
+        return self.state.get("current_model_override")
+
+    def clear_current_model_override(self) -> None:
+        """Clear model override (return to genesis model)."""
+        self.state["current_model_override"] = None
+        self._save()
+
+        logger.info("model_override_cleared", qube_id=self.qube_id)
+
+    # =============================================================================
+    # Model Lock (User Control)
+    # =============================================================================
+
+    def set_model_lock(self, locked: bool, model_name: str = None) -> None:
+        """
+        Lock or unlock the Qube's ability to switch models.
+
+        Args:
+            locked: True to lock, False to unlock
+            model_name: When locking, optionally force a specific model
+        """
+        self.state["model_locked"] = locked
+        self.state["model_locked_to"] = model_name if locked else None
+        self._save()
+
+        logger.info(
+            "model_lock_changed",
+            qube_id=self.qube_id,
+            locked=locked,
+            model=model_name
+        )
+
+    def is_model_locked(self) -> bool:
+        """Check if model switching is locked by user."""
+        return self.state.get("model_locked", False)
+
+    def get_locked_model(self) -> Optional[str]:
+        """Get the model that switching is locked to, if any."""
+        return self.state.get("model_locked_to")
+
+    # =============================================================================
+    # Revolver Mode
+    # =============================================================================
+
+    def set_revolver_mode(self, enabled: bool) -> None:
+        """
+        Enable or disable revolver mode (privacy feature).
+
+        When enabled, rotates providers for each response.
+        """
+        self.state["revolver_mode_enabled"] = enabled
+        if enabled:
+            # Reset index when enabling
+            self.state["revolver_last_index"] = 0
+        self._save()
+
+        logger.info("revolver_mode_changed", qube_id=self.qube_id, enabled=enabled)
+
+    def is_revolver_mode_enabled(self) -> bool:
+        """Check if revolver mode is enabled."""
+        return self.state.get("revolver_mode_enabled", False)
+
+    def get_next_revolver_index(self, num_providers: int) -> int:
+        """
+        Get the next provider index for revolver mode.
+
+        Args:
+            num_providers: Total number of available providers
+
+        Returns:
+            Index of next provider to use
+        """
+        if num_providers <= 0:
+            return 0
+        current = self.state.get("revolver_last_index", 0)
+        return current % num_providers
+
+    def increment_revolver_index(self, num_providers: int) -> None:
+        """
+        Increment revolver index for next rotation.
+
+        Args:
+            num_providers: Total number of available providers
+        """
+        if num_providers <= 0:
+            return
+        current = self.state.get("revolver_last_index", 0)
+        self.state["revolver_last_index"] = (current + 1) % num_providers
+        self._save()

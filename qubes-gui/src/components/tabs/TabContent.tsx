@@ -219,6 +219,17 @@ export const TabContent: React.FC<TabContentProps> = ({ qubes, setQubes, onQubes
     }));
   };
 
+  // Handle model change from chat (e.g., Qube used switch_model tool or revolver mode)
+  const handleQubeModelChange = (qubeId: string, newModel: string) => {
+    setQubes(prevQubes => prevQubes.map(q => {
+      if (q.qube_id === qubeId && q.ai_model !== newModel) {
+        console.log(`Model changed for ${q.name}: ${q.ai_model} → ${newModel}`);
+        return { ...q, ai_model: newModel };
+      }
+      return q;
+    }));
+  };
+
   // Keep all tabs mounted but show/hide with CSS to preserve state
   // Use useMemo to prevent unnecessary re-renders when selectedQubes array reference changes
   // Dashboard chat uses dashboard selection (persists even when on other tabs)
@@ -295,7 +306,7 @@ export const TabContent: React.FC<TabContentProps> = ({ qubes, setQubes, onQubes
                 <MultiQubeChatInterface key="multi-qube-chat" selectedQubes={selectedQubesForDashboard} />
               </div>
               <div className={`absolute inset-0 p-6 flex flex-col ${selectedQubesForDashboard.length >= 2 ? 'z-0 opacity-0 pointer-events-none' : 'z-10 opacity-100'}`}>
-                <ChatInterface key="single-qube-chat" selectedQubes={selectedQubesForDashboard} />
+                <ChatInterface key="single-qube-chat" selectedQubes={selectedQubesForDashboard} onQubeModelChange={handleQubeModelChange} />
               </div>
             </div>
           </div>

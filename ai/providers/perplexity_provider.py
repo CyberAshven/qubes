@@ -10,6 +10,7 @@ from typing import List, Dict, Any, Optional, AsyncIterator
 from ai.providers.base import AIModelInterface, ModelResponse
 from ai.retry_decorators import perplexity_retry
 from ai.circuit_breakers import with_circuit_breaker
+from ai.prompt_tools import get_prompt_tool_handler
 from core.exceptions import ModelAPIError
 from utils.logging import get_logger
 from monitoring.metrics import MetricsRecorder
@@ -35,6 +36,18 @@ class PerplexityModel(AIModelInterface):
         "sonar-reasoning": 127000,
         "sonar-deep-research": 127000,
     }
+
+    # Models that don't support native tool/function calling
+    # These will use prompt-based tool calling instead
+    # Note: All Perplexity models use prompt-based tools - even "reasoning" models
+    # that claim tool support don't reliably execute them
+    TOOL_INCAPABLE_MODELS = [
+        "sonar",                # Basic model, no native tools
+        "sonar-pro",            # Pro model, no native tools
+        "sonar-deep-research",  # Research model, no native tools
+        "sonar-reasoning",      # Reasoning model - tools unreliable
+        "sonar-reasoning-pro",  # Reasoning pro - tools unreliable
+    ]
 
     @perplexity_retry(max_attempts=3)
     async def generate(
@@ -64,15 +77,29 @@ class PerplexityModel(AIModelInterface):
             if max_tokens:
                 params["max_tokens"] = max_tokens
 
+            # Track if we're using prompt-based tools
+            using_prompt_tools = False
+            prompt_tool_handler = None
+
             # Perplexity tool calling support varies by model
-            # As of Jan 2025, sonar models don't support tool calling
-            # Only include tools if model supports them
-            supports_tools = self.model_name in ["sonar-reasoning-pro", "sonar-reasoning"]
-            if tools and supports_tools:
+            # sonar-reasoning and sonar-reasoning-pro support native tools
+            # Others use prompt-based tool calling
+            if tools and self.model_name not in self.TOOL_INCAPABLE_MODELS:
                 params["tools"] = tools
                 params["tool_choice"] = "auto"
-            elif tools and not supports_tools:
-                logger.debug(f"perplexity_tools_skipped", model=self.model_name, reason="Model doesn't support tool calling")
+            elif tools:
+                # Use prompt-based tool calling for models without native support
+                prompt_tool_handler = get_prompt_tool_handler()
+                params["messages"] = prompt_tool_handler.inject_tools_into_messages(
+                    messages, tools
+                )
+                using_prompt_tools = True
+                logger.info(
+                    "perplexity_using_prompt_tools",
+                    model=self.model_name,
+                    tools_count=len(tools),
+                    reason="Model doesn't support native function calling, using prompt injection"
+                )
 
             params.update(kwargs)
 
@@ -101,8 +128,12 @@ class PerplexityModel(AIModelInterface):
             choice = response.choices[0]
             message = choice.message
 
+            # Extract tool calls if present
             tool_calls = None
+            content = message.content or ""
+
             if message.tool_calls:
+                # Native tool calls from API
                 import json
                 tool_calls = [
                     {
@@ -112,6 +143,31 @@ class PerplexityModel(AIModelInterface):
                     }
                     for tc in message.tool_calls
                 ]
+            elif using_prompt_tools and prompt_tool_handler:
+                # Parse tool calls from model's text response
+                parsed_calls = prompt_tool_handler.parse_tool_calls(content)
+                if parsed_calls:
+                    tool_calls = prompt_tool_handler.convert_to_native_format(parsed_calls)
+                    # Extract clean content without tool call tags
+                    content = prompt_tool_handler.extract_content_without_tool_calls(content)
+                    logger.info(
+                        "perplexity_prompt_tools_parsed",
+                        model=self.model_name,
+                        tool_calls_found=len(tool_calls),
+                        tool_names=[tc["name"] for tc in tool_calls]
+                    )
+                else:
+                    # Model had tools available but didn't use them
+                    has_tool_keywords = any(kw in content.lower() for kw in [
+                        "switch", "model", "search", "remember", "send"
+                    ])
+                    logger.warning(
+                        "perplexity_prompt_tools_not_used",
+                        model=self.model_name,
+                        response_preview=content[:200] if content else "(empty)",
+                        has_tool_keywords=has_tool_keywords,
+                        hint="Model may have narrated action instead of calling tool"
+                    )
 
             # Record cost
             if response.usage:
@@ -130,7 +186,7 @@ class PerplexityModel(AIModelInterface):
             )
 
             return ModelResponse(
-                content=message.content or "",
+                content=content,
                 tool_calls=tool_calls,
                 model=response.model,
                 usage={
@@ -183,9 +239,21 @@ class PerplexityModel(AIModelInterface):
             if max_tokens:
                 params["max_tokens"] = max_tokens
 
-            if tools:
+            # Handle tools - native or prompt-based
+            if tools and self.model_name not in self.TOOL_INCAPABLE_MODELS:
                 params["tools"] = tools
                 params["tool_choice"] = "auto"
+            elif tools:
+                # Use prompt-based tool calling for streaming too
+                prompt_tool_handler = get_prompt_tool_handler()
+                params["messages"] = prompt_tool_handler.inject_tools_into_messages(
+                    messages, tools
+                )
+                logger.info(
+                    "perplexity_streaming_prompt_tools",
+                    model=self.model_name,
+                    tools_count=len(tools)
+                )
 
             params.update(kwargs)
 

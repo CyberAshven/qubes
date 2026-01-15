@@ -174,10 +174,12 @@ class VeniceModel(AIModelInterface):
                     messages, tools
                 )
                 using_prompt_tools = True
+                tool_names = [t.get("function", {}).get("name", "?") for t in tools]
                 logger.info(
                     "venice_using_prompt_tools",
                     model=self.model_name,
                     tools_count=len(tools),
+                    tool_names=tool_names,
                     reason="Model doesn't support native function calling, using prompt injection"
                 )
 
@@ -244,6 +246,19 @@ class VeniceModel(AIModelInterface):
                         model=self.model_name,
                         tool_calls_found=len(tool_calls),
                         tool_names=[tc["name"] for tc in tool_calls]
+                    )
+                else:
+                    # Model had tools available but didn't use them
+                    # Check if response looks like it SHOULD have had a tool call
+                    has_tool_keywords = any(kw in content.lower() for kw in [
+                        "switch", "model", "search", "remember", "send"
+                    ])
+                    logger.warning(
+                        "venice_prompt_tools_not_used",
+                        model=self.model_name,
+                        response_preview=content[:200] if content else "(empty)",
+                        has_tool_keywords=has_tool_keywords,
+                        hint="Model may have narrated action instead of calling tool"
                     )
 
             # Record cost

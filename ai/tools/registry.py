@@ -38,6 +38,8 @@ ALWAYS_AVAILABLE_TOOLS: Set[str] = {
     "chess_move",
     # Wallet operations (core functionality for BCH-enabled qubes)
     "send_bch",
+    # Model switching (Qube agency over cognitive architecture)
+    "switch_model",
 }
 
 
@@ -178,17 +180,10 @@ class ToolRegistry:
         Returns:
             List of tools in provider-specific format
         """
-        # Filter tools based on provider capabilities
-        # Ollama models (sovereign mode): Disable ALL tools
-        # Local models struggle with tool calling decisions and prefer external tools over system prompt
-        # For true sovereign operation, force them to rely only on system prompt and context
-        if model_provider == "ollama":
-            logger.info(
-                "tools_disabled_for_ollama_sovereign_mode",
-                reason="Local models work better without tools, relying on system prompt only",
-                qube_id=self.qube.qube_id
-            )
-            return []  # No tools for Ollama - pure sovereign mode
+        # Note: Ollama models now use prompt-based tool calling (like Venice/Perplexity)
+        # The ollama_provider.py handles injecting tool instructions into the prompt
+        # and parsing <tool_call> tags from responses. This allows local models to
+        # participate in model switching and other tool-based operations.
 
         # Filter tools based on skill unlocks
         if unlocked_tools is not None:

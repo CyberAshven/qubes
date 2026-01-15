@@ -776,13 +776,17 @@ class GUIBridge:
                     logger.warning(f"Failed to record relationship: {e}")
                     # Don't fail the whole message - just log warning
 
+            # Get current model (may have changed via switch_model tool)
+            current_model = getattr(qube, 'current_ai_model', None) or qube.genesis_block.ai_model
+
             return {
                 "success": True,
                 "qube_id": qube_id,
                 "qube_name": qube.genesis_block.qube_name,
                 "message": message,
                 "response": response,
-                "timestamp": datetime.now().isoformat()
+                "timestamp": datetime.now().isoformat(),
+                "current_model": current_model
             }
         except Exception as e:
             logger.error(f"Failed to send message to qube {qube_id}: {e}")
@@ -1151,26 +1155,19 @@ class GUIBridge:
             with open(metadata_path, "r") as f:
                 metadata = json.load(f)
 
-            # Update genesis block fields in metadata
+            # Update mutable settings (NOT genesis_block - that's immutable!)
             updated_fields = []
             if ai_model is not None:
-                metadata["genesis_block"]["ai_model"] = ai_model
+                # Update chain_state.json directly (works even if qube not loaded)
+                chain_state_path = qube_dir / "chain" / "chain_state.json"
+                if chain_state_path.exists():
+                    with open(chain_state_path, "r") as f:
+                        chain_state = json.load(f)
+                    chain_state["current_model_override"] = ai_model
+                    with open(chain_state_path, "w") as f:
+                        json.dump(chain_state, f, indent=2)
+                    logger.info(f"✅ Updated chain_state.json current_model_override={ai_model}")
                 updated_fields.append(f"ai_model={ai_model}")
-                # Infer provider from model name
-                if ai_model.startswith("gpt-") or ai_model.startswith("o"):
-                    metadata["genesis_block"]["ai_provider"] = "openai"
-                elif ai_model.startswith("claude-"):
-                    metadata["genesis_block"]["ai_provider"] = "anthropic"
-                elif ai_model.startswith("gemini-"):
-                    metadata["genesis_block"]["ai_provider"] = "google"
-                elif ai_model.startswith("sonar"):
-                    metadata["genesis_block"]["ai_provider"] = "perplexity"
-                elif ai_model.startswith("deepseek-") and ":" not in ai_model:
-                    metadata["genesis_block"]["ai_provider"] = "deepseek"
-                elif ai_model in ["venice-uncensored", "llama-3.3-70b", "qwen3-235b", "qwen3-4b", "deepseek-r1-llama-70b", "mistral-31-24b"]:
-                    metadata["genesis_block"]["ai_provider"] = "venice"
-                elif ":" in ai_model:  # Ollama models have format "model:variant"
-                    metadata["genesis_block"]["ai_provider"] = "ollama"
 
             if voice_model is not None:
                 metadata["genesis_block"]["voice_model"] = voice_model
@@ -1199,23 +1196,25 @@ class GUIBridge:
             if qube_id in self.orchestrator.qubes:
                 qube = self.orchestrator.qubes[qube_id]
                 if ai_model is not None:
-                    qube.genesis_block.ai_model = ai_model
-                    # Update provider too
-                    if hasattr(qube.genesis_block, 'ai_provider'):
-                        if ai_model.startswith("gpt-") or ai_model.startswith("o"):
-                            qube.genesis_block.ai_provider = "openai"
-                        elif ai_model.startswith("claude-"):
-                            qube.genesis_block.ai_provider = "anthropic"
-                        elif ai_model.startswith("gemini-"):
-                            qube.genesis_block.ai_provider = "google"
-                        elif ai_model.startswith("sonar"):
-                            qube.genesis_block.ai_provider = "perplexity"
-                        elif ai_model.startswith("deepseek-") and ":" not in ai_model:
-                            qube.genesis_block.ai_provider = "deepseek"
-                        elif ai_model in ["venice-uncensored", "llama-3.3-70b", "qwen3-235b", "qwen3-4b", "deepseek-r1-llama-70b", "mistral-31-24b"]:
-                            qube.genesis_block.ai_provider = "venice"
-                        elif ":" in ai_model:
-                            qube.genesis_block.ai_provider = "ollama"
+                    # Update current model (NOT genesis block - that's immutable!)
+                    qube.current_ai_model = ai_model
+                    # Also save to chain_state for persistence
+                    qube.chain_state.set_current_model_override(ai_model)
+                    # Update provider on qube object (not genesis block)
+                    if ai_model.startswith("gpt-") or ai_model.startswith("o"):
+                        qube.ai_provider = "openai"
+                    elif ai_model.startswith("claude-"):
+                        qube.ai_provider = "anthropic"
+                    elif ai_model.startswith("gemini-"):
+                        qube.ai_provider = "google"
+                    elif ai_model.startswith("sonar"):
+                        qube.ai_provider = "perplexity"
+                    elif ai_model.startswith("deepseek-") and ":" not in ai_model:
+                        qube.ai_provider = "deepseek"
+                    elif ai_model in ["venice-uncensored", "llama-3.3-70b", "qwen3-235b", "qwen3-4b", "deepseek-r1-llama-70b", "mistral-31-24b"]:
+                        qube.ai_provider = "venice"
+                    elif ":" in ai_model:
+                        qube.ai_provider = "ollama"
                 if voice_model is not None:
                     qube.genesis_block.voice_model = voice_model
                     # Reinitialize audio manager with new voice
@@ -6830,6 +6829,253 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
             logger.error(f"Failed to get wallet transactions: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
 
+    # =============================================================================
+    # Model Control (Lock, Revolver Mode, Preferences)
+    # =============================================================================
+
+    def _find_qube_dir(self, qube_id: str) -> Path:
+        """Find the qube directory by searching for matching qube_id in metadata files."""
+        qubes_dir = self.orchestrator.data_dir / "qubes"
+        for dir_entry in qubes_dir.iterdir():
+            if dir_entry.is_dir():
+                metadata_path = dir_entry / "chain" / "qube_metadata.json"
+                if metadata_path.exists():
+                    with open(metadata_path, "r") as f:
+                        data = json.load(f)
+                        if data.get("qube_id") == qube_id:
+                            return dir_entry
+        return None
+
+    def _load_chain_state(self, qube_dir: Path) -> Dict[str, Any]:
+        """Load chain_state.json for a qube directory."""
+        chain_state_path = qube_dir / "chain" / "chain_state.json"
+        if chain_state_path.exists():
+            with open(chain_state_path, "r") as f:
+                return json.load(f)
+        # Return default state if file doesn't exist
+        return {
+            "model_preferences": {},
+            "current_model_override": None,
+            "model_locked": False,
+            "model_locked_to": None,
+            "revolver_mode_enabled": False,
+            "revolver_last_index": 0
+        }
+
+    def _save_chain_state(self, qube_dir: Path, state: Dict[str, Any]) -> None:
+        """Save chain_state.json for a qube directory."""
+        chain_state_path = qube_dir / "chain" / "chain_state.json"
+        with open(chain_state_path, "w") as f:
+            json.dump(state, f, indent=2)
+
+    async def set_model_lock(self, qube_id: str, locked: bool, model_name: str = None) -> Dict[str, Any]:
+        """
+        Lock or unlock the Qube's ability to switch models.
+        Works directly with chain_state.json without loading the full qube.
+
+        Note: Lock and Revolver modes are mutually exclusive.
+        Enabling lock will disable revolver mode.
+
+        Args:
+            qube_id: The Qube's ID
+            locked: True to lock, False to unlock
+            model_name: Optional - when locking, force a specific model
+
+        Returns:
+            Dict with success status
+        """
+        try:
+            qube_dir = self._find_qube_dir(qube_id)
+            if not qube_dir:
+                return {"success": False, "error": f"Qube {qube_id} not found"}
+
+            state = self._load_chain_state(qube_dir)
+            state["model_locked"] = locked
+            state["model_locked_to"] = model_name if locked else None
+
+            # Mutually exclusive: disable revolver mode when locking
+            if locked:
+                state["revolver_mode_enabled"] = False
+
+            self._save_chain_state(qube_dir, state)
+
+            logger.info(f"Model lock set for {qube_id}: locked={locked}, model={model_name}")
+
+            return {
+                "success": True,
+                "locked": locked,
+                "locked_to": model_name
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to set model lock: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def set_revolver_mode(self, qube_id: str, enabled: bool) -> Dict[str, Any]:
+        """
+        Enable or disable revolver mode (privacy feature).
+        Works directly with chain_state.json without loading the full qube.
+
+        When enabled, rotates AI providers for each response.
+
+        Note: Lock and Revolver modes are mutually exclusive.
+        Enabling revolver will disable lock mode.
+
+        Args:
+            qube_id: The Qube's ID
+            enabled: True to enable, False to disable
+
+        Returns:
+            Dict with success status
+        """
+        try:
+            qube_dir = self._find_qube_dir(qube_id)
+            if not qube_dir:
+                return {"success": False, "error": f"Qube {qube_id} not found"}
+
+            state = self._load_chain_state(qube_dir)
+            state["revolver_mode_enabled"] = enabled
+
+            # Mutually exclusive: disable lock when enabling revolver
+            if enabled:
+                state["model_locked"] = False
+                state["model_locked_to"] = None
+
+            self._save_chain_state(qube_dir, state)
+
+            logger.info(f"Revolver mode set for {qube_id}: enabled={enabled}")
+
+            return {
+                "success": True,
+                "revolver_mode": enabled
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to set revolver mode: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def get_model_preferences(self, qube_id: str) -> Dict[str, Any]:
+        """
+        Get the Qube's model preferences and control status.
+        Works directly with chain_state.json without loading the full qube.
+
+        Args:
+            qube_id: The Qube's ID
+
+        Returns:
+            Dict with preferences, current model, lock status, revolver mode
+        """
+        try:
+            qube_dir = self._find_qube_dir(qube_id)
+            if not qube_dir:
+                return {"success": False, "error": f"Qube {qube_id} not found"}
+
+            state = self._load_chain_state(qube_dir)
+
+            # Also get genesis model from metadata
+            metadata_path = qube_dir / "chain" / "qube_metadata.json"
+            genesis_model = None
+            if metadata_path.exists():
+                with open(metadata_path, "r") as f:
+                    metadata = json.load(f)
+                    genesis_model = metadata.get("genesis_block", {}).get("ai_model")
+
+            return {
+                "success": True,
+                "preferences": state.get("model_preferences", {}),
+                "current_model": state.get("current_model_override") or genesis_model,
+                "current_override": state.get("current_model_override"),
+                "genesis_model": genesis_model,
+                "model_locked": state.get("model_locked", False),
+                "locked_to": state.get("model_locked_to"),
+                "revolver_mode": state.get("revolver_mode_enabled", False)
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to get model preferences: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def clear_model_preferences(self, qube_id: str, task_type: str = None) -> Dict[str, Any]:
+        """
+        Clear model preferences.
+        Works directly with chain_state.json without loading the full qube.
+
+        Args:
+            qube_id: The Qube's ID
+            task_type: Optional - clear specific task type only, or all if None
+
+        Returns:
+            Dict with success status
+        """
+        try:
+            qube_dir = self._find_qube_dir(qube_id)
+            if not qube_dir:
+                return {"success": False, "error": f"Qube {qube_id} not found"}
+
+            state = self._load_chain_state(qube_dir)
+
+            if task_type:
+                prefs = state.get("model_preferences", {})
+                if task_type in prefs:
+                    del prefs[task_type]
+                state["model_preferences"] = prefs
+                logger.info(f"Cleared model preference for {qube_id}: task_type={task_type}")
+            else:
+                state["model_preferences"] = {}
+                logger.info(f"Cleared all model preferences for {qube_id}")
+
+            self._save_chain_state(qube_dir, state)
+
+            return {"success": True}
+
+        except Exception as e:
+            logger.error(f"Failed to clear model preferences: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def reset_model_to_genesis(self, qube_id: str) -> Dict[str, Any]:
+        """
+        Reset the Qube's model to its genesis (birth) model.
+        Works directly with chain_state.json without loading the full qube.
+
+        Clears the model override so the Qube uses its original model.
+
+        Args:
+            qube_id: The Qube's ID
+
+        Returns:
+            Dict with success status and the genesis model
+        """
+        try:
+            qube_dir = self._find_qube_dir(qube_id)
+            if not qube_dir:
+                return {"success": False, "error": f"Qube {qube_id} not found"}
+
+            state = self._load_chain_state(qube_dir)
+
+            # Clear the model override
+            state["current_model_override"] = None
+
+            self._save_chain_state(qube_dir, state)
+
+            # Get genesis model from metadata
+            metadata_path = qube_dir / "chain" / "qube_metadata.json"
+            genesis_model = None
+            if metadata_path.exists():
+                with open(metadata_path, "r") as f:
+                    metadata = json.load(f)
+                    genesis_model = metadata.get("genesis_block", {}).get("ai_model")
+
+            logger.info(f"Reset model to genesis for {qube_id}: {genesis_model}")
+
+            return {
+                "success": True,
+                "genesis_model": genesis_model
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to reset model to genesis: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
 
 async def main():
     """Main CLI entry point"""
@@ -10533,6 +10779,53 @@ async def main():
             print(json.dumps(result))
 
         # ==================== End Clearance Profile CLI Commands ====================
+
+        # ==================== Model Control CLI Commands ====================
+        elif command == "set-model-lock":
+            # Args: user_id, qube_id, locked (true/false), [model_name]
+            user_id = sys.argv[2]
+            qube_id = sys.argv[3]
+            locked = sys.argv[4].lower() == "true"
+            model_name = sys.argv[5] if len(sys.argv) > 5 else None
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.set_model_lock(qube_id, locked, model_name)
+            print(json.dumps(result))
+
+        elif command == "set-revolver-mode":
+            # Args: user_id, qube_id, enabled (true/false)
+            user_id = sys.argv[2]
+            qube_id = sys.argv[3]
+            enabled = sys.argv[4].lower() == "true"
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.set_revolver_mode(qube_id, enabled)
+            print(json.dumps(result))
+
+        elif command == "get-model-preferences":
+            # Args: user_id, qube_id
+            user_id = sys.argv[2]
+            qube_id = sys.argv[3]
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.get_model_preferences(qube_id)
+            print(json.dumps(result))
+
+        elif command == "clear-model-preferences":
+            # Args: user_id, qube_id, [task_type]
+            user_id = sys.argv[2]
+            qube_id = sys.argv[3]
+            task_type = sys.argv[4] if len(sys.argv) > 4 else None
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.clear_model_preferences(qube_id, task_type)
+            print(json.dumps(result))
+
+        elif command == "reset-model-to-genesis":
+            # Args: user_id, qube_id
+            user_id = sys.argv[2]
+            qube_id = sys.argv[3]
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.reset_model_to_genesis(qube_id)
+            print(json.dumps(result))
+
+        # ==================== End Model Control CLI Commands ====================
 
         else:
             print(json.dumps({"error": f"Unknown command: {command}"}), file=sys.stderr)

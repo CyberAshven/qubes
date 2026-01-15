@@ -10,7 +10,7 @@ import { useAuth } from '../../hooks/useAuth';
 import { useQubeOrder } from '../../hooks/useQubeOrder';
 import { useQubeSelection } from '../../hooks/useQubeSelection';
 import { useWalletCache } from '../../hooks/useWalletCache';
-// import { useModels } from '../../hooks/useModels'; // Temporarily disabled for debugging
+import { useModels } from '../../hooks/useModels';
 import {
   DndContext,
   closestCenter,
@@ -1006,6 +1006,22 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
   const { userId, password: masterPassword } = useAuth();
   const { getWalletData, setBalance: setCachedBalance } = useWalletCache();
 
+  // Fetch models from backend (all models from ModelRegistry)
+  const {
+    providers: dynamicProviders,
+    models: dynamicModels,
+    defaults: dynamicDefaults,
+    fetchModels,
+    isLoaded: modelsLoaded,
+    getModelsForProvider: getModelsFromHook,
+    getDefaultModel: getDefaultFromHook,
+  } = useModels();
+
+  // Fetch models on mount
+  useEffect(() => {
+    fetchModels();
+  }, [fetchModels]);
+
   // Wallet Security state
   const [walletSecurityModalOpen, setWalletSecurityModalOpen] = useState(false);
   const [walletSecurity, setWalletSecurity] = useState<{
@@ -1176,8 +1192,22 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
     ollama: 'llama3.3:70b',
   };
 
-  const getModelsForProvider = (provider: string) => fallbackModels[provider] || [];
-  const getDefaultModel = (provider: string) => fallbackDefaults[provider] || '';
+  // Use dynamic models from hook when loaded, fallback to static list otherwise
+  const getModelsForProvider = (provider: string) => {
+    if (modelsLoaded) {
+      return getModelsFromHook(provider);
+    }
+    return fallbackModels[provider] || [];
+  };
+  const getDefaultModel = (provider: string) => {
+    if (modelsLoaded) {
+      return getDefaultFromHook(provider);
+    }
+    return fallbackDefaults[provider] || '';
+  };
+
+  // Use dynamic providers when loaded
+  const availableProviders = modelsLoaded && dynamicProviders.length > 0 ? dynamicProviders : providers;
 
   // Infer provider from model if provider is unknown - MUST be defined before useState that uses it
   const inferProvider = (model: string): string => {
@@ -1213,6 +1243,13 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
   const [loadingVisualizerSettings, setLoadingVisualizerSettings] = useState(false);
   const [savingVisualizerSettings, setSavingVisualizerSettings] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error'; isExiting?: boolean } | null>(null);
+
+  // Model Control state
+  const [modelLocked, setModelLocked] = useState(false);
+  const [lockedToModel, setLockedToModel] = useState<string | null>(null);
+  const [revolverMode, setRevolverMode] = useState(false);
+  const [modelPreferences, setModelPreferences] = useState<Record<string, { model: string; reason?: string }>>({});
+  const [loadingModelPrefs, setLoadingModelPrefs] = useState(false);
   const [availableMonitors, setAvailableMonitors] = useState<Array<{id: number; name: string}>>([]);
   const [isEditingVoice, setIsEditingVoice] = useState(false);
   const [isEditingColor, setIsEditingColor] = useState(false);
@@ -1301,6 +1338,99 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
       loadWalletSecurity();
     }
   }, [flipState, qube.recipient_address, userId, masterPassword]);
+
+  // Load model preferences on mount
+  useEffect(() => {
+    const loadModelPreferences = async () => {
+      if (!userId) return;
+      try {
+        setLoadingModelPrefs(true);
+        const result = await invoke<{
+          success: boolean;
+          preferences: Record<string, { model: string; reason?: string }>;
+          model_locked: boolean;
+          locked_to: string | null;
+          revolver_mode: boolean;
+        }>('get_model_preferences', {
+          userId,
+          qubeId: qube.qube_id
+        });
+        if (result.success) {
+          setModelLocked(result.model_locked);
+          setLockedToModel(result.locked_to);
+          setRevolverMode(result.revolver_mode);
+          setModelPreferences(result.preferences || {});
+        }
+      } catch (error) {
+        console.error('Failed to load model preferences:', error);
+      } finally {
+        setLoadingModelPrefs(false);
+      }
+    };
+    loadModelPreferences();
+  }, [userId, qube.qube_id]);
+
+  // Toggle model lock (mutually exclusive with revolver mode)
+  const handleToggleModelLock = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!userId || loadingModelPrefs) return;
+    try {
+      const newLocked = !modelLocked;
+      const result = await invoke<{
+        success: boolean;
+        locked: boolean;
+        locked_to: string | null;
+        error?: string;
+      }>('set_model_lock', {
+        userId,
+        qubeId: qube.qube_id,
+        locked: newLocked,
+        modelName: newLocked ? qube.ai_model : null // Lock to current model
+      });
+      if (result.success) {
+        setModelLocked(result.locked);
+        setLockedToModel(result.locked_to);
+        // Lock disables revolver mode (mutually exclusive)
+        if (result.locked) {
+          setRevolverMode(false);
+        }
+      } else if (result.error) {
+        console.error('Model lock error:', result.error);
+      }
+    } catch (error) {
+      console.error('Failed to toggle model lock:', error);
+    }
+  };
+
+  // Toggle revolver mode (mutually exclusive with model lock)
+  const handleToggleRevolverMode = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!userId || loadingModelPrefs) return;
+    try {
+      const newEnabled = !revolverMode;
+      const result = await invoke<{
+        success: boolean;
+        revolver_mode: boolean;
+        error?: string;
+      }>('set_revolver_mode', {
+        userId,
+        qubeId: qube.qube_id,
+        enabled: newEnabled
+      });
+      if (result.success) {
+        setRevolverMode(result.revolver_mode);
+        // Revolver disables lock mode (mutually exclusive)
+        if (result.revolver_mode) {
+          setModelLocked(false);
+          setLockedToModel(null);
+        }
+      } else if (result.error) {
+        console.error('Revolver mode error:', result.error);
+      }
+    } catch (error) {
+      console.error('Failed to toggle revolver mode:', error);
+    }
+  };
 
   const handleFlip = () => {
     const newFlipState = (flipState + 1) % 3;
@@ -1813,15 +1943,26 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
   };
 
   return (
-    <div className="relative w-full overflow-hidden" style={{ perspective: '1000px', height: '600px' }}>
+    <div className="relative w-full" style={{ padding: '8px', margin: '-8px' }}>
+      {/* Selection outline - outside overflow-hidden so it's not clipped */}
       <div
-        className="relative w-full h-full"
+        className="absolute inset-2 rounded-xl pointer-events-none"
         style={{
-          transformStyle: 'preserve-3d',
-          transition: 'transform 0.6s ease-in-out',
-          transform: `rotateY(${rotation}deg)`,
+          outline: isSelected ? `3px solid ${qube.favorite_color || '#00ff88'}` : undefined,
+          outlineOffset: '2px',
+          boxShadow: isSelected ? `0 0 25px ${qube.favorite_color || '#00ff88'}70` : undefined,
+          zIndex: isSelected ? 5 : undefined,
         }}
-      >
+      />
+      <div className="relative w-full overflow-hidden rounded-xl" style={{ perspective: '1000px', height: '600px' }}>
+        <div
+          className="relative w-full h-full"
+          style={{
+            transformStyle: 'preserve-3d',
+            transition: 'transform 0.6s ease-in-out',
+            transform: `rotateY(${rotation}deg)`,
+          }}
+        >
         {/* FRONT SIDE */}
         <div
           className="absolute w-full h-full"
@@ -1842,8 +1983,15 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
               toggleSelection(qube.qube_id, e.ctrlKey || e.metaKey, e.shiftKey);
             }}
             style={{
-              border: isSelected ? `3px solid ${qube.favorite_color || '#00ff88'}` : undefined,
-              boxShadow: isSelected ? `0 0 20px ${qube.favorite_color || '#00ff88'}60` : undefined,
+              // Use box-shadows for lock/revolver inner border and glows
+              boxShadow: [
+                // Inner border for lock/revolver (inset shadow)
+                modelLocked ? 'inset 0 0 0 4px rgba(255, 170, 0, 0.8)' : null,
+                revolverMode ? 'inset 0 0 0 4px rgba(0, 188, 212, 0.8)' : null,
+                // Glow effects for lock/revolver
+                modelLocked ? '0 0 20px rgba(255, 170, 0, 0.5)' : null,
+                revolverMode ? '0 0 20px rgba(0, 188, 212, 0.5)' : null,
+              ].filter(Boolean).join(', ') || undefined,
             }}
           >
             {/* Flip Button - Top Left Corner */}
@@ -1858,14 +2006,39 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
               🔄
             </button>
 
-            {/* TTS Toggle - Top Right Corner */}
-            <button
-              onClick={handleToggleTTS}
-              className="absolute top-3 right-3 text-2xl hover:scale-110 transition-transform cursor-pointer z-10"
-              title={qube.tts_enabled ? "TTS Enabled - Click to disable" : "TTS Disabled - Click to enable"}
-            >
-              {qube.tts_enabled ? '🔊' : '🔇'}
-            </button>
+            {/* Control Icons - Top Right Corner (Vertical) */}
+            <div className="absolute top-3 right-3 flex flex-col gap-2 z-10">
+              {/* TTS Toggle */}
+              <button
+                onClick={(e) => { e.stopPropagation(); handleToggleTTS(); }}
+                className="text-2xl hover:scale-110 transition-transform cursor-pointer"
+                title={qube.tts_enabled ? "TTS Enabled - Click to disable" : "TTS Disabled - Click to enable"}
+              >
+                {qube.tts_enabled ? '🔊' : '🔇'}
+              </button>
+
+              {/* Model Lock Toggle */}
+              <button
+                onClick={(e) => handleToggleModelLock(e)}
+                className={`text-xl hover:scale-110 transition-all cursor-pointer ${
+                  modelLocked ? 'drop-shadow-[0_0_6px_rgba(255,170,0,0.8)]' : 'opacity-40 hover:opacity-70'
+                }`}
+                title={modelLocked ? `Model locked to ${lockedToModel || qube.ai_model}` : 'Lock model (prevent switching)'}
+              >
+                {modelLocked ? '🔒' : '🔓'}
+              </button>
+
+              {/* Revolver Mode Toggle */}
+              <button
+                onClick={(e) => handleToggleRevolverMode(e)}
+                className={`text-xl hover:scale-110 transition-all cursor-pointer ${
+                  revolverMode ? 'drop-shadow-[0_0_6px_rgba(0,188,212,0.8)]' : 'opacity-40 hover:opacity-70'
+                }`}
+                title={revolverMode ? 'Revolver mode ON (rotating providers)' : 'Enable revolver mode (rotate providers)'}
+              >
+                🎰
+              </button>
+            </div>
 
             {/* Avatar */}
             <div className="flex flex-col items-center mb-4">
@@ -1911,7 +2084,7 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
             </div>
 
       {/* Stats */}
-      <div className="space-y-2 mb-4 text-sm">
+      <div className="space-y-2 mb-4 text-sm flex-1">
         {/* Blockchain */}
         {qube.home_blockchain && (
           <div className="flex justify-between items-center">
@@ -1940,7 +2113,7 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
                   onChange={(e) => handleProviderChange(e.target.value)}
                   className="flex-1 px-2 py-1 bg-bg-tertiary border border-glass-border rounded text-xs text-text-primary focus:outline-none focus:ring-1 focus:ring-accent-primary/50"
                 >
-                  {providers.map((option) => (
+                  {availableProviders.map((option) => (
                     <option key={option.value} value={option.value}>
                       {option.label}
                     </option>
@@ -1984,7 +2157,7 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
             <div className="flex gap-1 items-center">
               <span className="text-text-primary font-medium">{formatModelName(qube.ai_model)}</span>
               <button
-                onClick={() => setIsEditingModel(true)}
+                onClick={(e) => { e.stopPropagation(); setIsEditingModel(true); }}
                 className="px-1 text-accent-primary hover:text-accent-primary/70 transition-colors"
                 title="Edit model"
               >
@@ -2126,7 +2299,7 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
                   onChange={(e) => handleEvalProviderChange(e.target.value)}
                   className="flex-1 px-2 py-1 bg-bg-tertiary border border-glass-border rounded text-xs text-text-primary focus:outline-none focus:ring-1 focus:ring-accent-primary/50"
                 >
-                  {providers.map((option) => (
+                  {availableProviders.map((option) => (
                     <option key={option.value} value={option.value}>
                       {option.label}
                     </option>
@@ -2194,6 +2367,7 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
             </span>
           </div>
         )}
+
       </div>
 
             {/* Actions */}
@@ -2717,6 +2891,7 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
             </div>
           </GlassCard>
         </div>
+      </div>
       </div>
 
       {/* Toast Notification */}

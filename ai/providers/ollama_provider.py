@@ -36,13 +36,21 @@ class OllamaModel(AIModelInterface):
 
     # Models that don't support native tool/function calling
     # These will use prompt-based tool calling instead
-    # Add models here as needed based on testing
+    # Most Ollama models work better with prompt-based tools
     TOOL_INCAPABLE_MODELS = {
+        "llama3.3:70b",      # Large model, but native tools unreliable
         "codellama:7b",      # Code-focused, no function calling
         "codellama:13b",
         "codellama:34b",
         "llama3.2:1b",       # Very small, limited tool support
+        "llama3.2:3b",
         "gemma2:9b",         # Gemma has weak native tool support
+        "phi4:14b",          # Phi has inconsistent tool support
+        "mistral:7b",
+        "qwen2.5:7b",
+        "qwen3:30b",
+        "qwen3:235b",
+        "deepseek-r1:8b",
     }
 
     def __init__(self, model_name: str, api_key: str = "ollama", base_url: str = "http://localhost:11434/v1", **kwargs):
@@ -145,6 +153,18 @@ class OllamaModel(AIModelInterface):
                         model=self.model_name,
                         tool_calls_found=len(tool_calls),
                         tool_names=[tc["name"] for tc in tool_calls]
+                    )
+                else:
+                    # Model had tools available but didn't use them
+                    has_tool_keywords = any(kw in content.lower() for kw in [
+                        "switch", "model", "search", "remember", "send"
+                    ])
+                    logger.warning(
+                        "ollama_prompt_tools_not_used",
+                        model=self.model_name,
+                        response_preview=content[:200] if content else "(empty)",
+                        has_tool_keywords=has_tool_keywords,
+                        hint="Model may have narrated action instead of calling tool"
                     )
 
             # Ollama is free (local), so cost is 0

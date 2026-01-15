@@ -147,7 +147,9 @@ class Session:
             # Assign block number based on this qube's next_negative_index
             # -1 is the sentinel value meaning "assign from chain_state"
             if block.block_number == -1 or block.block_number >= 0:
-                # Re-read from chain_state in case another process updated it
+                # CRITICAL: Reload chain_state from file to get latest value
+                # Another process may have updated it since we loaded our in-memory copy
+                self.qube.chain_state._load()
                 self.next_negative_index = self.qube.chain_state.state.get("next_negative_index", -1)
 
                 # Assigning a new block number from this qube's chain state
@@ -2089,6 +2091,23 @@ IMPORTANT: Return ONLY valid JSON, no other text."""
             if session_blocks:
                 session.session_start = min(b.timestamp for b in session_blocks)
                 session.next_negative_index = min(b.block_number for b in session_blocks) - 1
+
+                # CRITICAL: Sync chain_state with recovered session
+                # This fixes issues where chain_state.json save failed or was corrupted
+                # The block files on disk are the source of truth
+                chain_state_index = qube.chain_state.state.get("next_negative_index", -1)
+                if chain_state_index != session.next_negative_index:
+                    logger.warning(
+                        "session_recovery_fixing_chain_state",
+                        chain_state_index=chain_state_index,
+                        recovered_index=session.next_negative_index,
+                        blocks_found=len(session_blocks),
+                        hint="chain_state.json was out of sync with session blocks on disk"
+                    )
+                    qube.chain_state.update_session(
+                        session_block_count=len(session_blocks),
+                        next_negative_index=session.next_negative_index
+                    )
             else:
                 session.session_start = int(datetime.now(timezone.utc).timestamp())
                 session.next_negative_index = -1

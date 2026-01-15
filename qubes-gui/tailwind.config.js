@@ -58,10 +58,15 @@ export default {
           '0%': { backgroundPosition: '200% 0' },
           '100%': { backgroundPosition: '-200% 0' },
         },
+        'spin-slow': {
+          '0%': { transform: 'rotate(0deg)' },
+          '100%': { transform: 'rotate(360deg)' },
+        },
       },
       animation: {
         pulse: 'pulse 2s ease-in-out infinite',
         shimmer: 'shimmer 2s linear infinite',
+        'spin-slow': 'spin-slow 3s linear infinite',
       },
     },
   },

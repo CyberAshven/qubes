@@ -10,6 +10,7 @@ import json
 import asyncio
 
 from ai.tools.registry import ToolDefinition, ToolRegistry
+from ai.tools.model_switch import switch_model, SWITCH_MODEL_SCHEMA, SWITCH_MODEL_DESCRIPTION
 from ai.model_registry import ModelRegistry
 from core.exceptions import AIError
 from utils.logging import get_logger
@@ -717,6 +718,20 @@ def register_default_tools(registry: ToolRegistry) -> None:
             "required": ["amount_sats"]
         },
         handler=lambda params: send_bch_handler(qube, params)
+    ))
+
+    # Model Switch - allows Qube to change their AI model
+    registry.register(ToolDefinition(
+        name="switch_model",
+        description=SWITCH_MODEL_DESCRIPTION,
+        parameters=SWITCH_MODEL_SCHEMA,
+        handler=lambda params: switch_model(
+            qube=qube,
+            model_name=params["model_name"],
+            task_type=params.get("task_type"),
+            reason=params.get("reason"),
+            save_preference=params.get("save_preference", False)
+        )
     ))
 
     logger.info("default_tools_registered", tool_count=len(registry.tools), qube_id=qube.qube_id)

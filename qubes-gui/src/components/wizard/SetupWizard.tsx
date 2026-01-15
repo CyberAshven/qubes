@@ -22,6 +22,7 @@ export interface WizardData {
     deepseek?: string;
     perplexity?: string;
     venice?: string;
+    nanogpt?: string;
     pinata?: string;
   };
 }

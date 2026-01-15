@@ -1354,6 +1354,13 @@ class UserOrchestrator:
                         block_file.unlink()
                         logger.debug("deleted_block", file=block_file.name)
 
+            # 1b. Delete all session blocks
+            session_blocks_dir = qube_dir / "blocks" / "session"
+            if session_blocks_dir.exists():
+                shutil.rmtree(session_blocks_dir)
+                session_blocks_dir.mkdir(parents=True, exist_ok=True)  # Recreate empty
+                logger.debug("deleted_session_blocks")
+
             # 2. Delete relationships folder
             relationships_dir = qube_dir / "relationships"
             if relationships_dir.exists():
@@ -1456,7 +1463,13 @@ class UserOrchestrator:
                     "integrity_verified": True,
                     "merkle_tree_valid": True,
                     "avatar_description": None,
-                    "avatar_description_generated_at": None
+                    "avatar_description_generated_at": None,
+                    # Clear model override and lock settings on reset
+                    "current_model_override": None,
+                    "model_locked": False,
+                    "model_locked_to": None,
+                    "revolver_mode_enabled": False,
+                    "revolver_last_index": 0
                 })
 
                 with open(chain_state_path, "w", encoding="utf-8") as f:

@@ -239,7 +239,25 @@ class QubeReasoner:
                 )
 
             # Load AI model
-            model_to_use = model_name or getattr(self.qube, 'current_ai_model', 'gpt-4o-mini')
+            # Priority: explicit model_name > revolver mode > chain_state override > qube's default
+            if model_name:
+                model_to_use = model_name
+            else:
+                # Check if revolver mode should select the model
+                revolver_model = self._apply_revolver_mode()
+                if revolver_model:
+                    model_to_use = revolver_model
+                    # Update the qube's current model for UI sync
+                    self.qube.current_ai_model = model_to_use
+                else:
+                    # Check for model override from switch_model tool (persisted in chain_state)
+                    override_model = self.qube.chain_state.get_current_model_override()
+                    if override_model:
+                        model_to_use = override_model
+                        # Sync to runtime attribute for UI
+                        self.qube.current_ai_model = override_model
+                    else:
+                        model_to_use = getattr(self.qube, 'current_ai_model', 'gpt-4o-mini')
 
             # Get provider from ModelRegistry
             model_info = ModelRegistry.get_model_info(model_to_use)
@@ -348,14 +366,28 @@ class QubeReasoner:
                     qube_id=self.qube.qube_id
                 )
 
-                # Generate response (with fallback if enabled)
-                if self.enable_fallback and self.fallback_chain:
+                # Generate response
+                # Revolver mode has its own retry mechanism, so it bypasses the fallback chain
+                is_revolver_active = self.qube.chain_state.is_revolver_mode_enabled()
+
+                if is_revolver_active:
+                    # Revolver mode - use provider rotation with retry on failure
+                    response, model_to_use, model_info = await self._generate_with_revolver_retry(
+                        context_messages=context_messages,
+                        tools=tools,
+                        temperature=temperature,
+                        model_to_use=model_to_use,
+                        model_info=model_info
+                    )
+                elif self.enable_fallback and self.fallback_chain:
+                    # Standard fallback chain
                     response = await self.fallback_chain.generate_with_fallback(
                         messages=context_messages,
                         tools=tools,
                         temperature=temperature
                     )
                 else:
+                    # Direct model call (no fallback)
                     response = await self.model.generate(
                         messages=context_messages,
                         tools=tools,
@@ -921,6 +953,11 @@ Make your move using the chess_move tool. Use one of the legal moves listed abov
         wallet_context = await self._build_wallet_context()
         if wallet_context:
             identity_block += f"\n{wallet_context}"
+
+        # Add model awareness (available models, preferences, current state)
+        model_awareness_context = self._build_model_awareness_context()
+        if model_awareness_context:
+            identity_block += f"\n{model_awareness_context}"
 
         # Combine genesis prompt with identity awareness
         base_system_prompt = f"""{base_genesis_prompt}
@@ -1760,6 +1797,459 @@ Multiple entities present. Be careful about what you share.
         except Exception as e:
             logger.warning("failed_to_build_skills_context", error=str(e))
             return ""
+
+    def _build_model_awareness_context(self) -> str:
+        """
+        Build model awareness context for system prompt.
+
+        Shows the Qube:
+        - Current model and birth model
+        - Available models (grouped by provider, only those with API keys)
+        - Unavailable models (no API key)
+        - Stored preferences
+        - Lock/revolver status
+
+        Returns:
+            Formatted model awareness context string
+        """
+        try:
+            from ai.model_registry import ModelRegistry
+
+            # Get configured providers from qube.api_keys
+            api_keys = getattr(self.qube, 'api_keys', {})
+            configured_providers = set(api_keys.keys())
+
+            # Ollama is always "available" (local)
+            configured_providers.add("ollama")
+
+            # Get current and genesis model
+            current_model = getattr(self.qube, 'current_ai_model', 'unknown')
+            # Read genesis model from actual chain block (not potentially corrupted metadata)
+            try:
+                chain_genesis = self.qube.memory_chain.get_block(0)
+                genesis_model = chain_genesis.ai_model
+            except Exception:
+                # Fallback to in-memory genesis block if chain read fails
+                genesis_model = self.qube.genesis_block.ai_model
+
+            # Check override
+            override = self.qube.chain_state.get_current_model_override()
+            if override:
+                current_model = override
+
+            # Group models by provider
+            available_models = {}  # provider -> list of (name, description)
+            unavailable_models = {}
+
+            for model_name, info in ModelRegistry.MODELS.items():
+                provider = info["provider"]
+                description = info.get("description", "")
+
+                if provider in configured_providers:
+                    if provider not in available_models:
+                        available_models[provider] = []
+                    available_models[provider].append((model_name, description))
+                else:
+                    if provider not in unavailable_models:
+                        unavailable_models[provider] = []
+                    unavailable_models[provider].append((model_name, description))
+
+            # Build context string
+            context = "\n# My Cognitive Architecture:\n"
+
+            # Current model info
+            current_info = ModelRegistry.get_model_info(current_model)
+            current_provider = current_info["provider"] if current_info else "unknown"
+            current_desc = current_info.get("description", "") if current_info else ""
+
+            context += f"**Current Model**: {current_model} ({current_provider})\n"
+            if current_desc:
+                context += f"  {current_desc}\n"
+            context += f"**Birth Model**: {genesis_model} (from my genesis block)\n"
+
+            # Available models - show ALL models so Qube knows its full capabilities
+            if available_models:
+                context += "\n## Available Models (I have API keys for these):\n"
+                for provider in sorted(available_models.keys()):
+                    models = available_models[provider]
+                    context += f"\n**{provider.title()}**\n"
+                    for name, desc in models:
+                        marker = " ← current" if name == current_model else ""
+                        context += f"  • {name}{marker}\n"
+
+            # Unavailable models (brief summary)
+            if unavailable_models:
+                unavailable_providers = sorted(unavailable_models.keys())
+                context += f"\n## Unavailable Providers (no API key):\n"
+                context += f"  {', '.join(unavailable_providers)}\n"
+
+            # Stored preferences
+            preferences = self.qube.chain_state.get_all_model_preferences()
+            if preferences:
+                context += "\n## My Model Preferences:\n"
+                for task_type, pref in preferences.items():
+                    model = pref.get("model", "unknown")
+                    reason = pref.get("reason", "")
+                    if reason:
+                        context += f"  • {task_type}: {model} - \"{reason}\"\n"
+                    else:
+                        context += f"  • {task_type}: {model}\n"
+            else:
+                context += "\n## My Model Preferences:\n"
+                context += "  No preferences set yet. I can save preferences for different task types.\n"
+
+            # Lock and revolver status
+            is_locked = self.qube.chain_state.is_model_locked()
+            locked_to = self.qube.chain_state.get_locked_model()
+            revolver_mode = self.qube.chain_state.is_revolver_mode_enabled()
+
+            context += "\n## Model Control Status:\n"
+            if is_locked:
+                if locked_to:
+                    context += f"  **Model Locked**: Yes - locked to {locked_to} by owner\n"
+                else:
+                    context += f"  **Model Locked**: Yes - I cannot switch models\n"
+            else:
+                context += "  **Model Locked**: No - I can switch models freely\n"
+
+            if revolver_mode:
+                context += "  **Revolver Mode**: ON - provider rotates each response for privacy\n"
+            else:
+                context += "  **Revolver Mode**: OFF\n"
+
+            # Usage note
+            context += "\n**Model Switching**: Use the `switch_model` tool to change models. "
+            context += "Let your owner know naturally when switching (e.g., \"I'll use Claude for this code review...\").\n"
+
+            return context
+
+        except Exception as e:
+            logger.warning("failed_to_build_model_awareness_context", error=str(e))
+            return ""
+
+    def _get_available_providers_for_revolver(self) -> list[tuple[str, str]]:
+        """
+        Get list of ALL available models for revolver mode rotation.
+
+        Returns:
+            List of (provider, model_name) tuples for all models from providers
+            with valid API keys or working local setups (Ollama).
+            Models are shuffled to ensure variety in rotation.
+        """
+        import random
+
+        available = []
+        api_keys = getattr(self.qube, 'api_keys', {})
+
+        from ai.model_registry import ModelRegistry
+
+        # Get all configured providers (those with API keys)
+        configured_providers = set(api_keys.keys())
+
+        # Add ALL models from configured providers
+        for model_name, model_info in ModelRegistry.MODELS.items():
+            provider = model_info.get("provider")
+
+            if provider == "ollama":
+                # Skip Ollama models here - handled separately below
+                continue
+
+            if provider in configured_providers:
+                available.append((provider, model_name))
+
+        # Check Ollama separately (local models)
+        try:
+            import httpx
+            response = httpx.get("http://localhost:11434/api/tags", timeout=2.0)
+            if response.status_code == 200:
+                data = response.json()
+                ollama_models = data.get("models", [])
+
+                # Get supported Ollama models from registry
+                supported_ollama = {
+                    name: info for name, info in ModelRegistry.MODELS.items()
+                    if info.get("provider") == "ollama"
+                }
+
+                # Add Ollama models that are both installed AND in our registry
+                for model_data in ollama_models:
+                    model_name = model_data.get("name", "")
+                    base_name = model_name.split(":")[0] if ":" in model_name else model_name
+
+                    if model_name in supported_ollama:
+                        available.append(("ollama", model_name))
+                    elif base_name in supported_ollama:
+                        available.append(("ollama", base_name))
+        except Exception:
+            pass  # Ollama not running
+
+        # Shuffle to ensure variety (seeded by qube_id for consistency within session)
+        # But use a different seed each time based on current index to get different orders
+        current_index = self.qube.chain_state.get_next_revolver_index(max(1, len(available)))
+        random.seed(f"{self.qube.qube_id}_{current_index // len(available) if available else 0}")
+        random.shuffle(available)
+
+        logger.info(
+            "revolver_available_models",
+            count=len(available),
+            providers=list(set(p for p, m in available)),
+            configured_api_keys=list(configured_providers),
+            sample_models=[(p, m) for p, m in available[:10]] if available else [],
+            qube_id=self.qube.qube_id
+        )
+
+        return available
+
+    def _apply_revolver_mode(self) -> Optional[str]:
+        """
+        Apply revolver mode rotation if enabled.
+
+        Rotates through available providers for privacy.
+
+        Returns:
+            Model name to use, or None if revolver mode is not active or no providers available.
+        """
+        try:
+            # Check if revolver mode is enabled
+            if not self.qube.chain_state.is_revolver_mode_enabled():
+                return None
+
+            # Check if model is locked (lock takes priority over revolver)
+            if self.qube.chain_state.is_model_locked():
+                logger.debug("revolver_skipped_model_locked")
+                return None
+
+            # Get available providers
+            providers = self._get_available_providers_for_revolver()
+            if not providers:
+                logger.warning("revolver_no_providers_available")
+                return None
+
+            if len(providers) == 1:
+                # Only one provider, no point rotating
+                logger.debug("revolver_single_provider", provider=providers[0][0])
+                return providers[0][1]
+
+            # Get next provider index
+            next_index = self.qube.chain_state.get_next_revolver_index(len(providers))
+            provider, model = providers[next_index]
+
+            # Increment for next time
+            self.qube.chain_state.increment_revolver_index(len(providers))
+
+            logger.info(
+                "revolver_mode_rotated",
+                provider=provider,
+                model=model,
+                index=next_index,
+                total_providers=len(providers),
+                qube_id=self.qube.qube_id
+            )
+
+            return model
+
+        except Exception as e:
+            logger.warning("revolver_mode_failed", error=str(e))
+            return None
+
+    async def _generate_with_revolver_retry(
+        self,
+        context_messages: list,
+        tools: list,
+        temperature: float,
+        model_to_use: str,
+        model_info: dict
+    ) -> tuple[Any, str, dict]:
+        """
+        Generate response with automatic retry on failure when in revolver mode.
+
+        If the current provider fails, automatically tries the next provider
+        in the rotation until one succeeds or all have been exhausted.
+
+        Args:
+            context_messages: The messages to send
+            tools: Tools available for the model
+            temperature: Generation temperature
+            model_to_use: Initial model to use
+            model_info: Model info from registry
+
+        Returns:
+            Tuple of (response, model_used, model_info) - may differ from input if retry occurred
+        """
+        # Check if revolver mode is active
+        if not self.qube.chain_state.is_revolver_mode_enabled():
+            # Not in revolver mode, just do normal generation
+            response = await self.model.generate(
+                messages=context_messages,
+                tools=tools,
+                temperature=temperature
+            )
+            return response, model_to_use, model_info
+
+        # Get all available providers for fallback
+        providers = self._get_available_providers_for_revolver()
+        if not providers:
+            # No providers available, try with current model anyway
+            response = await self.model.generate(
+                messages=context_messages,
+                tools=tools,
+                temperature=temperature
+            )
+            return response, model_to_use, model_info
+
+        # Find current model's index in provider list
+        current_index = 0
+        for i, (provider, model) in enumerate(providers):
+            if model == model_to_use:
+                current_index = i
+                break
+
+        # Try each provider in rotation
+        tried_providers = set()
+        last_error = None
+
+        for attempt in range(len(providers)):
+            try_index = (current_index + attempt) % len(providers)
+            provider, model = providers[try_index]
+
+            if model in tried_providers:
+                continue
+            tried_providers.add(model)
+
+            try:
+                # Get API key for this provider
+                api_keys = getattr(self.qube, 'api_keys', {})
+                api_key = api_keys.get(provider) if provider != "ollama" else "ollama"
+
+                if not api_key and provider != "ollama":
+                    logger.debug(
+                        "revolver_skip_no_api_key",
+                        provider=provider,
+                        model=model
+                    )
+                    continue
+
+                # Get model instance
+                current_model = ModelRegistry.get_model(model, api_key)
+                current_model_info = ModelRegistry.get_model_info(model)
+
+                # Update tools for this provider
+                current_tools = self.tool_registry.get_tools_for_model(
+                    current_model.get_provider_name()
+                )
+
+                logger.info(
+                    "revolver_trying_provider",
+                    provider=provider,
+                    model=model,
+                    attempt=attempt + 1,
+                    qube_id=self.qube.qube_id
+                )
+
+                # If this is a retry (not the first attempt), update the model info in system prompt
+                # so the Qube knows which model is actually responding
+                if attempt > 0:
+                    self._update_model_in_context(context_messages, model, provider)
+
+                # Try to generate
+                response = await current_model.generate(
+                    messages=context_messages,
+                    tools=current_tools,
+                    temperature=temperature
+                )
+
+                # Success! Update instance state and return
+                self.model = current_model
+                self.qube.current_ai_model = model
+
+                if attempt > 0:
+                    # We had to retry - log success after failure
+                    logger.info(
+                        "revolver_retry_succeeded",
+                        provider=provider,
+                        model=model,
+                        attempts_needed=attempt + 1,
+                        qube_id=self.qube.qube_id
+                    )
+
+                return response, model, current_model_info
+
+            except Exception as e:
+                last_error = e
+                logger.warning(
+                    "revolver_provider_failed",
+                    provider=provider,
+                    model=model,
+                    error=str(e),
+                    attempt=attempt + 1,
+                    remaining=len(providers) - attempt - 1,
+                    qube_id=self.qube.qube_id
+                )
+                continue
+
+        # All providers failed
+        logger.error(
+            "revolver_all_providers_failed",
+            tried_count=len(tried_providers),
+            providers_tried=list(tried_providers),
+            qube_id=self.qube.qube_id
+        )
+        raise last_error or Exception("All revolver providers failed")
+
+    def _update_model_in_context(
+        self,
+        context_messages: list,
+        new_model: str,
+        new_provider: str
+    ) -> None:
+        """
+        Update the model information in the system prompt after a revolver retry.
+
+        When revolver mode retries with a different provider, the system prompt
+        still references the original model. This method updates it so the Qube
+        knows which model is actually responding.
+
+        Args:
+            context_messages: The messages list (modified in place)
+            new_model: The model that will actually respond
+            new_provider: The provider for the new model
+        """
+        import re
+
+        # Find the system message (usually first)
+        for msg in context_messages:
+            if msg.get("role") == "system":
+                content = msg.get("content", "")
+
+                # Update the **Current Model**: line
+                # Pattern: **Current Model**: <model_name> (<provider>)
+                pattern = r'\*\*Current Model\*\*: [^\n]+'
+                new_model_info = ModelRegistry.get_model_info(new_model)
+                new_desc = new_model_info.get("description", "") if new_model_info else ""
+
+                replacement = f"**Current Model**: {new_model} ({new_provider})"
+                if new_desc:
+                    replacement += f"\n  - {new_desc}"
+
+                new_content = re.sub(pattern, replacement, content)
+
+                # Also add a note about the retry if not already present
+                if "revolver retry" not in new_content.lower():
+                    retry_note = f"\n\n**Note**: Due to a provider issue, you were switched from another model to {new_model} for this response."
+                    # Insert after the Current Model section
+                    new_content = new_content.replace(
+                        replacement,
+                        replacement + retry_note
+                    )
+
+                msg["content"] = new_content
+
+                logger.debug(
+                    "revolver_updated_context_model",
+                    new_model=new_model,
+                    new_provider=new_provider
+                )
+                break
 
     def _is_public_chat_context(self) -> bool:
         """

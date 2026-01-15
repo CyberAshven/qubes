@@ -224,6 +224,7 @@ struct ChatResponse {
     message: Option<String>,
     response: Option<String>,
     timestamp: Option<String>,
+    current_model: Option<String>,
     error: Option<String>,
 }
 
@@ -562,6 +563,57 @@ struct TrustPersonalityResponse {
 struct GenericSuccessResponse {
     success: bool,
     message: Option<String>,
+    error: Option<String>,
+}
+
+// Model Preferences Response
+#[derive(Debug, Serialize, Deserialize)]
+struct ModelPreferenceData {
+    model: String,
+    reason: Option<String>,
+    set_at: Option<u64>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+struct ModelPreferencesResponse {
+    #[serde(default)]
+    success: bool,
+    #[serde(default)]
+    preferences: std::collections::HashMap<String, ModelPreferenceData>,
+    current_model: Option<String>,
+    current_override: Option<String>,
+    genesis_model: Option<String>,
+    #[serde(default)]
+    model_locked: bool,
+    locked_to: Option<String>,
+    #[serde(default)]
+    revolver_mode: bool,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+struct ModelLockResponse {
+    #[serde(default)]
+    success: bool,
+    #[serde(default)]
+    locked: bool,
+    locked_to: Option<String>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+struct RevolverModeResponse {
+    #[serde(default)]
+    success: bool,
+    #[serde(default)]
+    revolver_mode: bool,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ResetModelResponse {
+    success: bool,
+    genesis_model: Option<String>,
     error: Option<String>,
 }
 
@@ -3356,6 +3408,164 @@ async fn update_owner_info_sensitivity(
     Ok(response)
 }
 
+// =============================================================================
+// Model Control Commands
+// =============================================================================
+
+#[tauri::command]
+async fn get_model_preferences(user_id: String, qube_id: String) -> Result<ModelPreferencesResponse, String> {
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("get-model-preferences")
+        .arg(&user_id)
+        .arg(&qube_id)
+        .output()
+        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Operation"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: ModelPreferencesResponse = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn set_model_lock(
+    user_id: String,
+    qube_id: String,
+    locked: bool,
+    model_name: Option<String>
+) -> Result<ModelLockResponse, String> {
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("set-model-lock")
+        .arg(&user_id)
+        .arg(&qube_id)
+        .arg(if locked { "true" } else { "false" });
+
+    if let Some(model) = &model_name {
+        cmd.arg(model);
+    }
+
+    let output = cmd
+        .output()
+        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Operation"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: ModelLockResponse = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn set_revolver_mode(
+    user_id: String,
+    qube_id: String,
+    enabled: bool
+) -> Result<RevolverModeResponse, String> {
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("set-revolver-mode")
+        .arg(&user_id)
+        .arg(&qube_id)
+        .arg(if enabled { "true" } else { "false" })
+        .output()
+        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Operation"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: RevolverModeResponse = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn clear_model_preferences(
+    user_id: String,
+    qube_id: String,
+    task_type: Option<String>
+) -> Result<GenericSuccessResponse, String> {
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("clear-model-preferences")
+        .arg(&user_id)
+        .arg(&qube_id);
+
+    if let Some(tt) = &task_type {
+        cmd.arg(tt);
+    }
+
+    let output = cmd
+        .output()
+        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Operation"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: GenericSuccessResponse = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn reset_model_to_genesis(user_id: String, qube_id: String) -> Result<ResetModelResponse, String> {
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("reset-model-to-genesis")
+        .arg(&user_id)
+        .arg(&qube_id)
+        .output()
+        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Operation"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: ResetModelResponse = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+// =============================================================================
+// Visualizer Settings
+// =============================================================================
+
 #[tauri::command]
 async fn get_visualizer_settings(user_id: String, qube_id: String) -> Result<VisualizerSettingsResponse, String> {
     // Validate inputs
@@ -5619,6 +5829,13 @@ pub fn run() {
             set_owner_info_field,
             delete_owner_info_field,
             update_owner_info_sensitivity,
+            // Model Control
+            get_model_preferences,
+            set_model_lock,
+            set_revolver_mode,
+            clear_model_preferences,
+            reset_model_to_genesis,
+            // Visualizer
             get_visualizer_settings,
             save_visualizer_settings,
             get_trust_personality,

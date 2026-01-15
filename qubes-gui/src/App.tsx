@@ -200,6 +200,8 @@ function App() {
       google?: string;
       deepseek?: string;
       perplexity?: string;
+      venice?: string;
+      nanogpt?: string;
       pinata?: string;
     };
   }) => {
@@ -211,6 +213,8 @@ function App() {
         google: 'google',
         deepseek: 'deepseek',
         perplexity: 'perplexity',
+        venice: 'venice',
+        nanogpt: 'nanogpt',
         pinata: 'pinata',
       };
 

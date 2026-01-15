@@ -38,7 +38,19 @@ class PromptBasedToolHandler:
     4. Formatting tool results for the model to continue
     """
 
-    # XML-style tags for tool calls (models handle these well)
+    # Pattern to find tool_call opening tags
+    TOOL_CALL_OPENER = re.compile(r'<tool_call>', re.IGNORECASE)
+
+    # Pattern to find tool_call closing tags
+    TOOL_CALL_CLOSER = re.compile(r'</tool_call>', re.IGNORECASE)
+
+    # Alternative opening patterns
+    ALT_OPENERS = [
+        re.compile(r'```tool_call\s*\n', re.IGNORECASE),
+        re.compile(r'\[TOOL_CALL\]', re.IGNORECASE),
+    ]
+
+    # Legacy pattern for backward compatibility (simple cases)
     TOOL_CALL_PATTERN = re.compile(
         r'<tool_call>\s*(\{.*?\})\s*</tool_call>',
         re.DOTALL | re.IGNORECASE
@@ -58,22 +70,32 @@ You have access to the following tools. Use them when needed to help the user.
 
 {tool_descriptions}
 
-## How to Use Tools
+## CRITICAL: How to Use Tools
 
-When you need to use a tool, output a tool call in this exact format:
+**YOU MUST USE THE EXACT FORMAT BELOW TO CALL TOOLS. DO NOT DESCRIBE OR NARRATE TOOL USAGE.**
+
+When you need to use a tool, output ONLY this format:
 <tool_call>{{"name": "tool_name", "arguments": {{"arg1": "value1"}}}}</tool_call>
 
-Important rules:
-1. Output ONLY the tool_call tag when using a tool - don't add extra text before it
-2. Wait for the tool result before continuing your response
-3. You can use multiple tools in sequence if needed
-4. After receiving tool results, provide your final response to the user
+**WRONG (DO NOT DO THIS):**
+- "I'll switch to the llama model now" (just describing, not calling)
+- "Let me search for that..." (narrating without tool call)
+- "*switches to a different model*" (roleplay, not actual call)
+
+**CORRECT:**
+<tool_call>{{"name": "switch_model", "arguments": {{"model_name": "llama-3.3-70b"}}}}</tool_call>
+
+Rules:
+1. **ALWAYS** output the <tool_call> tag - never just describe what you would do
+2. Output ONLY the tool_call tag when using a tool - no extra text before it
+3. Wait for the [Tool Result] before continuing your response
+4. You can call multiple tools if needed
 
 Example:
-User: What's the weather in Tokyo?
-Assistant: <tool_call>{{"name": "get_weather", "arguments": {{"location": "Tokyo"}}}}</tool_call>
-[Tool Result: Temperature: 22°C, Sunny]
-Assistant: The weather in Tokyo is currently sunny with a temperature of 22°C.
+User: Switch to a different model
+Assistant: <tool_call>{{"name": "switch_model", "arguments": {{"model_name": "gpt-4o"}}}}</tool_call>
+[Tool Result: Successfully switched to gpt-4o]
+Assistant: Done! I've switched to GPT-4o.
 """
 
     def __init__(self, max_tool_calls: int = 10):
@@ -183,11 +205,90 @@ Assistant: The weather in Tokyo is currently sunny with a temperature of 22°C.
         """
         Extract tool calls from model response.
 
+        Uses json.JSONDecoder.raw_decode to properly handle nested JSON objects,
+        which the simple regex approach fails on (nested braces break .*? patterns).
+
+        Also handles malformed tags where models forget closing tags, like:
+        <tool_call>{json1}<tool_call>{json2}</tool_call>
+
         Args:
             content: Model's response text
 
         Returns:
             List of parsed tool calls
+        """
+        tool_calls = []
+
+        # First, try the robust JSON parsing approach
+        tool_calls = self._parse_with_json_decoder(content)
+
+        # If that found nothing, fall back to legacy regex patterns
+        if not tool_calls:
+            tool_calls = self._parse_with_legacy_patterns(content)
+
+        return tool_calls
+
+    def _parse_with_json_decoder(self, content: str) -> List[ParsedToolCall]:
+        """
+        Parse tool calls using json.JSONDecoder.raw_decode for proper nested JSON handling.
+
+        This method:
+        1. Finds all <tool_call> opening tags
+        2. For each tag, uses raw_decode to parse exactly one complete JSON object
+        3. Handles malformed tags (missing closers) gracefully
+        """
+        tool_calls = []
+        decoder = json.JSONDecoder()
+
+        # Find all positions where <tool_call> appears
+        for match in self.TOOL_CALL_OPENER.finditer(content):
+            start_pos = match.end()  # Position right after <tool_call>
+
+            # Skip any whitespace
+            while start_pos < len(content) and content[start_pos].isspace():
+                start_pos += 1
+
+            if start_pos >= len(content) or content[start_pos] != '{':
+                continue  # No JSON object found after tag
+
+            try:
+                # raw_decode parses exactly one JSON value and returns (value, end_position)
+                # end_position is the ABSOLUTE index where parsing stopped
+                # This correctly handles nested objects like {"args": {"nested": "value"}}
+                data, end_pos = decoder.raw_decode(content, start_pos)
+
+                if isinstance(data, dict):
+                    name = data.get("name")
+                    arguments = data.get("arguments", {})
+
+                    if name:
+                        raw_text = content[start_pos:end_pos]
+                        tool_calls.append(ParsedToolCall(
+                            name=name,
+                            arguments=arguments,
+                            raw_text=raw_text
+                        ))
+
+                        logger.debug(
+                            "tool_call_parsed_with_decoder",
+                            tool_name=name,
+                            argument_count=len(arguments)
+                        )
+
+            except json.JSONDecodeError as e:
+                logger.warning(
+                    "tool_call_json_decode_failed",
+                    error=str(e),
+                    position=start_pos,
+                    context=content[start_pos:start_pos + 50]
+                )
+                continue
+
+        return tool_calls
+
+    def _parse_with_legacy_patterns(self, content: str) -> List[ParsedToolCall]:
+        """
+        Fall back to legacy regex patterns for simple cases.
         """
         tool_calls = []
 
@@ -203,7 +304,6 @@ Assistant: The weather in Tokyo is currently sunny with a temperature of 22°C.
 
         for match in matches:
             try:
-                # Parse the JSON
                 data = json.loads(match)
 
                 name = data.get("name")
@@ -217,14 +317,14 @@ Assistant: The weather in Tokyo is currently sunny with a temperature of 22°C.
                     ))
 
                     logger.debug(
-                        "tool_call_parsed",
+                        "tool_call_parsed_legacy",
                         tool_name=name,
                         argument_count=len(arguments)
                     )
 
             except json.JSONDecodeError as e:
                 logger.warning(
-                    "tool_call_parse_failed",
+                    "tool_call_parse_failed_legacy",
                     error=str(e),
                     raw_text=match[:100]
                 )
@@ -234,6 +334,10 @@ Assistant: The weather in Tokyo is currently sunny with a temperature of 22°C.
 
     def has_tool_call(self, content: str) -> bool:
         """Check if content contains a tool call."""
+        # Check for <tool_call> opener followed by JSON
+        if self.TOOL_CALL_OPENER.search(content):
+            return True
+        # Check legacy patterns
         return bool(self.TOOL_CALL_PATTERN.search(content)) or \
                any(p.search(content) for p in self.ALT_PATTERNS)
 
@@ -267,18 +371,84 @@ Assistant: The weather in Tokyo is currently sunny with a temperature of 22°C.
         """
         Remove tool call tags from content to get clean text.
 
+        Uses JSON decoder to find complete tool call boundaries,
+        handling nested JSON objects correctly.
+
         Args:
             content: Model response with potential tool calls
 
         Returns:
             Content with tool call tags removed
         """
-        # Remove main pattern
-        clean = self.TOOL_CALL_PATTERN.sub('', content)
+        # Build list of (start, end) ranges to remove
+        ranges_to_remove = []
+        decoder = json.JSONDecoder()
 
-        # Remove alternative patterns
+        # Find all <tool_call> tags and their complete JSON
+        for match in self.TOOL_CALL_OPENER.finditer(content):
+            tag_start = match.start()
+            json_start = match.end()
+
+            # Skip whitespace
+            while json_start < len(content) and content[json_start].isspace():
+                json_start += 1
+
+            if json_start >= len(content) or content[json_start] != '{':
+                # No JSON, just remove the tag itself
+                ranges_to_remove.append((tag_start, match.end()))
+                continue
+
+            try:
+                # Parse the complete JSON object
+                # end_pos is the ABSOLUTE index where parsing stopped
+                _, json_end = decoder.raw_decode(content, json_start)
+
+                # Check for closing </tool_call> tag after JSON
+                remaining = content[json_end:json_end + 20]
+                close_match = self.TOOL_CALL_CLOSER.match(remaining.lstrip())
+                if close_match:
+                    # Include the closing tag in removal
+                    whitespace_len = len(remaining) - len(remaining.lstrip())
+                    json_end += whitespace_len + close_match.end()
+
+                ranges_to_remove.append((tag_start, json_end))
+
+            except json.JSONDecodeError:
+                # If JSON parse fails, just remove the opening tag
+                ranges_to_remove.append((tag_start, match.end()))
+
+        # Also remove any orphaned </tool_call> tags
+        for match in self.TOOL_CALL_CLOSER.finditer(content):
+            # Check if this closer is already covered by a range
+            is_covered = any(start <= match.start() < end for start, end in ranges_to_remove)
+            if not is_covered:
+                ranges_to_remove.append((match.start(), match.end()))
+
+        # Remove legacy patterns too
         for pattern in self.ALT_PATTERNS:
-            clean = pattern.sub('', clean)
+            for match in pattern.finditer(content):
+                ranges_to_remove.append((match.start(), match.end()))
+
+        # Sort ranges and merge overlapping ones
+        ranges_to_remove.sort()
+        merged = []
+        for start, end in ranges_to_remove:
+            if merged and start <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+            else:
+                merged.append((start, end))
+
+        # Build clean content by excluding the ranges
+        clean_parts = []
+        prev_end = 0
+        for start, end in merged:
+            if start > prev_end:
+                clean_parts.append(content[prev_end:start])
+            prev_end = end
+        if prev_end < len(content):
+            clean_parts.append(content[prev_end:])
+
+        clean = ''.join(clean_parts)
 
         # Clean up extra whitespace
         clean = re.sub(r'\n{3,}', '\n\n', clean)

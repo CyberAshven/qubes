@@ -12,13 +12,14 @@ import { useAudio } from '../../contexts/AudioContext';
 import { useChatMessages, Message } from '../../hooks/useChatMessages';
 import { useQubeSelection } from '../../hooks/useQubeSelection';
 import { TypewriterText } from './TypewriterText';
-import { formatModelName } from '../../utils/modelFormatter';
+import { ChatHeader } from './ChatHeader';
 import EmojiPicker, { EmojiClickData, Theme } from 'emoji-picker-react';
 import { WaveformOverlay } from '../visualizer/WaveformOverlay';
 import type { WaveformStyle, ColorTheme, GradientStyle, AnimationSmoothness } from '../../types';
 
 interface ChatInterfaceProps {
   selectedQubes: Qube[];
+  onQubeModelChange?: (qubeId: string, newModel: string) => void;
 }
 
 interface ChatResponse {
@@ -28,10 +29,11 @@ interface ChatResponse {
   message?: string;
   response?: string;
   timestamp?: string;
+  current_model?: string;
   error?: string;
 }
 
-export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes }) => {
+export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQubeModelChange }) => {
   const { userId, password } = useAuth();
   const { playTTS, audioElement } = useAudio();
   const { getMessages, addMessage, clearMessages, getUploadedFiles, addUploadedFile, removeUploadedFile, clearUploadedFiles } = useChatMessages();
@@ -42,6 +44,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes }) =
   const [lastResponseText, setLastResponseText] = useState<string>('');
   const [pendingResponse, setPendingResponse] = useState<{ qubeName: string; content: string } | null>(null);
   const [activeTypewriterMessageId, setActiveTypewriterMessageId] = useState<string | null>(null);
+  const [currentModel, setCurrentModel] = useState<string | null>(null); // Local model state for header updates
   const [isRecording, setIsRecording] = useState(false);
   const [isGeneratingTTS, setIsGeneratingTTS] = useState(false);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
@@ -611,6 +614,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes }) =
     setPendingResponse(null);
     setLastResponseText('');
     setActiveTypewriterMessageId(null);
+    setCurrentModel(null); // Reset so header uses new qube's ai_model
     setIsGeneratingTTS(false);
     setError(null);
   }, [selectedQubes]);
@@ -757,6 +761,12 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes }) =
               content: combinedResponse,
             });
             setLastResponseText(cleanContentForDisplay(combinedResponse));
+
+            // Check if model changed (e.g., via switch_model tool or revolver mode)
+            // Use local state to update header without re-rendering entire chat (preserves typewriter)
+            if (textResponse.current_model) {
+              setCurrentModel(textResponse.current_model);
+            }
           } else {
             throw new Error(textResponse.error || 'Failed to get response from qube');
           }
@@ -783,6 +793,12 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes }) =
             content: response.response,
           });
           setLastResponseText(cleanContentForDisplay(response.response));
+
+          // Check if model changed (e.g., via switch_model tool or revolver mode)
+          // Use local state to update header without re-rendering entire chat (preserves typewriter)
+          if (response.current_model) {
+            setCurrentModel(response.current_model);
+          }
         } else {
           setError(response.error || 'Failed to get response from qube');
           setIsLoading(false);
@@ -984,116 +1000,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes }) =
 
   return (
     <div className="flex-1 flex flex-col gap-4 overflow-hidden">
-      {/* Chat Header - Single Horizontal Row */}
-      <GlassCard className="sticky top-0 z-10 p-6 border-l-4 bg-bg-primary/95 backdrop-blur-sm" style={{ borderLeftColor: selectedQubes[0].favorite_color }}>
-        <div className="flex items-center justify-between">
-          {/* Avatar + Name */}
-          <div className="flex items-center gap-3">
-            <img
-              src={getAvatarPath(selectedQubes[0])}
-              alt={`${selectedQubes[0].name} avatar`}
-              className="w-16 h-16 rounded-xl object-cover shadow-lg transition-transform hover:scale-105"
-              style={{
-                border: `2px solid ${selectedQubes[0].favorite_color}`,
-                boxShadow: `0 0 15px ${selectedQubes[0].favorite_color}40`
-              }}
-              onError={(e) => {
-                // Fallback to letter if image fails to load
-                const target = e.target as HTMLImageElement;
-                target.style.display = 'none';
-                const fallback = target.nextElementSibling as HTMLElement;
-                if (fallback) fallback.style.display = 'flex';
-              }}
-            />
-            <div
-              className="w-16 h-16 rounded-xl flex items-center justify-center text-2xl font-display font-bold shadow-lg transition-transform hover:scale-105"
-              style={{
-                background: `linear-gradient(135deg, ${selectedQubes[0].favorite_color}40, ${selectedQubes[0].favorite_color}20)`,
-                color: selectedQubes[0].favorite_color,
-                border: `2px solid ${selectedQubes[0].favorite_color}`,
-                boxShadow: `0 0 15px ${selectedQubes[0].favorite_color}40`,
-                display: 'none',
-              }}
-            >
-              {selectedQubes[0].name[0]}
-            </div>
-            <div className="flex flex-col">
-              <div className="text-xs text-text-tertiary uppercase tracking-wider font-semibold">Name</div>
-              <h1 className="text-xl font-display font-bold" style={{ color: selectedQubes[0].favorite_color }}>
-                {selectedQubes[0].name}
-              </h1>
-            </div>
-          </div>
-
-          {/* Model */}
-          <div className="flex flex-col">
-            <div className="text-xs text-text-tertiary uppercase tracking-wider font-semibold">Model</div>
-            <div className="text-xl font-display font-bold flex items-center gap-2" style={{ color: selectedQubes[0].favorite_color }}>
-              🤖 {formatModelName(selectedQubes[0].ai_model)}
-            </div>
-          </div>
-
-          {/* ID */}
-          <div className="flex flex-col">
-            <div className="text-xs text-text-tertiary uppercase tracking-wider font-semibold">Qube ID</div>
-            <div className="text-xl font-display font-bold flex items-center gap-2" style={{ color: selectedQubes[0].favorite_color }}>
-              🆔 {selectedQubes[0].qube_id.substring(0, 8)}
-            </div>
-          </div>
-
-          {/* Voice */}
-          <div className="flex flex-col">
-            <div className="text-xs text-text-tertiary uppercase tracking-wider font-semibold">Voice</div>
-            <div className="text-xl font-display font-bold flex items-center gap-2" style={{ color: selectedQubes[0].favorite_color }}>
-              🎤 {(() => {
-                const voiceName = selectedQubes[0].voice_model?.split(':')[1] || selectedQubes[0].voice_model || 'Not set';
-                return voiceName.charAt(0).toUpperCase() + voiceName.slice(1);
-              })()}
-            </div>
-          </div>
-
-          {/* Creator */}
-          <div className="flex flex-col">
-            <div className="text-xs text-text-tertiary uppercase tracking-wider font-semibold">Creator</div>
-            <div className="text-xl font-display font-bold flex items-center gap-2" style={{ color: selectedQubes[0].favorite_color }}>
-              👤 {selectedQubes[0].creator || 'Unknown'}
-            </div>
-          </div>
-
-          {/* Blockchain */}
-          <div className="flex flex-col">
-            <div className="text-xs text-text-tertiary uppercase tracking-wider font-semibold">Blockchain</div>
-            <div className="text-xl font-display font-bold flex items-center gap-2" style={{ color: selectedQubes[0].favorite_color }}>
-              {selectedQubes[0].home_blockchain === 'bitcoincash' ? (
-                <img
-                  src="/bitcoin_cash_logo.svg"
-                  alt="BCH"
-                  className="w-5 h-5"
-                />
-              ) : (
-                '⛓️'
-              )}
-              {selectedQubes[0].home_blockchain === 'bitcoincash'
-                ? 'Bitcoin Cash'
-                : selectedQubes[0].home_blockchain || 'Unknown'}
-            </div>
-          </div>
-
-          {/* Birth Date */}
-          <div className="flex flex-col">
-            <div className="text-xs text-text-tertiary uppercase tracking-wider font-semibold">Born</div>
-            <div className="text-xl font-display font-bold flex items-center gap-2" style={{ color: selectedQubes[0].favorite_color }}>
-              🎂 {selectedQubes[0].birth_timestamp
-                ? new Date(selectedQubes[0].birth_timestamp * 1000).toLocaleDateString('en-US', {
-                    month: 'short',
-                    day: 'numeric',
-                    year: 'numeric'
-                  })
-                : 'Unknown'}
-            </div>
-          </div>
-        </div>
-      </GlassCard>
+      {/* Chat Header - Isolated component to prevent re-renders from breaking typewriter */}
+      <ChatHeader qube={selectedQubes[0]} userId={userId || ''} currentModel={currentModel} />
 
       {/* Messages Area */}
       <GlassCard className="flex-1 p-4 pb-6 overflow-y-auto">
