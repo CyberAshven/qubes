@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { Qube } from '../../types';
 import { useQubeSelection } from '../../hooks/useQubeSelection';
 import { useAuth } from '../../hooks/useAuth';
@@ -97,6 +98,76 @@ export const TabContent: React.FC<TabContentProps> = ({ qubes, setQubes, onQubes
 
   // State for recall loading
   const [isRecalling, setIsRecalling] = useState(false);
+
+  // State for model mode indicator
+  const [modelMode, setModelMode] = useState<'manual' | 'revolver' | 'autonomous'>('manual');
+
+  // Fetch model mode when selected qube changes
+  useEffect(() => {
+    const fetchModelMode = async () => {
+      if (!singleSelectedQube || !userId) {
+        setModelMode('manual');
+        return;
+      }
+
+      try {
+        const result = await invoke<{
+          success: boolean;
+          model_locked?: boolean;
+          revolver_mode?: boolean;
+          free_mode?: boolean;
+          error?: string;
+        }>('get_model_preferences', {
+          userId,
+          qubeId: singleSelectedQube.qube_id,
+        });
+
+        if (result.success) {
+          if (result.revolver_mode) {
+            setModelMode('revolver');
+          } else if (result.free_mode) {
+            setModelMode('autonomous');
+          } else {
+            setModelMode('manual');
+          }
+        }
+      } catch (err) {
+        console.error('Failed to fetch model mode:', err);
+        setModelMode('manual');
+      }
+    };
+
+    fetchModelMode();
+  }, [singleSelectedQube, userId]);
+
+  // Listen for model mode changes from QubeSettingsModal
+  useEffect(() => {
+    const setupListener = async () => {
+      const unlisten = await listen<{
+        qubeId: string;
+        modelLocked: boolean;
+        revolverMode: boolean;
+        freeMode: boolean;
+      }>('model-mode-changed', (event) => {
+        // Only update if the changed qube matches the selected qube
+        if (singleSelectedQube && event.payload.qubeId === singleSelectedQube.qube_id) {
+          if (event.payload.revolverMode) {
+            setModelMode('revolver');
+          } else if (event.payload.freeMode) {
+            setModelMode('autonomous');
+          } else {
+            setModelMode('manual');
+          }
+        }
+      });
+      return unlisten;
+    };
+
+    const cleanupPromise = setupListener();
+    return () => {
+      cleanupPromise.then(cleanup => cleanup());
+    };
+  }, [singleSelectedQube]);
 
   // Handle "Recall Last" button click
   const handleRecallLast = async () => {
@@ -255,7 +326,25 @@ export const TabContent: React.FC<TabContentProps> = ({ qubes, setQubes, onQubes
         >
           {/* Mode Toggle - Local vs P2P */}
           <div className="flex items-center justify-between py-3 px-4 bg-bg-secondary/50 border-b border-glass-border">
-            <div>{/* Spacer for centering */}</div>
+            {/* Model Mode Indicator */}
+            <div className="min-w-[120px] flex items-center gap-2">
+              {singleSelectedQube && (
+                <>
+                  <span className="text-text-secondary text-sm">Mode:</span>
+                  <span
+                    className={`px-2 py-0.5 rounded text-xs font-medium ${
+                      modelMode === 'revolver'
+                        ? 'bg-green-500/20 text-green-400 border border-green-500/50'
+                        : modelMode === 'autonomous'
+                        ? 'bg-purple-500/20 text-purple-400 border border-purple-500/50'
+                        : 'bg-gray-500/20 text-gray-400 border border-gray-500/50'
+                    }`}
+                  >
+                    {modelMode === 'revolver' ? 'Revolver' : modelMode === 'autonomous' ? 'Autonomous' : 'Manual'}
+                  </span>
+                </>
+              )}
+            </div>
             <div className="flex items-center gap-2">
               <span className="text-text-secondary text-sm mr-2">Chat Mode:</span>
               <button

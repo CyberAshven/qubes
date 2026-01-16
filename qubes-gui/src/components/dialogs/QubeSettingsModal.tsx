@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { emit } from '@tauri-apps/api/event';
 import { GlassCard, GlassButton } from '../glass';
 import { useModels } from '../../hooks/useModels';
 import { useAuth } from '../../hooks/useAuth';
@@ -416,6 +417,14 @@ export const QubeSettingsModal: React.FC<QubeSettingsModalProps> = ({
         revolverModels: revolverResult.models,
         freeMode,
         freeModeModels: freeModeResult.models,
+      });
+
+      // Emit event for Chat tab to update mode indicator
+      emit('model-mode-changed', {
+        qubeId,
+        modelLocked,
+        revolverMode,
+        freeMode,
       });
 
       onClose();
