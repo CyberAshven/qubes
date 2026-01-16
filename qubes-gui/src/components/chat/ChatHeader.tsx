@@ -47,13 +47,16 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({ qube, userId, currentMod
       className="sticky top-0 z-10 p-6 border-l-4 bg-bg-primary/95 backdrop-blur-sm"
       style={{ borderLeftColor: qube.favorite_color }}
     >
-      <div className="flex items-center justify-between gap-4">
+      <div
+        className="grid items-center gap-4"
+        style={{ gridTemplateColumns: '200px 180px 110px 100px 110px 140px 130px' }}
+      >
         {/* Avatar + Name */}
-        <div className="flex items-center gap-3 min-w-[140px]">
+        <div className="flex items-center gap-3">
           <img
             src={getAvatarPath()}
             alt={`${qube.name} avatar`}
-            className="w-16 h-16 rounded-xl object-cover shadow-lg transition-transform hover:scale-105"
+            className="w-16 h-16 rounded-xl object-cover shadow-lg transition-transform hover:scale-105 flex-shrink-0"
             style={{
               border: `2px solid ${qube.favorite_color}`,
               boxShadow: `0 0 15px ${qube.favorite_color}40`
@@ -66,7 +69,7 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({ qube, userId, currentMod
             }}
           />
           <div
-            className="w-16 h-16 rounded-xl flex items-center justify-center text-2xl font-display font-bold shadow-lg transition-transform hover:scale-105"
+            className="w-16 h-16 rounded-xl flex items-center justify-center text-2xl font-display font-bold shadow-lg transition-transform hover:scale-105 flex-shrink-0"
             style={{
               background: `linear-gradient(135deg, ${qube.favorite_color}40, ${qube.favorite_color}20)`,
               color: qube.favorite_color,
@@ -77,24 +80,24 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({ qube, userId, currentMod
           >
             {qube.name[0]}
           </div>
-          <div className="flex flex-col">
+          <div className="flex flex-col min-w-0">
             <div className="text-xs text-text-tertiary uppercase tracking-wider font-semibold">Name</div>
-            <h1 className="text-xl font-display font-bold" style={{ color: qube.favorite_color }}>
+            <h1 className="text-xl font-display font-bold truncate" style={{ color: qube.favorite_color }}>
               {qube.name}
             </h1>
           </div>
         </div>
 
         {/* Model - Uses local state, updates independently */}
-        <div className="flex flex-col min-w-[160px]">
+        <div className="flex flex-col min-w-0">
           <div className="text-xs text-text-tertiary uppercase tracking-wider font-semibold">Model</div>
-          <div className="text-xl font-display font-bold flex items-center gap-2" style={{ color: qube.favorite_color }}>
-            🤖 {formatModelName(displayedModel)}
+          <div className="text-xl font-display font-bold flex items-center gap-2 truncate" style={{ color: qube.favorite_color }}>
+            🤖 <span className="truncate">{formatModelName(displayedModel)}</span>
           </div>
         </div>
 
         {/* ID */}
-        <div className="flex flex-col min-w-[100px]">
+        <div className="flex flex-col">
           <div className="text-xs text-text-tertiary uppercase tracking-wider font-semibold">Qube ID</div>
           <div className="text-xl font-display font-bold flex items-center gap-2" style={{ color: qube.favorite_color }}>
             🆔 {qube.qube_id.substring(0, 8)}
@@ -102,37 +105,37 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({ qube, userId, currentMod
         </div>
 
         {/* Voice */}
-        <div className="flex flex-col min-w-[90px]">
+        <div className="flex flex-col min-w-0">
           <div className="text-xs text-text-tertiary uppercase tracking-wider font-semibold">Voice</div>
-          <div className="text-xl font-display font-bold flex items-center gap-2" style={{ color: qube.favorite_color }}>
-            🎤 {(() => {
+          <div className="text-xl font-display font-bold flex items-center gap-2 truncate" style={{ color: qube.favorite_color }}>
+            🎤 <span className="truncate">{(() => {
               const voiceName = qube.voice_model?.split(':')[1] || qube.voice_model || 'Not set';
               return voiceName.charAt(0).toUpperCase() + voiceName.slice(1);
-            })()}
+            })()}</span>
           </div>
         </div>
 
         {/* Creator */}
-        <div className="flex flex-col min-w-[100px]">
+        <div className="flex flex-col min-w-0">
           <div className="text-xs text-text-tertiary uppercase tracking-wider font-semibold">Creator</div>
-          <div className="text-xl font-display font-bold flex items-center gap-2" style={{ color: qube.favorite_color }}>
-            👤 {qube.creator || 'Unknown'}
+          <div className="text-xl font-display font-bold flex items-center gap-2 truncate" style={{ color: qube.favorite_color }}>
+            👤 <span className="truncate">{qube.creator || 'Unknown'}</span>
           </div>
         </div>
 
         {/* Blockchain */}
-        <div className="flex flex-col min-w-[120px]">
+        <div className="flex flex-col min-w-0">
           <div className="text-xs text-text-tertiary uppercase tracking-wider font-semibold">Blockchain</div>
-          <div className="text-xl font-display font-bold flex items-center gap-2" style={{ color: qube.favorite_color }}>
+          <div className="text-xl font-display font-bold flex items-center gap-2 truncate" style={{ color: qube.favorite_color }}>
             {qube.home_blockchain === 'bitcoincash' ? (
-              <img src="/bitcoin_cash_logo.svg" alt="BCH" className="w-5 h-5" />
+              <img src="/bitcoin_cash_logo.svg" alt="BCH" className="w-5 h-5 flex-shrink-0" />
             ) : '⛓️'}
-            {qube.home_blockchain === 'bitcoincash' ? 'Bitcoin Cash' : qube.home_blockchain || 'Unknown'}
+            <span className="truncate">{qube.home_blockchain === 'bitcoincash' ? 'Bitcoin Cash' : qube.home_blockchain || 'Unknown'}</span>
           </div>
         </div>
 
         {/* Birth Date */}
-        <div className="flex flex-col min-w-[120px]">
+        <div className="flex flex-col">
           <div className="text-xs text-text-tertiary uppercase tracking-wider font-semibold">Born</div>
           <div className="text-xl font-display font-bold flex items-center gap-2" style={{ color: qube.favorite_color }}>
             🎂 {qube.birth_timestamp
