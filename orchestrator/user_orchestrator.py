@@ -1464,12 +1464,13 @@ class UserOrchestrator:
                     "merkle_tree_valid": True,
                     "avatar_description": None,
                     "avatar_description_generated_at": None,
-                    # Clear model override and lock settings on reset
+                    # Reset model settings - Manual mode is the default
                     "current_model_override": None,
-                    "model_locked": False,
+                    "model_locked": True,  # Manual mode is default
                     "model_locked_to": None,
                     "revolver_mode_enabled": False,
-                    "revolver_last_index": 0
+                    "revolver_last_index": 0,
+                    "free_mode": False  # Autonomous mode off by default
                 })
 
                 with open(chain_state_path, "w", encoding="utf-8") as f:

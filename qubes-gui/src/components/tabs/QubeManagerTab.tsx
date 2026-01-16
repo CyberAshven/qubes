@@ -6,6 +6,7 @@ import { readTextFile } from '@tauri-apps/plugin-fs';
 import { Qube, Tab } from '../../types';
 import { GlassCard, GlassButton } from '../glass';
 import { WalletSecurityModal } from '../dialogs/WalletSecurityModal';
+import { QubeSettingsModal } from '../dialogs/QubeSettingsModal';
 import { useAuth } from '../../hooks/useAuth';
 import { useQubeOrder } from '../../hooks/useQubeOrder';
 import { useQubeSelection } from '../../hooks/useQubeSelection';
@@ -108,8 +109,14 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
   const [isResetting, setIsResetting] = useState(false);
 
   // Set up drag-and-drop sensors
+  // Using distance activation constraint to distinguish click from drag
+  // This allows avatar click to flip the card while drag still works for reordering
   const sensors = useSensors(
-    useSensor(PointerSensor),
+    useSensor(PointerSensor, {
+      activationConstraint: {
+        distance: 8, // Must move 8px before drag activates
+      },
+    }),
     useSensor(KeyboardSensor, {
       coordinateGetter: sortableKeyboardCoordinates,
     })
@@ -1080,7 +1087,7 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
   // Static fallback models by provider (matches backend ModelRegistry)
   const fallbackModels: Record<string, { value: string; label: string }[]> = {
     openai: [
-      { value: 'gpt-5.2', label: 'GPT-5.2 ' },
+      { value: 'gpt-5.2', label: 'GPT-5.2' },
       { value: 'gpt-5.2-pro', label: 'GPT-5.2 Pro' },
       { value: 'gpt-5.2-chat-latest', label: 'GPT-5.2 Instant' },
       { value: 'gpt-5.2-codex', label: 'GPT-5.2 Codex' },
@@ -1108,9 +1115,9 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
       { value: 'claude-3-haiku-20240307', label: 'Claude 3 Haiku' },
     ],
     google: [
-      { value: 'gemini-3-pro-preview', label: 'Gemini 3 Pro ' },
+      { value: 'gemini-3-pro-preview', label: 'Gemini 3 Pro' },
       { value: 'gemini-3-flash-preview', label: 'Gemini 3 Flash' },
-      { value: 'gemini-3-pro-image-preview', label: 'Gemini 3 Pro Image' },
+      { value: 'gemini-3-pro-image-preview', label: 'Gemini 3 Pro Vision' },
       { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
       { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
       { value: 'gemini-2.5-flash-preview-09-2025', label: 'Gemini 2.5 Flash Preview' },
@@ -1142,8 +1149,8 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
       { value: 'claude-opus-45', label: 'Claude Opus 4.5 (Venice)' },
       { value: 'openai-gpt-52', label: 'GPT-5.2 (Venice)' },
       { value: 'openai-gpt-oss-120b', label: 'GPT OSS 120B (Venice)' },
-      { value: 'gemini-3-pro-preview', label: 'Gemini 3 Pro (Venice)' },
-      { value: 'gemini-3-flash-preview', label: 'Gemini 3 Flash (Venice)' },
+      { value: 'venice/gemini-3-pro', label: 'Gemini 3 Pro (Venice)' },
+      { value: 'venice/gemini-3-flash', label: 'Gemini 3 Flash (Venice)' },
       { value: 'grok-41-fast', label: 'Grok 4.1 Fast' },
       { value: 'grok-code-fast-1', label: 'Grok Code Fast' },
       { value: 'zai-org-glm-4.7', label: 'GLM 4.7' },
@@ -1212,14 +1219,15 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
   // Infer provider from model if provider is unknown - MUST be defined before useState that uses it
   const inferProvider = (model: string): string => {
     if (model.startsWith('nanogpt/')) return 'nanogpt'; // NanoGPT models use nanogpt/ prefix
+    if (model.startsWith('venice/')) return 'venice'; // Venice models use venice/ prefix
     if (model.startsWith('gpt-') || model.startsWith('o')) return 'openai';
     if (model.startsWith('claude-')) return 'anthropic';
     if (model.startsWith('gemini-')) return 'google';
     if (model.startsWith('sonar')) return 'perplexity';
     if (model.includes(':')) return 'ollama'; // Ollama models use colon notation (must check before deepseek)
     if (model.startsWith('deepseek-')) return 'deepseek'; // Matches deepseek-chat, deepseek-reasoner, etc.
-    // Venice models (no colon, specific names)
-    if (['venice-uncensored', 'llama-3.3-70b', 'qwen3-235b-a22b-instruct-2507', 'qwen3-4b', 'mistral-31-24b', 'claude-opus-45', 'gemini-3-flash-preview', 'grok-41-fast'].includes(model)) return 'venice';
+    // Venice models (specific names without prefix)
+    if (['venice-uncensored', 'llama-3.3-70b', 'qwen3-235b-a22b-instruct-2507', 'qwen3-4b', 'mistral-31-24b', 'claude-opus-45', 'openai-gpt-52', 'grok-41-fast'].includes(model)) return 'venice';
     return 'openai'; // Default fallback
   };
 
@@ -1248,6 +1256,11 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
   const [modelLocked, setModelLocked] = useState(false);
   const [lockedToModel, setLockedToModel] = useState<string | null>(null);
   const [revolverMode, setRevolverMode] = useState(false);
+  const [revolverProviders, setRevolverProviders] = useState<string[]>([]);
+  const [revolverModels, setRevolverModels] = useState<string[]>([]);
+  const [freeMode, setFreeMode] = useState(false);  // Manual mode is default
+  const [freeModeModels, setFreeModeModels] = useState<string[]>([]);
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [modelPreferences, setModelPreferences] = useState<Record<string, { model: string; reason?: string }>>({});
   const [loadingModelPrefs, setLoadingModelPrefs] = useState(false);
   const [availableMonitors, setAvailableMonitors] = useState<Array<{id: number; name: string}>>([]);
@@ -1351,6 +1364,10 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
           model_locked: boolean;
           locked_to: string | null;
           revolver_mode: boolean;
+          revolver_providers: string[];
+          revolver_models: string[];
+          free_mode: boolean;
+          free_mode_models: string[];
         }>('get_model_preferences', {
           userId,
           qubeId: qube.qube_id
@@ -1359,6 +1376,11 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
           setModelLocked(result.model_locked);
           setLockedToModel(result.locked_to);
           setRevolverMode(result.revolver_mode);
+          setRevolverProviders(result.revolver_providers || []);
+          setRevolverModels(result.revolver_models || []);
+          // Default to free mode if neither locked nor revolver
+          setFreeMode(result.free_mode ?? (!result.model_locked && !result.revolver_mode));
+          setFreeModeModels(result.free_mode_models || []);
           setModelPreferences(result.preferences || {});
         }
       } catch (error) {
@@ -1983,69 +2005,45 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
               toggleSelection(qube.qube_id, e.ctrlKey || e.metaKey, e.shiftKey);
             }}
             style={{
-              // Use box-shadows for lock/revolver inner border and glows
+              // Use box-shadows for mode inner border and glows
+              // Manual = no outline, Revolver = green, Autonomous = purple
               boxShadow: [
-                // Inner border for lock/revolver (inset shadow)
-                modelLocked ? 'inset 0 0 0 4px rgba(255, 170, 0, 0.8)' : null,
-                revolverMode ? 'inset 0 0 0 4px rgba(0, 188, 212, 0.8)' : null,
-                // Glow effects for lock/revolver
-                modelLocked ? '0 0 20px rgba(255, 170, 0, 0.5)' : null,
-                revolverMode ? '0 0 20px rgba(0, 188, 212, 0.5)' : null,
+                // Inner border for mode (inset shadow)
+                revolverMode ? 'inset 0 0 0 4px rgba(34, 197, 94, 0.8)' : null,  // green-500
+                freeMode ? 'inset 0 0 0 4px rgba(168, 85, 247, 0.8)' : null,  // purple-500
+                // Glow effects for mode
+                revolverMode ? '0 0 20px rgba(34, 197, 94, 0.5)' : null,
+                freeMode ? '0 0 20px rgba(168, 85, 247, 0.5)' : null,
               ].filter(Boolean).join(', ') || undefined,
             }}
           >
-            {/* Flip Button - Top Left Corner */}
+            {/* TTS Button - Top Left Corner */}
             <button
-              onClick={(e) => {
-                e.stopPropagation();
-                handleFlip();
-              }}
+              onClick={(e) => { e.stopPropagation(); handleToggleTTS(); }}
               className="absolute top-3 left-3 text-2xl hover:scale-110 transition-transform cursor-pointer z-10"
-              title={flipState === 0 ? "Flip to blockchain stats" : flipState === 1 ? "Flip to relationship stats" : "Flip to front"}
+              title={qube.tts_enabled ? "TTS Enabled - Click to disable" : "TTS Disabled - Click to enable"}
             >
-              🔄
+              {qube.tts_enabled ? '🔊' : '🔇'}
             </button>
 
-            {/* Control Icons - Top Right Corner (Vertical) */}
-            <div className="absolute top-3 right-3 flex flex-col gap-2 z-10">
-              {/* TTS Toggle */}
-              <button
-                onClick={(e) => { e.stopPropagation(); handleToggleTTS(); }}
-                className="text-2xl hover:scale-110 transition-transform cursor-pointer"
-                title={qube.tts_enabled ? "TTS Enabled - Click to disable" : "TTS Disabled - Click to enable"}
-              >
-                {qube.tts_enabled ? '🔊' : '🔇'}
-              </button>
+            {/* Settings Gear - Top Right Corner */}
+            <button
+              onClick={(e) => { e.stopPropagation(); setShowSettingsModal(true); }}
+              className={`absolute top-3 right-3 text-2xl hover:scale-110 transition-all cursor-pointer z-10 ${
+                (modelLocked || revolverMode) ? 'drop-shadow-[0_0_6px_rgba(255,255,255,0.6)]' : 'opacity-60 hover:opacity-100'
+              }`}
+              title="Model settings (Lock / Revolver mode)"
+            >
+              ⚙️
+            </button>
 
-              {/* Model Lock Toggle */}
-              <button
-                onClick={(e) => handleToggleModelLock(e)}
-                className={`text-xl hover:scale-110 transition-all cursor-pointer ${
-                  modelLocked ? 'drop-shadow-[0_0_6px_rgba(255,170,0,0.8)]' : 'opacity-40 hover:opacity-70'
-                }`}
-                title={modelLocked ? `Model locked to ${lockedToModel || qube.ai_model}` : 'Lock model (prevent switching)'}
-              >
-                {modelLocked ? '🔒' : '🔓'}
-              </button>
-
-              {/* Revolver Mode Toggle */}
-              <button
-                onClick={(e) => handleToggleRevolverMode(e)}
-                className={`text-xl hover:scale-110 transition-all cursor-pointer ${
-                  revolverMode ? 'drop-shadow-[0_0_6px_rgba(0,188,212,0.8)]' : 'opacity-40 hover:opacity-70'
-                }`}
-                title={revolverMode ? 'Revolver mode ON (rotating providers)' : 'Enable revolver mode (rotate providers)'}
-              >
-                🎰
-              </button>
-            </div>
-
-            {/* Avatar */}
+            {/* Avatar - Click to flip, drag to reorder */}
             <div className="flex flex-col items-center mb-4">
               <div
                 {...dragHandleProps}
-                className="cursor-grab active:cursor-grabbing mb-3"
-                title="Drag to reorder"
+                onClick={handleFlip}
+                className="cursor-pointer mb-3 hover:scale-105 transition-transform"
+                title={flipState === 0 ? "Click to flip • Drag to reorder" : flipState === 1 ? "Click to flip • Drag to reorder" : "Click to flip • Drag to reorder"}
               >
                 <img
                   src={getAvatarPath(qube)}
@@ -2933,6 +2931,31 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
         onClose={() => setWalletSecurityModalOpen(false)}
         onSave={handleWalletSecuritySave}
       />
+
+      {/* Model Settings Modal */}
+      <QubeSettingsModal
+        isOpen={showSettingsModal}
+        qubeId={qube.qube_id}
+        qubeName={qube.name}
+        currentModel={qube.ai_model}
+        modelLocked={modelLocked}
+        lockedToModel={lockedToModel}
+        revolverMode={revolverMode}
+        revolverProviders={revolverProviders}
+        revolverModels={revolverModels}
+        freeMode={freeMode}
+        freeModeModels={freeModeModels}
+        onClose={() => setShowSettingsModal(false)}
+        onUpdate={(updates) => {
+          setModelLocked(updates.modelLocked);
+          setLockedToModel(updates.lockedToModel);
+          setRevolverMode(updates.revolverMode);
+          setRevolverProviders(updates.revolverProviders);
+          setRevolverModels(updates.revolverModels);
+          setFreeMode(updates.freeMode);
+          setFreeModeModels(updates.freeModeModels);
+        }}
+      />
     </div>
   );
 };
@@ -2970,7 +2993,7 @@ const formatModelDisplay = (modelId: string): string => {
     // Google - Gemini 3.x and 2.5
     'gemini-3-pro-preview': 'Gemini 3 Pro',
     'gemini-3-flash-preview': 'Gemini 3 Flash',
-    'gemini-3-pro-image-preview': 'Gemini 3 Pro Image',
+    'gemini-3-pro-image-preview': 'Gemini 3 Pro Vision',
     'gemini-2.5-pro': 'Gemini 2.5 Pro',
     'gemini-2.5-flash': 'Gemini 2.5 Flash',
     'gemini-2.5-flash-preview-09-2025': 'Gemini 2.5 Flash Preview',
@@ -2999,6 +3022,8 @@ const formatModelDisplay = (modelId: string): string => {
     'claude-opus-45': 'Claude Opus 4.5 (Venice)',
     'openai-gpt-52': 'GPT-5.2 (Venice)',
     'openai-gpt-oss-120b': 'GPT OSS 120B (Venice)',
+    'venice/gemini-3-pro': 'Gemini 3 Pro (Venice)',
+    'venice/gemini-3-flash': 'Gemini 3 Flash (Venice)',
     'grok-41-fast': 'Grok 4.1 Fast',
     'grok-code-fast-1': 'Grok Code Fast 1',
     'zai-org-glm-4.7': 'GLM 4.7',

@@ -96,9 +96,11 @@ fn sanitize_backend_error(raw_error: &str, context: &str) -> String {
         return "Operation timed out. Please try again.".to_string();
     }
 
-    // API/Network errors
-    if error_lower.contains("api")
-        && (error_lower.contains("error") || error_lower.contains("failed"))
+    // API/Network errors - be specific to avoid matching log messages like "api_key_load_failed"
+    if error_lower.contains("api request failed")
+        || error_lower.contains("api error")
+        || error_lower.contains("api connection")
+        || (error_lower.contains("api") && error_lower.contains("unreachable"))
     {
         return "API request failed. Please check your connection and try again.".to_string();
     }
@@ -588,6 +590,8 @@ struct ModelPreferencesResponse {
     locked_to: Option<String>,
     #[serde(default)]
     revolver_mode: bool,
+    #[serde(default)]
+    revolver_providers: Vec<String>,
     error: Option<String>,
 }
 
@@ -607,6 +611,33 @@ struct RevolverModeResponse {
     success: bool,
     #[serde(default)]
     revolver_mode: bool,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+struct FreeModeResponse {
+    #[serde(default)]
+    success: bool,
+    #[serde(default)]
+    enabled: bool,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+struct RevolverProvidersResponse {
+    #[serde(default)]
+    success: bool,
+    #[serde(default)]
+    providers: Vec<String>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+struct RevolverModelsResponse {
+    #[serde(default)]
+    success: bool,
+    #[serde(default)]
+    models: Vec<String>,
     error: Option<String>,
 }
 
@@ -3504,6 +3535,219 @@ async fn set_revolver_mode(
 }
 
 #[tauri::command]
+async fn set_revolver_providers(
+    user_id: String,
+    qube_id: String,
+    providers: Vec<String>
+) -> Result<RevolverProvidersResponse, String> {
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let providers_json = serde_json::to_string(&providers)
+        .map_err(|e| format!("Failed to serialize providers: {}", e))?;
+
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("set-revolver-providers")
+        .arg(&user_id)
+        .arg(&qube_id)
+        .arg(&providers_json)
+        .output()
+        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Operation"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: RevolverProvidersResponse = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn get_revolver_providers(
+    user_id: String,
+    qube_id: String
+) -> Result<RevolverProvidersResponse, String> {
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("get-revolver-providers")
+        .arg(&user_id)
+        .arg(&qube_id)
+        .output()
+        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Operation"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: RevolverProvidersResponse = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn set_revolver_models(
+    user_id: String,
+    qube_id: String,
+    models: Vec<String>
+) -> Result<RevolverModelsResponse, String> {
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let models_json = serde_json::to_string(&models)
+        .map_err(|e| format!("Failed to serialize models: {}", e))?;
+
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("set-revolver-models")
+        .arg(&user_id)
+        .arg(&qube_id)
+        .arg(&models_json)
+        .output()
+        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Operation"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: RevolverModelsResponse = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn get_revolver_models(
+    user_id: String,
+    qube_id: String
+) -> Result<RevolverModelsResponse, String> {
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("get-revolver-models")
+        .arg(&user_id)
+        .arg(&qube_id)
+        .output()
+        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Operation"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: RevolverModelsResponse = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn set_free_mode_models(
+    user_id: String,
+    qube_id: String,
+    models: Vec<String>
+) -> Result<RevolverModelsResponse, String> {
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let models_json = serde_json::to_string(&models)
+        .map_err(|e| format!("Failed to serialize models: {}", e))?;
+
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("set-free-mode-models")
+        .arg(&user_id)
+        .arg(&qube_id)
+        .arg(&models_json)
+        .output()
+        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Operation"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: RevolverModelsResponse = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn get_free_mode_models(
+    user_id: String,
+    qube_id: String
+) -> Result<RevolverModelsResponse, String> {
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("get-free-mode-models")
+        .arg(&user_id)
+        .arg(&qube_id)
+        .output()
+        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Operation"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: RevolverModelsResponse = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn set_free_mode(
+    user_id: String,
+    qube_id: String,
+    enabled: bool
+) -> Result<FreeModeResponse, String> {
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("set-free-mode")
+        .arg(&user_id)
+        .arg(&qube_id)
+        .arg(if enabled { "true" } else { "false" })
+        .output()
+        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Operation"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: FreeModeResponse = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
 async fn clear_model_preferences(
     user_id: String,
     qube_id: String,
@@ -5833,6 +6077,13 @@ pub fn run() {
             get_model_preferences,
             set_model_lock,
             set_revolver_mode,
+            set_revolver_providers,
+            get_revolver_providers,
+            set_revolver_models,
+            get_revolver_models,
+            set_free_mode_models,
+            get_free_mode_models,
+            set_free_mode,
             clear_model_preferences,
             reset_model_to_genesis,
             // Visualizer

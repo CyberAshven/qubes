@@ -96,7 +96,7 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
   // Fallback models by provider (matches backend ModelRegistry)
   const fallbackModels: Record<string, { value: string; label: string }[]> = {
     openai: [
-      { value: 'gpt-5.2', label: 'GPT-5.2 ' },
+      { value: 'gpt-5.2', label: 'GPT-5.2' },
       { value: 'gpt-5.2-pro', label: 'GPT-5.2 Pro' },
       { value: 'gpt-5.2-chat-latest', label: 'GPT-5.2 Instant' },
       { value: 'gpt-5.2-codex', label: 'GPT-5.2 Codex' },
@@ -124,9 +124,9 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
       { value: 'claude-3-haiku-20240307', label: 'Claude 3 Haiku' },
     ],
     google: [
-      { value: 'gemini-3-pro-preview', label: 'Gemini 3 Pro ' },
+      { value: 'gemini-3-pro-preview', label: 'Gemini 3 Pro' },
       { value: 'gemini-3-flash-preview', label: 'Gemini 3 Flash' },
-      { value: 'gemini-3-pro-image-preview', label: 'Gemini 3 Pro Image' },
+      { value: 'gemini-3-pro-image-preview', label: 'Gemini 3 Pro Vision' },
       { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
       { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
       { value: 'gemini-2.5-flash-preview-09-2025', label: 'Gemini 2.5 Flash Preview' },
@@ -158,8 +158,8 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
       { value: 'claude-opus-45', label: 'Claude Opus 4.5 (Venice)' },
       { value: 'openai-gpt-52', label: 'GPT-5.2 (Venice)' },
       { value: 'openai-gpt-oss-120b', label: 'GPT OSS 120B (Venice)' },
-      { value: 'gemini-3-pro-preview', label: 'Gemini 3 Pro (Venice)' },
-      { value: 'gemini-3-flash-preview', label: 'Gemini 3 Flash (Venice)' },
+      { value: 'venice/gemini-3-pro', label: 'Gemini 3 Pro (Venice)' },
+      { value: 'venice/gemini-3-flash', label: 'Gemini 3 Flash (Venice)' },
       { value: 'grok-41-fast', label: 'Grok 4.1 Fast' },
       { value: 'grok-code-fast-1', label: 'Grok Code Fast' },
       { value: 'zai-org-glm-4.7', label: 'GLM 4.7' },

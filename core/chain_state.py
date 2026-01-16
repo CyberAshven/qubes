@@ -102,10 +102,19 @@ class ChainState:
             # Model preferences and switching
             "model_preferences": {},  # task_type -> {model, reason, set_at}
             "current_model_override": None,  # Persists model switch across sessions
-            "model_locked": False,  # User lock - prevents Qube from switching
+            "model_locked": True,  # Manual mode is the default
             "model_locked_to": None,  # When locked, forced to this model
             "revolver_mode_enabled": False,  # Privacy mode - rotate providers
-            "revolver_last_index": 0  # Track rotation position
+            "revolver_last_index": 0,  # Track rotation position
+            "revolver_providers": [],  # Providers to include in revolver mode (empty = all)
+            "revolver_models": [],  # Specific models to include (empty = all from providers)
+            "revolver_first_response_done": False,  # Track if first response has been made
+            "revolver_enabled_at": 0,  # Timestamp when revolver mode was enabled
+            "revolver_last_response_at": 0,  # Timestamp of last revolver response
+
+            # Autonomous mode settings
+            "free_mode": False,  # Autonomous mode - off by default (Manual is default)
+            "free_mode_models": [],  # Models available in free mode (empty = all configured)
         }
 
         self._save()
@@ -529,8 +538,12 @@ class ChainState:
         """
         self.state["revolver_mode_enabled"] = enabled
         if enabled:
-            # Reset index when enabling
+            # Reset index and first response flag when enabling
             self.state["revolver_last_index"] = 0
+            self.state["revolver_first_response_done"] = False
+            # Record timestamp for first-response detection
+            import time
+            self.state["revolver_enabled_at"] = int(time.time())
         self._save()
 
         logger.info("revolver_mode_changed", qube_id=self.qube_id, enabled=enabled)
@@ -566,3 +579,113 @@ class ChainState:
         current = self.state.get("revolver_last_index", 0)
         self.state["revolver_last_index"] = (current + 1) % num_providers
         self._save()
+
+    def is_revolver_first_response_done(self) -> bool:
+        """
+        Check if first response has been made since enabling revolver mode.
+
+        Uses both flag AND timestamp for reliability. First response is NOT done if:
+        - Flag is False, OR
+        - Last response timestamp is before/equal to enabled timestamp (or 0)
+        """
+        flag = self.state.get("revolver_first_response_done", False)
+        enabled_at = self.state.get("revolver_enabled_at", 0)
+        last_response_at = self.state.get("revolver_last_response_at", 0)
+
+        # First response is done only if flag is True AND last_response is after enabled_at
+        if not flag:
+            return False
+        if enabled_at > 0 and last_response_at <= enabled_at:
+            return False
+        return True
+
+    def set_revolver_first_response_done(self) -> None:
+        """Mark that the first response has been made since enabling revolver mode."""
+        import time
+        self.state["revolver_first_response_done"] = True
+        self.state["revolver_last_response_at"] = int(time.time())
+        self._save()
+
+    def set_revolver_providers(self, providers: list[str]) -> None:
+        """
+        Set the list of providers to include in revolver mode rotation.
+
+        Args:
+            providers: List of provider names (e.g., ['venice', 'google', 'openai']).
+                      Empty list means use all configured providers.
+        """
+        self.state["revolver_providers"] = providers
+        logger.info("revolver_providers_set", qube_id=self.qube_id, providers=providers)
+        self._save()
+
+    def get_revolver_providers(self) -> list[str]:
+        """
+        Get the list of providers to include in revolver mode rotation.
+
+        Returns:
+            List of provider names, or empty list if all providers should be used.
+        """
+        return self.state.get("revolver_providers", [])
+
+    def set_revolver_models(self, models: list[str]) -> None:
+        """
+        Set the list of specific models to include in revolver mode rotation.
+
+        Args:
+            models: List of model IDs (e.g., ['gpt-5.2', 'claude-sonnet-4.5']).
+                   Empty list means use all models from selected providers.
+        """
+        self.state["revolver_models"] = models
+        logger.info("revolver_models_set", qube_id=self.qube_id, model_count=len(models))
+        self._save()
+
+    def get_revolver_models(self) -> list[str]:
+        """
+        Get the list of specific models to include in revolver mode rotation.
+
+        Returns:
+            List of model IDs, or empty list if all models should be used.
+        """
+        return self.state.get("revolver_models", [])
+
+    def set_free_mode_models(self, models: list[str]) -> None:
+        """
+        Set the list of models available in free mode (autonomous selection).
+
+        Args:
+            models: List of model IDs (e.g., ['gpt-5.2', 'claude-sonnet-4.5']).
+                   Empty list means all configured models are available.
+        """
+        self.state["free_mode_models"] = models
+        logger.info("free_mode_models_set", qube_id=self.qube_id, model_count=len(models))
+        self._save()
+
+    def get_free_mode_models(self) -> list[str]:
+        """
+        Get the list of models available in free mode.
+
+        Returns:
+            List of model IDs, or empty list if all models are available.
+        """
+        return self.state.get("free_mode_models", [])
+
+    def set_free_mode(self, enabled: bool) -> None:
+        """
+        Enable or disable free mode (autonomous model selection).
+
+        Args:
+            enabled: True to enable free mode, False to disable
+        """
+        self.state["free_mode"] = enabled
+        logger.info("free_mode_set", qube_id=self.qube_id, enabled=enabled)
+        self._save()
+
+    def is_free_mode_enabled(self) -> bool:
+        """
+        Check if free mode is enabled.
+
+        Returns:
+            True if free mode is enabled, False otherwise.
+            Defaults to False (model_locked is the default mode).
+        """
+        return self.state.get("free_mode", False)

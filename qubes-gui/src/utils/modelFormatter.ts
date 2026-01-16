@@ -42,7 +42,7 @@ export function formatModelName(modelId: string): string {
     // Google - Gemini 3.x and 2.5 series (2025-2026)
     'gemini-3-pro-preview': 'Gemini 3 Pro',
     'gemini-3-flash-preview': 'Gemini 3 Flash',
-    'gemini-3-pro-image-preview': 'Gemini 3 Pro Image',
+    'gemini-3-pro-image-preview': 'Gemini 3 Pro Vision',
     'gemini-2.5-pro': 'Gemini 2.5 Pro',
     'gemini-2.5-flash': 'Gemini 2.5 Flash',
     'gemini-2.5-flash-preview-09-2025': 'Gemini 2.5 Flash Preview',
@@ -80,6 +80,8 @@ export function formatModelName(modelId: string): string {
     'google-gemma-3-27b-it': 'Gemma 3 27B',
     'hermes-3-llama-3.1-405b': 'Hermes 3 405B',
     'dolphin-2.9.3-mistral-7b': 'Venice Uncensored',
+    'venice/gemini-3-pro': 'Gemini 3 Pro (Venice)',
+    'venice/gemini-3-flash': 'Gemini 3 Flash (Venice)',
     // Ollama models
     'llama3.3:70b': 'Llama 3.3 70B',
     'llama3.2': 'Llama 3.2',
@@ -95,6 +97,15 @@ export function formatModelName(modelId: string): string {
     'gemma2:9b': 'Gemma 2 9B',
     'mistral:7b': 'Mistral 7B',
     'codellama:7b': 'CodeLlama 7B',
+    // NanoGPT models
+    'nanogpt/gpt-4o': 'GPT-4o (NanoGPT)',
+    'nanogpt/gpt-4o-mini': 'GPT-4o Mini (NanoGPT)',
+    'nanogpt/claude-3-5-sonnet': 'Claude 3.5 Sonnet (NanoGPT)',
+    'nanogpt/claude-3-haiku': 'Claude 3 Haiku (NanoGPT)',
+    'nanogpt/llama-3.1-70b': 'Llama 3.1 70B (NanoGPT)',
+    'nanogpt/llama-3.1-8b': 'Llama 3.1 8B (NanoGPT)',
+    'nanogpt/mistral-large': 'Mistral Large (NanoGPT)',
+    'nanogpt/mixtral-8x7b': 'Mixtral 8x7B (NanoGPT)',
   };
 
   if (modelMap[modelId]) return modelMap[modelId];

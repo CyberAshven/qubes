@@ -6940,6 +6940,12 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
             if enabled:
                 state["model_locked"] = False
                 state["model_locked_to"] = None
+                # Reset rotation state when enabling
+                state["revolver_last_index"] = 0
+                state["revolver_first_response_done"] = False
+                # Record when revolver mode was enabled (for first-response detection)
+                import time
+                state["revolver_enabled_at"] = int(time.time())
 
             self._save_chain_state(qube_dir, state)
 
@@ -6952,6 +6958,218 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
 
         except Exception as e:
             logger.error(f"Failed to set revolver mode: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def set_revolver_providers(self, qube_id: str, providers: List[str]) -> Dict[str, Any]:
+        """
+        Set the list of providers to include in revolver mode rotation.
+        Works directly with chain_state.json without loading the full qube.
+
+        Args:
+            qube_id: The Qube's ID
+            providers: List of provider names. Empty list means use all configured providers.
+
+        Returns:
+            Dict with success status and current providers list
+        """
+        try:
+            qube_dir = self._find_qube_dir(qube_id)
+            if not qube_dir:
+                return {"success": False, "error": f"Qube {qube_id} not found"}
+
+            state = self._load_chain_state(qube_dir)
+            state["revolver_providers"] = providers
+            self._save_chain_state(qube_dir, state)
+
+            logger.info(f"Revolver providers set for {qube_id}: {providers}")
+
+            return {
+                "success": True,
+                "providers": providers
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to set revolver providers: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def get_revolver_providers(self, qube_id: str) -> Dict[str, Any]:
+        """
+        Get the list of providers configured for revolver mode rotation.
+        Works directly with chain_state.json without loading the full qube.
+
+        Args:
+            qube_id: The Qube's ID
+
+        Returns:
+            Dict with success status and providers list
+        """
+        try:
+            qube_dir = self._find_qube_dir(qube_id)
+            if not qube_dir:
+                return {"success": False, "error": f"Qube {qube_id} not found"}
+
+            state = self._load_chain_state(qube_dir)
+            providers = state.get("revolver_providers", [])
+
+            return {
+                "success": True,
+                "providers": providers
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to get revolver providers: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def set_revolver_models(self, qube_id: str, models: List[str]) -> Dict[str, Any]:
+        """
+        Set the list of specific models to include in revolver mode rotation.
+        Works directly with chain_state.json without loading the full qube.
+
+        Args:
+            qube_id: The Qube's ID
+            models: List of model IDs. Empty list means use all models from selected providers.
+
+        Returns:
+            Dict with success status and current models list
+        """
+        try:
+            qube_dir = self._find_qube_dir(qube_id)
+            if not qube_dir:
+                return {"success": False, "error": f"Qube {qube_id} not found"}
+
+            state = self._load_chain_state(qube_dir)
+            state["revolver_models"] = models
+            self._save_chain_state(qube_dir, state)
+
+            logger.info(f"Revolver models set for {qube_id}: {len(models)} models")
+
+            return {
+                "success": True,
+                "models": models
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to set revolver models: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def get_revolver_models(self, qube_id: str) -> Dict[str, Any]:
+        """
+        Get the list of specific models configured for revolver mode rotation.
+        Works directly with chain_state.json without loading the full qube.
+
+        Args:
+            qube_id: The Qube's ID
+
+        Returns:
+            Dict with success status and models list
+        """
+        try:
+            qube_dir = self._find_qube_dir(qube_id)
+            if not qube_dir:
+                return {"success": False, "error": f"Qube {qube_id} not found"}
+
+            state = self._load_chain_state(qube_dir)
+            models = state.get("revolver_models", [])
+
+            return {
+                "success": True,
+                "models": models
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to get revolver models: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def set_free_mode_models(self, qube_id: str, models: List[str]) -> Dict[str, Any]:
+        """
+        Set the list of models available in free mode (autonomous selection).
+        Works directly with chain_state.json without loading the full qube.
+
+        Args:
+            qube_id: The Qube's ID
+            models: List of model IDs. Empty list means all configured models are available.
+
+        Returns:
+            Dict with success status and current models list
+        """
+        try:
+            qube_dir = self._find_qube_dir(qube_id)
+            if not qube_dir:
+                return {"success": False, "error": f"Qube {qube_id} not found"}
+
+            state = self._load_chain_state(qube_dir)
+            state["free_mode_models"] = models
+            self._save_chain_state(qube_dir, state)
+
+            logger.info(f"Free mode models set for {qube_id}: {len(models)} models")
+
+            return {
+                "success": True,
+                "models": models
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to set free mode models: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def get_free_mode_models(self, qube_id: str) -> Dict[str, Any]:
+        """
+        Get the list of models available in free mode.
+        Works directly with chain_state.json without loading the full qube.
+
+        Args:
+            qube_id: The Qube's ID
+
+        Returns:
+            Dict with success status and models list
+        """
+        try:
+            qube_dir = self._find_qube_dir(qube_id)
+            if not qube_dir:
+                return {"success": False, "error": f"Qube {qube_id} not found"}
+
+            state = self._load_chain_state(qube_dir)
+            models = state.get("free_mode_models", [])
+
+            return {
+                "success": True,
+                "models": models
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to get free mode models: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def set_free_mode(self, qube_id: str, enabled: bool) -> Dict[str, Any]:
+        """
+        Enable or disable free mode (autonomous model selection).
+        Works directly with chain_state.json without loading the full qube.
+
+        Args:
+            qube_id: The Qube's ID
+            enabled: True to enable free mode, False to disable
+
+        Returns:
+            Dict with success status and current enabled state
+        """
+        try:
+            qube_dir = self._find_qube_dir(qube_id)
+            if not qube_dir:
+                return {"success": False, "error": f"Qube {qube_id} not found"}
+
+            state = self._load_chain_state(qube_dir)
+            state["free_mode"] = enabled
+            self._save_chain_state(qube_dir, state)
+
+            logger.info(f"Free mode {'enabled' if enabled else 'disabled'} for {qube_id}")
+
+            return {
+                "success": True,
+                "enabled": enabled
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to set free mode: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
 
     async def get_model_preferences(self, qube_id: str) -> Dict[str, Any]:
@@ -6980,15 +7198,25 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
                     metadata = json.load(f)
                     genesis_model = metadata.get("genesis_block", {}).get("ai_model")
 
+            # Determine modes: model_locked is the default if none are explicitly set
+            revolver_mode = state.get("revolver_mode_enabled", False)
+            free_mode = state.get("free_mode", False)
+            # Default to model_locked if neither revolver nor free mode is on
+            model_locked = state.get("model_locked", not revolver_mode and not free_mode)
+
             return {
                 "success": True,
                 "preferences": state.get("model_preferences", {}),
                 "current_model": state.get("current_model_override") or genesis_model,
                 "current_override": state.get("current_model_override"),
                 "genesis_model": genesis_model,
-                "model_locked": state.get("model_locked", False),
+                "model_locked": model_locked,
                 "locked_to": state.get("model_locked_to"),
-                "revolver_mode": state.get("revolver_mode_enabled", False)
+                "revolver_mode": revolver_mode,
+                "revolver_providers": state.get("revolver_providers", []),
+                "revolver_models": state.get("revolver_models", []),
+                "free_mode": free_mode,
+                "free_mode_models": state.get("free_mode_models", [])
             }
 
         except Exception as e:
@@ -7526,18 +7754,64 @@ async def main():
             qube_id = validate_qube_id(sys.argv[3])
             password = get_secret("password", argv_index=4)
 
-            # Create bridge with correct user
+            # Direct file deletion approach - avoids loading qube which can lock files
+            # This is more reliable on Windows where file handles can be held
+            import time
+            from pathlib import Path
+
+            # Get data directory from orchestrator
             user_bridge = GUIBridge(user_id=user_id)
+            qube_dir = user_bridge.orchestrator.data_dir / "qubes"
 
-            # Set master key
-            user_bridge.orchestrator.set_master_key(password)
+            # Find qube directory (starts with name, ends with _QUBEID)
+            qube_path = None
+            for d in qube_dir.iterdir():
+                if d.is_dir() and d.name.endswith(f"_{qube_id}"):
+                    qube_path = d
+                    break
 
-            # Load qube and discard session
-            if qube_id not in user_bridge.orchestrator.qubes:
-                await user_bridge.orchestrator.load_qube(qube_id)
+            blocks_discarded = 0
+            if qube_path:
+                session_dir = qube_path / "blocks" / "session"
+                chain_state_file = qube_path / "chain_state.json"
 
-            qube = user_bridge.orchestrator.qubes[qube_id]
-            blocks_discarded = qube.discard_session()
+                # Delete session block files with retry
+                if session_dir.exists():
+                    for block_file in list(session_dir.glob("*.json")):
+                        for attempt in range(3):
+                            try:
+                                block_file.unlink()
+                                blocks_discarded += 1
+                                break
+                            except PermissionError:
+                                if attempt < 2:
+                                    time.sleep(0.1 * (attempt + 1))
+                            except Exception as e:
+                                logger.warning("delete_block_failed", file=str(block_file), error=str(e))
+                                break
+
+                # Update chain_state to clear session info
+                if chain_state_file.exists():
+                    try:
+                        with open(chain_state_file, 'r') as f:
+                            state = json.load(f)
+
+                        state["current_session_id"] = None
+                        state["session_block_count"] = 0
+                        state["next_negative_index"] = -1
+                        state["session_start_timestamp"] = None
+
+                        # Write with retry
+                        for attempt in range(3):
+                            try:
+                                with open(chain_state_file, 'w') as f:
+                                    json.dump(state, f, indent=2)
+                                break
+                            except PermissionError:
+                                if attempt < 2:
+                                    time.sleep(0.1 * (attempt + 1))
+                    except Exception as e:
+                        logger.warning("update_chain_state_failed", error=str(e))
 
             print(json.dumps({"success": True, "blocks_discarded": blocks_discarded}))
 
@@ -10798,6 +11072,69 @@ async def main():
             enabled = sys.argv[4].lower() == "true"
             user_bridge = GUIBridge(user_id=user_id)
             result = await user_bridge.set_revolver_mode(qube_id, enabled)
+            print(json.dumps(result))
+
+        elif command == "set-revolver-providers":
+            # Args: user_id, qube_id, providers (JSON array)
+            user_id = sys.argv[2]
+            qube_id = sys.argv[3]
+            providers_json = sys.argv[4] if len(sys.argv) > 4 else "[]"
+            providers = json.loads(providers_json)
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.set_revolver_providers(qube_id, providers)
+            print(json.dumps(result))
+
+        elif command == "get-revolver-providers":
+            # Args: user_id, qube_id
+            user_id = sys.argv[2]
+            qube_id = sys.argv[3]
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.get_revolver_providers(qube_id)
+            print(json.dumps(result))
+
+        elif command == "set-revolver-models":
+            # Args: user_id, qube_id, models (JSON array)
+            user_id = sys.argv[2]
+            qube_id = sys.argv[3]
+            models_json = sys.argv[4] if len(sys.argv) > 4 else "[]"
+            models = json.loads(models_json)
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.set_revolver_models(qube_id, models)
+            print(json.dumps(result))
+
+        elif command == "get-revolver-models":
+            # Args: user_id, qube_id
+            user_id = sys.argv[2]
+            qube_id = sys.argv[3]
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.get_revolver_models(qube_id)
+            print(json.dumps(result))
+
+        elif command == "set-free-mode-models":
+            # Args: user_id, qube_id, models (JSON array)
+            user_id = sys.argv[2]
+            qube_id = sys.argv[3]
+            models_json = sys.argv[4] if len(sys.argv) > 4 else "[]"
+            models = json.loads(models_json)
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.set_free_mode_models(qube_id, models)
+            print(json.dumps(result))
+
+        elif command == "get-free-mode-models":
+            # Args: user_id, qube_id
+            user_id = sys.argv[2]
+            qube_id = sys.argv[3]
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.get_free_mode_models(qube_id)
+            print(json.dumps(result))
+
+        elif command == "set-free-mode":
+            # Args: user_id, qube_id, enabled (true/false)
+            user_id = sys.argv[2]
+            qube_id = sys.argv[3]
+            enabled = sys.argv[4].lower() == "true" if len(sys.argv) > 4 else True
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.set_free_mode(qube_id, enabled)
             print(json.dumps(result))
 
         elif command == "get-model-preferences":

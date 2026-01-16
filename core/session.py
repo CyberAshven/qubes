@@ -809,9 +809,16 @@ class Session:
         self.next_negative_index = -1
 
         # Update chain state
-        self.qube.chain_state.end_session()
+        try:
+            self.qube.chain_state.end_session()
+        except Exception as e:
+            logger.warning("chain_state_end_session_failed", error=str(e))
 
-        self.cleanup()
+        # Cleanup files (don't fail if files are locked - they'll be cleaned up next time)
+        try:
+            self.cleanup()
+        except Exception as e:
+            logger.warning("session_cleanup_failed", error=str(e))
 
         logger.info("session_discarded", session_id=self.session_id, blocks=block_count)
         return block_count
@@ -2036,13 +2043,32 @@ IMPORTANT: Return ONLY valid JSON, no other text."""
     def cleanup(self) -> None:
         """Remove all session blocks after successful anchoring or discarding"""
         from pathlib import Path
+        import time
 
         session_dir = Path(self.qube.data_dir) / "blocks" / "session"
         if session_dir.exists():
             # Delete all JSON files in session directory
+            failed_files = []
             for block_file in session_dir.glob("*.json"):
-                block_file.unlink()
-                logger.debug("session_block_deleted", file=block_file.name)
+                # Retry deletion with backoff (files may be locked on Windows)
+                for attempt in range(3):
+                    try:
+                        block_file.unlink()
+                        logger.debug("session_block_deleted", file=block_file.name)
+                        break
+                    except PermissionError:
+                        if attempt < 2:
+                            time.sleep(0.1 * (attempt + 1))  # 100ms, 200ms backoff
+                        else:
+                            failed_files.append(block_file.name)
+                            logger.warning("session_block_delete_failed", file=block_file.name, error="Permission denied")
+                    except Exception as e:
+                        failed_files.append(block_file.name)
+                        logger.warning("session_block_delete_failed", file=block_file.name, error=str(e))
+                        break
+
+            if failed_files:
+                logger.warning("some_session_blocks_not_deleted", count=len(failed_files), files=failed_files)
 
 
     @staticmethod
