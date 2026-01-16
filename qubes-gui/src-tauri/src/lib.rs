@@ -592,6 +592,12 @@ struct ModelPreferencesResponse {
     revolver_mode: bool,
     #[serde(default)]
     revolver_providers: Vec<String>,
+    #[serde(default)]
+    revolver_models: Vec<String>,
+    #[serde(default)]
+    free_mode: bool,
+    #[serde(default)]
+    free_mode_models: Vec<String>,
     error: Option<String>,
 }
 
