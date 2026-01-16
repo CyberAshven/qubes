@@ -949,6 +949,12 @@ Make your move using the chess_move tool. Use one of the legal moves listed abov
         genesis = self.qube.genesis_block
         base_genesis_prompt = genesis.genesis_prompt or "You are a helpful AI assistant."
 
+        # Inject current model into genesis prompt for model awareness
+        # This ensures the AI knows what model it's running on RIGHT NOW
+        current_model = getattr(self.qube, 'current_ai_model', genesis.ai_model)
+        model_injection = f"[You are currently running on: {current_model}]\n\n"
+        base_genesis_prompt = model_injection + base_genesis_prompt
+
         # Build identity awareness block with genesis metadata
         # Format birth timestamp in US Eastern 12-hour format
         from utils.time_format import format_timestamp, get_current_timestamp_formatted
@@ -2448,7 +2454,13 @@ Multiple entities present. Be careful about what you share.
             if msg.get("role") == "system":
                 content = msg.get("content", "")
 
-                # Update the **Current Model**: line
+                # Update the model injection at the start of genesis prompt
+                # Pattern: [You are currently running on: <model_name>]
+                injection_pattern = r'\[You are currently running on: [^\]]+\]'
+                injection_replacement = f"[You are currently running on: {new_model}]"
+                content = re.sub(injection_pattern, injection_replacement, content)
+
+                # Update the **Current Model**: line in model awareness section
                 # Pattern: **Current Model**: <model_name> (<provider>)
                 pattern = r'\*\*Current Model\*\*: [^\n]+'
                 new_model_info = ModelRegistry.get_model_info(new_model)
