@@ -2511,6 +2511,12 @@ Multiple entities present. Be careful about what you share.
                 injection_replacement = f"[You are currently running on: {new_model}]"
                 content = re.sub(injection_pattern, injection_replacement, content)
 
+                # Update the "THIS RESPONSE" line from model history section
+                # Pattern: **THIS RESPONSE**: I am generating this response using **<model_name>**
+                this_response_pattern = r'\*\*THIS RESPONSE\*\*: I am generating this response using \*\*[^*]+\*\*'
+                this_response_replacement = f"**THIS RESPONSE**: I am generating this response using **{new_model}**"
+                content = re.sub(this_response_pattern, this_response_replacement, content)
+
                 # Update the **Current Model**: line in model awareness section
                 # Pattern: **Current Model**: <model_name> (<provider>)
                 pattern = r'\*\*Current Model\*\*: [^\n]+'
