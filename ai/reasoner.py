@@ -1026,6 +1026,11 @@ Make your move using the chess_move tool. Use one of the legal moves listed abov
         if model_awareness_context:
             identity_block += f"\n{model_awareness_context}"
 
+        # Add model history from recent blocks (ground truth from memory chain)
+        model_history = self._build_model_history_from_blocks()
+        if model_history:
+            identity_block += f"\n{model_history}"
+
         # Combine genesis prompt with identity awareness
         base_system_prompt = f"""{base_genesis_prompt}
 
@@ -2022,6 +2027,52 @@ Multiple entities present. Be careful about what you share.
 
         except Exception as e:
             logger.warning("failed_to_build_model_awareness_context", error=str(e))
+            return ""
+
+    def _build_model_history_from_blocks(self) -> str:
+        """
+        Build model history from recent blocks in the memory chain.
+
+        This provides ground truth about which model was used for each response,
+        directly from the blockchain. Helps prevent model confusion in revolver mode.
+
+        Returns:
+            Formatted model history string showing recent responses and their models
+        """
+        try:
+            history_lines = []
+
+            # Get recent blocks from session (most recent responses)
+            if self.qube.current_session and self.qube.current_session.session_blocks:
+                # Get last 5 assistant responses from session
+                assistant_blocks = [
+                    b for b in self.qube.current_session.session_blocks
+                    if b.block_type == "MESSAGE" and b.content.get("message_type") == "qube_to_human"
+                ][-5:]
+
+                for block in assistant_blocks:
+                    block_num = block.block_number
+                    model = block.ai_model or "unknown"
+                    # Get first 50 chars of response as preview
+                    preview = block.content.get("message_body", "")[:50]
+                    if len(block.content.get("message_body", "")) > 50:
+                        preview += "..."
+                    history_lines.append(f"  Block {block_num}: {model} - \"{preview}\"")
+
+            if history_lines:
+                # Get current model for THIS response
+                current_model = getattr(self.qube, 'current_ai_model', 'unknown')
+
+                context = "\n# My Recent Model History (from my memory chain):\n"
+                context += "These are my actual responses and the models that generated them:\n"
+                context += "\n".join(history_lines)
+                context += f"\n\n**THIS RESPONSE**: I am generating this response using **{current_model}**\n"
+                return context
+
+            return ""
+
+        except Exception as e:
+            logger.warning("failed_to_build_model_history", error=str(e))
             return ""
 
     def _get_available_providers_for_revolver(self) -> list[tuple[str, str]]:
