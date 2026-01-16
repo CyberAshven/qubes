@@ -49,7 +49,7 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({ qube, userId, currentMod
     >
       <div
         className="grid items-center"
-        style={{ gridTemplateColumns: '17% 15% 11% 9% 10% 13% 13%', gap: '12px' }}
+        style={{ gridTemplateColumns: 'auto repeat(6, 1fr)', gap: '24px' }}
       >
         {/* Avatar + Name */}
         <div className="flex items-center gap-3 overflow-hidden">
