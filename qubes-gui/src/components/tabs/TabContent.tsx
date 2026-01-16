@@ -327,7 +327,7 @@ export const TabContent: React.FC<TabContentProps> = ({ qubes, setQubes, onQubes
           {/* Mode Toggle - Local vs P2P */}
           <div className="flex items-center justify-between py-3 px-4 bg-bg-secondary/50 border-b border-glass-border">
             {/* Model Mode Indicator */}
-            <div className="min-w-[120px] flex items-center gap-2">
+            <div className="w-[200px] flex items-center gap-2">
               {singleSelectedQube && (
                 <>
                   <span className="text-text-secondary text-sm">Model Mode:</span>
