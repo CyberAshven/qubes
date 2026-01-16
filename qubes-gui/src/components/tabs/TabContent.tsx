@@ -330,7 +330,7 @@ export const TabContent: React.FC<TabContentProps> = ({ qubes, setQubes, onQubes
             <div className="min-w-[120px] flex items-center gap-2">
               {singleSelectedQube && (
                 <>
-                  <span className="text-text-secondary text-sm">Mode:</span>
+                  <span className="text-text-secondary text-sm">Model Mode:</span>
                   <span
                     className={`px-2 py-0.5 rounded text-xs font-medium ${
                       modelMode === 'revolver'
