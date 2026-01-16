@@ -47,9 +47,9 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({ qube, userId, currentMod
       className="sticky top-0 z-10 p-6 border-l-4 bg-bg-primary/95 backdrop-blur-sm"
       style={{ borderLeftColor: qube.favorite_color }}
     >
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-4">
         {/* Avatar + Name */}
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 min-w-[140px]">
           <img
             src={getAvatarPath()}
             alt={`${qube.name} avatar`}
@@ -86,7 +86,7 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({ qube, userId, currentMod
         </div>
 
         {/* Model - Uses local state, updates independently */}
-        <div className="flex flex-col">
+        <div className="flex flex-col min-w-[160px]">
           <div className="text-xs text-text-tertiary uppercase tracking-wider font-semibold">Model</div>
           <div className="text-xl font-display font-bold flex items-center gap-2" style={{ color: qube.favorite_color }}>
             🤖 {formatModelName(displayedModel)}
@@ -94,7 +94,7 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({ qube, userId, currentMod
         </div>
 
         {/* ID */}
-        <div className="flex flex-col">
+        <div className="flex flex-col min-w-[100px]">
           <div className="text-xs text-text-tertiary uppercase tracking-wider font-semibold">Qube ID</div>
           <div className="text-xl font-display font-bold flex items-center gap-2" style={{ color: qube.favorite_color }}>
             🆔 {qube.qube_id.substring(0, 8)}
@@ -102,7 +102,7 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({ qube, userId, currentMod
         </div>
 
         {/* Voice */}
-        <div className="flex flex-col">
+        <div className="flex flex-col min-w-[90px]">
           <div className="text-xs text-text-tertiary uppercase tracking-wider font-semibold">Voice</div>
           <div className="text-xl font-display font-bold flex items-center gap-2" style={{ color: qube.favorite_color }}>
             🎤 {(() => {
@@ -113,7 +113,7 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({ qube, userId, currentMod
         </div>
 
         {/* Creator */}
-        <div className="flex flex-col">
+        <div className="flex flex-col min-w-[100px]">
           <div className="text-xs text-text-tertiary uppercase tracking-wider font-semibold">Creator</div>
           <div className="text-xl font-display font-bold flex items-center gap-2" style={{ color: qube.favorite_color }}>
             👤 {qube.creator || 'Unknown'}
@@ -121,7 +121,7 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({ qube, userId, currentMod
         </div>
 
         {/* Blockchain */}
-        <div className="flex flex-col">
+        <div className="flex flex-col min-w-[120px]">
           <div className="text-xs text-text-tertiary uppercase tracking-wider font-semibold">Blockchain</div>
           <div className="text-xl font-display font-bold flex items-center gap-2" style={{ color: qube.favorite_color }}>
             {qube.home_blockchain === 'bitcoincash' ? (
@@ -132,7 +132,7 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({ qube, userId, currentMod
         </div>
 
         {/* Birth Date */}
-        <div className="flex flex-col">
+        <div className="flex flex-col min-w-[120px]">
           <div className="text-xs text-text-tertiary uppercase tracking-wider font-semibold">Born</div>
           <div className="text-xl font-display font-bold flex items-center gap-2" style={{ color: qube.favorite_color }}>
             🎂 {qube.birth_timestamp
