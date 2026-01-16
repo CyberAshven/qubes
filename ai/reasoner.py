@@ -2002,7 +2002,9 @@ Multiple entities present. Be careful about what you share.
                 context += "  **Model Locked**: No - I can switch models freely\n"
 
             if revolver_mode:
-                context += "  **Revolver Mode**: ON - provider rotates each response for privacy\n"
+                context += "  **Revolver Mode**: ON - your model is automatically rotated each response for privacy. "
+                context += "IMPORTANT: Always check **Current Model** above to know which model you ARE right now. "
+                context += "Do NOT guess or roleplay being a different model than what is shown in Current Model.\n"
             else:
                 context += "  **Revolver Mode**: OFF\n"
 
@@ -2458,21 +2460,35 @@ Multiple entities present. Be careful about what you share.
 
                 new_content = re.sub(pattern, replacement, content)
 
-                # Also add a note about the retry if not already present
-                if "revolver retry" not in new_content.lower():
-                    retry_note = f"\n\n**Note**: Due to a provider issue, you were switched from another model to {new_model} for this response."
-                    # Insert after the Current Model section
-                    new_content = new_content.replace(
-                        replacement,
-                        replacement + retry_note
+                # Verify the regex actually matched
+                if new_content == content:
+                    logger.warning(
+                        "revolver_update_context_failed",
+                        reason="regex did not match Current Model line",
+                        new_model=new_model,
+                        new_provider=new_provider,
+                        content_snippet=content[:500] if content else "empty"
                     )
+                    # Force update by prepending model info if regex failed
+                    model_override = f"\n\n**IMPORTANT - Current Model Override**: You are NOW running as {new_model} ({new_provider}). Ignore any previous model information.\n\n"
+                    new_content = model_override + content
+                else:
+                    # Also add a note about the retry if not already present
+                    if "revolver retry" not in new_content.lower():
+                        retry_note = f"\n\n**Note**: Due to a provider issue, you were switched from another model to {new_model} for this response."
+                        # Insert after the Current Model section
+                        new_content = new_content.replace(
+                            replacement,
+                            replacement + retry_note
+                        )
 
                 msg["content"] = new_content
 
                 logger.debug(
                     "revolver_updated_context_model",
                     new_model=new_model,
-                    new_provider=new_provider
+                    new_provider=new_provider,
+                    regex_matched=(new_content != content)
                 )
                 break
 
