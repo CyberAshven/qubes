@@ -47,9 +47,12 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({ qube, userId, currentMod
       className="sticky top-0 z-10 p-6 border-l-4 bg-bg-primary/95 backdrop-blur-sm"
       style={{ borderLeftColor: qube.favorite_color }}
     >
-      <div className="flex items-center">
+      <div
+        className="grid items-center"
+        style={{ gridTemplateColumns: '17% 15% 11% 9% 10% 13% 13%', gap: '12px' }}
+      >
         {/* Avatar + Name */}
-        <div className="flex items-center gap-3 flex-[2]">
+        <div className="flex items-center gap-3 overflow-hidden">
           <img
             src={getAvatarPath()}
             alt={`${qube.name} avatar`}
@@ -77,71 +80,76 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({ qube, userId, currentMod
           >
             {qube.name[0]}
           </div>
-          <div className="flex flex-col">
+          <div className="flex flex-col min-w-0">
             <div className="text-xs text-text-tertiary uppercase tracking-wider font-semibold">Name</div>
-            <h1 className="text-xl font-display font-bold" style={{ color: qube.favorite_color }}>
+            <h1 className="text-xl font-display font-bold truncate" style={{ color: qube.favorite_color }}>
               {qube.name}
             </h1>
           </div>
         </div>
 
         {/* Model - Uses local state, updates independently */}
-        <div className="flex flex-col flex-[2]">
+        <div className="flex flex-col min-w-0">
           <div className="text-xs text-text-tertiary uppercase tracking-wider font-semibold">Model</div>
           <div className="text-xl font-display font-bold flex items-center gap-2" style={{ color: qube.favorite_color }}>
-            🤖 {formatModelName(displayedModel)}
+            <span className="flex-shrink-0">🤖</span>
+            <span className="truncate">{formatModelName(displayedModel)}</span>
           </div>
         </div>
 
         {/* ID */}
-        <div className="flex flex-col flex-1">
+        <div className="flex flex-col min-w-0">
           <div className="text-xs text-text-tertiary uppercase tracking-wider font-semibold">Qube ID</div>
           <div className="text-xl font-display font-bold flex items-center gap-2" style={{ color: qube.favorite_color }}>
-            🆔 {qube.qube_id.substring(0, 8)}
+            <span className="flex-shrink-0">🆔</span>
+            <span className="truncate">{qube.qube_id.substring(0, 8)}</span>
           </div>
         </div>
 
         {/* Voice */}
-        <div className="flex flex-col flex-1">
+        <div className="flex flex-col min-w-0">
           <div className="text-xs text-text-tertiary uppercase tracking-wider font-semibold">Voice</div>
           <div className="text-xl font-display font-bold flex items-center gap-2" style={{ color: qube.favorite_color }}>
-            🎤 {(() => {
+            <span className="flex-shrink-0">🎤</span>
+            <span className="truncate">{(() => {
               const voiceName = qube.voice_model?.split(':')[1] || qube.voice_model || 'Not set';
               return voiceName.charAt(0).toUpperCase() + voiceName.slice(1);
-            })()}
+            })()}</span>
           </div>
         </div>
 
         {/* Creator */}
-        <div className="flex flex-col flex-1">
+        <div className="flex flex-col min-w-0">
           <div className="text-xs text-text-tertiary uppercase tracking-wider font-semibold">Creator</div>
           <div className="text-xl font-display font-bold flex items-center gap-2" style={{ color: qube.favorite_color }}>
-            👤 {qube.creator || 'Unknown'}
+            <span className="flex-shrink-0">👤</span>
+            <span className="truncate">{qube.creator || 'Unknown'}</span>
           </div>
         </div>
 
         {/* Blockchain */}
-        <div className="flex flex-col flex-[1.5]">
+        <div className="flex flex-col min-w-0">
           <div className="text-xs text-text-tertiary uppercase tracking-wider font-semibold">Blockchain</div>
           <div className="text-xl font-display font-bold flex items-center gap-2" style={{ color: qube.favorite_color }}>
             {qube.home_blockchain === 'bitcoincash' ? (
               <img src="/bitcoin_cash_logo.svg" alt="BCH" className="w-5 h-5 flex-shrink-0" />
-            ) : '⛓️'}
-            {qube.home_blockchain === 'bitcoincash' ? 'Bitcoin Cash' : qube.home_blockchain || 'Unknown'}
+            ) : <span className="flex-shrink-0">⛓️</span>}
+            <span className="truncate">{qube.home_blockchain === 'bitcoincash' ? 'Bitcoin Cash' : qube.home_blockchain || 'Unknown'}</span>
           </div>
         </div>
 
         {/* Birth Date */}
-        <div className="flex flex-col flex-[1.5]">
+        <div className="flex flex-col min-w-0">
           <div className="text-xs text-text-tertiary uppercase tracking-wider font-semibold">Born</div>
           <div className="text-xl font-display font-bold flex items-center gap-2" style={{ color: qube.favorite_color }}>
-            🎂 {qube.birth_timestamp
+            <span className="flex-shrink-0">🎂</span>
+            <span className="truncate">{qube.birth_timestamp
               ? new Date(qube.birth_timestamp * 1000).toLocaleDateString('en-US', {
                   month: 'short',
                   day: 'numeric',
                   year: 'numeric'
                 })
-              : 'Unknown'}
+              : 'Unknown'}</span>
           </div>
         </div>
       </div>
