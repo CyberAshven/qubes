@@ -185,25 +185,39 @@ class ToolRegistry:
         # and parsing <tool_call> tags from responses. This allows local models to
         # participate in model switching and other tool-based operations.
 
+        # Check if revolver mode is enabled - if so, exclude switch_model tool
+        # This prevents the Qube from trying to switch models when revolver mode
+        # automatically rotates them
+        revolver_mode_enabled = False
+        if hasattr(self.qube, 'chain_state') and self.qube.chain_state:
+            revolver_mode_enabled = self.qube.chain_state.is_revolver_mode_enabled()
+
         # Filter tools based on skill unlocks
         if unlocked_tools is not None:
             # Tool is available if:
             # 1. It's in ALWAYS_AVAILABLE_TOOLS (core functionality)
             # 2. OR it's been unlocked via a maxed skill
+            # 3. AND it's not switch_model when revolver mode is on
             tools_to_use = [
                 tool for tool in self.tools.values()
-                if tool.name in ALWAYS_AVAILABLE_TOOLS or tool.name in unlocked_tools
+                if (tool.name in ALWAYS_AVAILABLE_TOOLS or tool.name in unlocked_tools)
+                and not (revolver_mode_enabled and tool.name == "switch_model")
             ]
             logger.debug(
                 "tools_filtered_by_skills",
                 total_tools=len(self.tools),
                 available_tools=len(tools_to_use),
                 unlocked_count=len(unlocked_tools),
+                revolver_mode=revolver_mode_enabled,
                 qube_id=self.qube.qube_id
             )
         else:
             # No skill filtering - all tools available (backward compatibility)
-            tools_to_use = list(self.tools.values())
+            # Still exclude switch_model in revolver mode
+            tools_to_use = [
+                tool for tool in self.tools.values()
+                if not (revolver_mode_enabled and tool.name == "switch_model")
+            ]
 
         if model_provider == "openai":
             return [tool.to_openai_format() for tool in tools_to_use]

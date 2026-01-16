@@ -135,9 +135,41 @@ class ChainState:
             # Initialize new state on failure
             self._initialize_new_state()
 
+    def reload(self) -> None:
+        """
+        Reload state from disk, picking up any external changes.
+
+        This is useful when other processes (like the GUI) may have modified
+        the chain_state.json file directly.
+        """
+        if self.state_file.exists():
+            self._load()
+            logger.debug("chain_state_reloaded", qube_id=self.qube_id)
+
     def _save(self) -> None:
-        """Save state to disk with file locking to prevent concurrent write conflicts"""
+        """Save state to disk with file locking to prevent concurrent write conflicts.
+
+        IMPORTANT: This method merges with disk state to preserve GUI-managed settings.
+        The GUI writes directly to chain_state.json for settings like model mode,
+        so we must not overwrite those fields with stale in-memory values.
+        """
         import time
+
+        # Fields that the GUI manages directly - always prefer disk values
+        GUI_MANAGED_FIELDS = {
+            "model_locked",
+            "model_locked_to",
+            "revolver_mode_enabled",
+            "revolver_providers",
+            "revolver_models",
+            "revolver_first_response_done",
+            "revolver_enabled_at",
+            "revolver_last_response_at",
+            "free_mode",
+            "free_mode_models",
+            "auto_anchor_enabled",
+            "auto_anchor_threshold",
+        }
 
         max_retries = 3
         last_error = None
@@ -147,8 +179,25 @@ class ChainState:
                 lock = FileLock(self.lock_file, timeout=5.0)
 
                 with lock:
+                    # Load current disk state to merge with
+                    disk_state = {}
+                    if self.state_file.exists():
+                        try:
+                            with open(self.state_file, 'r') as f:
+                                disk_state = json.load(f)
+                        except Exception:
+                            pass  # Will use in-memory state if disk read fails
+
+                    # Start with in-memory state
+                    merged_state = self.state.copy()
+
+                    # Preserve GUI-managed fields from disk state
+                    for field in GUI_MANAGED_FIELDS:
+                        if field in disk_state:
+                            merged_state[field] = disk_state[field]
+
                     # Update last_updated timestamp
-                    self.state["last_updated"] = int(datetime.now(timezone.utc).timestamp())
+                    merged_state["last_updated"] = int(datetime.now(timezone.utc).timestamp())
 
                     # Ensure parent directory exists
                     self.state_file.parent.mkdir(parents=True, exist_ok=True)
@@ -156,12 +205,15 @@ class ChainState:
                     # Write atomically (write to temp, then rename)
                     temp_file = self.state_file.with_suffix('.json.tmp')
                     with open(temp_file, 'w') as f:
-                        json.dump(self.state, f, indent=2)
+                        json.dump(merged_state, f, indent=2)
                         f.flush()  # Ensure data is written
                         import os
                         os.fsync(f.fileno())  # Force OS to flush to disk
 
                     temp_file.replace(self.state_file)
+
+                    # Update in-memory state to match what was saved
+                    self.state = merged_state
 
                     logger.debug("chain_state_saved", qube_id=self.qube_id)
                     return  # Success

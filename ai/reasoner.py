@@ -380,9 +380,16 @@ class QubeReasoner:
             # Add user message (avoid duplicates)
             # Check if last message is already this user message
             if not context_messages or context_messages[-1].get("content") != input_message:
+                # In revolver mode, inject model info directly into user message
+                # This ensures the AI sees the model name right before responding
+                message_content = input_message
+                is_revolver_active = self.qube.chain_state.is_revolver_mode_enabled()
+                if is_revolver_active and not is_revolver_first_response:
+                    message_content = f"[You are running model: {model_to_use}]\n\n{input_message}"
+
                 context_messages.append({
                     "role": "user",
-                    "content": input_message
+                    "content": message_content
                 })
 
             logger.info(
@@ -1026,10 +1033,11 @@ Make your move using the chess_move tool. Use one of the legal moves listed abov
         if model_awareness_context:
             identity_block += f"\n{model_awareness_context}"
 
-        # Add model history from recent blocks (ground truth from memory chain)
-        model_history = self._build_model_history_from_blocks()
-        if model_history:
-            identity_block += f"\n{model_history}"
+        # NOTE: Model history from blocks was removed because it caused confusion
+        # for smaller models - they would see multiple model names in the history
+        # and pick the wrong one instead of reading the "Current Model" line.
+        # The genesis injection [You are currently running on: X] and the
+        # **Current Model** line in model awareness context are sufficient.
 
         # Combine genesis prompt with identity awareness
         base_system_prompt = f"""{base_genesis_prompt}
@@ -1881,24 +1889,53 @@ Multiple entities present. Be careful about what you share.
         - Stored preferences
         - Lock/revolver status
 
+        In REVOLVER MODE: Returns minimal context with ONLY the current model name.
+        This prevents confusion - smaller models can't pick the wrong model if they
+        only see one model name in the entire prompt.
+
         Returns:
             Formatted model awareness context string
         """
         try:
             from ai.model_registry import ModelRegistry
 
+            # Get current model
+            current_model = getattr(self.qube, 'current_ai_model', 'unknown')
+
+            # REVOLVER MODE: Return minimal context with ONLY current model + birth model
+            # This prevents model confusion - smaller models can't get confused
+            # if they only see these two model names (current + birth) in the prompt
+            if self.qube.chain_state.is_revolver_mode_enabled():
+                current_info = ModelRegistry.get_model_info(current_model)
+                current_provider = current_info["provider"] if current_info else "unknown"
+                current_desc = current_info.get("description", "") if current_info else ""
+
+                # Get birth model from genesis block
+                try:
+                    chain_genesis = self.qube.memory_chain.get_block(0)
+                    birth_model = chain_genesis.ai_model
+                except Exception:
+                    birth_model = self.qube.genesis_block.ai_model
+
+                context = "\n# My Cognitive Architecture:\n"
+                context += f"**Current Model**: {current_model} ({current_provider})"
+                if current_desc:
+                    context += f" - {current_desc}"
+                context += "\n"
+                context += f"**Birth Model**: {birth_model} (from my genesis block)\n"
+                context += "\n## Mode Status:\n"
+                context += "**Revolver Mode**: ENABLED - My model is automatically rotated each response for privacy and variety. "
+                context += "I should respond naturally as whatever model I currently am. "
+                context += "The switch_model tool is not available in this mode.\n"
+                return context
+
+            # NON-REVOLVER MODE: Full model awareness context
             # Get configured providers from qube.api_keys
             api_keys = getattr(self.qube, 'api_keys', {})
             configured_providers = set(api_keys.keys())
 
             # Ollama is always "available" (local)
             configured_providers.add("ollama")
-
-            # Get current and genesis model
-            # Note: self.qube.current_ai_model is already set correctly by model selection logic
-            # (which handles revolver mode > chain_state override > default priority)
-            # Do NOT re-check chain_state override here as it would override revolver mode selection
-            current_model = getattr(self.qube, 'current_ai_model', 'unknown')
 
             # Read genesis model from actual chain block (not potentially corrupted metadata)
             try:
@@ -2015,13 +2052,13 @@ Multiple entities present. Be careful about what you share.
             if revolver_mode:
                 context += "  **Revolver Mode**: ON - your model is automatically rotated each response for privacy. "
                 context += "IMPORTANT: Always check **Current Model** above to know which model you ARE right now. "
-                context += "Do NOT guess or roleplay being a different model than what is shown in Current Model.\n"
+                context += "Do NOT guess or roleplay being a different model than what is shown in Current Model. "
+                context += "NOTE: The switch_model tool is DISABLED in revolver mode - you cannot manually switch models.\n"
             else:
                 context += "  **Revolver Mode**: OFF\n"
-
-            # Usage note
-            context += "\n**Model Switching**: Use the `switch_model` tool to change models. "
-            context += "Let your owner know naturally when switching (e.g., \"I'll use Claude for this code review...\").\n"
+                # Only show model switching note when revolver mode is off
+                context += "\n**Model Switching**: Use the `switch_model` tool to change models. "
+                context += "Let your owner know naturally when switching (e.g., \"I'll use Claude for this code review...\").\n"
 
             return context
 
@@ -2206,6 +2243,10 @@ Multiple entities present. Be careful about what you share.
             Model name to use, or None if revolver mode is not active or no providers available.
         """
         try:
+            # Reload chain_state to pick up any GUI changes (model mode settings)
+            # This is important because the GUI writes directly to chain_state.json
+            self.qube.chain_state.reload()
+
             # Check if revolver mode is enabled
             if not self.qube.chain_state.is_revolver_mode_enabled():
                 return None
@@ -2345,8 +2386,16 @@ Multiple entities present. Be careful about what you share.
             # because Python 3 deletes the exception variable after the block
             saved_primary_error = primary_error
             import os
+            # Extract the actual error from the exception chain
+            actual_error = primary_error
+            while hasattr(actual_error, '__cause__') and actual_error.__cause__:
+                actual_error = actual_error.__cause__
             with open(os.path.expanduser("~/revolver_debug.txt"), "a") as f:
-                f.write(f"PRIMARY FAILED: model={model_to_use}, error={str(saved_primary_error)}\n")
+                f.write(f"PRIMARY FAILED: model={model_to_use}\n")
+                f.write(f"  Error type: {type(primary_error).__name__}\n")
+                f.write(f"  Error message: {str(primary_error)}\n")
+                f.write(f"  Root cause type: {type(actual_error).__name__}\n")
+                f.write(f"  Root cause message: {str(actual_error)}\n")
             logger.warning(
                 "revolver_primary_failed",
                 model=model_to_use,
@@ -2454,10 +2503,15 @@ Multiple entities present. Be careful about what you share.
 
             except Exception as e:
                 last_error = e
-                # DEBUG: Log the failure to our debug file
+                # DEBUG: Log the failure with full error details
                 import os
+                actual_error = e
+                while hasattr(actual_error, '__cause__') and actual_error.__cause__:
+                    actual_error = actual_error.__cause__
                 with open(os.path.expanduser("~/revolver_debug.txt"), "a") as f:
-                    f.write(f"FALLBACK FAILED: provider={provider}, model={model}, error={str(e)}\n")
+                    f.write(f"FALLBACK FAILED: provider={provider}, model={model}\n")
+                    f.write(f"  Error type: {type(e).__name__}\n")
+                    f.write(f"  Root cause: {type(actual_error).__name__}: {str(actual_error)}\n")
                 logger.warning(
                     "revolver_fallback_failed",
                     provider=provider,
@@ -2560,6 +2614,23 @@ Multiple entities present. Be careful about what you share.
                     regex_matched=(new_content != content)
                 )
                 break
+
+        # Also update the user message injection pattern
+        # Pattern: [You are running model: <model_name>]
+        # This is injected into the last user message in revolver mode
+        for msg in reversed(context_messages):
+            if msg.get("role") == "user":
+                content = msg.get("content", "")
+                user_injection_pattern = r'\[You are running model: [^\]]+\]'
+                if re.search(user_injection_pattern, content):
+                    user_injection_replacement = f"[You are running model: {new_model}]"
+                    new_content = re.sub(user_injection_pattern, user_injection_replacement, content)
+                    msg["content"] = new_content
+                    logger.debug(
+                        "revolver_updated_user_message_model",
+                        new_model=new_model
+                    )
+                break  # Only update the last user message
 
     def _is_public_chat_context(self) -> bool:
         """

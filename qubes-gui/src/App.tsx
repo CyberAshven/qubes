@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { listen } from '@tauri-apps/api/event';
 import { QubeRoster } from './components/roster/QubeRoster';
 import { TabBar } from './components/tabs/TabBar';
 import { TabContent } from './components/tabs/TabContent';
@@ -83,6 +84,32 @@ function App() {
       loadQubes();
     }
   }, [isAuthenticated]);
+
+  // Listen for model changes (from revolver mode, switch_model tool, etc.)
+  // Updates the qube's ai_model so roster and other components show current model
+  useEffect(() => {
+    const setupModelChangeListener = async () => {
+      const unlisten = await listen<{ qubeId: string; newModel: string }>(
+        'qube-model-changed',
+        (event) => {
+          const { qubeId, newModel } = event.payload;
+          setQubes((prevQubes) =>
+            prevQubes.map((qube) =>
+              qube.qube_id === qubeId
+                ? { ...qube, ai_model: newModel }
+                : qube
+            )
+          );
+        }
+      );
+      return unlisten;
+    };
+
+    const cleanupPromise = setupModelChangeListener();
+    return () => {
+      cleanupPromise.then((cleanup) => cleanup());
+    };
+  }, []);
 
   // Set up window close listener
   useEffect(() => {

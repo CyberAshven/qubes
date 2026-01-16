@@ -55,6 +55,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const recognitionRef = useRef<any>(null);
   const pendingTypewriterRef = useRef<string | null>(null); // Track message waiting for typewriter activation
+  const processingResponseRef = useRef<string | null>(null); // Track which response is being processed (guards against double execution)
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const emojiPickerRef = useRef<HTMLDivElement>(null);
 
@@ -608,8 +609,18 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
     return () => window.removeEventListener('keydown', handleEscapeKey);
   }, [selectedQubes, clearMessages]);
 
-  // Clear pending states when switching Qubes
+  // Track the current qube ID to detect actual qube changes (not just array reference changes)
+  const currentQubeId = selectedQubes.length > 0 ? selectedQubes[0].qube_id : null;
+  const prevQubeIdRef = useRef<string | null>(currentQubeId);
+
+  // Clear pending states when switching Qubes (only when qube ID actually changes)
   useEffect(() => {
+    // Skip if qube ID hasn't actually changed
+    if (prevQubeIdRef.current === currentQubeId) {
+      return;
+    }
+    prevQubeIdRef.current = currentQubeId;
+
     // Clear any pending responses from previous Qube
     setPendingResponse(null);
     setLastResponseText('');
@@ -617,7 +628,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
     setCurrentModel(null); // Reset so header uses new qube's ai_model
     setIsGeneratingTTS(false);
     setError(null);
-  }, [selectedQubes]);
+  }, [currentQubeId]);
 
   // Close emoji picker when clicking outside
   useEffect(() => {
@@ -766,6 +777,11 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
             // Use local state to update header without re-rendering entire chat (preserves typewriter)
             if (textResponse.current_model) {
               setCurrentModel(textResponse.current_model);
+              // Emit event so other components (roster, etc.) can update
+              emit('qube-model-changed', {
+                qubeId: selectedQubes[0].qube_id,
+                newModel: textResponse.current_model,
+              });
             }
           } else {
             throw new Error(textResponse.error || 'Failed to get response from qube');
@@ -798,6 +814,11 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
           // Use local state to update header without re-rendering entire chat (preserves typewriter)
           if (response.current_model) {
             setCurrentModel(response.current_model);
+            // Emit event so other components (roster, etc.) can update
+            emit('qube-model-changed', {
+              qubeId: selectedQubes[0].qube_id,
+              newModel: response.current_model,
+            });
           }
         } else {
           setError(response.error || 'Failed to get response from qube');
@@ -873,6 +894,14 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
         return;
       }
 
+      // Guard against double execution (can happen during TTS rate limiting delays)
+      // Use the response content as the key - if it's the same response, skip
+      const responseKey = pendingResponse.content;
+      if (processingResponseRef.current === responseKey) {
+        return;
+      }
+      processingResponseRef.current = responseKey;
+
       const currentQube = selectedQubes[0];
       const messageId = (Date.now() + 1).toString();
       const qubeResponse: Message = {
@@ -914,6 +943,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
           // Clear pending response and stop loading
           setPendingResponse(null);
           setIsLoading(false);
+          processingResponseRef.current = null;
         } catch (err) {
           console.error('TTS error:', err);
           setError(`TTS error: ${String(err)}`);
@@ -923,12 +953,14 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
           addMessage(currentQube.qube_id, qubeResponse);
           setPendingResponse(null);
           setIsLoading(false);
+          processingResponseRef.current = null;
         }
       } else {
         // TTS disabled - show message immediately without typewriter effect
         addMessage(currentQube.qube_id, qubeResponse);
         setPendingResponse(null);
         setIsLoading(false);
+        processingResponseRef.current = null;
       }
     };
 
