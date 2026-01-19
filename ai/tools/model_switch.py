@@ -33,8 +33,14 @@ async def switch_model(
     Returns:
         Dict with success status, message, and previous model
     """
-    # Check if model is locked by user
-    if qube.chain_state.is_model_locked():
+    # Reload chain_state to get fresh settings (GUI may have updated them)
+    qube.chain_state.reload()
+
+    # In Autonomous mode, the Qube has full control over model selection
+    autonomous_mode = qube.chain_state.is_autonomous_mode_enabled()
+
+    # Check if model is locked by user (skip if autonomous mode)
+    if not autonomous_mode and qube.chain_state.is_model_locked():
         locked_model = qube.chain_state.get_locked_model()
         return {
             "success": False,
@@ -43,8 +49,8 @@ async def switch_model(
             "locked": True
         }
 
-    # Check if revolver mode is enabled
-    if qube.chain_state.is_revolver_mode_enabled():
+    # Check if revolver mode is enabled (skip if autonomous mode - Qube can override)
+    if not autonomous_mode and qube.chain_state.is_revolver_mode_enabled():
         return {
             "success": False,
             "message": "Revolver mode is currently enabled - your model is automatically rotated between providers for each response. You cannot manually switch models while in revolver mode. Ask your owner to disable revolver mode if you want to use a specific model.",

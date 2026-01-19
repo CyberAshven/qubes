@@ -392,7 +392,7 @@ export const ActiveContextPanel: React.FC<ActiveContextPanelProps> = ({
       >
         <h3 className="text-sm font-display flex items-center gap-2" style={{ color: favoriteColor }}>
           <span className="text-lg">🧬</span>
-          Chain State
+          System State
           {estimatedTokens > 0 && (
             <span
               className={`text-xs px-1.5 py-0.5 rounded ${tokenColor.text} ${tokenColor.bg}`}
@@ -428,21 +428,6 @@ export const ActiveContextPanel: React.FC<ActiveContextPanelProps> = ({
               )
             }
             sectionData={data.stats}
-          />
-
-          {/* Session */}
-          <CategoryRow
-            type="session"
-            icon="⚡"
-            title="Session"
-            badge={
-              shortTermMemory && (
-                <span className="text-xs bg-accent-warning/20 text-accent-warning px-1.5 py-0.5 rounded">
-                  {shortTermMemory.session.count} blocks
-                </span>
-              )
-            }
-            sectionData={{ ...data.session, blocks: shortTermMemory?.session }}
           />
 
           {/* Settings */}
@@ -549,6 +534,21 @@ export const ActiveContextPanel: React.FC<ActiveContextPanelProps> = ({
           {/* Memory Separator */}
           <MemorySeparator />
 
+          {/* Session (Current conversation blocks) */}
+          <CategoryRow
+            type="session"
+            icon="⚡"
+            title="Session"
+            badge={
+              shortTermMemory && (
+                <span className="text-xs bg-accent-warning/20 text-accent-warning px-1.5 py-0.5 rounded">
+                  {shortTermMemory.session.count} {shortTermMemory.session.count === 1 ? 'block' : 'blocks'}
+                </span>
+              )
+            }
+            sectionData={{ ...data.session, blocks: shortTermMemory?.session }}
+          />
+
           {/* Recalled Memories (Semantic) */}
           {shortTermMemory && (
             <CategoryRow
@@ -557,7 +557,7 @@ export const ActiveContextPanel: React.FC<ActiveContextPanelProps> = ({
               title="Recalled"
               badge={
                 <span className="text-xs bg-purple-500/20 text-purple-400 px-1.5 py-0.5 rounded">
-                  {shortTermMemory.semantic_recalls.count}
+                  {shortTermMemory.semantic_recalls.count} {shortTermMemory.semantic_recalls.count === 1 ? 'block' : 'blocks'}
                 </span>
               }
               sectionData={shortTermMemory.semantic_recalls}
@@ -572,7 +572,7 @@ export const ActiveContextPanel: React.FC<ActiveContextPanelProps> = ({
               title="History"
               badge={
                 <span className="text-xs bg-amber-500/20 text-amber-400 px-1.5 py-0.5 rounded">
-                  {shortTermMemory.recent_permanent.count}
+                  {shortTermMemory.recent_permanent.count} {shortTermMemory.recent_permanent.count === 1 ? 'block' : 'blocks'}
                 </span>
               }
               sectionData={shortTermMemory.recent_permanent}
@@ -587,7 +587,7 @@ export const ActiveContextPanel: React.FC<ActiveContextPanelProps> = ({
             badge={
               data.chain && (
                 <span className="text-xs bg-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded">
-                  {data.chain.total_blocks}
+                  {data.chain.total_blocks} {data.chain.total_blocks === 1 ? 'block' : 'blocks'}
                 </span>
               )
             }

@@ -322,8 +322,8 @@ class UserOrchestrator:
             # Apply user's auto-anchor preferences to newly created qube
             prefs = self.preferences_manager.get_block_preferences()
             qube.chain_state.set_auto_anchor(
-                enabled=prefs.individual_auto_anchor,
-                threshold=prefs.individual_anchor_threshold
+                individual_enabled=prefs.individual_auto_anchor,
+                individual_threshold=prefs.individual_anchor_threshold
             )
             qube.auto_anchor_enabled = prefs.individual_auto_anchor
             qube.auto_anchor_threshold = prefs.individual_anchor_threshold
@@ -776,8 +776,8 @@ class UserOrchestrator:
         # Apply user preferences
         prefs = self.preferences_manager.get_block_preferences()
         qube.chain_state.set_auto_anchor(
-            enabled=prefs.individual_auto_anchor,
-            threshold=prefs.individual_anchor_threshold
+            individual_enabled=prefs.individual_auto_anchor,
+            individual_threshold=prefs.individual_anchor_threshold
         )
         qube.auto_anchor_enabled = prefs.individual_auto_anchor
         qube.auto_anchor_threshold = prefs.individual_anchor_threshold
@@ -1010,8 +1010,8 @@ class UserOrchestrator:
             # Apply user preferences for auto-anchor settings
             prefs = self.preferences_manager.get_block_preferences()
             qube.chain_state.set_auto_anchor(
-                enabled=prefs.individual_auto_anchor,
-                threshold=prefs.individual_anchor_threshold
+                individual_enabled=prefs.individual_auto_anchor,
+                individual_threshold=prefs.individual_anchor_threshold
             )
             qube.auto_anchor_enabled = prefs.individual_auto_anchor
             qube.auto_anchor_threshold = prefs.individual_anchor_threshold

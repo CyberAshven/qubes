@@ -438,8 +438,10 @@ class ChainStateEventBus:
 
         elif event.event_type == Events.AUTO_ANCHOR_UPDATED:
             cs.set_auto_anchor(
-                enabled=payload.get("enabled"),
-                threshold=payload.get("threshold")
+                individual_enabled=payload.get("individual_enabled"),
+                individual_threshold=payload.get("individual_threshold"),
+                group_enabled=payload.get("group_enabled"),
+                group_threshold=payload.get("group_threshold")
             )
 
         # =====================================================================

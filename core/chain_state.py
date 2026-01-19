@@ -248,8 +248,10 @@ class ChainState:
         "revolver_mode_pool",
         "autonomous_mode_enabled",
         "autonomous_mode_pool",
-        "auto_anchor_enabled",
-        "auto_anchor_threshold",
+        "individual_auto_anchor_enabled",
+        "individual_auto_anchor_threshold",
+        "group_auto_anchor_enabled",
+        "group_auto_anchor_threshold",
         "tts_enabled",
         "voice_model",
         "visualizer_enabled",
@@ -2245,47 +2247,45 @@ class ChainState:
     # AUTO-ANCHOR METHODS
     # =========================================================================
 
-    def is_auto_anchor_enabled(self) -> bool:
-        """Check if auto-anchor is enabled."""
-        return self.state.get("settings", {}).get("auto_anchor_enabled", False)
+    def is_auto_anchor_enabled(self, group_chat: bool = False) -> bool:
+        """Check if auto-anchor is enabled for the given context.
 
-    def get_auto_anchor_threshold(self) -> int:
-        """Get auto-anchor threshold."""
-        return self.state.get("settings", {}).get("auto_anchor_threshold", 10)
+        Args:
+            group_chat: If True, check group chat setting; otherwise individual
+        """
+        settings = self.state.get("settings", {})
+        if group_chat:
+            return settings.get("group_auto_anchor_enabled", True)
+        return settings.get("individual_auto_anchor_enabled", True)
+
+    def get_auto_anchor_threshold(self, group_chat: bool = False) -> int:
+        """Get auto-anchor threshold for the given context.
+
+        Args:
+            group_chat: If True, get group chat threshold; otherwise individual
+        """
+        settings = self.state.get("settings", {})
+        if group_chat:
+            return settings.get("group_auto_anchor_threshold", 20)
+        return settings.get("individual_auto_anchor_threshold", 20)
 
     def set_auto_anchor(
         self,
-        enabled: bool = None,
-        threshold: int = None,
         individual_enabled: bool = None,
         individual_threshold: int = None,
         group_enabled: bool = None,
         group_threshold: int = None
     ) -> None:
-        """Configure auto-anchor settings (supports both legacy and individual/group)."""
+        """Configure auto-anchor settings for individual and group chats."""
         settings = self.state.setdefault("settings", {})
 
-        # Handle legacy parameters (backwards compatibility)
-        if enabled is not None:
-            settings["auto_anchor_enabled"] = enabled
-            # Also set as individual default
-            if individual_enabled is None:
-                settings["individual_auto_anchor_enabled"] = enabled
-        if threshold is not None:
-            settings["auto_anchor_threshold"] = threshold
-            # Also set as individual default
-            if individual_threshold is None:
-                settings["individual_auto_anchor_threshold"] = threshold
-
-        # Handle individual chat settings
+        # Individual chat settings
         if individual_enabled is not None:
             settings["individual_auto_anchor_enabled"] = individual_enabled
-            settings["auto_anchor_enabled"] = individual_enabled  # Legacy field
         if individual_threshold is not None:
             settings["individual_auto_anchor_threshold"] = individual_threshold
-            settings["auto_anchor_threshold"] = individual_threshold  # Legacy field
 
-        # Handle group chat settings
+        # Group chat settings
         if group_enabled is not None:
             settings["group_auto_anchor_enabled"] = group_enabled
         if group_threshold is not None:
@@ -2488,10 +2488,35 @@ class ChainState:
         self._save()
 
     def set_current_model_override(self, model_name: str) -> None:
-        """Set model override."""
+        """Set model override and update runtime with model and provider."""
         self.state["current_model_override"] = model_name
         runtime = self.state.setdefault("runtime", {})
         runtime["current_model"] = model_name
+
+        # Derive provider from model name
+        try:
+            from ai.model_registry import ModelRegistry
+            model_info = ModelRegistry.get_model_info(model_name)
+            if model_info:
+                runtime["current_provider"] = model_info["provider"]
+        except Exception:
+            # Fallback: infer provider from model name
+            model_lower = model_name.lower()
+            if "claude" in model_lower:
+                runtime["current_provider"] = "anthropic"
+            elif "gpt" in model_lower:
+                runtime["current_provider"] = "openai"
+            elif "gemini" in model_lower:
+                runtime["current_provider"] = "google"
+            elif "sonar" in model_lower:
+                runtime["current_provider"] = "perplexity"
+            elif "grok" in model_lower:
+                runtime["current_provider"] = "xai"
+            elif "venice" in model_lower:
+                runtime["current_provider"] = "venice"
+            elif any(x in model_lower for x in ["llama", "mistral", "qwen"]):
+                runtime["current_provider"] = "ollama"
+
         self._save()
 
     def get_current_model_override(self) -> Optional[str]:

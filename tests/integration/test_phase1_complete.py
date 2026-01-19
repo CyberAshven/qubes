@@ -146,7 +146,7 @@ def test_auto_anchor_workflow():
     # Enable auto-anchor with low threshold for testing
     qube.auto_anchor_enabled = True
     qube.auto_anchor_threshold = 5
-    qube.chain_state.set_auto_anchor(enabled=True, threshold=5)
+    qube.chain_state.set_auto_anchor(individual_enabled=True, individual_threshold=5)
 
     print(f"✅ Auto-anchor enabled: threshold={qube.auto_anchor_threshold} blocks")
 

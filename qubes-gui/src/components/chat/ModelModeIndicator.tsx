@@ -87,18 +87,19 @@ export const ModelModeIndicator: React.FC<ModelModeIndicatorProps> = ({ qubeId, 
   if (!qubeId) return null;
 
   return (
-    <div className="w-[200px] flex items-center gap-2">
-      <span className="text-text-secondary text-sm">Model Mode:</span>
+    <div className="flex items-center gap-2 whitespace-nowrap">
+      <span className="text-text-secondary text-sm whitespace-nowrap">Model Mode:</span>
       <span
-        className={`px-2 py-0.5 rounded text-xs font-medium ${
+        className={`px-2 py-0.5 rounded text-xs font-medium whitespace-nowrap flex items-center gap-1 ${
           modelMode === 'revolver'
-            ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
+            ? 'bg-green-500/20 text-green-400 border border-green-500/30'
             : modelMode === 'autonomous'
-              ? 'bg-green-500/20 text-green-300 border border-green-500/30'
-              : 'bg-gray-500/20 text-gray-300 border border-gray-500/30'
+              ? 'bg-purple-500/20 text-purple-400 border border-purple-500/30'
+              : 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30'
         }`}
       >
-        {modelMode === 'revolver' ? 'Revolver' : modelMode === 'autonomous' ? 'Autonomous' : 'Manual'}
+        <span>{modelMode === 'revolver' ? '🎰' : modelMode === 'autonomous' ? '🤖' : '🔒'}</span>
+        <span>{modelMode === 'revolver' ? 'Revolver' : modelMode === 'autonomous' ? 'Autonomous' : 'Manual'}</span>
       </span>
     </div>
   );

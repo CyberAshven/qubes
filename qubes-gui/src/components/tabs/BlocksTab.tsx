@@ -270,6 +270,10 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
   const [shortTermExpanded, setShortTermExpanded] = useState(false);
   const [longTermExpanded, setLongTermExpanded] = useState(false);
 
+  // Sort order state (true = newest first, false = oldest first)
+  const [shortTermNewestFirst, setShortTermNewestFirst] = useState(true);
+  const [longTermNewestFirst, setLongTermNewestFirst] = useState(true);
+
   // Context section selection (for right panel display)
   const [selectedContextSection, setSelectedContextSection] = useState<ContextSectionData | null>(null);
 
@@ -622,6 +626,17 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
     return matchesSearch && matchesFilter;
   });
 
+  // Sort blocks by block number (negative = session, positive = permanent)
+  // For session blocks: -1 is oldest, -12 is newest (more negative = newer)
+  // For permanent blocks: 0 is oldest, higher = newer
+  const sortedSessionBlocks = [...sessionBlocks].sort((a, b) =>
+    shortTermNewestFirst ? a.block_number - b.block_number : b.block_number - a.block_number
+  );
+
+  const sortedPermanentBlocks = [...filteredPermanentBlocks].sort((a, b) =>
+    longTermNewestFirst ? b.block_number - a.block_number : a.block_number - b.block_number
+  );
+
   const blockTypes = ['all', 'GENESIS', 'MESSAGE', 'ACTION', 'SUMMARY', 'GAME'];
 
   if (!selectedQube) {
@@ -806,6 +821,15 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                     Minimize
                   </span>
                 )}
+                {shortTermExpanded && (
+                  <span
+                    onClick={(e) => { e.stopPropagation(); setShortTermNewestFirst(!shortTermNewestFirst); }}
+                    className="text-xs text-text-secondary hover:text-amber-400 transition-colors cursor-pointer"
+                    title={shortTermNewestFirst ? 'Showing newest first' : 'Showing oldest first'}
+                  >
+                    {shortTermNewestFirst ? '↓ New' : '↑ Old'}
+                  </span>
+                )}
                 <span className="text-text-tertiary">{shortTermExpanded ? '▼' : '▶'}</span>
               </div>
             </button>
@@ -927,7 +951,7 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                 </div>
 
                 <div className="space-y-2">
-                  {sessionBlocks.slice(0, sessionBlocksToShow).map((block) => (
+                  {sortedSessionBlocks.slice(0, sessionBlocksToShow).map((block) => (
                     <GlassCard
                       key={block.block_number}
                       variant="interactive"
@@ -1003,6 +1027,15 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                     Minimize
                   </span>
                 )}
+                {longTermExpanded && (
+                  <span
+                    onClick={(e) => { e.stopPropagation(); setLongTermNewestFirst(!longTermNewestFirst); }}
+                    className="text-xs text-text-secondary hover:text-cyan-400 transition-colors cursor-pointer"
+                    title={longTermNewestFirst ? 'Showing newest first' : 'Showing oldest first'}
+                  >
+                    {longTermNewestFirst ? '↓ New' : '↑ Old'}
+                  </span>
+                )}
                 <span className="text-text-tertiary">{longTermExpanded ? '▼' : '▶'}</span>
               </div>
             </button>
@@ -1041,7 +1074,7 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                 </div>
               ) : (
                 <>
-                  {filteredPermanentBlocks.slice(0, permanentBlocksToShow).map((block) => (
+                  {sortedPermanentBlocks.slice(0, permanentBlocksToShow).map((block) => (
                     <GlassCard
                       key={block.block_number}
                       variant="interactive"
@@ -1066,13 +1099,13 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                     </GlassCard>
                   ))}
 
-                  {filteredPermanentBlocks.length > permanentBlocksToShow && (
+                  {sortedPermanentBlocks.length > permanentBlocksToShow && (
                     <div className="mt-3 text-center">
                       <button
-                        onClick={() => setPermanentBlocksToShow(prev => Math.min(prev + 10, filteredPermanentBlocks.length))}
+                        onClick={() => setPermanentBlocksToShow(prev => Math.min(prev + 10, sortedPermanentBlocks.length))}
                         className="text-sm text-text-secondary hover:text-text-primary transition-colors px-4 py-2 rounded bg-glass-bg/30 hover:bg-glass-bg/50"
                       >
-                        Show More ({filteredPermanentBlocks.length - permanentBlocksToShow} remaining)
+                        Show More ({sortedPermanentBlocks.length - permanentBlocksToShow} remaining)
                       </button>
                     </div>
                   )}
@@ -1562,8 +1595,8 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
               {/* Session Blocks */}
               {selectedContextSection.type === 'session' && (
                 <div className="space-y-2">
-                  {selectedContextSection.data?.blocks?.length > 0 ? (
-                    selectedContextSection.data.blocks.map((block: any, idx: number) => (
+                  {selectedContextSection.data?.blocks?.blocks?.length > 0 ? (
+                    selectedContextSection.data.blocks.blocks.map((block: any, idx: number) => (
                       <div key={idx} className="p-3 bg-glass-bg/30 rounded-lg border-l-2 border-dashed border-sky-400/50">
                         <div className="flex items-center justify-between mb-2">
                           <div className="flex items-center gap-2">
