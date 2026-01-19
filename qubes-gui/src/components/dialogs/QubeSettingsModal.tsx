@@ -4,6 +4,7 @@ import { emit } from '@tauri-apps/api/event';
 import { GlassCard, GlassButton } from '../glass';
 import { useModels } from '../../hooks/useModels';
 import { useAuth } from '../../hooks/useAuth';
+import { useChainState } from '../../contexts/ChainStateContext';
 
 interface QubeSettingsModalProps {
   isOpen: boolean;
@@ -13,19 +14,17 @@ interface QubeSettingsModalProps {
   modelLocked: boolean;
   lockedToModel: string | null;
   revolverMode: boolean;
-  revolverProviders: string[];
-  revolverModels: string[];  // Individual model IDs for revolver mode
-  freeMode: boolean;  // Default autonomous mode
-  freeModeModels: string[];  // Individual model IDs for free mode
+  revolverModePool: string[];  // Individual model IDs for revolver mode
+  autonomousMode: boolean;  // Autonomous mode
+  autonomousModePool: string[];  // Individual model IDs for autonomous mode
   onClose: () => void;
   onUpdate: (updates: {
     modelLocked: boolean;
     lockedToModel: string | null;
     revolverMode: boolean;
-    revolverProviders: string[];
-    revolverModels: string[];
-    freeMode: boolean;
-    freeModeModels: string[];
+    revolverModePool: string[];
+    autonomousMode: boolean;
+    autonomousModePool: string[];
   }) => void;
 }
 
@@ -54,25 +53,25 @@ export const QubeSettingsModal: React.FC<QubeSettingsModalProps> = ({
   modelLocked: initialModelLocked,
   lockedToModel: initialLockedToModel,
   revolverMode: initialRevolverMode,
-  revolverProviders: initialRevolverProviders,
-  revolverModels: initialRevolverModels,
-  freeMode: initialFreeMode,
-  freeModeModels: initialFreeModeModels,
+  revolverModePool: initialRevolverModePool,
+  autonomousMode: initialAutonomousMode,
+  autonomousModePool: initialAutonomousModePool,
   onClose,
   onUpdate,
 }) => {
   const { userId, password: masterPassword } = useAuth();
   const { providers, models, isLoaded, fetchModels, formatModelName } = useModels();
+  const { invalidateCache, loadChainState } = useChainState();
 
   // Local state - only one of the three modes can be active
   // Default to modelLocked if none of the modes is explicitly on
-  const [modelLocked, setModelLocked] = useState(initialModelLocked || (!initialRevolverMode && !initialFreeMode));
+  const [modelLocked, setModelLocked] = useState(initialModelLocked || (!initialRevolverMode && !initialAutonomousMode));
   const [revolverMode, setRevolverMode] = useState(initialRevolverMode);
-  const [freeMode, setFreeMode] = useState(initialFreeMode);
+  const [autonomousMode, setAutonomousMode] = useState(initialAutonomousMode);
   // Track selected models for revolver mode (stored as "provider:model" strings)
   const [selectedRevolverModels, setSelectedRevolverModels] = useState<Set<string>>(new Set());
-  // Track selected models for free mode (stored as "provider:model" strings)
-  const [selectedFreeModeModels, setSelectedFreeModeModels] = useState<Set<string>>(new Set());
+  // Track selected models for autonomous mode (stored as "provider:model" strings)
+  const [selectedAutonomousModeModels, setSelectedAutonomousModeModels] = useState<Set<string>>(new Set());
   const [configuredProviders, setConfiguredProviders] = useState<string[]>([]);
   const [expandedProviders, setExpandedProviders] = useState<Set<string>>(new Set());
   const [saving, setSaving] = useState(false);
@@ -81,10 +80,10 @@ export const QubeSettingsModal: React.FC<QubeSettingsModalProps> = ({
   // Sync state when props change
   useEffect(() => {
     setRevolverMode(initialRevolverMode);
-    setFreeMode(initialFreeMode);
+    setAutonomousMode(initialAutonomousMode);
     // Default to modelLocked if none of the modes is explicitly on
-    setModelLocked(initialModelLocked || (!initialRevolverMode && !initialFreeMode));
-  }, [initialModelLocked, initialRevolverMode, initialFreeMode, isOpen]);
+    setModelLocked(initialModelLocked || (!initialRevolverMode && !initialAutonomousMode));
+  }, [initialModelLocked, initialRevolverMode, initialAutonomousMode, isOpen]);
 
   // Load models and configured providers on mount
   useEffect(() => {
@@ -98,7 +97,7 @@ export const QubeSettingsModal: React.FC<QubeSettingsModalProps> = ({
   useEffect(() => {
     if (isLoaded && configuredProviders.length > 0) {
       // If no models are selected (empty = all), select all available models
-      if (initialRevolverModels.length === 0) {
+      if (initialRevolverModePool.length === 0) {
         const allModels = new Set<string>();
         getAvailableProviders().forEach(provider => {
           const providerModels = models[provider] || [];
@@ -107,46 +106,52 @@ export const QubeSettingsModal: React.FC<QubeSettingsModalProps> = ({
         setSelectedRevolverModels(allModels);
       } else {
         // Select only the specific models that were saved
+        // Handle both new format (provider:model) and legacy format (just model ID)
         const selected = new Set<string>();
         getAvailableProviders().forEach(provider => {
           const providerModels = models[provider] || [];
           providerModels.forEach(m => {
-            if (initialRevolverModels.includes(m.value)) {
-              selected.add(`${provider}:${m.value}`);
+            const fullKey = `${provider}:${m.value}`;
+            // Check new format first (provider:model), then legacy format (just model ID)
+            if (initialRevolverModePool.includes(fullKey) || initialRevolverModePool.includes(m.value)) {
+              selected.add(fullKey);
             }
           });
         });
         setSelectedRevolverModels(selected);
       }
     }
-  }, [isLoaded, configuredProviders, initialRevolverModels, models]);
+  }, [isLoaded, configuredProviders, initialRevolverModePool, models]);
 
   // Initialize selected models for free mode
   useEffect(() => {
     if (isLoaded && configuredProviders.length > 0) {
       // If no models are selected (empty = all), select all available models
-      if (initialFreeModeModels.length === 0) {
+      if (initialAutonomousModePool.length === 0) {
         const allModels = new Set<string>();
         getAvailableProviders().forEach(provider => {
           const providerModels = models[provider] || [];
           providerModels.forEach(m => allModels.add(`${provider}:${m.value}`));
         });
-        setSelectedFreeModeModels(allModels);
+        setSelectedAutonomousModeModels(allModels);
       } else {
         // Select only the specific models that were saved
+        // Handle both new format (provider:model) and legacy format (just model ID)
         const selected = new Set<string>();
         getAvailableProviders().forEach(provider => {
           const providerModels = models[provider] || [];
           providerModels.forEach(m => {
-            if (initialFreeModeModels.includes(m.value)) {
-              selected.add(`${provider}:${m.value}`);
+            const fullKey = `${provider}:${m.value}`;
+            // Check new format first (provider:model), then legacy format (just model ID)
+            if (initialAutonomousModePool.includes(fullKey) || initialAutonomousModePool.includes(m.value)) {
+              selected.add(fullKey);
             }
           });
         });
-        setSelectedFreeModeModels(selected);
+        setSelectedAutonomousModeModels(selected);
       }
     }
-  }, [isLoaded, configuredProviders, initialFreeModeModels, models]);
+  }, [isLoaded, configuredProviders, initialAutonomousModePool, models]);
 
   const loadConfiguredProviders = async () => {
     if (!userId || !masterPassword) return;
@@ -217,26 +222,26 @@ export const QubeSettingsModal: React.FC<QubeSettingsModalProps> = ({
     const providerModels = models[provider] || [];
     const providerModelKeys = providerModels.map(m => `${provider}:${m.value}`);
 
-    const allSelected = providerModelKeys.every(key => selectedFreeModeModels.has(key));
+    const allSelected = providerModelKeys.every(key => selectedAutonomousModeModels.has(key));
 
-    const newSelected = new Set(selectedFreeModeModels);
+    const newSelected = new Set(selectedAutonomousModeModels);
     if (allSelected) {
       providerModelKeys.forEach(key => newSelected.delete(key));
     } else {
       providerModelKeys.forEach(key => newSelected.add(key));
     }
-    setSelectedFreeModeModels(newSelected);
+    setSelectedAutonomousModeModels(newSelected);
   };
 
   const toggleFreeModeModel = (provider: string, modelValue: string) => {
     const key = `${provider}:${modelValue}`;
-    const newSelected = new Set(selectedFreeModeModels);
+    const newSelected = new Set(selectedAutonomousModeModels);
     if (newSelected.has(key)) {
       newSelected.delete(key);
     } else {
       newSelected.add(key);
     }
-    setSelectedFreeModeModels(newSelected);
+    setSelectedAutonomousModeModels(newSelected);
   };
 
   const toggleExpandProvider = (provider: string) => {
@@ -272,24 +277,24 @@ export const QubeSettingsModal: React.FC<QubeSettingsModalProps> = ({
   const isFreeModeProviderFullySelected = (provider: string): boolean => {
     const providerModels = models[provider] || [];
     if (providerModels.length === 0) return false;
-    return providerModels.every(m => selectedFreeModeModels.has(`${provider}:${m.value}`));
+    return providerModels.every(m => selectedAutonomousModeModels.has(`${provider}:${m.value}`));
   };
 
   const isFreeModeProviderPartiallySelected = (provider: string): boolean => {
     const providerModels = models[provider] || [];
     if (providerModels.length === 0) return false;
-    const selectedCount = providerModels.filter(m => selectedFreeModeModels.has(`${provider}:${m.value}`)).length;
+    const selectedCount = providerModels.filter(m => selectedAutonomousModeModels.has(`${provider}:${m.value}`)).length;
     return selectedCount > 0 && selectedCount < providerModels.length;
   };
 
   const getFreeModeSelectedCountForProvider = (provider: string): number => {
     const providerModels = models[provider] || [];
-    return providerModels.filter(m => selectedFreeModeModels.has(`${provider}:${m.value}`)).length;
+    return providerModels.filter(m => selectedAutonomousModeModels.has(`${provider}:${m.value}`)).length;
   };
 
   const handleLockToggle = () => {
     // Don't allow turning off lock mode if it's the only mode active
-    if (modelLocked && !revolverMode && !freeMode) {
+    if (modelLocked && !revolverMode && !autonomousMode) {
       return; // Can't turn off - at least one mode must be on
     }
     const newLocked = !modelLocked;
@@ -297,7 +302,7 @@ export const QubeSettingsModal: React.FC<QubeSettingsModalProps> = ({
     if (newLocked) {
       // Lock disables the other modes
       setRevolverMode(false);
-      setFreeMode(false);
+      setAutonomousMode(false);
     }
   };
 
@@ -307,7 +312,7 @@ export const QubeSettingsModal: React.FC<QubeSettingsModalProps> = ({
     if (newRevolver) {
       // Revolver disables the other modes
       setModelLocked(false);
-      setFreeMode(false);
+      setAutonomousMode(false);
     } else {
       // Default to lock mode when revolver is turned off
       setModelLocked(true);
@@ -315,9 +320,9 @@ export const QubeSettingsModal: React.FC<QubeSettingsModalProps> = ({
   };
 
   const handleFreeModeToggle = () => {
-    const newFreeMode = !freeMode;
-    setFreeMode(newFreeMode);
-    if (newFreeMode) {
+    const newAutonomousMode = !autonomousMode;
+    setAutonomousMode(newAutonomousMode);
+    if (newAutonomousMode) {
       // Free mode disables the other modes
       setModelLocked(false);
       setRevolverMode(false);
@@ -338,6 +343,7 @@ export const QubeSettingsModal: React.FC<QubeSettingsModalProps> = ({
           qubeId,
           locked: modelLocked,
           modelName: modelLocked ? currentModel : null,
+          password: masterPassword,
         });
       }
 
@@ -347,65 +353,45 @@ export const QubeSettingsModal: React.FC<QubeSettingsModalProps> = ({
           userId,
           qubeId,
           enabled: revolverMode,
+          password: masterPassword,
         });
       }
 
-      // Save free mode state
-      await invoke('set_free_mode', {
+      // Save autonomous mode state
+      await invoke('set_autonomous_mode', {
         userId,
         qubeId,
-        enabled: freeMode,
+        enabled: autonomousMode,
+        password: masterPassword,
       });
 
-      // Helper to extract model IDs from selected set
-      const extractModelsToSave = (selectedSet: Set<string>): { models: string[], providers: string[] } => {
-        const availableProviders = getAvailableProviders();
-        const allPossibleModels = new Set<string>();
-        availableProviders.forEach(provider => {
-          const providerModels = models[provider] || [];
-          providerModels.forEach(m => allPossibleModels.add(`${provider}:${m.value}`));
-        });
-
-        // Check if all models are selected
-        const allSelected = allPossibleModels.size === selectedSet.size &&
-          [...allPossibleModels].every(m => selectedSet.has(m));
-
-        if (allSelected) {
-          return { models: [], providers: [] };
-        }
-
+      // Helper to extract models from selected set
+      // Saves full "provider:model" format so display code can parse correctly
+      const extractModelsToSave = (selectedSet: Set<string>): string[] => {
         const modelsToSave: string[] = [];
-        const providersToSave: string[] = [];
         selectedSet.forEach(key => {
-          const [provider, ...modelParts] = key.split(':');
-          const modelId = modelParts.join(':');
-          modelsToSave.push(modelId);
-          if (!providersToSave.includes(provider)) {
-            providersToSave.push(provider);
-          }
+          // Save the full "provider:model" key, not just model ID
+          modelsToSave.push(key);
         });
-        return { models: modelsToSave, providers: providersToSave };
+        return modelsToSave;
       };
 
-      // Save revolver models
-      const revolverResult = extractModelsToSave(selectedRevolverModels);
-      await invoke('set_revolver_models', {
+      // Save revolver mode pool
+      const revolverPool = extractModelsToSave(selectedRevolverModels);
+      await invoke('set_revolver_mode_pool', {
         userId,
         qubeId,
-        models: revolverResult.models,
-      });
-      await invoke('set_revolver_providers', {
-        userId,
-        qubeId,
-        providers: revolverResult.providers,
+        pool: revolverPool,
+        password: masterPassword,
       });
 
-      // Save free mode models
-      const freeModeResult = extractModelsToSave(selectedFreeModeModels);
-      await invoke('set_free_mode_models', {
+      // Save autonomous mode pool
+      const autonomousPool = extractModelsToSave(selectedAutonomousModeModels);
+      await invoke('set_autonomous_mode_pool', {
         userId,
         qubeId,
-        models: freeModeResult.models,
+        pool: autonomousPool,
+        password: masterPassword,
       });
 
       // Notify parent of changes
@@ -413,10 +399,9 @@ export const QubeSettingsModal: React.FC<QubeSettingsModalProps> = ({
         modelLocked,
         lockedToModel: modelLocked ? currentModel : null,
         revolverMode,
-        revolverProviders: revolverResult.providers,
-        revolverModels: revolverResult.models,
-        freeMode,
-        freeModeModels: freeModeResult.models,
+        revolverModePool: revolverPool,
+        autonomousMode,
+        autonomousModePool: autonomousPool,
       });
 
       // Emit event for Chat tab to update mode indicator
@@ -424,8 +409,12 @@ export const QubeSettingsModal: React.FC<QubeSettingsModalProps> = ({
         qubeId,
         modelLocked,
         revolverMode,
-        freeMode,
+        autonomousMode,
       });
+
+      // Invalidate chain state cache and refresh so other components see the update
+      invalidateCache(qubeId);
+      await loadChainState(qubeId, true);
 
       onClose();
     } catch (error) {
@@ -447,7 +436,7 @@ export const QubeSettingsModal: React.FC<QubeSettingsModalProps> = ({
     >
       <GlassCard
         className={`w-full max-w-lg max-h-[85vh] p-6 m-4 overflow-hidden flex flex-col transition-all ${
-          freeMode ? 'ring-2 ring-purple-500' : revolverMode ? 'ring-2 ring-green-500' : ''
+          autonomousMode ? 'ring-2 ring-purple-500' : revolverMode ? 'ring-2 ring-green-500' : ''
         }`}
         onClick={(e: React.MouseEvent) => e.stopPropagation()}
       >
@@ -631,12 +620,12 @@ export const QubeSettingsModal: React.FC<QubeSettingsModalProps> = ({
               <button
                 onClick={handleFreeModeToggle}
                 className={`relative w-12 h-6 rounded-full transition-colors ${
-                  freeMode ? 'bg-green-500' : 'bg-red-500/60'
+                  autonomousMode ? 'bg-green-500' : 'bg-red-500/60'
                 }`}
               >
                 <span
                   className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${
-                    freeMode ? 'left-7' : 'left-1'
+                    autonomousMode ? 'left-7' : 'left-1'
                   }`}
                 />
               </button>
@@ -645,7 +634,7 @@ export const QubeSettingsModal: React.FC<QubeSettingsModalProps> = ({
               Autonomously choose from selected models based on the task.
             </p>
 
-            {freeMode && (
+            {autonomousMode && (
               <div className="mt-3 space-y-2">
                 <label className="text-text-secondary text-xs block mb-2">
                   Select models available for autonomous selection:
@@ -704,7 +693,7 @@ export const QubeSettingsModal: React.FC<QubeSettingsModalProps> = ({
                                 >
                                   <input
                                     type="checkbox"
-                                    checked={selectedFreeModeModels.has(`${provider}:${model.value}`)}
+                                    checked={selectedAutonomousModeModels.has(`${provider}:${model.value}`)}
                                     onChange={() => toggleFreeModeModel(provider, model.value)}
                                     className="rounded border-glass-border bg-glass-bg text-purple-500 focus:ring-purple-500"
                                   />
@@ -719,7 +708,7 @@ export const QubeSettingsModal: React.FC<QubeSettingsModalProps> = ({
                   </div>
                 )}
                 <p className="text-text-tertiary text-xs italic mt-2">
-                  {selectedFreeModeModels.size} model{selectedFreeModeModels.size !== 1 ? 's' : ''} available for selection
+                  {selectedAutonomousModeModels.size} model{selectedAutonomousModeModels.size !== 1 ? 's' : ''} available for selection
                 </p>
               </div>
             )}

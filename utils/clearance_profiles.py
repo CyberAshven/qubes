@@ -173,14 +173,25 @@ DEFAULT_TAGS: Dict[str, TagDefinition] = {
 
 
 class ClearanceConfig:
-    """Per-Qube clearance configuration."""
+    """
+    Per-Qube clearance configuration.
 
-    def __init__(self, qube_dir: Path):
-        self.qube_dir = Path(qube_dir)
-        self.config_dir = self.qube_dir / "clearance"
-        self.config_dir.mkdir(exist_ok=True)
-        self.config_file = self.config_dir / "config.json"
+    UPDATED FOR CHAIN STATE CONSOLIDATION:
+    - Data is now stored in chain_state.json under "clearance" section
+    - Automatically encrypted at rest with chain_state
+    - Uses ChainState accessor methods for persistence
+    """
 
+    def __init__(self, chain_state: "ChainState"):
+        """
+        Initialize clearance configuration.
+
+        Args:
+            chain_state: ChainState instance for this qube
+        """
+        self.chain_state = chain_state
+
+        # In-memory caches (loaded from chain_state)
         self.profiles: Dict[str, ClearanceProfile] = {}
         self.custom_tags: Dict[str, TagDefinition] = {}
         self.auto_suggest_enabled: bool = True
@@ -188,38 +199,23 @@ class ClearanceConfig:
         self._load_config()
 
     def _load_config(self) -> None:
-        """Load configuration from disk."""
-        if self.config_file.exists():
-            try:
-                with open(self.config_file, 'r') as f:
-                    data = json.load(f)
-
-                # Load custom profiles (merged with defaults)
-                for name, profile_data in data.get("profiles", {}).items():
-                    self.profiles[name] = ClearanceProfile.from_dict(profile_data)
-
-                # Load custom tags
-                for name, tag_data in data.get("custom_tags", {}).items():
-                    tag_data["is_default"] = False
-                    self.custom_tags[name] = TagDefinition.from_dict(tag_data)
-
-                self.auto_suggest_enabled = data.get("auto_suggest_enabled", True)
-
-            except Exception as e:
-                logger.error("clearance_config_load_failed", error=str(e))
-
-    def _save_config(self) -> None:
-        """Save configuration to disk."""
+        """Load configuration from chain_state."""
         try:
-            data = {
-                "profiles": {name: p.to_dict() for name, p in self.profiles.items()},
-                "custom_tags": {name: t.to_dict() for name, t in self.custom_tags.items()},
-                "auto_suggest_enabled": self.auto_suggest_enabled,
-            }
-            with open(self.config_file, 'w') as f:
-                json.dump(data, f, indent=2)
+            config = self.chain_state.get_clearance_config()
+
+            # Load custom profiles
+            for name, profile_data in config.get("custom_profiles", {}).items():
+                self.profiles[name] = ClearanceProfile.from_dict(profile_data)
+
+            # Load custom tags
+            for name, tag_data in config.get("custom_tags", {}).items():
+                tag_data["is_default"] = False
+                self.custom_tags[name] = TagDefinition.from_dict(tag_data)
+
+            self.auto_suggest_enabled = config.get("auto_suggest_enabled", True)
+
         except Exception as e:
-            logger.error("clearance_config_save_failed", error=str(e))
+            logger.error("clearance_config_load_failed", error=str(e))
 
     def get_profile(self, name: str) -> ClearanceProfile:
         """Get profile by name, falling back to defaults."""
@@ -239,7 +235,8 @@ class ClearanceConfig:
         updated_data = base.to_dict()
         updated_data.update(updates)
         self.profiles[name] = ClearanceProfile.from_dict(updated_data)
-        self._save_config()
+        # Save to chain_state
+        self.chain_state.set_custom_profile(name, updated_data)
         return self.profiles[name]
 
     def get_tag(self, name: str) -> Optional[TagDefinition]:
@@ -259,13 +256,14 @@ class ClearanceConfig:
         """Create a new custom tag."""
         tag = TagDefinition(name, description, icon, color, is_default=False)
         self.custom_tags[name] = tag
-        self._save_config()
+        # Save to chain_state
+        self.chain_state.set_custom_tag(name, tag.to_dict())
         return tag
 
     def delete_custom_tag(self, name: str) -> bool:
         """Delete a custom tag (cannot delete defaults)."""
         if name in self.custom_tags:
             del self.custom_tags[name]
-            self._save_config()
+            self.chain_state.delete_custom_tag(name)
             return True
         return False

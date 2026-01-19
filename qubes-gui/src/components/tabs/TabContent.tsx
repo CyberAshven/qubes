@@ -4,6 +4,7 @@ import { Qube } from '../../types';
 import { useQubeSelection } from '../../hooks/useQubeSelection';
 import { useAuth } from '../../hooks/useAuth';
 import { useChatMessages } from '../../hooks/useChatMessages';
+import { useChainState } from '../../contexts/ChainStateContext';
 import { GlassCard, GlassButton } from '../glass';
 import { QubeManagerTab } from './QubeManagerTab';
 import { CreateQubeModal, CreateQubeData } from './CreateQubeModal';
@@ -32,6 +33,7 @@ interface TabContentProps {
 export const TabContent: React.FC<TabContentProps> = ({ qubes, setQubes, onQubesChange }) => {
   const currentTab = useQubeSelection((state) => state.currentTab);
   const { userId, password } = useAuth();
+  const { invalidateCache, loadChainState } = useChainState();
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [qubeToDelete, setQubeToDelete] = useState<Qube | null>(null);
   const [chatMode, setChatMode] = useState<ChatMode>('local');
@@ -205,6 +207,7 @@ export const TabContent: React.FC<TabContentProps> = ({ qubes, setQubes, onQubes
       favoriteColor: updates.favorite_color,
       ttsEnabled: updates.tts_enabled,
       evaluationModel: updates.evaluation_model,
+      password,  // Required for chain_state encryption
     });
 
     // Update local state instead of reloading all qubes
@@ -221,6 +224,10 @@ export const TabContent: React.FC<TabContentProps> = ({ qubes, setQubes, onQubes
       }
       return q;
     }));
+
+    // Invalidate and refresh chain state cache
+    invalidateCache(qubeId);
+    await loadChainState(qubeId, true);
   };
 
   // Handle model change from chat (e.g., Qube used switch_model tool or revolver mode)
@@ -263,6 +270,7 @@ export const TabContent: React.FC<TabContentProps> = ({ qubes, setQubes, onQubes
             <ModelModeIndicator
               qubeId={singleSelectedQube?.qube_id ?? null}
               userId={userId}
+              password={password}
             />
             <div className="flex items-center gap-2">
               <span className="text-text-secondary text-sm mr-2">Chat Mode:</span>

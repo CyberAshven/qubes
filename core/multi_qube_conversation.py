@@ -117,22 +117,8 @@ class MultiQubeConversation:
         # Distribute to all participants (including first qube, who will just update signatures)
         await self._distribute_block_to_participants(user_message_block, creator_id=first_qube.qube_id)
 
-        # User messages are immediately locked in - sync next_negative_index for ALL qubes
-        # Set to block_number - 1 to ensure all qubes are aligned
-        new_index = user_message_block.block_number - 1
-        for qube in self.qubes:
-            if qube.current_session:
-                qube.current_session.next_negative_index = new_index
-                qube.chain_state.update_session(
-                    session_block_count=len(qube.current_session.session_blocks),
-                    next_negative_index=qube.current_session.next_negative_index
-                )
-                logger.debug(
-                    "initial_message_locked_in",
-                    qube=qube.name,
-                    block_number=user_message_block.block_number,
-                    new_next_negative_index=new_index
-                )
+        # Note: With timestamp-based indexing, all qubes compute indices from timestamps
+        # No need to sync next_negative_index - each qube's _reindex_session_blocks handles it
 
         # Record user-to-qube relationships for all participants
         try:
@@ -515,7 +501,8 @@ class MultiQubeConversation:
             from pathlib import Path
             import json
 
-            next_block_number = next_speaker.current_session.next_negative_index
+            # With timestamp-based indexing, compute next expected number from current block count
+            next_block_number = -(len(next_speaker.current_session.session_blocks) + 1)
             user_block_exists = False
 
             logger.debug(
@@ -601,7 +588,7 @@ class MultiQubeConversation:
             response_block.content["prefetch"] = True
 
             # Add to speaker's session FIRST (updates their chain_state)
-            # This ensures their next_negative_index advances before distribution
+            # This reindexes all session blocks by timestamp
             next_speaker.current_session.create_block(response_block)
             # Check for auto-anchor after block creation
             await next_speaker.current_session.check_and_auto_anchor()
@@ -788,12 +775,13 @@ class MultiQubeConversation:
 
     def lock_in_response(self, response_timestamp: int) -> None:
         """
-        Lock in a response as "spoken" by marking it as no longer a prefetch
-        and advancing next_negative_index for all participants
+        Lock in a response as "spoken" by marking it as no longer a prefetch.
 
         This should be called by the GUI when it BEGINS SPEAKING a response.
         It marks the block (and any associated ACTION blocks from the same turn)
-        as prefetch=false for all participants AND advances their next_negative_index.
+        as prefetch=false for all participants.
+
+        Note: With timestamp-based indexing, no counter sync is needed.
 
         Args:
             response_timestamp: The timestamp of the response block to lock in
@@ -825,34 +813,10 @@ class MultiQubeConversation:
                     )
                     locked_count += 1
 
-        # Sync next_negative_index for all qubes to the minimum locked block number - 1
-        # This ensures all qubes have the same index after locking in
-        # (Handles cases where creator qube already advanced locally when creating multiple blocks)
-        if locked_block_numbers:
-            # Find the most negative (lowest) block number that was locked in
-            min_locked_block = min(locked_block_numbers)
-            # All qubes should now be ready to assign min_locked_block - 1
-            new_index = min_locked_block - 1
-
-            for qube in self.qubes:
-                if qube.current_session:
-                    qube.current_session.next_negative_index = new_index
-                    qube.chain_state.update_session(
-                        session_block_count=len(qube.current_session.session_blocks),
-                        next_negative_index=qube.current_session.next_negative_index
-                    )
-                    logger.debug(
-                        "synced_next_negative_index",
-                        qube=qube.name,
-                        locked_blocks=sorted(locked_block_numbers),
-                        new_next_negative_index=new_index
-                    )
-
         logger.info(
             "response_locked_in",
             conversation_id=self.conversation_id,
-            blocks_locked=locked_count,
-            next_negative_index_advanced=len(locked_block_numbers)
+            blocks_locked=locked_count
         )
 
     async def inject_user_message(self, user_message: str) -> Dict[str, Any]:
@@ -931,8 +895,7 @@ class MultiQubeConversation:
             # Update chain_state with current block count
             if blocks_to_remove:
                 qube.chain_state.update_session(
-                    session_block_count=len(qube.current_session.session_blocks),
-                    next_negative_index=qube.current_session.next_negative_index
+                    session_block_count=len(qube.current_session.session_blocks)
                 )
 
         # Remove prefetched entries from conversation_history
@@ -991,22 +954,8 @@ class MultiQubeConversation:
             # Normal case - first qube already has it
             await self._distribute_block_to_participants(user_block, creator_id=self.qubes[0].qube_id)
 
-        # User messages are immediately locked in - sync next_negative_index for ALL qubes
-        # Set to block_number - 1 to ensure all qubes are aligned
-        new_index = user_block.block_number - 1
-        for qube in self.qubes:
-            if qube.current_session:
-                qube.current_session.next_negative_index = new_index
-                qube.chain_state.update_session(
-                    session_block_count=len(qube.current_session.session_blocks),
-                    next_negative_index=qube.current_session.next_negative_index
-                )
-                logger.debug(
-                    "user_message_locked_in",
-                    qube=qube.name,
-                    block_number=user_block.block_number,
-                    new_next_negative_index=new_index
-                )
+        # Note: With timestamp-based indexing, no counter sync needed
+        # Each qube's _reindex_session_blocks computes indices from timestamps
 
         # Record user-to-qube relationships for all participants
         try:

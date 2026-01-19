@@ -1,4 +1,5 @@
 import { calculateTokenCost, formatUSD, formatBCH } from '../../utils/tokenCostCalculator';
+import { formatModelName } from '../../utils/modelFormatter';
 import React, { useState, useEffect } from 'react';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { GlassCard, GlassButton } from '../glass';
@@ -6,6 +7,7 @@ import { Qube } from '../../types';
 import { BlockContentViewer } from '../blocks/BlockContentViewer';
 import { SKILL_DEFINITIONS } from '../../data/skillDefinitions';
 import { ActiveContextPanel, ContextSectionType, ContextSectionData } from '../context';
+import { useChainState } from '../../contexts/ChainStateContext';
 
 // Helper to get skill name from ID
 const getSkillName = (skillId: string): string => {
@@ -33,6 +35,26 @@ const TIER_ICONS: Record<string, string> = {
   'sun': '☀️',
   'planet': '🪐',
   'moon': '🌙'
+};
+
+// Helper to format voice model names: "openai:fable" -> "OpenAI - Fable"
+const formatVoiceName = (voiceId: string): string => {
+  if (!voiceId) return 'None';
+
+  const PROVIDER_NAMES: Record<string, string> = {
+    openai: 'OpenAI',
+    google: 'Google',
+    gemini: 'Gemini',
+    elevenlabs: 'ElevenLabs',
+  };
+
+  if (voiceId.includes(':')) {
+    const [provider, voice] = voiceId.split(':');
+    const providerName = PROVIDER_NAMES[provider.toLowerCase()] || (provider.charAt(0).toUpperCase() + provider.slice(1));
+    const voiceName = voice.charAt(0).toUpperCase() + voice.slice(1);
+    return `${providerName} - ${voiceName}`;
+  }
+  return voiceId.charAt(0).toUpperCase() + voiceId.slice(1);
 };
 
 // Expandable skill category component
@@ -274,6 +296,9 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
   const [contextLoading, setContextLoading] = useState(false);
   const [showContextPanels, setShowContextPanels] = useState(true);
 
+  // Use global chain state cache
+  const { loadChainState, getChainState, isLoading: isChainStateLoading, cacheVersion } = useChainState();
+
   const selectedQube = selectedQubes.length === 1 ? selectedQubes[0] : null;
 
   // Reset expanded states when switching blocks
@@ -346,29 +371,39 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
     }
   };
 
-  // Load context preview (what's actually in the Qube's context window)
-  const loadContextPreview = async () => {
-    if (!selectedQube || !password) return;
+  // Load context preview using global chain state cache
+  const loadContextPreview = async (forceRefresh = false) => {
+    if (!selectedQube) return;
 
-    setContextLoading(true);
-    try {
-      const result = await invoke<any>('get_context_preview', {
-        userId,
-        qubeId: selectedQube.qube_id,
-        password,
+    const qubeId = selectedQube.qube_id;
+
+    // Get cached data immediately for instant display
+    const cached = getChainState(qubeId);
+    if (cached && !forceRefresh) {
+      setContextPreview({
+        active_context: cached.active_context,
+        short_term_memory: cached.short_term_memory,
       });
+    }
 
-      if (result.success) {
-        setContextPreview(result);
-        // Note: lastContextState is updated by loadBlocks, not here
-        // This ensures we compare apples to apples (both from loadBlocks)
-      } else {
-        console.warn('Failed to load context preview:', result.error);
-        setContextPreview(null);
+    // Only show loading if we don't have cached data
+    if (!cached) {
+      setContextLoading(true);
+    }
+
+    try {
+      const data = await loadChainState(qubeId, forceRefresh);
+      if (data) {
+        setContextPreview({
+          active_context: data.active_context,
+          short_term_memory: data.short_term_memory,
+        });
       }
     } catch (error) {
       console.warn('Failed to load context preview:', error);
-      setContextPreview(null);
+      if (!cached) {
+        setContextPreview(null);
+      }
     } finally {
       setContextLoading(false);
     }
@@ -389,10 +424,24 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
     setPermanentBlocks([]);
     setSelectedBlock(null);
     setSelectedSection(null);
-    setContextPreview(null);
     setSelectedContextSection(null);  // Clear right panel selection
     hasInitiallyLoaded.current = false;
     loadedQubeId.current = null;
+
+    // Use cached context preview from global cache if available for instant display
+    if (currentQubeId) {
+      const cached = getChainState(currentQubeId);
+      if (cached) {
+        setContextPreview({
+          active_context: cached.active_context,
+          short_term_memory: cached.short_term_memory,
+        });
+      } else {
+        setContextPreview(null);
+      }
+    } else {
+      setContextPreview(null);
+    }
 
     const loadInitial = async () => {
       if (selectedQube) {
@@ -406,16 +455,60 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedQube?.qube_id]);
 
-  // Reload blocks when tab becomes active (e.g., switching from Chat tab)
+  // Helper to get section data from context preview
+  const getSectionDataFromPreview = (preview: any, sectionType: ContextSectionType): any => {
+    if (!preview) return null;
+    const ac = preview.active_context;
+    const stm = preview.short_term_memory;
+
+    switch (sectionType) {
+      case 'identity': return ac?.genesis_identity;
+      case 'stats': return ac?.stats;
+      case 'session': return { ...ac?.session, blocks: stm?.session };
+      case 'settings': return ac?.settings;
+      case 'relationships': return ac?.relationships;
+      case 'skills': return ac?.skills;
+      case 'financial': return ac?.wallet;
+      case 'mood': return ac?.mood;
+      case 'health': return ac?.health;
+      case 'owner_info': return ac?.owner_info;
+      case 'recalled': return stm?.semantic_recalls;
+      case 'history': return stm?.recent_permanent;
+      case 'chain': return ac?.chain;
+      default: return null;
+    }
+  };
+
+  // Reload blocks and sync context when tab becomes active or cache is updated
   // This ensures new blocks created in Chat are visible when switching to Blocks tab
+  // and settings changes on other tabs are reflected here
   useEffect(() => {
     if (isActive && selectedQube && hasInitiallyLoaded.current && loadedQubeId.current === selectedQube.qube_id) {
-      // Tab became active and we already have data for this qube - refresh it
+      // Tab became active or cache was updated and we already have data for this qube - refresh it
       loadBlocks();
-      loadContextPreview();
+      // Sync from global cache (context handles periodic refresh)
+      const cached = getChainState(selectedQube.qube_id);
+      if (cached) {
+        const newPreview = {
+          active_context: cached.active_context,
+          short_term_memory: cached.short_term_memory,
+        };
+        setContextPreview(newPreview);
+
+        // Also refresh the selected section data if one is selected
+        if (selectedContextSection) {
+          const updatedData = getSectionDataFromPreview(newPreview, selectedContextSection.type);
+          if (updatedData) {
+            setSelectedContextSection({
+              ...selectedContextSection,
+              data: updatedData,
+            });
+          }
+        }
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isActive]);
+  }, [isActive, cacheVersion]);
 
   const handleAnchorClick = () => {
     if (!selectedQube || sessionBlocks.length === 0) return;
@@ -434,8 +527,8 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
         password,
       });
       await loadBlocks();
-      // Refresh context preview since blocks changed
-      await loadContextPreview();
+      // Force refresh context preview since blocks changed
+      await loadContextPreview(true);
       // Refresh qubes list to update chain_length on cards
       onQubesChange?.();
     } catch (error) {
@@ -652,7 +745,7 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                 <button
                   onClick={async () => {
                     await loadBlocks();
-                    await loadContextPreview();
+                    await loadContextPreview(true); // Force refresh on manual click
                   }}
                   disabled={contextLoading || loading}
                   className="text-xs text-accent-primary hover:text-accent-primary/80 transition-colors disabled:opacity-50"
@@ -1157,8 +1250,8 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                 </div>
               )}
 
-              {/* Genesis Identity */}
-              {selectedContextSection.type === 'genesis' && selectedContextSection.data && (
+              {/* Genesis Identity (type: 'identity' or legacy 'genesis') */}
+              {(selectedContextSection.type === 'genesis' || selectedContextSection.type === 'identity') && selectedContextSection.data && (
                 <div className="space-y-4">
                   {/* Qube Name */}
                   <div className="flex items-center gap-3 pb-3 border-b border-glass-border">
@@ -1195,7 +1288,7 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                       </div>
                       <div>
                         <span className="text-text-tertiary">Voice</span>
-                        <div className="text-text-primary mt-1">{selectedContextSection.data.voice_model || 'None'}</div>
+                        <div className="text-text-primary mt-1">{formatVoiceName(selectedContextSection.data.voice_model)}</div>
                       </div>
                     </div>
                   </div>
@@ -1360,8 +1453,8 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                 </div>
               )}
 
-              {/* Wallet */}
-              {selectedContextSection.type === 'wallet' && selectedContextSection.data && (
+              {/* Wallet/Financial (type: 'financial' or legacy 'wallet') */}
+              {(selectedContextSection.type === 'wallet' || selectedContextSection.type === 'financial') && selectedContextSection.data && (
                 <div className="space-y-4">
                   <div className="p-3 bg-glass-bg/30 rounded-lg">
                     <span className="text-text-tertiary text-sm">P2SH Address:</span>
@@ -1397,8 +1490,8 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                 </div>
               )}
 
-              {/* Semantic Recalls */}
-              {selectedContextSection.type === 'semantic_recalls' && (
+              {/* Semantic Recalls (type: 'recalled' or legacy 'semantic_recalls') */}
+              {(selectedContextSection.type === 'semantic_recalls' || selectedContextSection.type === 'recalled') && (
                 <div className="space-y-2">
                   {selectedContextSection.data?.blocks?.length > 0 ? (
                     selectedContextSection.data.blocks.map((block: any, idx: number) => (
@@ -1436,8 +1529,8 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                 </div>
               )}
 
-              {/* Recent Permanent */}
-              {selectedContextSection.type === 'recent_permanent' && (
+              {/* Recent Permanent / History (type: 'history' or legacy 'recent_permanent') */}
+              {(selectedContextSection.type === 'recent_permanent' || selectedContextSection.type === 'history') && (
                 <div className="space-y-2">
                   {selectedContextSection.data?.blocks?.length > 0 ? (
                     selectedContextSection.data.blocks.map((block: any, idx: number) => (
@@ -1493,6 +1586,616 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                       <p>No session blocks yet.</p>
                     </div>
                   )}
+                </div>
+              )}
+
+              {/* Stats */}
+              {selectedContextSection.type === 'stats' && selectedContextSection.data && (
+                <div className="space-y-4">
+                  {/* Overview Grid */}
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="p-3 bg-glass-bg/30 rounded-lg">
+                      <span className="text-text-tertiary text-xs">Total Sessions</span>
+                      <div className="text-2xl font-display text-accent-primary mt-1">
+                        {selectedContextSection.data.total_sessions || 0}
+                      </div>
+                    </div>
+                    <div className="p-3 bg-glass-bg/30 rounded-lg">
+                      <span className="text-text-tertiary text-xs">Total Tokens</span>
+                      <div className="text-2xl font-display text-accent-primary mt-1">
+                        {(selectedContextSection.data.total_tokens || 0).toLocaleString()}
+                      </div>
+                    </div>
+                    <div className="p-3 bg-glass-bg/30 rounded-lg">
+                      <span className="text-text-tertiary text-xs">Total Anchors</span>
+                      <div className="text-2xl font-display text-accent-primary mt-1">
+                        {Number(selectedContextSection.data.total_anchors) || 0}
+                      </div>
+                    </div>
+                    <div className="p-3 bg-glass-bg/30 rounded-lg">
+                      <span className="text-text-tertiary text-xs">Total Cost</span>
+                      <div className="text-2xl font-display text-emerald-400 mt-1">
+                        ${(selectedContextSection.data.total_cost || 0).toFixed(4)}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Tokens by Model */}
+                  {selectedContextSection.data.tokens_by_model && Object.keys(selectedContextSection.data.tokens_by_model).length > 0 && (
+                    <div className="p-3 bg-glass-bg/20 rounded-lg">
+                      <div className="text-text-tertiary text-xs uppercase tracking-wider mb-3">Tokens by Model</div>
+                      <div className="space-y-2">
+                        {Object.entries(selectedContextSection.data.tokens_by_model).map(([model, tokens]: [string, any]) => (
+                          <div key={model} className="flex justify-between text-sm">
+                            <span className="text-text-secondary">{model}</span>
+                            <span className="text-text-primary font-mono">{tokens.toLocaleString()}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* API Calls by Tool */}
+                  {selectedContextSection.data.api_calls_by_tool && Object.keys(selectedContextSection.data.api_calls_by_tool).length > 0 && (
+                    <div className="p-3 bg-glass-bg/20 rounded-lg">
+                      <div className="text-text-tertiary text-xs uppercase tracking-wider mb-3">API Calls by Tool</div>
+                      <div className="space-y-2">
+                        {Object.entries(selectedContextSection.data.api_calls_by_tool).map(([tool, count]: [string, any]) => (
+                          <div key={tool} className="flex justify-between text-sm">
+                            <span className="text-text-secondary">{tool.replace(/_/g, ' ')}</span>
+                            <span className="text-text-primary font-mono">{count}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Block Counts - Only show active types with non-zero counts */}
+                  {selectedContextSection.data.block_counts && (() => {
+                    const ACTIVE_BLOCK_TYPES = ['GENESIS', 'MESSAGE', 'ACTION', 'SUMMARY', 'GAME'];
+                    const filteredCounts = Object.entries(selectedContextSection.data.block_counts)
+                      .filter(([type, count]: [string, any]) => ACTIVE_BLOCK_TYPES.includes(type) && count > 0);
+                    return filteredCounts.length > 0 ? (
+                      <div className="p-3 bg-glass-bg/20 rounded-lg">
+                        <div className="text-text-tertiary text-xs uppercase tracking-wider mb-3">Block Counts</div>
+                        <div className="flex flex-wrap gap-2">
+                          {filteredCounts.map(([type, count]: [string, any]) => (
+                            <span
+                              key={type}
+                              className={`text-xs px-2 py-1 rounded ${
+                                type === 'MESSAGE' ? 'bg-emerald-400/20 text-emerald-400' :
+                                type === 'SUMMARY' ? 'bg-fuchsia-400/20 text-fuchsia-400' :
+                                type === 'ACTION' ? 'bg-amber-400/20 text-amber-400' :
+                                type === 'GENESIS' ? 'bg-red-500/20 text-red-500' :
+                                type === 'GAME' ? 'bg-yellow-400/20 text-yellow-400' :
+                                'bg-glass-bg/50 text-text-secondary'
+                              }`}
+                            >
+                              {type}: {count}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null;
+                  })()}
+
+                  {/* First/Last Interaction */}
+                  {(selectedContextSection.data.first_interaction || selectedContextSection.data.last_interaction) && (
+                    <div className="p-3 bg-glass-bg/20 rounded-lg grid grid-cols-2 gap-3">
+                      {selectedContextSection.data.first_interaction && (
+                        <div>
+                          <span className="text-text-tertiary text-xs">First Interaction</span>
+                          <div className="text-text-primary text-sm mt-1">
+                            {new Date(selectedContextSection.data.first_interaction * 1000).toLocaleDateString()}
+                          </div>
+                        </div>
+                      )}
+                      {selectedContextSection.data.last_interaction && (
+                        <div>
+                          <span className="text-text-tertiary text-xs">Last Interaction</span>
+                          <div className="text-text-primary text-sm mt-1">
+                            {new Date(selectedContextSection.data.last_interaction * 1000).toLocaleDateString()}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Settings */}
+              {selectedContextSection.type === 'settings' && selectedContextSection.data && (
+                <div className="space-y-4">
+                  {/* Model Mode - Show only the active mode with color coding */}
+                  {/* Colors: Manual=yellow, Revolver=green, Autonomous=purple */}
+                  <div className={`p-4 rounded-lg text-center ${
+                    selectedContextSection.data.model_mode === 'Revolver'
+                      ? 'bg-emerald-500/20 border border-emerald-500/30'
+                      : selectedContextSection.data.model_mode === 'Autonomous'
+                      ? 'bg-purple-500/20 border border-purple-500/30'
+                      : 'bg-yellow-500/20 border border-yellow-500/30'
+                  }`}>
+                    <div className="text-3xl mb-2">
+                      {selectedContextSection.data.model_mode === 'Revolver' ? '🎰' :
+                       selectedContextSection.data.model_mode === 'Autonomous' ? '🤖' : '🔒'}
+                    </div>
+                    <h3 className={`text-xl font-display ${
+                      selectedContextSection.data.model_mode === 'Revolver'
+                        ? 'text-emerald-400'
+                        : selectedContextSection.data.model_mode === 'Autonomous'
+                        ? 'text-purple-400'
+                        : 'text-yellow-400'
+                    }`}>
+                      {selectedContextSection.data.model_mode === 'Revolver' ? 'Revolver Mode' :
+                       selectedContextSection.data.model_mode === 'Autonomous' ? 'Autonomous' : 'Manual Mode'}
+                    </h3>
+                    {selectedContextSection.data.model_locked_to && selectedContextSection.data.model_mode === 'Manual' && (
+                      <div className="text-text-secondary text-sm mt-1">
+                        Locked to: {formatModelName(selectedContextSection.data.model_locked_to)}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Model Pool - show for Revolver or Autonomous mode */}
+                  {selectedContextSection.data.model_mode === 'Revolver' && (selectedContextSection.data.revolver_mode_pool?.length === 0 ? (
+                    <div className="p-3 bg-glass-bg/20 rounded-lg">
+                      <div className="text-text-tertiary text-xs uppercase tracking-wider mb-2">Model Pool</div>
+                      <div className="text-text-secondary text-sm italic">All available models (no restrictions)</div>
+                    </div>
+                  ) : (() => {
+                    // Provider colors and labels
+                    const PROVIDER_CONFIG: Record<string, { label: string; bg: string; text: string; border: string }> = {
+                      openai: { label: 'OpenAI', bg: 'bg-rose-500/10', text: 'text-rose-400', border: 'border-rose-500/30' },
+                      anthropic: { label: 'Anthropic', bg: 'bg-orange-500/10', text: 'text-orange-400', border: 'border-orange-500/30' },
+                      google: { label: 'Google', bg: 'bg-blue-500/10', text: 'text-blue-400', border: 'border-blue-500/30' },
+                      venice: { label: 'Venice', bg: 'bg-violet-500/10', text: 'text-violet-400', border: 'border-violet-500/30' },
+                      deepseek: { label: 'DeepSeek', bg: 'bg-cyan-500/10', text: 'text-cyan-400', border: 'border-cyan-500/30' },
+                      xai: { label: 'xAI', bg: 'bg-red-500/10', text: 'text-red-400', border: 'border-red-500/30' },
+                      perplexity: { label: 'Perplexity', bg: 'bg-lime-500/10', text: 'text-lime-400', border: 'border-lime-500/30' },
+                      openrouter: { label: 'OpenRouter', bg: 'bg-fuchsia-500/10', text: 'text-fuchsia-400', border: 'border-fuchsia-500/30' },
+                      ollama: { label: 'Ollama', bg: 'bg-slate-500/10', text: 'text-slate-400', border: 'border-slate-500/30' },
+                      nanogpt: { label: 'NanoGPT', bg: 'bg-amber-500/10', text: 'text-amber-400', border: 'border-amber-500/30' },
+                      other: { label: 'Other', bg: 'bg-gray-500/10', text: 'text-gray-400', border: 'border-gray-500/30' },
+                    };
+                    const KNOWN_PROVIDERS = Object.keys(PROVIDER_CONFIG).filter(p => p !== 'other');
+
+                    // Group models by provider
+                    const grouped: Record<string, string[]> = {};
+                    selectedContextSection.data.revolver_mode_pool
+                      .filter((model: string) => model && model.trim() && !/^\d+b$/i.test(model.trim()))
+                      .forEach((model: string) => {
+                        const colonIdx = model.indexOf(':');
+                        let provider = 'other';
+                        let modelId = model;
+                        if (colonIdx > 0) {
+                          const possibleProvider = model.substring(0, colonIdx).toLowerCase();
+                          if (KNOWN_PROVIDERS.includes(possibleProvider)) {
+                            provider = possibleProvider;
+                            modelId = model.substring(colonIdx + 1);
+                          }
+                        }
+                        if (!grouped[provider]) grouped[provider] = [];
+                        grouped[provider].push(modelId);
+                      });
+
+                    // Sort providers: known first (in order), then 'other'
+                    const sortedProviders = [...KNOWN_PROVIDERS.filter(p => grouped[p]), ...(grouped['other'] ? ['other'] : [])];
+
+                    return (
+                      <div className="p-3 bg-glass-bg/20 rounded-lg">
+                        <div className="text-text-tertiary text-xs uppercase tracking-wider mb-3">Model Pool</div>
+                        <div className="space-y-2">
+                          {sortedProviders.map(provider => {
+                            const config = PROVIDER_CONFIG[provider];
+                            const models = grouped[provider] || [];
+                            return (
+                              <div key={provider} className={`p-2 rounded-lg border ${config.bg} ${config.border}`}>
+                                <div className={`text-xs font-medium mb-1.5 ${config.text}`}>{config.label}</div>
+                                <div className="flex flex-wrap gap-1">
+                                  {models.map((modelId, idx) => (
+                                    <span key={idx} className={`text-xs px-1.5 py-0.5 rounded ${config.bg} ${config.text} border ${config.border}`}>
+                                      {formatModelName(modelId)}
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })())}
+
+                  {selectedContextSection.data.model_mode === 'Autonomous' && (selectedContextSection.data.autonomous_mode_pool?.length === 0 ? (
+                    <div className="p-3 bg-glass-bg/20 rounded-lg">
+                      <div className="text-text-tertiary text-xs uppercase tracking-wider mb-2">Model Pool</div>
+                      <div className="text-text-secondary text-sm italic">All available models (Qube decides)</div>
+                    </div>
+                  ) : (() => {
+                    // Provider colors and labels
+                    const PROVIDER_CONFIG: Record<string, { label: string; bg: string; text: string; border: string }> = {
+                      openai: { label: 'OpenAI', bg: 'bg-rose-500/10', text: 'text-rose-400', border: 'border-rose-500/30' },
+                      anthropic: { label: 'Anthropic', bg: 'bg-orange-500/10', text: 'text-orange-400', border: 'border-orange-500/30' },
+                      google: { label: 'Google', bg: 'bg-blue-500/10', text: 'text-blue-400', border: 'border-blue-500/30' },
+                      venice: { label: 'Venice', bg: 'bg-violet-500/10', text: 'text-violet-400', border: 'border-violet-500/30' },
+                      deepseek: { label: 'DeepSeek', bg: 'bg-cyan-500/10', text: 'text-cyan-400', border: 'border-cyan-500/30' },
+                      xai: { label: 'xAI', bg: 'bg-red-500/10', text: 'text-red-400', border: 'border-red-500/30' },
+                      perplexity: { label: 'Perplexity', bg: 'bg-lime-500/10', text: 'text-lime-400', border: 'border-lime-500/30' },
+                      openrouter: { label: 'OpenRouter', bg: 'bg-fuchsia-500/10', text: 'text-fuchsia-400', border: 'border-fuchsia-500/30' },
+                      ollama: { label: 'Ollama', bg: 'bg-slate-500/10', text: 'text-slate-400', border: 'border-slate-500/30' },
+                      nanogpt: { label: 'NanoGPT', bg: 'bg-amber-500/10', text: 'text-amber-400', border: 'border-amber-500/30' },
+                      other: { label: 'Other', bg: 'bg-gray-500/10', text: 'text-gray-400', border: 'border-gray-500/30' },
+                    };
+                    const KNOWN_PROVIDERS = Object.keys(PROVIDER_CONFIG).filter(p => p !== 'other');
+
+                    // Group models by provider
+                    const grouped: Record<string, string[]> = {};
+                    selectedContextSection.data.autonomous_mode_pool
+                      .filter((model: string) => model && model.trim() && !/^\d+b$/i.test(model.trim()))
+                      .forEach((model: string) => {
+                        const colonIdx = model.indexOf(':');
+                        let provider = 'other';
+                        let modelId = model;
+                        if (colonIdx > 0) {
+                          const possibleProvider = model.substring(0, colonIdx).toLowerCase();
+                          if (KNOWN_PROVIDERS.includes(possibleProvider)) {
+                            provider = possibleProvider;
+                            modelId = model.substring(colonIdx + 1);
+                          }
+                        }
+                        if (!grouped[provider]) grouped[provider] = [];
+                        grouped[provider].push(modelId);
+                      });
+
+                    // Sort providers: known first (in order), then 'other'
+                    const sortedProviders = [...KNOWN_PROVIDERS.filter(p => grouped[p]), ...(grouped['other'] ? ['other'] : [])];
+
+                    return (
+                      <div className="p-3 bg-glass-bg/20 rounded-lg">
+                        <div className="text-text-tertiary text-xs uppercase tracking-wider mb-3">Model Pool</div>
+                        <div className="space-y-2">
+                          {sortedProviders.map(provider => {
+                            const config = PROVIDER_CONFIG[provider];
+                            const models = grouped[provider] || [];
+                            return (
+                              <div key={provider} className={`p-2 rounded-lg border ${config.bg} ${config.border}`}>
+                                <div className={`text-xs font-medium mb-1.5 ${config.text}`}>{config.label}</div>
+                                <div className="flex flex-wrap gap-1">
+                                  {models.map((modelId, idx) => (
+                                    <span key={idx} className={`text-xs px-1.5 py-0.5 rounded ${config.bg} ${config.text} border ${config.border}`}>
+                                      {formatModelName(modelId)}
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })())}
+
+                  {/* Memory & Anchoring */}
+                  <div className="p-3 bg-glass-bg/20 rounded-lg">
+                    <div className="text-text-tertiary text-xs uppercase tracking-wider mb-3">Memory & Anchoring</div>
+                    <div className="space-y-3">
+                      {/* Individual Chat */}
+                      <div className="space-y-1">
+                        <div className="text-text-tertiary text-xs">Individual Chat</div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-text-secondary">Auto-Anchor</span>
+                          <span className={`text-xs px-2 py-1 rounded ${
+                            selectedContextSection.data.individual_auto_anchor_enabled ? 'bg-accent-primary/20 text-accent-primary' : 'bg-glass-bg/50 text-text-tertiary'
+                          }`}>
+                            {selectedContextSection.data.individual_auto_anchor_enabled ? 'Enabled' : 'Disabled'}
+                          </span>
+                        </div>
+                        {selectedContextSection.data.individual_auto_anchor_enabled && (
+                          <div className="flex justify-between items-center">
+                            <span className="text-text-secondary">Threshold</span>
+                            <span className="text-text-primary text-sm">{selectedContextSection.data.individual_auto_anchor_threshold} messages</span>
+                          </div>
+                        )}
+                      </div>
+                      {/* Group Chat */}
+                      <div className="space-y-1">
+                        <div className="text-text-tertiary text-xs">Group Chat</div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-text-secondary">Auto-Anchor</span>
+                          <span className={`text-xs px-2 py-1 rounded ${
+                            selectedContextSection.data.group_auto_anchor_enabled ? 'bg-accent-primary/20 text-accent-primary' : 'bg-glass-bg/50 text-text-tertiary'
+                          }`}>
+                            {selectedContextSection.data.group_auto_anchor_enabled ? 'Enabled' : 'Disabled'}
+                          </span>
+                        </div>
+                        {selectedContextSection.data.group_auto_anchor_enabled && (
+                          <div className="flex justify-between items-center">
+                            <span className="text-text-secondary">Threshold</span>
+                            <span className="text-text-primary text-sm">{selectedContextSection.data.group_auto_anchor_threshold} messages</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Voice & Interface */}
+                  <div className="p-3 bg-glass-bg/20 rounded-lg">
+                    <div className="text-text-tertiary text-xs uppercase tracking-wider mb-3">Voice & Interface</div>
+                    <div className="space-y-2">
+                      <div className="flex justify-between items-center">
+                        <span className="text-text-secondary">TTS</span>
+                        <span className={`text-xs px-2 py-1 rounded ${
+                          selectedContextSection.data.tts_enabled ? 'bg-accent-primary/20 text-accent-primary' : 'bg-glass-bg/50 text-text-tertiary'
+                        }`}>
+                          {selectedContextSection.data.tts_enabled ? 'Enabled' : 'Disabled'}
+                        </span>
+                      </div>
+                      {selectedContextSection.data.voice_model && (
+                        <div className="flex justify-between items-center">
+                          <span className="text-text-secondary">Voice Model</span>
+                          <span className="text-text-primary text-sm">{formatVoiceName(selectedContextSection.data.voice_model)}</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Visualizer */}
+                  <div className="p-3 bg-glass-bg/20 rounded-lg">
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="text-text-tertiary text-xs uppercase tracking-wider">Visualizer</div>
+                      <span className={`text-xs px-2 py-0.5 rounded ${
+                        selectedContextSection.data.visualizer?.enabled ? 'bg-cyan-500/20 text-cyan-400' : 'bg-glass-bg/50 text-text-tertiary'
+                      }`}>
+                        {selectedContextSection.data.visualizer?.enabled ? 'Enabled' : 'Disabled'}
+                      </span>
+                    </div>
+                    {selectedContextSection.data.visualizer?.enabled && (
+                      <div className="space-y-2">
+                        <div className="flex justify-between items-center">
+                          <span className="text-text-secondary">Waveform Style</span>
+                          <span className="text-text-primary text-sm">
+                            {['Classic Bars', 'Symmetric Bars', 'Smooth Waveform', 'Radial Spectrum', 'Dot Matrix', 'Polygon Morph', 'Concentric Circles', 'Spiral Wave', 'Particle Field', 'Ring Bars', 'Wave Mesh'][selectedContextSection.data.visualizer.waveform_style - 1] || `Style ${selectedContextSection.data.visualizer.waveform_style}`}
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-text-secondary">Color Theme</span>
+                          <span className="text-text-primary text-sm capitalize">
+                            {selectedContextSection.data.visualizer.color_theme?.replace(/-/g, ' ') || 'Qube Color'}
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-text-secondary">Sensitivity</span>
+                          <div className="flex items-center gap-2">
+                            <div className="w-12 h-1.5 bg-glass-bg/50 rounded-full overflow-hidden">
+                              <div
+                                className="h-full bg-cyan-400 transition-all"
+                                style={{ width: `${selectedContextSection.data.visualizer.sensitivity || 50}%` }}
+                              />
+                            </div>
+                            <span className="text-text-tertiary text-xs">{selectedContextSection.data.visualizer.sensitivity || 50}%</span>
+                          </div>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-text-secondary">Smoothness</span>
+                          <span className="text-text-primary text-sm capitalize">
+                            {selectedContextSection.data.visualizer.animation_smoothness || 'Medium'}
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-text-secondary">Frequency Range</span>
+                          <span className="text-text-primary text-sm">{selectedContextSection.data.visualizer.frequency_range || 20}%</span>
+                        </div>
+                        {selectedContextSection.data.visualizer.audio_offset_ms !== 0 && (
+                          <div className="flex justify-between items-center">
+                            <span className="text-text-secondary">Audio Offset</span>
+                            <span className="text-text-primary text-sm">{selectedContextSection.data.visualizer.audio_offset_ms}ms</span>
+                          </div>
+                        )}
+                        <div className="flex justify-between items-center">
+                          <span className="text-text-secondary">Output Monitor</span>
+                          <span className="text-text-primary text-sm">
+                            {selectedContextSection.data.visualizer.output_monitor === 0 ? 'Primary' : `Monitor ${selectedContextSection.data.visualizer.output_monitor}`}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Mood */}
+              {selectedContextSection.type === 'mood' && selectedContextSection.data && (
+                <div className="space-y-4">
+                  <div className="text-center p-6 bg-glass-bg/30 rounded-lg">
+                    <div className="text-6xl mb-3">
+                      {(() => {
+                        const moodEmojis: Record<string, string> = {
+                          happy: '😊', excited: '🤩', neutral: '😐', curious: '🤔',
+                          tired: '😴', stressed: '😰', sad: '😢', angry: '😠'
+                        };
+                        return moodEmojis[selectedContextSection.data.current_mood] || '😐';
+                      })()}
+                    </div>
+                    <h3 className="text-xl font-display text-text-primary capitalize">
+                      {selectedContextSection.data.current_mood || 'Neutral'}
+                    </h3>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="p-3 bg-glass-bg/20 rounded-lg">
+                      <span className="text-text-tertiary text-xs">Energy Level</span>
+                      <div className="mt-2">
+                        <div className="h-2 bg-glass-bg/50 rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-yellow-400 transition-all"
+                            style={{ width: `${(selectedContextSection.data.energy_level || 0) * 10}%` }}
+                          />
+                        </div>
+                        <div className="text-right text-xs text-text-tertiary mt-1">
+                          {selectedContextSection.data.energy_level || 0}/10
+                        </div>
+                      </div>
+                    </div>
+                    <div className="p-3 bg-glass-bg/20 rounded-lg">
+                      <span className="text-text-tertiary text-xs">Stress Level</span>
+                      <div className="mt-2">
+                        <div className="h-2 bg-glass-bg/50 rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-red-400 transition-all"
+                            style={{ width: `${(selectedContextSection.data.stress_level || 0) * 10}%` }}
+                          />
+                        </div>
+                        <div className="text-right text-xs text-text-tertiary mt-1">
+                          {selectedContextSection.data.stress_level || 0}/10
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {selectedContextSection.data.last_update && (
+                    <div className="text-text-tertiary text-xs text-center">
+                      Last updated: {new Date(selectedContextSection.data.last_update * 1000).toLocaleString()}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Health */}
+              {selectedContextSection.type === 'health' && selectedContextSection.data && (
+                <div className="space-y-4">
+                  <div className={`p-4 rounded-lg text-center ${
+                    selectedContextSection.data.overall_status === 'healthy'
+                      ? 'bg-emerald-500/20 border border-emerald-500/30'
+                      : 'bg-yellow-500/20 border border-yellow-500/30'
+                  }`}>
+                    <div className="text-4xl mb-2">
+                      {selectedContextSection.data.overall_status === 'healthy' ? '💚' : '⚠️'}
+                    </div>
+                    <h3 className={`text-xl font-display capitalize ${
+                      selectedContextSection.data.overall_status === 'healthy'
+                        ? 'text-emerald-400'
+                        : 'text-yellow-400'
+                    }`}>
+                      {selectedContextSection.data.overall_status || 'Unknown'}
+                    </h3>
+                  </div>
+
+                  <div className="p-3 bg-glass-bg/20 rounded-lg">
+                    <div className="flex justify-between items-center">
+                      <span className="text-text-secondary">Integrity Verified</span>
+                      <span className={`text-xs px-2 py-1 rounded ${
+                        selectedContextSection.data.integrity_verified
+                          ? 'bg-emerald-500/20 text-emerald-400'
+                          : 'bg-red-500/20 text-red-400'
+                      }`}>
+                        {selectedContextSection.data.integrity_verified ? 'Verified' : 'Not Verified'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {selectedContextSection.data.issues && selectedContextSection.data.issues.length > 0 && (
+                    <div className="p-3 bg-red-500/10 rounded-lg border border-red-500/30">
+                      <div className="text-red-400 text-xs uppercase tracking-wider mb-2">Issues</div>
+                      <ul className="space-y-1">
+                        {selectedContextSection.data.issues.map((issue: string, idx: number) => (
+                          <li key={idx} className="text-text-secondary text-sm flex items-start gap-2">
+                            <span className="text-red-400">•</span>
+                            {issue}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {selectedContextSection.data.last_check && (
+                    <div className="text-text-tertiary text-xs text-center">
+                      Last checked: {new Date(selectedContextSection.data.last_check * 1000).toLocaleString()}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Chain */}
+              {selectedContextSection.type === 'chain' && selectedContextSection.data && (
+                <div className="space-y-4">
+                  {/* Block Counts */}
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="p-3 bg-glass-bg/30 rounded-lg text-center">
+                      <span className="text-text-tertiary text-xs">Total</span>
+                      <div className="text-2xl font-display text-accent-primary mt-1">
+                        {selectedContextSection.data.total_blocks || 0}
+                      </div>
+                    </div>
+                    <div className="p-3 bg-glass-bg/30 rounded-lg text-center">
+                      <span className="text-text-tertiary text-xs">Permanent</span>
+                      <div className="text-2xl font-display text-fuchsia-400 mt-1">
+                        {selectedContextSection.data.permanent_blocks || 0}
+                      </div>
+                    </div>
+                    <div className="p-3 bg-glass-bg/30 rounded-lg text-center">
+                      <span className="text-text-tertiary text-xs">Session</span>
+                      <div className="text-2xl font-display text-sky-400 mt-1">
+                        {selectedContextSection.data.session_blocks || 0}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Hashes */}
+                  {selectedContextSection.data.genesis_hash && (
+                    <div className="p-3 bg-glass-bg/20 rounded-lg">
+                      <span className="text-text-tertiary text-xs">Genesis Hash</span>
+                      <div className="text-text-primary font-mono text-xs mt-1 break-all">
+                        {selectedContextSection.data.genesis_hash}
+                      </div>
+                    </div>
+                  )}
+                  {selectedContextSection.data.latest_block_hash && (
+                    <div className="p-3 bg-glass-bg/20 rounded-lg">
+                      <span className="text-text-tertiary text-xs">Latest Block Hash</span>
+                      <div className="text-text-primary font-mono text-xs mt-1 break-all">
+                        {selectedContextSection.data.latest_block_hash}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Last Anchor */}
+                  {selectedContextSection.data.last_anchor_block && (
+                    <div className="p-3 bg-glass-bg/20 rounded-lg">
+                      <div className="flex justify-between items-center">
+                        <span className="text-text-secondary">Last Anchor Block</span>
+                        <span className="text-accent-primary font-mono">#{selectedContextSection.data.last_anchor_block}</span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Block Type Breakdown - Only show active types with non-zero counts */}
+                  {selectedContextSection.data.block_counts && (() => {
+                    const ACTIVE_BLOCK_TYPES = ['GENESIS', 'MESSAGE', 'ACTION', 'SUMMARY', 'GAME'];
+                    const filteredCounts = Object.entries(selectedContextSection.data.block_counts)
+                      .filter(([type, count]: [string, any]) => ACTIVE_BLOCK_TYPES.includes(type) && count > 0);
+                    return filteredCounts.length > 0 ? (
+                      <div className="p-3 bg-glass-bg/20 rounded-lg">
+                        <div className="text-text-tertiary text-xs uppercase tracking-wider mb-3">Block Types</div>
+                        <div className="flex flex-wrap gap-2">
+                          {filteredCounts.map(([type, count]: [string, any]) => (
+                            <span
+                              key={type}
+                              className={`text-xs px-2 py-1 rounded ${
+                                type === 'MESSAGE' ? 'bg-emerald-400/20 text-emerald-400' :
+                                type === 'SUMMARY' ? 'bg-fuchsia-400/20 text-fuchsia-400' :
+                                type === 'ACTION' ? 'bg-amber-400/20 text-amber-400' :
+                                type === 'GENESIS' ? 'bg-red-500/20 text-red-500' :
+                                type === 'GAME' ? 'bg-yellow-400/20 text-yellow-400' :
+                                'bg-glass-bg/50 text-text-secondary'
+                              }`}
+                            >
+                              {type}: {count}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null;
+                  })()}
                 </div>
               )}
             </GlassCard>

@@ -943,11 +943,26 @@ class UserOrchestrator:
                 self.master_key
             )
 
+            # Get qube_dir from memory_chain_path
+            # memory_chain_path is like: data/users/{user}/qubes/{name_id}/memory
+            memory_chain_path = Path(qube_data["memory_chain_path"])
+            qube_dir = memory_chain_path.parent  # Go up one level: memory -> {name_id}
+
+            # Get encryption key for chain_state
+            encryption_key = self._get_encryption_key(qube_dir)
+
+            # If encryption_key.enc doesn't exist yet (legacy qube), save it now
+            # This ensures existing qubes get their encryption_key.enc file
+            key_file = qube_dir / "chain" / "encryption_key.enc"
+            if not key_file.exists() and encryption_key:
+                self._save_encryption_key(qube_dir, encryption_key)
+
             # Create Qube from storage
             qube = Qube.from_storage(
                 qube_data=qube_data,
                 private_key=private_key,
                 user_name=self.user_id,
+                encryption_key=encryption_key,
                 orchestrator=self
             )
 
@@ -991,6 +1006,35 @@ class UserOrchestrator:
             # Register in orchestrator
             self.qubes[qube_id] = qube
             qube._orchestrator = self  # Store reference for auto-approval
+
+            # Apply user preferences for auto-anchor settings
+            prefs = self.preferences_manager.get_block_preferences()
+            qube.chain_state.set_auto_anchor(
+                enabled=prefs.individual_auto_anchor,
+                threshold=prefs.individual_anchor_threshold
+            )
+            qube.auto_anchor_enabled = prefs.individual_auto_anchor
+            qube.auto_anchor_threshold = prefs.individual_anchor_threshold
+            logger.debug("auto_anchor_prefs_applied",
+                        enabled=prefs.individual_auto_anchor,
+                        threshold=prefs.individual_anchor_threshold)
+
+            # Background sync wallet balances to chain_state (non-blocking)
+            try:
+                import asyncio
+                genesis = qube.genesis_block
+                wallet_info = None
+                if hasattr(genesis, 'wallet'):
+                    wallet_info = genesis.wallet
+                    if hasattr(wallet_info, '__dict__') and not isinstance(wallet_info, dict):
+                        wallet_info = vars(wallet_info)
+                owner_pubkey = wallet_info.get("owner_pubkey") if wallet_info else None
+
+                asyncio.create_task(
+                    qube.wallet_manager.sync_balances_to_chain_state(owner_pubkey)
+                )
+            except Exception as sync_err:
+                logger.debug(f"Could not start balance sync: {sync_err}")
 
             logger.info("qube_loaded_successfully", qube_id=qube_id[:16] + "...")
 
@@ -1042,15 +1086,32 @@ class UserOrchestrator:
                             avatar_url = f"https://ipfs.io/ipfs/{avatar_ipfs_cid}"
                         # Note: We pass avatar_local_path separately for frontend to handle
 
-                        # Load chain state for block counts
-                        chain_state_path = qube_dir / "chain" / "chain_state.json"
+                        # Load chain state for block counts using ChainState with encryption
                         total_blocks = 1  # At least genesis
                         block_breakdown = {}
-                        if chain_state_path.exists():
-                            with open(chain_state_path, "r") as cs_f:
-                                chain_state = json.load(cs_f)
-                                total_blocks = chain_state.get("chain_length", 1)
-                                block_breakdown = chain_state.get("block_counts", {})  # Fixed: was block_counts_by_type
+                        try:
+                            encryption_key = self._get_encryption_key(qube_dir)
+                            if encryption_key:
+                                from core.chain_state import ChainState
+                                chain_dir = qube_dir / "chain"
+                                cs = ChainState(chain_dir, encryption_key, qube_data["qube_id"])
+                                chain_data = cs.state.get("chain", {})
+                                total_blocks = chain_data.get("total_blocks", 1)
+                                block_breakdown = cs.state.get("block_counts", {})
+                            else:
+                                # Fallback: try legacy plain JSON (for qubes not yet migrated)
+                                chain_state_path = qube_dir / "chain" / "chain_state.json"
+                                if chain_state_path.exists():
+                                    with open(chain_state_path, "r") as cs_f:
+                                        chain_state = json.load(cs_f)
+                                        # Handle both legacy and v2 formats
+                                        if "chain" in chain_state:
+                                            total_blocks = chain_state["chain"].get("total_blocks", 1)
+                                        else:
+                                            total_blocks = chain_state.get("chain_length", 1)
+                                        block_breakdown = chain_state.get("block_counts", {})
+                        except Exception as cs_err:
+                            logger.debug(f"Could not load chain_state for {qube_dir.name}: {cs_err}")
 
                         # Load relationship stats
                         relationships_file = qube_dir / "relationships" / "relationships.json"
@@ -1271,6 +1332,17 @@ class UserOrchestrator:
             import shutil
             shutil.rmtree(qube_dir)
 
+            # Delete debug prompt cache (prevents stale data in Debug Inspector)
+            try:
+                import tempfile
+                debug_prompt_dir = Path(tempfile.gettempdir()) / "qubes_debug_prompts"
+                debug_prompt_file = debug_prompt_dir / f"{qube_id}.json"
+                if debug_prompt_file.exists():
+                    debug_prompt_file.unlink()
+                    logger.debug("deleted_debug_prompt_cache")
+            except Exception as e:
+                logger.debug(f"Could not delete debug prompt cache: {e}")
+
             # Remove from BCMR registry via minting API
             try:
                 async with MintingAPIClient() as client:
@@ -1367,11 +1439,17 @@ class UserOrchestrator:
                 shutil.rmtree(relationships_dir)
                 logger.debug("deleted_relationships_dir")
 
-            # 3. Delete owner_info folder (learned info about owner)
+            # 3. Delete owner_info folder (learned info about owner - now in chain_state)
             owner_info_dir = qube_dir / "owner_info"
             if owner_info_dir.exists():
                 shutil.rmtree(owner_info_dir)
                 logger.debug("deleted_owner_info_dir")
+
+            # 3b. Delete clearance folder (clearance settings now in chain_state.relationships)
+            clearance_dir = qube_dir / "clearance"
+            if clearance_dir.exists():
+                shutil.rmtree(clearance_dir)
+                logger.debug("deleted_clearance_dir")
 
             # 4. Delete snapshots folder
             snapshots_dir = qube_dir / "snapshots"
@@ -1402,13 +1480,19 @@ class UserOrchestrator:
                 visualizer_settings.unlink()
                 logger.debug("deleted_visualizer_settings")
 
-            # 8. Delete session lock files
+            # 8. Delete session lock files (skip if locked by another process)
             for lock_file in qube_dir.glob("*.lock"):
-                lock_file.unlink()
-                logger.debug("deleted_lock_file", file=lock_file.name)
+                try:
+                    lock_file.unlink()
+                    logger.debug("deleted_lock_file", file=lock_file.name)
+                except OSError:
+                    logger.debug("skipped_locked_file", file=lock_file.name)
             for lock_file in chain_dir.glob("*.lock"):
-                lock_file.unlink()
-                logger.debug("deleted_chain_lock_file", file=lock_file.name)
+                try:
+                    lock_file.unlink()
+                    logger.debug("deleted_chain_lock_file", file=lock_file.name)
+                except OSError:
+                    logger.debug("skipped_locked_chain_file", file=lock_file.name)
 
             # 9. Delete root-level chain_state.json if exists (duplicate)
             root_chain_state = qube_dir / "chain_state.json"
@@ -1416,92 +1500,89 @@ class UserOrchestrator:
                 root_chain_state.unlink()
                 logger.debug("deleted_root_chain_state")
 
+            # 10. Delete chain_state backup file (prevents old data restoration)
+            chain_state_backup = chain_dir / ".chain_state.backup.json"
+            if chain_state_backup.exists():
+                chain_state_backup.unlink()
+                logger.debug("deleted_chain_state_backup")
+
+            # 11. Delete debug prompt cache (prevents stale data in Debug Inspector)
+            try:
+                import tempfile
+                debug_prompt_dir = Path(tempfile.gettempdir()) / "qubes_debug_prompts"
+                debug_prompt_file = debug_prompt_dir / f"{qube_id}.json"
+                if debug_prompt_file.exists():
+                    debug_prompt_file.unlink()
+                    logger.debug("deleted_debug_prompt_cache")
+            except Exception as e:
+                logger.debug(f"Could not delete debug prompt cache: {e}")
+
             # === RESET state files to fresh values ===
 
-            # 1. Reset chain_state.json
+            # Get encryption key for this qube (required for ChainState)
+            encryption_key = self._get_encryption_key(qube_dir)
+            if not encryption_key:
+                raise QubesError(
+                    f"Cannot reset qube - encryption key not available. Is master key set?",
+                    context={"qube_id": qube_id}
+                )
+
+            # Load genesis block data (source of truth for qube-specific values)
+            genesis_path = chain_dir / "genesis.json"
+            if not genesis_path.exists():
+                raise QubesError(
+                    f"Genesis block not found for qube {qube_id}",
+                    context={"qube_id": qube_id, "genesis_path": str(genesis_path)}
+                )
+
+            with open(genesis_path, "r", encoding="utf-8") as f:
+                genesis_data = json.load(f)
+
+            # Use centralized function to create default chain_state
+            from core.chain_state import create_default_chain_state
+            reset_state = create_default_chain_state(genesis_data, qube_id)
+
+            # Preserve financial data from existing chain_state (wallet/transactions are blockchain data)
+            try:
+                from core.chain_state import ChainState
+                existing_cs = ChainState(chain_dir, encryption_key, qube_id)
+                existing_financial = existing_cs.state.get("financial", {})
+                if existing_financial and existing_financial.get("wallet", {}).get("address"):
+                    reset_state["financial"] = existing_financial
+                    logger.debug("preserved_financial_data_during_reset")
+            except Exception as e:
+                logger.debug(f"Could not preserve financial data: {e}")
+
+            logger.debug(
+                "reset_state_created",
+                qube_id=qube_id,
+                tts_enabled=reset_state["settings"]["tts_enabled"],
+                voice_model=reset_state["settings"]["voice_model"],
+                model_locked=reset_state["settings"]["model_locked"],
+                ai_model=reset_state["runtime"]["current_model"]
+            )
+
+            # Write encrypted chain_state directly (bypassing ChainState class to avoid lock conflicts)
+            # This is safe because reset is a destructive operation that replaces all state
+            from crypto.encryption import encrypt_block_data, derive_chain_state_key
+
             chain_state_path = chain_dir / "chain_state.json"
-            if chain_state_path.exists():
-                with open(chain_state_path, "r", encoding="utf-8") as f:
-                    chain_state = json.load(f)
+            chain_state_key = derive_chain_state_key(encryption_key)
+            encrypted_data = encrypt_block_data(reset_state, chain_state_key)  # Pass dict, not string
+            encrypted_data["encrypted"] = True  # CRITICAL: Mark as encrypted so ChainState doesn't "migrate" it
 
-                # Get genesis block hash from genesis.json
-                genesis_path = chain_dir / "genesis.json"
-                genesis_hash = chain_state.get("last_block_hash", "0" * 64)
-                if genesis_path.exists():
-                    with open(genesis_path, "r", encoding="utf-8") as f:
-                        genesis_data = json.load(f)
-                        genesis_hash = genesis_data.get("block_hash", genesis_hash)
+            # Atomic write: temp file then rename
+            temp_path = chain_state_path.with_suffix(".tmp")
+            with open(temp_path, "w", encoding="utf-8") as f:
+                json.dump(encrypted_data, f)
+            temp_path.replace(chain_state_path)
+            logger.debug("reset_chain_state_encrypted")
 
-                # Reset to fresh state
-                chain_state.update({
-                    "chain_length": 1,
-                    "last_block_number": 0,
-                    "last_block_hash": genesis_hash,
-                    "last_merkle_root": None,
-                    "last_anchor_block": None,
-                    "current_session_id": None,
-                    "session_block_count": 0,
-                    "next_negative_index": -1,
-                    "session_start_timestamp": None,
-                    "block_counts": {
-                        "GENESIS": 1,
-                        "THOUGHT": 0,
-                        "ACTION": 0,
-                        "OBSERVATION": 0,
-                        "MESSAGE": 0,
-                        "DECISION": 0,
-                        "MEMORY_ANCHOR": 0,
-                        "COLLABORATIVE_MEMORY": 0,
-                        "SUMMARY": 0
-                    },
-                    "total_tokens_used": 0,
-                    "total_api_cost": 0.0,
-                    "tokens_by_model": {},
-                    "api_calls_by_tool": {},
-                    "last_updated": int(datetime.now().timestamp()),
-                    "last_backup": None,
-                    "integrity_verified": True,
-                    "merkle_tree_valid": True,
-                    "avatar_description": None,
-                    "avatar_description_generated_at": None,
-                    # Reset model settings - Manual mode is the default
-                    "current_model_override": None,
-                    "model_locked": True,  # Manual mode is default
-                    "model_locked_to": None,
-                    "revolver_mode_enabled": False,
-                    "revolver_last_index": 0,
-                    "free_mode": False  # Autonomous mode off by default
-                })
-
-                with open(chain_state_path, "w", encoding="utf-8") as f:
-                    json.dump(chain_state, f, indent=2)
-                logger.debug("reset_chain_state")
-
-            # 2. Reset skills.json - set all XP to 0 and clear evidence
+            # Also delete legacy skills directory if it exists (data now in chain_state)
             skills_dir = qube_dir / "skills"
-            skills_path = skills_dir / "skills.json"
-            if skills_path.exists():
-                with open(skills_path, "r", encoding="utf-8") as f:
-                    skills_data = json.load(f)
-
-                # Reset all skills
-                for skill in skills_data.get("skills", []):
-                    skill["xp"] = 0
-                    skill["level"] = 0
-                    skill["evidence"] = []
-
-                skills_data["last_updated"] = datetime.now().isoformat() + "Z"
-
-                with open(skills_path, "w", encoding="utf-8") as f:
-                    json.dump(skills_data, f, indent=2)
-                logger.debug("reset_skills")
-
-            # 3. Clear skill_history.json
-            skill_history_path = skills_dir / "skill_history.json"
-            if skill_history_path.exists():
-                with open(skill_history_path, "w", encoding="utf-8") as f:
-                    json.dump([], f)
-                logger.debug("reset_skill_history")
+            if skills_dir.exists():
+                shutil.rmtree(skills_dir)
+                logger.debug("deleted_legacy_skills_dir")
 
             logger.info(
                 "qube_reset_successfully",
@@ -1553,16 +1634,32 @@ class UserOrchestrator:
 
             genesis = qube_data["genesis_block"]
 
-            # Load chain state to get block counts
-            chain_state_path = qube_dir / "chain" / "chain_state.json"
+            # Load chain state to get block counts using ChainState with encryption
             block_breakdown = {}
             total_blocks = 0
 
-            if chain_state_path.exists():
-                with open(chain_state_path, "r") as f:
-                    chain_state = json.load(f)
-                    block_breakdown = chain_state.get("block_counts", {})  # Fixed: was block_counts_by_type
-                    total_blocks = chain_state.get("chain_length", 0)
+            try:
+                encryption_key = self._get_encryption_key(qube_dir)
+                if encryption_key:
+                    from core.chain_state import ChainState
+                    chain_dir = qube_dir / "chain"
+                    cs = ChainState(chain_dir, encryption_key, qube_id)
+                    chain_data = cs.state.get("chain", {})
+                    total_blocks = chain_data.get("total_blocks", 0)
+                    block_breakdown = cs.state.get("block_counts", {})
+                else:
+                    # Fallback: try legacy plain JSON
+                    chain_state_path = qube_dir / "chain" / "chain_state.json"
+                    if chain_state_path.exists():
+                        with open(chain_state_path, "r") as f:
+                            chain_state = json.load(f)
+                            if "chain" in chain_state:
+                                total_blocks = chain_state["chain"].get("total_blocks", 0)
+                            else:
+                                total_blocks = chain_state.get("chain_length", 0)
+                            block_breakdown = chain_state.get("block_counts", {})
+            except Exception as cs_err:
+                logger.debug(f"Could not load chain_state for {qube_id}: {cs_err}")
 
             # Get avatar info
             avatar_info = genesis.get("avatar", {})
@@ -1977,32 +2074,37 @@ class UserOrchestrator:
         )
 
         # Sync preferences to all existing qubes' chain_state
-        # Use individual_anchor_threshold as default for all qubes
-        # (group chat threshold handling can be added later when conversation type is known)
-        if individual_anchor_threshold is not None or individual_auto_anchor is not None:
+        # Pass both individual and group settings
+        if any([individual_anchor_threshold, individual_auto_anchor, group_auto_anchor, group_anchor_threshold]):
             from core.chain_state import ChainState
 
             # Update loaded qubes
             for qube_id, qube in self.qubes.items():
-                # Update chain_state
-                enabled = individual_auto_anchor if individual_auto_anchor is not None else qube.auto_anchor_enabled
-                threshold = individual_anchor_threshold if individual_anchor_threshold is not None else qube.auto_anchor_threshold
+                # Update chain_state with all settings
+                qube.chain_state.set_auto_anchor(
+                    individual_enabled=individual_auto_anchor,
+                    individual_threshold=individual_anchor_threshold,
+                    group_enabled=group_auto_anchor,
+                    group_threshold=group_anchor_threshold
+                )
 
-                qube.chain_state.set_auto_anchor(enabled=enabled, threshold=threshold)
-
-                # Update in-memory Qube instance
-                qube.auto_anchor_enabled = enabled
-                qube.auto_anchor_threshold = threshold
+                # Update in-memory Qube instance (use individual settings for legacy fields)
+                if individual_auto_anchor is not None:
+                    qube.auto_anchor_enabled = individual_auto_anchor
+                if individual_anchor_threshold is not None:
+                    qube.auto_anchor_threshold = individual_anchor_threshold
 
                 # If qube has an active session, update session threshold too
-                if qube.current_session:
-                    qube.current_session.auto_anchor_threshold = threshold
+                if qube.current_session and individual_anchor_threshold is not None:
+                    qube.current_session.auto_anchor_threshold = individual_anchor_threshold
 
                 logger.debug(
                     "qube_anchor_settings_updated",
                     qube_id=qube_id[:8],
-                    enabled=enabled,
-                    threshold=threshold
+                    individual_enabled=individual_auto_anchor,
+                    individual_threshold=individual_anchor_threshold,
+                    group_enabled=group_auto_anchor,
+                    group_threshold=group_anchor_threshold
                 )
 
             # Also update chain_state for qubes not currently loaded
@@ -2019,20 +2121,30 @@ class UserOrchestrator:
                         chain_state_file = qube_dir / "chain" / "chain_state.json"
                         if chain_state_file.exists():
                             try:
-                                # Load chain_state for this qube
-                                chain_state = ChainState(qube_id_from_dir, qube_dir)
+                                # Load chain_state for this qube with encryption
+                                encryption_key = self._get_encryption_key(qube_dir)
+                                if not encryption_key:
+                                    logger.debug(f"Skipping unloaded qube {qube_id_from_dir} - no encryption key")
+                                    continue
 
-                                # Update with new preferences
-                                enabled = individual_auto_anchor if individual_auto_anchor is not None else chain_state.is_auto_anchor_enabled()
-                                threshold = individual_anchor_threshold if individual_anchor_threshold is not None else chain_state.get_auto_anchor_threshold()
+                                chain_dir = qube_dir / "chain"
+                                chain_state = ChainState(chain_dir, encryption_key, qube_id_from_dir)
 
-                                chain_state.set_auto_anchor(enabled=enabled, threshold=threshold)
+                                # Update with all anchor settings
+                                chain_state.set_auto_anchor(
+                                    individual_enabled=individual_auto_anchor,
+                                    individual_threshold=individual_anchor_threshold,
+                                    group_enabled=group_auto_anchor,
+                                    group_threshold=group_anchor_threshold
+                                )
 
                                 logger.debug(
                                     "unloaded_qube_anchor_settings_updated",
                                     qube_id=qube_id_from_dir[:8],
-                                    enabled=enabled,
-                                    threshold=threshold
+                                    individual_enabled=individual_auto_anchor,
+                                    individual_threshold=individual_anchor_threshold,
+                                    group_enabled=group_auto_anchor,
+                                    group_threshold=group_anchor_threshold
                                 )
                             except Exception as e:
                                 logger.warning(
@@ -2224,25 +2336,26 @@ class UserOrchestrator:
         with open(qube_metadata, "w", encoding="utf-8") as f:
             json.dump(qube_data, f, indent=2)
 
+        # Save encryption key encrypted by master key (for gui_bridge access)
+        # This allows gui_bridge to access chain_state without loading full Qube
+        self._save_encryption_key(qube_dir, qube.encryption_key)
+
         logger.debug("qube_saved", qube_id=qube.qube_id[:16] + "...")
 
     def _initialize_qube_skills(self, qube: Qube):
         """
         Initialize skills for a newly created Qube
 
-        Creates skills.json and skill_history.json with default values.
+        Skills are now stored in chain_state and initialized in Qube.__init__.
+        This method just logs the initialization status.
 
         Args:
             qube: Qube instance to initialize skills for
         """
         try:
-            from utils.skills_manager import SkillsManager
-
-            qube_dir = self.data_dir / "qubes" / qube.storage_dir_name
-            skills_manager = SkillsManager(qube_dir)
-
-            # load_skills() will create and save default skills if they don't exist
-            skills_data = skills_manager.load_skills()
+            # Qube already has skills_manager initialized in __init__
+            # Just ensure skills data is loaded and get count for logging
+            skills_data = qube.skills_manager.load_skills()
 
             logger.info(
                 "qube_skills_initialized",
@@ -2250,8 +2363,8 @@ class UserOrchestrator:
                 skills_count=len(skills_data.get("skills", []))
             )
         except Exception as e:
-            logger.warning(f"Failed to initialize skills for qube: {e}")
-            # Don't fail qube creation if skills init fails
+            logger.warning(f"Failed to verify skills initialization for qube: {e}")
+            # Don't fail qube creation if skills verification fails
 
     async def _load_qube_data(self, qube_id: str) -> Dict[str, Any]:
         """
@@ -2312,6 +2425,88 @@ class UserOrchestrator:
         private_key = deserialize_private_key(decrypted)
 
         return private_key
+
+    def _save_encryption_key(self, qube_dir: Path, encryption_key: bytes) -> None:
+        """
+        Save qube encryption key encrypted by master key.
+
+        This allows gui_bridge to access chain_state without loading the full Qube.
+        The key file is stored at {qube_dir}/chain/encryption_key.enc
+
+        Args:
+            qube_dir: Qube data directory
+            encryption_key: 32-byte encryption key to save
+        """
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        import secrets as crypto_secrets
+
+        if not self.master_key:
+            logger.warning("Cannot save encryption key - master key not set")
+            return
+
+        chain_dir = qube_dir / "chain"
+        chain_dir.mkdir(parents=True, exist_ok=True)
+        key_file = chain_dir / "encryption_key.enc"
+
+        try:
+            aesgcm = AESGCM(self.master_key)
+            nonce = crypto_secrets.token_bytes(12)
+            ciphertext = aesgcm.encrypt(nonce, encryption_key, None)
+
+            with open(key_file, 'w') as f:
+                json.dump({
+                    "nonce": nonce.hex(),
+                    "ciphertext": ciphertext.hex(),
+                    "algorithm": "AES-256-GCM",
+                    "version": "1.0"
+                }, f, indent=2)
+
+            logger.debug("encryption_key_saved", key_file=str(key_file))
+
+        except Exception as e:
+            logger.error(f"Failed to save encryption key: {e}")
+            raise
+
+    def _get_encryption_key(self, qube_dir: Path) -> Optional[bytes]:
+        """
+        Get the encryption key for a qube.
+
+        The qube's encryption key is stored encrypted by the master key in:
+        {qube_dir}/chain/encryption_key.enc
+
+        Args:
+            qube_dir: Qube data directory
+
+        Returns:
+            Encryption key bytes, or None if not available
+        """
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+        if not self.master_key:
+            logger.warning("Cannot get qube encryption key - master key not set")
+            return None
+
+        key_file = qube_dir / "chain" / "encryption_key.enc"
+        if not key_file.exists():
+            # Legacy qube without encrypted key file - use master key directly
+            # (for backward compatibility during migration)
+            logger.debug("No encryption_key.enc found, using master key fallback")
+            return self.master_key
+
+        try:
+            with open(key_file, 'r') as f:
+                enc_data = json.load(f)
+
+            nonce = bytes.fromhex(enc_data["nonce"])
+            ciphertext = bytes.fromhex(enc_data["ciphertext"])
+
+            aesgcm = AESGCM(self.master_key)
+            qube_key = aesgcm.decrypt(nonce, ciphertext, None)
+            return qube_key
+
+        except Exception as e:
+            logger.error(f"Failed to decrypt qube encryption key: {e}")
+            return None
 
     # =============================================================================
     # Multi-Qube Conversation Management

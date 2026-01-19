@@ -13,7 +13,7 @@ import time
 import hashlib
 import asyncio
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Literal
+from typing import Dict, Any, List, Optional, Literal, TYPE_CHECKING
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta
 
@@ -21,6 +21,9 @@ from crypto.wallet import QubeWallet, TxOutput, validate_address
 from crypto.bch_script import pubkey_from_privkey, UTXO, address_to_script_pubkey
 from crypto.keys import get_raw_private_key_bytes
 from utils.logging import get_logger
+
+if TYPE_CHECKING:
+    from core.chain_state import ChainState
 
 logger = get_logger(__name__)
 
@@ -104,6 +107,12 @@ class WalletTransactionManager:
     """
     Manages transactions for a Qube's wallet.
 
+    UPDATED FOR CHAIN STATE CONSOLIDATION:
+    - Pending transactions stored in chain_state.json under "financial.pending"
+    - Transaction history stored in "financial.transactions.history" (capped at 50)
+    - Balance cache stored in "financial.wallet"
+    - Data automatically encrypted at rest
+
     Handles the full lifecycle:
     1. Qube proposes a transaction
     2. Transaction is stored as pending
@@ -115,16 +124,20 @@ class WalletTransactionManager:
     # Pending transactions expire after 24 hours
     DEFAULT_EXPIRY_HOURS = 24
 
-    def __init__(self, qube, data_dir: Optional[Path] = None):
+    # Maximum transaction history entries
+    MAX_TRANSACTION_HISTORY = 50
+
+    def __init__(self, qube, chain_state: "ChainState"):
         """
         Initialize transaction manager for a Qube.
 
         Args:
             qube: Qube instance with wallet info in genesis block
-            data_dir: Directory to store pending transactions (defaults to qube's data dir)
+            chain_state: ChainState instance for persistence
         """
         self.qube = qube
         self.qube_id = qube.qube_id
+        self.chain_state = chain_state
 
         # Get wallet info from genesis block (handle both Block and SimpleNamespace)
         if not qube.genesis_block:
@@ -132,7 +145,7 @@ class WalletTransactionManager:
 
         # Handle both Block objects (with .content dict) and SimpleNamespace (from dict)
         genesis = qube.genesis_block
-        if hasattr(genesis, 'content') and isinstance(genesis.content, dict):
+        if hasattr(genesis, 'content') and isinstance(getattr(genesis, 'content', None), dict):
             wallet_info = genesis.content.get("wallet")
         elif hasattr(genesis, 'wallet'):
             wallet_info = genesis.wallet
@@ -147,25 +160,22 @@ class WalletTransactionManager:
 
         self.owner_pubkey = wallet_info.get("owner_pubkey")
         self.p2sh_address = wallet_info.get("p2sh_address")
+        self.qube_pubkey = wallet_info.get("qube_pubkey")
 
         if not self.owner_pubkey or not self.p2sh_address:
             raise ValueError(f"Qube {qube.qube_id} has incomplete wallet info")
 
         # Create wallet instance (use raw 32-byte private key, not PEM format)
         private_key_bytes = get_raw_private_key_bytes(qube.private_key)
+
         self.wallet = QubeWallet(
             qube_private_key=private_key_bytes,
             owner_pubkey_hex=self.owner_pubkey,
-            network="mainnet"
+            network="mainnet",
+            qube_pubkey_hex=self.qube_pubkey
         )
 
-        # Storage directory
-        self.data_dir = data_dir or Path(qube.data_dir)
-        self.pending_tx_file = self.data_dir / "pending_transactions.json"
-        self.tx_history_file = self.data_dir / "transaction_history.json"
-        self.balance_cache_file = self.data_dir / "balance_cache.json"
-
-        # In-memory cache
+        # In-memory cache (loaded from chain_state)
         self._pending_txs: Dict[str, PendingTx] = {}
         self._load_pending_transactions()
 
@@ -198,45 +208,46 @@ class WalletTransactionManager:
 
     def _load_balance_cache(self) -> None:
         """
-        Load persisted balance cache from disk into the wallet's in-memory cache.
+        Load persisted balance cache from chain_state into the wallet's in-memory cache.
 
         This ensures balance is available immediately even if the API is slow/down.
         """
         try:
-            if self.balance_cache_file.exists():
-                with open(self.balance_cache_file, 'r') as f:
-                    cache_data = json.load(f)
+            financial = self.chain_state.state.get("financial", {})
+            cache_data = financial.get("wallet", {})
 
-                cached_balance = cache_data.get("balance")
-                cached_timestamp = cache_data.get("timestamp", 0)
+            cached_balance = cache_data.get("balance_satoshis")
+            cached_timestamp = cache_data.get("last_sync", 0)
 
-                if cached_balance is not None:
-                    # Load into wallet's in-memory cache
-                    self.wallet._cached_balance = cached_balance
-                    self.wallet._balance_last_updated = cached_timestamp
-                    logger.debug(
-                        "balance_cache_loaded",
-                        balance=cached_balance,
-                        cache_age=int(time.time() - cached_timestamp)
-                    )
+            if cached_balance is not None:
+                # Load into wallet's in-memory cache
+                self.wallet._cached_balance = cached_balance
+                self.wallet._balance_last_updated = cached_timestamp
+                logger.debug(
+                    "balance_cache_loaded",
+                    balance=cached_balance,
+                    cache_age=int(time.time() - cached_timestamp) if cached_timestamp else 0
+                )
         except Exception as e:
             logger.debug(f"Could not load balance cache: {e}")
 
     def _save_balance_cache(self, balance: int) -> None:
         """
-        Persist balance to disk for fast startup.
+        Persist balance to chain_state for fast startup.
 
         Args:
             balance: Balance in satoshis
         """
         try:
-            cache_data = {
-                "balance": balance,
-                "timestamp": time.time(),
-                "address": self.p2sh_address
-            }
-            with open(self.balance_cache_file, 'w') as f:
-                json.dump(cache_data, f)
+            financial = self.chain_state.state.setdefault("financial", {})
+            wallet_data = financial.setdefault("wallet", {})
+
+            wallet_data["balance_satoshis"] = balance
+            wallet_data["balance_bch"] = balance / 100_000_000
+            wallet_data["last_sync"] = time.time()
+            wallet_data["address"] = self.p2sh_address
+
+            self.chain_state._save()
             logger.debug("balance_cache_saved", balance=balance)
         except Exception as e:
             logger.debug(f"Could not save balance cache: {e}")
@@ -264,6 +275,136 @@ class WalletTransactionManager:
             if self.wallet._cached_balance is not None:
                 return self.wallet._cached_balance
             return 0
+
+    async def sync_balances_to_chain_state(self, owner_pubkey: str = None) -> None:
+        """
+        Sync all wallet balances from blockchain to chain_state.
+
+        Called on qube load to ensure chain_state has current data.
+        UI reads from chain_state for instant response.
+
+        Args:
+            owner_pubkey: Owner's public key for NFT balance lookup
+        """
+        import aiohttp
+
+        try:
+            # Fetch P2SH balance and UTXO count
+            p2sh_balance = 0
+            utxo_count = 0
+            try:
+                addr = self.p2sh_address.split(":")[-1] if ":" in self.p2sh_address else self.p2sh_address
+                timeout = aiohttp.ClientTimeout(total=10)
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    url = f"https://rest.bch.actorforth.org/v2/address/details/{addr}"
+                    async with session.get(url) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            balance = data.get("balanceSat") or data.get("balance")
+                            if balance is not None:
+                                p2sh_balance = int(balance)
+                            # Get UTXO count from unconfirmedTxApperances or txApperances
+                            utxo_count = data.get("unspentTxCount", 0) or data.get("txApperances", 0)
+            except Exception as e:
+                logger.debug(f"P2SH balance sync failed: {e}")
+
+            # If we didn't get utxo_count from API, try to fetch UTXOs directly
+            if utxo_count == 0 and p2sh_balance > 0:
+                try:
+                    utxos = await self.wallet.get_utxos()
+                    utxo_count = len(utxos)
+                except Exception as e:
+                    logger.debug(f"UTXO count fetch failed: {e}")
+
+            # Fetch NFT/BCH balance (q address)
+            nft_balance = 0
+            if owner_pubkey:
+                try:
+                    from crypto.bch_script import pubkey_to_p2pkh_address
+                    q_address = pubkey_to_p2pkh_address(owner_pubkey, "mainnet", token_aware=False)
+
+                    timeout = aiohttp.ClientTimeout(total=10)
+                    async with aiohttp.ClientSession(timeout=timeout) as session:
+                        url = f"https://api.blockchair.com/bitcoin-cash/dashboards/address/{q_address}"
+                        async with session.get(url) as resp:
+                            if resp.status == 200:
+                                data = await resp.json()
+                                if "data" in data and q_address in data["data"]:
+                                    nft_balance = data["data"][q_address]["address"]["balance"]
+                except Exception as e:
+                    logger.debug(f"NFT balance sync failed: {e}")
+
+            # Fetch recent transactions and sync to chain_state history
+            recent_transactions = []
+            new_tx_count = 0
+            try:
+                tx_history_result = await self.wallet.get_transaction_history(limit=20)
+                # get_transaction_history returns dict with "transactions" key
+                tx_history = tx_history_result.get("transactions", [])
+
+                # Get existing txids from chain_state to avoid duplicates
+                existing_txids = set()
+                existing_history = self.chain_state.get_transaction_history(limit=0)  # Get all
+                for tx in existing_history:
+                    if tx.get("txid"):
+                        existing_txids.add(tx.get("txid"))
+
+                for tx in tx_history:
+                    txid = tx.get("txid", "")
+                    amount = tx.get("amount", 0)
+                    tx_type = "received" if amount > 0 else "sent"
+
+                    recent_transactions.append({
+                        "txid": txid,
+                        "amount": amount,
+                        "type": tx_type,
+                        "timestamp": tx.get("timestamp"),
+                        "confirmations": tx.get("confirmations", 0)
+                    })
+
+                    # Add NEW incoming transactions to chain_state history
+                    # (Outgoing transactions are already added by owner_approve/withdraw/auto_send)
+                    if txid and txid not in existing_txids and amount > 0:
+                        self.chain_state.add_transaction({
+                            "txid": txid,
+                            "direction": "received",
+                            "from_address": tx.get("counterparty"),
+                            "amount_satoshis": amount,
+                            "amount_bch": amount / 100_000_000,
+                            "timestamp": tx.get("timestamp", time.time()),
+                            "status": "confirmed" if tx.get("confirmations", 0) > 0 else "unconfirmed",
+                            "confirmations": tx.get("confirmations", 0),
+                            "block_height": tx.get("block_height")
+                        })
+                        new_tx_count += 1
+                        logger.debug(f"Added incoming transaction to chain_state: {txid[:16]}...")
+
+            except Exception as e:
+                logger.debug(f"Transaction history sync failed: {e}")
+
+            # Update chain_state
+            financial = self.chain_state.state.setdefault("financial", {})
+
+            # P2SH wallet balance
+            wallet_data = financial.setdefault("wallet", {})
+            wallet_data["balance_satoshis"] = p2sh_balance
+            wallet_data["balance_bch"] = p2sh_balance / 100_000_000
+            wallet_data["last_sync"] = time.time()
+            wallet_data["address"] = self.p2sh_address
+            wallet_data["recent_transactions"] = recent_transactions
+            wallet_data["utxo_count"] = utxo_count
+
+            # NFT/BCH balance
+            nft_data = financial.setdefault("nft_balance", {})
+            nft_data["balance_satoshis"] = nft_balance
+            nft_data["balance_bch"] = nft_balance / 100_000_000
+            nft_data["last_sync"] = time.time()
+
+            self.chain_state._save()
+            logger.info("wallet_balances_synced_to_chain_state", p2sh=p2sh_balance, nft=nft_balance, txs=len(recent_transactions), new_txs=new_tx_count)
+
+        except Exception as e:
+            logger.warning(f"Failed to sync wallet balances: {e}")
 
     # =========================================================================
     # QUBE PROPOSES TRANSACTION
@@ -435,6 +576,20 @@ class WalletTransactionManager:
             memo=pending.memo
         ))
 
+        # Update chain_state balance (optimistic update - subtract sent amount + fee)
+        try:
+            total_spent = pending.total_amount + pending.fee
+            financial = self.chain_state.state.setdefault("financial", {})
+            wallet_data = financial.setdefault("wallet", {})
+            current_balance = wallet_data.get("balance_satoshis", 0)
+            new_balance = max(0, current_balance - total_spent)
+            wallet_data["balance_satoshis"] = new_balance
+            wallet_data["balance_bch"] = new_balance / 100_000_000
+            wallet_data["last_sync"] = time.time()
+            self.chain_state._save()
+        except Exception as e:
+            logger.debug(f"Could not update chain_state after tx: {e}")
+
         logger.info(
             "transaction_approved_and_broadcast",
             qube_id=self.qube_id,
@@ -504,6 +659,19 @@ class WalletTransactionManager:
             memo="Owner direct withdrawal"
         ))
 
+        # Update chain_state balance (optimistic update - subtract sent amount)
+        try:
+            financial = self.chain_state.state.setdefault("financial", {})
+            wallet_data = financial.setdefault("wallet", {})
+            current_balance = wallet_data.get("balance_satoshis", 0)
+            new_balance = max(0, current_balance - amount_sats - 200)  # Include approx fee
+            wallet_data["balance_satoshis"] = new_balance
+            wallet_data["balance_bch"] = new_balance / 100_000_000
+            wallet_data["last_sync"] = time.time()
+            self.chain_state._save()
+        except Exception as e:
+            logger.debug(f"Could not update chain_state after withdrawal: {e}")
+
         logger.info(
             "owner_withdrawal",
             qube_id=self.qube_id,
@@ -548,6 +716,17 @@ class WalletTransactionManager:
             block_height=None,
             memo="Owner full withdrawal"
         ))
+
+        # Update chain_state balance (full withdrawal = 0 balance)
+        try:
+            financial = self.chain_state.state.setdefault("financial", {})
+            wallet_data = financial.setdefault("wallet", {})
+            wallet_data["balance_satoshis"] = 0
+            wallet_data["balance_bch"] = 0.0
+            wallet_data["last_sync"] = time.time()
+            self.chain_state._save()
+        except Exception as e:
+            logger.debug(f"Could not update chain_state after full withdrawal: {e}")
 
         logger.info(
             "owner_full_withdrawal",
@@ -634,6 +813,20 @@ class WalletTransactionManager:
             memo=memo or "Auto-approved (whitelisted)"
         ))
 
+        # Update chain_state balance (optimistic update - subtract sent amount + fee)
+        try:
+            total_sent = amount_sats + proposed.unsigned_tx.fee
+            financial = self.chain_state.state.setdefault("financial", {})
+            wallet_data = financial.setdefault("wallet", {})
+            current_balance = wallet_data.get("balance_satoshis", 0)
+            new_balance = max(0, current_balance - total_sent)
+            wallet_data["balance_satoshis"] = new_balance
+            wallet_data["balance_bch"] = new_balance / 100_000_000
+            wallet_data["last_sync"] = time.time()
+            self.chain_state._save()
+        except Exception as e:
+            logger.debug(f"Could not update chain_state after auto_send: {e}")
+
         logger.info(
             "auto_send_completed",
             qube_id=self.qube_id,
@@ -677,47 +870,56 @@ class WalletTransactionManager:
             self._save_pending_transactions()
 
     def _load_pending_transactions(self) -> None:
-        """Load pending transactions from disk"""
-        if self.pending_tx_file.exists():
+        """Load pending transactions from chain_state."""
+        financial = self.chain_state.state.get("financial", {})
+        pending_list = financial.get("pending", [])
+
+        self._pending_txs = {}
+        for tx_data in pending_list:
             try:
-                with open(self.pending_tx_file) as f:
-                    data = json.load(f)
-                self._pending_txs = {
-                    tx_id: PendingTx.from_dict(tx_data)
-                    for tx_id, tx_data in data.items()
-                }
+                tx = PendingTx.from_dict(tx_data)
+                self._pending_txs[tx.tx_id] = tx
             except Exception as e:
-                logger.warning("failed_to_load_pending_txs", error=str(e))
-                self._pending_txs = {}
+                logger.warning(f"Failed to load pending tx: {e}")
+
+        logger.debug(f"Loaded {len(self._pending_txs)} pending transactions from chain_state")
 
     def _save_pending_transactions(self) -> None:
-        """Save pending transactions to disk"""
+        """Save pending transactions to chain_state."""
         try:
-            data = {tx_id: tx.to_dict() for tx_id, tx in self._pending_txs.items()}
-            with open(self.pending_tx_file, 'w') as f:
-                json.dump(data, f, indent=2)
+            pending_list = [tx.to_dict() for tx in self._pending_txs.values()]
+
+            financial = self.chain_state.state.setdefault("financial", {})
+            financial["pending"] = pending_list
+            self.chain_state._save()
+
+            logger.debug(f"Saved {len(pending_list)} pending transactions to chain_state")
         except Exception as e:
-            logger.error("failed_to_save_pending_txs", error=str(e))
+            logger.error(f"Failed to save pending transactions: {e}")
 
     # =========================================================================
     # TRANSACTION HISTORY
     # =========================================================================
 
     def get_transaction_history(self, limit: int = 50) -> List[TxHistoryEntry]:
-        """Get transaction history"""
-        if not self.tx_history_file.exists():
-            return []
+        """Get transaction history from chain_state."""
+        financial = self.chain_state.state.get("financial", {})
+        transactions = financial.get("transactions", {})
+        history_data = transactions.get("history", [])
 
-        try:
-            with open(self.tx_history_file) as f:
-                data = json.load(f)
-            entries = [TxHistoryEntry(**entry) for entry in data]
-            # Sort by timestamp descending
-            entries.sort(key=lambda x: x.timestamp, reverse=True)
-            return entries[:limit]
-        except Exception as e:
-            logger.warning("failed_to_load_tx_history", error=str(e))
-            return []
+        history = []
+        for entry_data in history_data:
+            try:
+                if isinstance(entry_data, dict):
+                    history.append(TxHistoryEntry(**entry_data))
+                else:
+                    history.append(entry_data)
+            except Exception as e:
+                logger.warning(f"Failed to parse history entry: {e}")
+
+        # Sort by timestamp descending
+        history.sort(key=lambda x: x.timestamp, reverse=True)
+        return history[:limit]
 
     async def get_full_transaction_history(
         self,
@@ -832,15 +1034,108 @@ class WalletTransactionManager:
         }
 
     def _add_to_history(self, entry: TxHistoryEntry) -> None:
-        """Add entry to transaction history"""
-        history = self.get_transaction_history(limit=1000)
-        history.insert(0, entry)
-
+        """Add entry to transaction history (capped at MAX_TRANSACTION_HISTORY)."""
         try:
-            with open(self.tx_history_file, 'w') as f:
-                json.dump([e.to_dict() for e in history], f, indent=2)
+            financial = self.chain_state.state.setdefault("financial", {})
+            transactions = financial.setdefault("transactions", {"history": [], "total_count": 0, "archived_count": 0})
+            history = transactions.get("history", [])
+
+            # Append new entry
+            history.append(entry.to_dict())
+            transactions["total_count"] = transactions.get("total_count", 0) + 1
+
+            # Cap at MAX_TRANSACTION_HISTORY
+            if len(history) > self.MAX_TRANSACTION_HISTORY:
+                overflow = len(history) - self.MAX_TRANSACTION_HISTORY
+                transactions["archived_count"] = transactions.get("archived_count", 0) + overflow
+                history = history[-self.MAX_TRANSACTION_HISTORY:]
+
+            transactions["history"] = history
+            self.chain_state._save()
+
+            logger.debug(f"Added transaction to history, total: {len(history)}")
         except Exception as e:
-            logger.error("failed_to_save_tx_history", error=str(e))
+            logger.error(f"Failed to add transaction to history: {e}")
+
+    # =========================================================================
+    # MIGRATION HELPER
+    # =========================================================================
+
+    @classmethod
+    def migrate_from_files(cls, qube, chain_state: "ChainState", data_dir: Path) -> "WalletTransactionManager":
+        """
+        Migrate wallet data from old file-based storage to chain_state.
+
+        Args:
+            qube: Qube instance
+            chain_state: ChainState instance to migrate into
+            data_dir: Path to qube's data directory
+
+        Returns:
+            New WalletTransactionManager instance with migrated data
+        """
+        pending_file = data_dir / "pending_transactions.json"
+        history_file = data_dir / "transaction_history.json"
+        balance_file = data_dir / "balance_cache.json"
+
+        financial = chain_state.state.setdefault("financial", {})
+
+        # Migrate pending transactions
+        if pending_file.exists():
+            try:
+                with open(pending_file, 'r') as f:
+                    pending_data = json.load(f)
+                financial["pending"] = list(pending_data.values())
+                logger.info(f"Migrated {len(pending_data)} pending transactions")
+            except Exception as e:
+                logger.error(f"Failed to migrate pending transactions: {e}")
+
+        # Migrate transaction history
+        if history_file.exists():
+            try:
+                with open(history_file, 'r') as f:
+                    history_data = json.load(f)
+                # Cap during migration
+                if len(history_data) > 50:
+                    history_data = history_data[-50:]
+                financial["transactions"] = {
+                    "history": history_data,
+                    "total_count": len(history_data),
+                    "archived_count": 0
+                }
+                logger.info(f"Migrated {len(history_data)} transaction history entries")
+            except Exception as e:
+                logger.error(f"Failed to migrate transaction history: {e}")
+
+        # Migrate balance cache
+        if balance_file.exists():
+            try:
+                with open(balance_file, 'r') as f:
+                    balance_data = json.load(f)
+                # Convert to new format
+                financial["wallet"] = {
+                    "balance_satoshis": balance_data.get("balance", 0),
+                    "balance_bch": balance_data.get("balance", 0) / 100_000_000,
+                    "last_sync": balance_data.get("timestamp"),
+                    "address": balance_data.get("address"),
+                }
+                logger.info("Migrated balance cache")
+            except Exception as e:
+                logger.error(f"Failed to migrate balance cache: {e}")
+
+        # Save to chain_state
+        chain_state._save()
+
+        # Delete old files
+        try:
+            for old_file in [pending_file, history_file, balance_file]:
+                if old_file.exists():
+                    old_file.unlink()
+                    logger.info(f"Deleted old file: {old_file}")
+        except Exception as e:
+            logger.warning(f"Failed to cleanup old wallet files: {e}")
+
+        return cls(qube, chain_state)
 
     # =========================================================================
     # HELPERS
@@ -877,7 +1172,10 @@ class WalletTransactionManager:
 
 def get_wallet_manager(qube) -> WalletTransactionManager:
     """
-    Factory function to create wallet manager for a Qube.
+    Get the wallet manager for a Qube.
+
+    Since Qube now initializes wallet_manager in __init__, this simply
+    returns the existing instance.
 
     Args:
         qube: Qube instance
@@ -885,4 +1183,4 @@ def get_wallet_manager(qube) -> WalletTransactionManager:
     Returns:
         WalletTransactionManager instance
     """
-    return WalletTransactionManager(qube)
+    return qube.wallet_manager

@@ -184,7 +184,8 @@ class ChainSyncService:
         owner_public_key_hex: str,
         genesis_block: Any,
         user_id: str,
-        category_id: str
+        category_id: str,
+        encryption_key: Optional[bytes] = None
     ) -> SyncResult:
         """
         Sync Qube to chain (backup to IPFS)
@@ -228,7 +229,8 @@ class ChainSyncService:
                 genesis_block=genesis_block,
                 user_id=user_id,
                 has_nft=True,
-                nft_category_id=category_id
+                nft_category_id=category_id,
+                encryption_key=encryption_key
             )
 
             # Step 2: Encrypt symmetric key with ECIES to owner
@@ -268,16 +270,29 @@ class ChainSyncService:
             # Extract CID from ipfs:// URI
             ipfs_cid = ipfs_uri.replace("ipfs://", "")
 
-            # Step 4: Calculate merkle root and chain length
-            chain_state_path = Path(qube_dir) / "chain" / "chain_state.json"
+            # Step 4: Get merkle root and chain length from chain_state
             chain_length = 0
             merkle_root = ""
 
-            if chain_state_path.exists():
-                with open(chain_state_path, 'r') as f:
-                    chain_state = json.load(f)
+            if encryption_key:
+                # Use ChainState class for encrypted chain_state
+                from core.chain_state import ChainState
+                try:
+                    chain_dir = Path(qube_dir) / "chain"
+                    cs = ChainState(chain_dir, encryption_key, qube_id)
+                    chain_state = cs.get_all_settings()
                     chain_length = chain_state.get("chain_length", 0)
                     merkle_root = chain_state.get("merkle_root", "")
+                except Exception as e:
+                    logger.warning(f"Failed to read encrypted chain_state for merkle_root: {e}")
+            else:
+                # Legacy: read plain JSON
+                chain_state_path = Path(qube_dir) / "chain" / "chain_state.json"
+                if chain_state_path.exists():
+                    with open(chain_state_path, 'r') as f:
+                        chain_state = json.load(f)
+                        chain_length = chain_state.get("chain_length", 0)
+                        merkle_root = chain_state.get("merkle_root", "")
 
             # Step 5: Update BCMR metadata
             print("  📝 Updating BCMR metadata...", file=sys.stderr)
@@ -337,7 +352,8 @@ class ChainSyncService:
         genesis_block: Any,
         user_id: str,
         category_id: str,
-        wallet_wif: str
+        wallet_wif: str,
+        encryption_key: Optional[bytes] = None
     ) -> TransferResult:
         """
         Transfer Qube to new owner
@@ -387,7 +403,8 @@ class ChainSyncService:
                 owner_public_key_hex=owner_public_key_hex,
                 genesis_block=genesis_block,
                 user_id=user_id,
-                category_id=category_id
+                category_id=category_id,
+                encryption_key=encryption_key
             )
 
             if not sync_result.success:
@@ -953,7 +970,8 @@ async def sync_qube_to_chain(
     owner_public_key_hex: str,
     genesis_block: Any,
     user_id: str,
-    category_id: str
+    category_id: str,
+    encryption_key: Optional[bytes] = None
 ) -> SyncResult:
     """
     Quick utility to sync a Qube to chain
@@ -966,6 +984,7 @@ async def sync_qube_to_chain(
         genesis_block: Genesis block
         user_id: User ID
         category_id: NFT category ID
+        encryption_key: Optional encryption key for reading encrypted chain_state
 
     Returns:
         SyncResult
@@ -978,5 +997,6 @@ async def sync_qube_to_chain(
         owner_public_key_hex=owner_public_key_hex,
         genesis_block=genesis_block,
         user_id=user_id,
-        category_id=category_id
+        category_id=category_id,
+        encryption_key=encryption_key
     )

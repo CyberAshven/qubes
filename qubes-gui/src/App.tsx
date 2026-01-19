@@ -13,6 +13,7 @@ import { SetupWizard } from './components/wizard';
 import { useAuth } from './hooks/useAuth';
 import { useAutoLock } from './hooks/useAutoLock';
 import { AudioProvider } from './contexts/AudioContext';
+import { ChainStateProvider } from './contexts/ChainStateContext';
 import { Qube } from './types';
 
 // Check if we're in dev mode
@@ -340,6 +341,7 @@ function App() {
 
   return (
     <AudioProvider>
+      <ChainStateProvider>
       {/* Lock Screen Overlay */}
       <LockScreen />
 
@@ -393,6 +395,7 @@ function App() {
           />
         )}
       </div>
+      </ChainStateProvider>
     </AudioProvider>
   );
 }

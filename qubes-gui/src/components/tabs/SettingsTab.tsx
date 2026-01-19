@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { GlassCard, GlassButton, GlassInput } from '../glass';
 import { useAuth } from '../../hooks/useAuth';
+import { useChainState } from '../../contexts/ChainStateContext';
 import { useUpdater } from '../../hooks/useUpdater';
 
 interface APIKeyStatus {
@@ -70,6 +71,7 @@ interface MemoryConfig {
 
 export const SettingsTab: React.FC = () => {
   const { userId, password, autoLockEnabled, autoLockTimeout, setAutoLockSettings } = useAuth();
+  const { invalidateCache, loadChainState } = useChainState();
 
   const {
     updateAvailable,
@@ -400,12 +402,13 @@ export const SettingsTab: React.FC = () => {
   };
 
   const loadTrustPersonality = async (qubeId: string) => {
-    if (!qubeId) return;
+    if (!qubeId || !password) return;
     try {
       setLoadingTrustPersonality(true);
       const result = await invoke<{ trust_profile: string }>('get_trust_personality', {
         userId,
-        qubeId
+        qubeId,
+        password
       });
       setTrustPersonality(result.trust_profile as any || 'balanced');
     } catch (error) {
@@ -427,6 +430,10 @@ export const SettingsTab: React.FC = () => {
         qubeId: selectedQubeForTrust,
         trustProfile: personality
       });
+
+      // Invalidate and refresh chain state cache
+      invalidateCache(selectedQubeForTrust);
+      await loadChainState(selectedQubeForTrust, true);
 
       alert(`✅ Trust personality updated to "${personality}"`);
     } catch (error) {
@@ -646,6 +653,15 @@ export const SettingsTab: React.FC = () => {
 
       // Update with server response
       setBlockPreferences(result);
+
+      // Invalidate cache for all qubes since this is a user-level preference
+      for (const qube of availableQubes) {
+        invalidateCache(qube.qube_id);
+      }
+      // Force refresh for all qubes
+      for (const qube of availableQubes) {
+        loadChainState(qube.qube_id, true);
+      }
     } catch (error) {
       console.error('Failed to update preference:', error);
       alert(`❌ Error updating preference: ${String(error)}`);
@@ -680,6 +696,15 @@ export const SettingsTab: React.FC = () => {
       setBlockPreferences(result);
       setIndividualThresholdInput(result.individual_anchor_threshold.toString());
       setGroupThresholdInput(result.group_anchor_threshold.toString());
+
+      // Invalidate cache for all qubes since this is a user-level preference
+      for (const qube of availableQubes) {
+        invalidateCache(qube.qube_id);
+      }
+      // Force refresh for all qubes
+      for (const qube of availableQubes) {
+        loadChainState(qube.qube_id, true);
+      }
     } catch (error) {
       console.error('Failed to update preference:', error);
       alert(`❌ Error updating preference: ${String(error)}`);
@@ -978,7 +1003,7 @@ export const SettingsTab: React.FC = () => {
                 className="w-full flex items-center justify-between text-left"
               >
                 <h2 className="text-lg font-display text-text-primary">
-                  ⚙️ Block Settings
+                  ⚓ Auto-Anchor
                 </h2>
                 <span className={`text-text-tertiary transition-transform ${collapsedPanels.blockSettings ? '' : 'rotate-180'}`}>
                   ▼
@@ -1073,7 +1098,7 @@ export const SettingsTab: React.FC = () => {
                 className="w-full flex items-center justify-between text-left"
               >
                 <h2 className="text-lg font-display text-text-primary">
-                  🧠 Block Recall
+                  🔮 Block Recall
                 </h2>
                 <span className={`text-text-tertiary transition-transform ${collapsedPanels.blockRecall ? '' : 'rotate-180'}`}>
                   ▼

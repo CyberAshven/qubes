@@ -1194,86 +1194,73 @@ class Relationship:
 
 class RelationshipStorage:
     """
-    Manages persistent storage of relationships for a Qube
+    Manages persistent storage of relationships for a Qube.
+
+    UPDATED FOR CHAIN STATE CONSOLIDATION:
+    - Data is now stored in chain_state.json under "relationships" section
+    - Automatically encrypted at rest with chain_state
+    - Uses ChainState accessor methods for persistence
     """
 
-    def __init__(self, qube_data_dir: Path):
+    def __init__(self, chain_state: "ChainState"):
         """
-        Initialize relationship storage
+        Initialize relationship storage.
 
         Args:
-            qube_data_dir: Path to Qube's data directory (e.g., data/qubes/Alice_A1B2C3D4/)
+            chain_state: ChainState instance for this qube
         """
-        self.qube_data_dir = Path(qube_data_dir)
-        self.relationships_dir = self.qube_data_dir / "relationships"
-        self.relationships_file = self.relationships_dir / "relationships.json"
+        self.chain_state = chain_state
 
-        # Ensure directory exists
-        self.relationships_dir.mkdir(parents=True, exist_ok=True)
-
-        # Load existing relationships
+        # Load existing relationships from chain_state
         self.relationships: Dict[str, Relationship] = {}
         self._load_relationships()
 
         logger.info(
             "relationship_storage_initialized",
-            qube_dir=str(self.qube_data_dir),
+            qube_id=chain_state.qube_id,
             relationship_count=len(self.relationships)
         )
 
     def _load_relationships(self) -> None:
-        """Load relationships from JSON file and apply decay"""
-        if self.relationships_file.exists():
-            try:
-                with open(self.relationships_file, 'r') as f:
-                    data = json.load(f)
+        """Load relationships from chain_state and apply decay."""
+        relationships_data = self.chain_state.get_relationships()
 
-                decayed_count = 0
-                for entity_id, rel_data in data.items():
-                    rel = Relationship.from_dict(rel_data)
+        decayed_count = 0
+        for entity_id, rel_data in relationships_data.items():
+            rel = Relationship.from_dict(rel_data)
 
-                    # Apply decay for inactive relationships
-                    if rel.apply_decay():
-                        decayed_count += 1
+            # Apply decay for inactive relationships
+            if rel.apply_decay():
+                decayed_count += 1
 
-                    # Update days_known to current
-                    rel.update_days_known()
+            # Update days_known to current
+            rel.update_days_known()
 
-                    self.relationships[entity_id] = rel
+            self.relationships[entity_id] = rel
 
-                logger.debug(
-                    "relationships_loaded",
-                    count=len(self.relationships),
-                    decayed_count=decayed_count
-                )
+        logger.debug(
+            "relationships_loaded",
+            count=len(self.relationships),
+            decayed_count=decayed_count
+        )
 
-                # Save if any relationships decayed
-                if decayed_count > 0:
-                    self.save()
-                    logger.info(
-                        "relationship_decay_saved",
-                        decayed_count=decayed_count
-                    )
-
-            except Exception as e:
-                logger.error(
-                    "relationship_load_failed",
-                    error=str(e),
-                    exc_info=True
-                )
-        else:
-            logger.debug("no_existing_relationships_file")
+        # Save if any relationships decayed
+        if decayed_count > 0:
+            self.save()
+            logger.info(
+                "relationship_decay_saved",
+                decayed_count=decayed_count
+            )
 
     def save(self) -> None:
-        """Save all relationships to JSON file"""
+        """Save all relationships to chain_state."""
         try:
             data = {
                 entity_id: rel.to_dict()
                 for entity_id, rel in self.relationships.items()
             }
 
-            with open(self.relationships_file, 'w') as f:
-                json.dump(data, f, indent=2)
+            self.chain_state.update_relationships(data)
 
             logger.debug(
                 "relationships_saved",
@@ -1288,7 +1275,7 @@ class RelationshipStorage:
             raise
 
     def get_relationship(self, entity_id: str) -> Optional[Relationship]:
-        """Get relationship by entity ID"""
+        """Get relationship by entity ID."""
         return self.relationships.get(entity_id)
 
     def create_relationship(
@@ -1298,7 +1285,7 @@ class RelationshipStorage:
         **kwargs
     ) -> Relationship:
         """
-        Create a new relationship
+        Create a new relationship.
 
         Args:
             entity_id: Entity ID
@@ -1317,28 +1304,42 @@ class RelationshipStorage:
 
         rel = Relationship(entity_id, entity_type, **kwargs)
         self.relationships[entity_id] = rel
+
+        # DEBUG: Log relationship creation
+        logger.info(
+            f"[DEBUG] create_relationship: entity_id={entity_id}, "
+            f"total_relationships={len(self.relationships)}, "
+            f"relationship_ids={list(self.relationships.keys())}"
+        )
+
         self.save()
+
+        # DEBUG: Verify chain_state after save
+        chain_state_rels = self.chain_state.state.get("relationships", {}).get("entities", {})
+        logger.info(
+            f"[DEBUG] create_relationship AFTER save: chain_state has {len(chain_state_rels)} entities: {list(chain_state_rels.keys())}"
+        )
 
         return rel
 
     def update_relationship(self, relationship: Relationship) -> None:
-        """Update existing relationship and save"""
+        """Update existing relationship and save."""
         self.relationships[relationship.entity_id] = relationship
         self.save()
 
     def get_all_relationships(self) -> List[Relationship]:
-        """Get all relationships"""
+        """Get all relationships."""
         return list(self.relationships.values())
 
     def get_relationships_by_status(self, status: str) -> List[Relationship]:
-        """Get all relationships with specific status"""
+        """Get all relationships with specific status."""
         return [
             rel for rel in self.relationships.values()
             if rel.status == status
         ]
 
     def get_best_friend(self) -> Optional[Relationship]:
-        """Get best friend relationship (only one allowed)"""
+        """Get best friend relationship (only one allowed)."""
         for rel in self.relationships.values():
             if rel.is_best_friend:
                 return rel
@@ -1346,7 +1347,7 @@ class RelationshipStorage:
 
     def delete_relationship(self, entity_id: str) -> bool:
         """
-        Delete a relationship
+        Delete a relationship.
 
         Args:
             entity_id: Entity ID to delete
@@ -1360,3 +1361,53 @@ class RelationshipStorage:
             logger.info("relationship_deleted", entity_id=entity_id)
             return True
         return False
+
+    # =========================================================================
+    # MIGRATION HELPER (for transitioning from old file-based storage)
+    # =========================================================================
+
+    @classmethod
+    def migrate_from_file(cls, chain_state: "ChainState", qube_data_dir: Path) -> "RelationshipStorage":
+        """
+        Migrate relationships from old file-based storage to chain_state.
+
+        Args:
+            chain_state: ChainState instance to migrate into
+            qube_data_dir: Path to qube's data directory
+
+        Returns:
+            New RelationshipStorage instance with migrated data
+        """
+        old_file = qube_data_dir / "relationships" / "relationships.json"
+
+        if old_file.exists():
+            try:
+                with open(old_file, 'r') as f:
+                    old_data = json.load(f)
+
+                # Write to chain_state
+                chain_state.update_relationships(old_data)
+
+                logger.info(
+                    "relationships_migrated_to_chain_state",
+                    count=len(old_data),
+                    source=str(old_file)
+                )
+
+                # Delete old file after successful migration
+                old_file.unlink()
+
+                # Try to remove empty relationships directory
+                relationships_dir = qube_data_dir / "relationships"
+                if relationships_dir.exists() and not any(relationships_dir.iterdir()):
+                    relationships_dir.rmdir()
+                    logger.info("removed_empty_relationships_directory")
+
+            except Exception as e:
+                logger.error(
+                    "relationship_migration_failed",
+                    error=str(e),
+                    exc_info=True
+                )
+
+        return cls(chain_state)

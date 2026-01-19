@@ -9,6 +9,7 @@ import { GlassButton } from '../glass/GlassButton';
 import { Qube } from '../../types';
 import { useAuth } from '../../hooks/useAuth';
 import { useAudio } from '../../contexts/AudioContext';
+import { useChainState } from '../../contexts/ChainStateContext';
 import { useChatMessages, Message } from '../../hooks/useChatMessages';
 import { useQubeSelection } from '../../hooks/useQubeSelection';
 import { TypewriterText } from './TypewriterText';
@@ -36,6 +37,7 @@ interface ChatResponse {
 export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQubeModelChange }) => {
   const { userId, password } = useAuth();
   const { playTTS, audioElement } = useAudio();
+  const { invalidateCache, loadChainState, startWatching, stopWatching } = useChainState();
   const { getMessages, addMessage, clearMessages, getUploadedFiles, addUploadedFile, removeUploadedFile, clearUploadedFiles } = useChatMessages();
   const currentTab = useQubeSelection(state => state.currentTab);
   const [inputValue, setInputValue] = useState('');
@@ -96,10 +98,16 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
 
           // Save to backend if we have a user and qube selected
           if (userId && selectedQubes.length > 0) {
+            const qubeId = selectedQubes[0].qube_id;
             invoke('save_visualizer_settings', {
               userId,
-              qubeId: selectedQubes[0].qube_id,
-              settings: JSON.stringify(newSettings)
+              qubeId,
+              settings: JSON.stringify(newSettings),
+              password
+            }).then(() => {
+              // Invalidate and refresh chain state cache
+              invalidateCache(qubeId);
+              loadChainState(qubeId, true);
             }).catch(err => console.error('Failed to save visualizer settings:', err));
           }
 
@@ -366,7 +374,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
       try {
         const settings = await invoke('get_visualizer_settings', {
           userId,
-          qubeId: selectedQubes[0].qube_id
+          qubeId: selectedQubes[0].qube_id,
+          password
         });
         // Merge with defaults to handle missing fields (like output_monitor)
         const loadedSettings = {
@@ -400,7 +409,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
           try {
             const settings = await invoke('get_visualizer_settings', {
               userId,
-              qubeId
+              qubeId,
+              password
             });
 
             const loadedSettings = {
@@ -629,6 +639,19 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
     setIsGeneratingTTS(false);
     setError(null);
   }, [currentQubeId]);
+
+  // Start/stop event watching when qube changes
+  useEffect(() => {
+    if (!currentQubeId) return;
+
+    // Start watching events for this qube
+    startWatching(currentQubeId);
+
+    // Cleanup: stop watching when qube changes or component unmounts
+    return () => {
+      stopWatching(currentQubeId);
+    };
+  }, [currentQubeId, startWatching, stopWatching]);
 
   // Close emoji picker when clicking outside
   useEffect(() => {
@@ -1492,12 +1515,17 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
 
             // Save to backend
             if (userId && selectedQubes.length > 0) {
+              const qubeId = selectedQubes[0].qube_id;
               try {
                 await invoke('save_visualizer_settings', {
                   userId,
-                  qubeId: selectedQubes[0].qube_id,
-                  settings: JSON.stringify(newSettings)
+                  qubeId,
+                  settings: JSON.stringify(newSettings),
+                  password
                 });
+                // Invalidate and refresh chain state cache
+                invalidateCache(qubeId);
+                await loadChainState(qubeId, true);
               } catch (error) {
                 console.error('Failed to save waveform style:', error);
               }
@@ -1509,12 +1537,17 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
 
             // Save to backend
             if (userId && selectedQubes.length > 0) {
+              const qubeId = selectedQubes[0].qube_id;
               try {
                 await invoke('save_visualizer_settings', {
                   userId,
-                  qubeId: selectedQubes[0].qube_id,
-                  settings: JSON.stringify(newSettings)
+                  qubeId,
+                  settings: JSON.stringify(newSettings),
+                  password
                 });
+                // Invalidate and refresh chain state cache
+                invalidateCache(qubeId);
+                await loadChainState(qubeId, true);
               } catch (error) {
                 console.error('Failed to save visualizer toggle:', error);
               }

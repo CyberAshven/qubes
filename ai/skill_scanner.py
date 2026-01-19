@@ -24,7 +24,7 @@ TOOL_TO_SKILL_MAPPING = {
     "generate_image": "visual_design",           # creative_expression → visual_design planet
     "search_memory": "knowledge_domains_sun",    # knowledge_domains → sun (general research)
     "describe_my_avatar": "analysis_critique",   # ai_reasoning → analysis_critique planet
-    "describe_my_skills": "analysis_critique",   # ai_reasoning → analysis_critique planet (self-reflection)
+    # Note: get_chain_state and update_chain_state are general-purpose tools, not skill-specific
 
     # AI Reasoning Tools
     "think_step_by_step": "chain_of_thought",    # ai_reasoning → chain_of_thought planet
@@ -32,7 +32,6 @@ TOOL_TO_SKILL_MAPPING = {
     "explore_alternatives": "multistep_planning",# ai_reasoning → multistep_planning planet
 
     # Social Intelligence Tools
-    "get_relationships": "social_intelligence_sun",  # social_intelligence → sun (relationship queries)
     "draft_message_variants": "communication",   # social_intelligence → communication planet
     "predict_reaction": "empathy",               # social_intelligence → empathy planet
     "build_rapport_strategy": "relationship_building", # social_intelligence → relationship_building planet
@@ -174,17 +173,22 @@ class SkillScanner:
             for block in blocks:
                 # Get block type
                 block_type = block.block_type if isinstance(block.block_type, str) else block.block_type.value
+                logger.info(f"[SKILL_SCANNER] Processing block {block.block_number}, type={block_type}")
 
                 # Process ACTION blocks for tool usage
                 if block_type == "ACTION":
                     # Get content (should already be unencrypted session blocks)
                     content = block.content
+                    logger.info(f"[SKILL_SCANNER] ACTION block content type: {type(content)}, is_dict: {isinstance(content, dict)}")
                     if not content or not isinstance(content, dict):
+                        logger.warning(f"[SKILL_SCANNER] Skipping block {block.block_number}: content is not a dict (type={type(content)})")
                         continue
 
                     # Extract action_type (maps to tool name)
                     action_type = content.get("action_type")
+                    logger.info(f"[SKILL_SCANNER] action_type={action_type}")
                     if not action_type:
+                        logger.warning(f"[SKILL_SCANNER] Skipping block {block.block_number}: no action_type in content")
                         continue
 
                     # Determine skill_id based on tool type and content
@@ -280,12 +284,8 @@ class SkillScanner:
 
                     skill_detections.append(detection_entry)
 
-                    logger.debug(
-                        f"[SKILL_SCANNER] Detected skill usage",
-                        skill_id=skill_id,
-                        tool=action_type,
-                        xp=xp_amount,
-                        block=block.block_number
+                    logger.info(
+                        f"[SKILL_SCANNER] ✅ DETECTED: skill={skill_id}, tool={action_type}, xp={xp_amount}, block={block.block_number}"
                     )
 
                 # Process MESSAGE blocks for social intelligence skills
@@ -390,9 +390,8 @@ class SkillScanner:
             return 0
 
         try:
-            from utils.skills_manager import SkillsManager
-
-            skills_manager = SkillsManager(self.qube.data_dir)
+            # Use the qube's existing skills_manager (which uses ChainState)
+            skills_manager = self.qube.skills_manager
             skills_gained = 0
 
             for detection in skill_detections:

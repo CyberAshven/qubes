@@ -91,7 +91,8 @@ def create_chain_package(
     genesis_block: Dict[str, Any],
     user_id: str,
     has_nft: bool = False,
-    nft_category_id: Optional[str] = None
+    nft_category_id: Optional[str] = None,
+    encryption_key: Optional[bytes] = None
 ) -> Tuple[bytes, bytes]:
     """
     Create an encrypted chain package from Qube data.
@@ -105,6 +106,8 @@ def create_chain_package(
         user_id: ID of user creating the package
         has_nft: Whether Qube has an NFT
         nft_category_id: NFT category ID if minted
+        encryption_key: Optional encryption key for reading encrypted chain_state.
+                       If not provided, chain_state is read as plain JSON (legacy mode).
 
     Returns:
         Tuple of (encrypted_package_bytes, symmetric_key)
@@ -128,7 +131,8 @@ def create_chain_package(
             genesis_block=genesis_block,
             user_id=user_id,
             has_nft=has_nft,
-            nft_category_id=nft_category_id
+            nft_category_id=nft_category_id,
+            encryption_key=encryption_key
         )
 
         # Serialize to JSON
@@ -320,23 +324,46 @@ def _collect_qube_data(
     genesis_block: Dict[str, Any],
     user_id: str,
     has_nft: bool,
-    nft_category_id: Optional[str]
+    nft_category_id: Optional[str],
+    encryption_key: Optional[bytes] = None
 ) -> QubePackageData:
     """
     Collect all Qube data from filesystem.
+
+    Args:
+        encryption_key: If provided, chain_state is read using ChainState class
+                       with decryption. If None, falls back to plain JSON read.
     """
+    from core.chain_state import ChainState
+
     # Load memory blocks
     memory_blocks = _load_memory_blocks(qube_dir)
 
-    # Load chain state
-    chain_state = _load_json_file(qube_dir / "chain" / "chain_state.json") or {}
+    # Load chain state (using ChainState class if encryption_key provided)
+    if encryption_key:
+        try:
+            chain_dir = qube_dir / "chain"
+            cs = ChainState(chain_dir, encryption_key, qube_id)
+            chain_state = cs.get_all_settings()
+        except Exception as e:
+            logger.warning(f"Failed to read encrypted chain_state, falling back to plain JSON: {e}")
+            chain_state = _load_json_file(qube_dir / "chain" / "chain_state.json") or {}
+    else:
+        chain_state = _load_json_file(qube_dir / "chain" / "chain_state.json") or {}
 
-    # Load relationships
-    relationships = _load_json_file(qube_dir / "relationships" / "relationships.json")
+    # Load relationships from chain_state if available, otherwise fall back to file
+    relationships = chain_state.get("relationships") if chain_state else None
+    if relationships is None:
+        relationships = _load_json_file(qube_dir / "relationships" / "relationships.json")
 
-    # Load skills
-    skills = _load_json_file(qube_dir / "skills" / "skills.json")
-    skill_history = _load_json_list(qube_dir / "skills" / "skill_history.json")
+    # Load skills from chain_state if available, otherwise fall back to file
+    skills = chain_state.get("skills") if chain_state else None
+    if skills is None:
+        skills = _load_json_file(qube_dir / "skills" / "skills.json")
+
+    skill_history = chain_state.get("skill_history") if chain_state else None
+    if skill_history is None:
+        skill_history = _load_json_list(qube_dir / "skills" / "skill_history.json")
 
     # Load avatar
     avatar_data, avatar_filename = _load_avatar(qube_dir, qube_id)
@@ -496,7 +523,8 @@ def _calculate_merkle_root(hashes: List[str]) -> str:
 def restore_qube_from_package(
     package_data: QubePackageData,
     target_dir: Path,
-    new_encrypted_private_key: Dict[str, Any]
+    new_encrypted_private_key: Dict[str, Any],
+    encryption_key: Optional[bytes] = None
 ) -> bool:
     """
     Restore a Qube from unpacked package data.
@@ -505,6 +533,9 @@ def restore_qube_from_package(
         package_data: Unpacked Qube data
         target_dir: Directory to restore to
         new_encrypted_private_key: Private key encrypted with new owner's password
+        encryption_key: Optional encryption key for writing encrypted chain_state.
+                       If provided, chain_state is written encrypted. If None,
+                       falls back to plain JSON (legacy mode).
 
     Returns:
         True if successful
@@ -517,15 +548,14 @@ def restore_qube_from_package(
             "restoring_qube_from_package",
             qube_id=qube_id,
             qube_name=qube_name,
-            target_dir=str(target_dir)
+            target_dir=str(target_dir),
+            encrypted=encryption_key is not None
         )
 
-        # Create directory structure
+        # Create directory structure (only essential dirs - skills/relationships now in chain_state)
         (target_dir / "blocks" / "permanent").mkdir(parents=True, exist_ok=True)
         (target_dir / "blocks" / "session").mkdir(parents=True, exist_ok=True)
         (target_dir / "chain").mkdir(parents=True, exist_ok=True)
-        (target_dir / "relationships").mkdir(parents=True, exist_ok=True)
-        (target_dir / "skills").mkdir(parents=True, exist_ok=True)
         (target_dir / "blockchain").mkdir(parents=True, exist_ok=True)
 
         # Save genesis block
@@ -547,11 +577,6 @@ def restore_qube_from_package(
             with open(block_path, 'w', encoding='utf-8') as f:
                 json.dump(block, f, indent=2)
 
-        # Save chain state
-        chain_state_path = target_dir / "chain" / "chain_state.json"
-        with open(chain_state_path, 'w', encoding='utf-8') as f:
-            json.dump(package_data.chain_state, f, indent=2)
-
         # Save qube metadata with new encrypted private key
         qube_metadata = {
             "qube_id": qube_id,
@@ -565,22 +590,34 @@ def restore_qube_from_package(
         with open(metadata_path, 'w', encoding='utf-8') as f:
             json.dump(qube_metadata, f, indent=2)
 
-        # Save relationships
-        if package_data.relationships:
-            rel_path = target_dir / "relationships" / "relationships.json"
-            with open(rel_path, 'w', encoding='utf-8') as f:
-                json.dump(package_data.relationships, f, indent=2)
+        # Save chain state with encryption if key provided
+        # Merge relationships and skills into chain_state for consolidated storage
+        merged_chain_state = dict(package_data.chain_state) if package_data.chain_state else {}
 
-        # Save skills
+        # Add relationships to chain_state if present
+        if package_data.relationships:
+            merged_chain_state["relationships"] = package_data.relationships
+
+        # Add skills to chain_state if present
         if package_data.skills:
-            skills_path = target_dir / "skills" / "skills.json"
-            with open(skills_path, 'w', encoding='utf-8') as f:
-                json.dump(package_data.skills, f, indent=2)
+            merged_chain_state["skills"] = package_data.skills
 
         if package_data.skill_history:
-            history_path = target_dir / "skills" / "skill_history.json"
-            with open(history_path, 'w', encoding='utf-8') as f:
-                json.dump(package_data.skill_history, f, indent=2)
+            merged_chain_state["skill_history"] = package_data.skill_history
+
+        if encryption_key:
+            # Use ChainState class to write encrypted chain_state
+            from core.chain_state import ChainState
+            chain_dir = target_dir / "chain"
+            chain_state = ChainState(chain_dir, encryption_key, qube_id)
+            chain_state.update_settings(merged_chain_state)
+            logger.debug("wrote_encrypted_chain_state")
+        else:
+            # Legacy: write plain JSON
+            chain_state_path = target_dir / "chain" / "chain_state.json"
+            with open(chain_state_path, 'w', encoding='utf-8') as f:
+                json.dump(merged_chain_state, f, indent=2)
+            logger.debug("wrote_plain_chain_state")
 
         # Save avatar
         if package_data.avatar_data and package_data.avatar_filename:
@@ -604,7 +641,8 @@ def restore_qube_from_package(
         logger.info(
             "qube_restored_from_package",
             qube_id=qube_id,
-            block_count=len(package_data.memory_blocks) + 1
+            block_count=len(package_data.memory_blocks) + 1,
+            encrypted=encryption_key is not None
         )
 
         return True

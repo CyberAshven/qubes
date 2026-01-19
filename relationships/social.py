@@ -20,6 +20,10 @@ class SocialDynamicsManager:
     """
     Main interface for relationship management
 
+    UPDATED FOR CHAIN STATE CONSOLIDATION:
+    - Now accepts RelationshipStorage instance instead of creating it
+    - RelationshipStorage is initialized externally with ChainState
+
     Provides high-level methods for:
     - Creating and managing relationships
     - Recording interactions and collaborations
@@ -31,7 +35,7 @@ class SocialDynamicsManager:
 
     def __init__(
         self,
-        qube_data_dir: Path,
+        relationship_storage: RelationshipStorage,
         trust_profile: Optional[str] = None,
         qube = None
     ):
@@ -39,22 +43,20 @@ class SocialDynamicsManager:
         Initialize social dynamics manager
 
         Args:
-            qube_data_dir: Path to Qube's data directory
+            relationship_storage: RelationshipStorage instance (already initialized with ChainState)
             trust_profile: Default trust scoring profile ("analytical", "social", "cautious")
             qube: Reference to parent Qube (for creator detection)
         """
-        self.qube_data_dir = Path(qube_data_dir)
+        self.storage = relationship_storage
         self.trust_profile = trust_profile
         self.qube = qube
 
         # Initialize components
-        self.storage = RelationshipStorage(qube_data_dir)
         self.trust_scorer = TrustScorer()
         self.progression_manager = RelationshipProgressionManager(self.trust_scorer)
 
         logger.info(
             "social_dynamics_manager_initialized",
-            qube_dir=str(qube_data_dir),
             trust_profile=trust_profile,
             relationship_count=len(self.storage.relationships)
         )

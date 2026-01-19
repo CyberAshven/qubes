@@ -52,8 +52,7 @@ class Session:
 
         self.session_start = int(datetime.now(timezone.utc).timestamp())
         self.session_blocks: List[Block] = []
-        # Read from chain_state to prevent race conditions across processes (GUI + CLI)
-        self.next_negative_index = self.qube.chain_state.state.get("next_negative_index", -1)
+        # Note: Block indices are now computed from timestamps, no counter needed
         self.auto_anchor_threshold = auto_anchor_threshold
         self.metadata = {
             "participants": {"humans": [], "qubes": []},
@@ -66,8 +65,11 @@ class Session:
         self._auto_anchor_is_group = False
         self._pending_anchor_task: Optional[asyncio.Task] = None
 
-        # Update chain state
-        self.qube.chain_state.start_session(self.session_id)
+        # Emit session started event
+        from core.events import Events
+        self.qube.events.emit(Events.SESSION_STARTED, {
+            "session_id": self.session_id
+        })
 
         logger.info("session_started", session_id=self.session_id, qube_id=qube.qube_id)
 
@@ -132,65 +134,61 @@ class Session:
         - Unsigned (no crypto overhead)
         - Saved as individual JSON files
 
+        Block numbers are assigned based on timestamp ordering:
+        - Earliest timestamp = -1, next = -2, etc.
+        - This is stateless and deterministic (no counter to sync)
+
         Args:
             block: Block to add (will be modified with session data)
 
         Returns:
             Modified block with negative index and temporary flag
         """
-        from utils.file_lock import qube_session_lock
-
-        # ATOMIC: Read-modify-write next_negative_index to prevent race conditions
-        # between multiple processes (GUI + CLI) accessing same Qube
-        with qube_session_lock(self.qube.data_dir):
-            # Set session properties
-            # Assign block number based on this qube's next_negative_index
-            # -1 is the sentinel value meaning "assign from chain_state"
-            if block.block_number == -1 or block.block_number >= 0:
-                # CRITICAL: Reload chain_state from file to get latest value
-                # Another process may have updated it since we loaded our in-memory copy
-                self.qube.chain_state._load()
-                self.next_negative_index = self.qube.chain_state.state.get("next_negative_index", -1)
-
-                # Assigning a new block number from this qube's chain state
-                block.block_number = self.next_negative_index
-
-                # Advance THIS qube's next_negative_index so next block gets a different number
-                # This allows a qube to create multiple sequential blocks (ACTION, MESSAGE, etc.)
-                # Other qubes will have their indexes updated when blocks are locked in
-                self.next_negative_index -= 1
-
-                # Update chain state atomically
-                self.qube.chain_state.update_session(
-                    session_block_count=len(self.session_blocks) + 1,  # +1 for block being added
-                    next_negative_index=self.next_negative_index
-                )
-            # else: Block already has a negative number (distributed from another qube)
-            # Don't reassign - preserve the shared block number
-            # Don't advance - that qube already advanced when they created it
-
         block.temporary = True
         block.session_id = self.session_id
 
-        # For session blocks, we don't need previous_hash - just reference previous block number
-        if len(self.session_blocks) > 0:
-            block.previous_block_number = self.session_blocks[-1].block_number
-        else:
-            # First session block - reference last permanent block
-            latest = self.qube.memory_chain.get_latest_block()
-            block.previous_block_number = latest.block_number if latest else 0
+        # Ensure block has a timestamp
+        if not block.timestamp:
+            block.timestamp = int(datetime.now(timezone.utc).timestamp())
 
-        # NO hashing or signing for session blocks (performance + they're temporary)
-        # block.block_hash = None
-        # block.signature = None
-
-        # Store in session
+        # Add to session list first, then reindex all by timestamp
         self.session_blocks.append(block)
+        self._reindex_session_blocks()
+
+        # Emit session updated event
+        from core.events import Events
+        block_count = len(self.session_blocks)
+        self.qube.events.emit(Events.SESSION_UPDATED, {
+            "session_block_count": block_count,
+            "next_negative_index": -(block_count + 1)  # Next block would be -2, -3, etc.
+        })
 
         # EAGER RELATIONSHIP CREATION (metrics updated later by AI during SUMMARY)
         # Create relationship immediately so relationships.json exists from first message
         if block.block_type == "MESSAGE":
-            self._create_relationship_eagerly(block)
+            # Wrap relationship creation in try-except so it doesn't block event emission
+            try:
+                self._create_relationship_eagerly(block)
+            except Exception as e:
+                logger.warning(
+                    "relationship_creation_failed",
+                    qube_id=self.qube.qube_id,
+                    error=str(e)
+                )
+
+            # Track message sent/received via events (must not be blocked by relationship errors)
+            content = block.content if isinstance(block.content, dict) else {}
+            message_type = content.get("message_type", "")
+
+            # Emit events from the QUBE's perspective:
+            # - MESSAGE_SENT: qube sends a message (qube_to_human, qube_to_group, qube_to_qube)
+            # - MESSAGE_RECEIVED: qube receives a message (human_to_qube, human_to_group, qube_to_qube_response)
+            if message_type in ["qube_to_human", "qube_to_group", "qube_to_qube"]:
+                logger.info("emitting_message_sent_event", message_type=message_type, qube_id=self.qube.qube_id)
+                self.qube.events.emit(Events.MESSAGE_SENT, {})  # Qube sends this message
+            elif message_type in ["human_to_qube", "human_to_group", "qube_to_qube_response"]:
+                logger.info("emitting_message_received_event", message_type=message_type, qube_id=self.qube.qube_id)
+                self.qube.events.emit(Events.MESSAGE_RECEIVED, {})  # Qube receives this message
 
         # Save individual block file (unencrypted, for crash recovery)
         self._save_session_block(block)
@@ -200,26 +198,9 @@ class Session:
         active_threshold = self.get_active_threshold()
         block_count = len(self.session_blocks)
 
-        # DEBUG: Write to separate file
-        from pathlib import Path
-        debug_file = Path(self.qube.data_dir).parent.parent.parent / "logs" / "auto_anchor_debug.log"
-        debug_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(debug_file, "a", encoding="utf-8") as f:
-            should_trigger = self.qube.auto_anchor_enabled and block_count >= active_threshold
-            f.write(f"{datetime.now(timezone.utc).isoformat()} | create_block: auto_anchor_enabled={self.qube.auto_anchor_enabled}, blocks={block_count}, threshold={active_threshold}, should_trigger={should_trigger}\n")
-
-        # Diagnostic logging
-        logger.info(
-            "auto_anchor_check",
-            qube_name=self.qube.name,
-            auto_anchor_enabled=self.qube.auto_anchor_enabled,
-            block_count=block_count,
-            threshold=active_threshold,
-            should_trigger=self.qube.auto_anchor_enabled and block_count >= active_threshold
-        )
-
         if self.qube.auto_anchor_enabled and block_count >= active_threshold:
             is_group = self.is_group_conversation()
+
             logger.info(
                 "auto_anchor_pending",
                 block_count=len(self.session_blocks),
@@ -263,7 +244,7 @@ class Session:
         debug_file = Path(self.qube.data_dir).parent.parent.parent / "logs" / "auto_anchor_debug.log"
         debug_file.parent.mkdir(parents=True, exist_ok=True)
         with open(debug_file, "a", encoding="utf-8") as f:
-            f.write(f"{datetime.now(timezone.utc).isoformat()} | check_and_auto_anchor called: pending={self._auto_anchor_pending}, blocks={len(self.session_blocks)}\n")
+            f.write(f"{datetime.now(timezone.utc).isoformat()} | [{self.qube.name}] check_and_auto_anchor called: pending={self._auto_anchor_pending}, blocks={len(self.session_blocks)}\n")
 
         logger.info(
             "check_and_auto_anchor_called",
@@ -360,7 +341,6 @@ class Session:
             # (blocks may have been partially converted)
             logger.info("auto_anchor_cleanup_after_failure", qube_id=self.qube.qube_id)
             self.session_blocks = []
-            self.next_negative_index = -1
             self.cleanup()
 
     def get_block(self, index: int) -> Optional[Block]:
@@ -410,10 +390,11 @@ class Session:
             if block.block_number == block_number:
                 deleted = self.session_blocks.pop(i)
 
-                # Update chain state
-                self.qube.chain_state.update_session(
-                    session_block_count=len(self.session_blocks)
-                )
+                # Emit session updated event
+                from core.events import Events
+                self.qube.events.emit(Events.SESSION_UPDATED, {
+                    "session_block_count": len(self.session_blocks)
+                })
 
                 # Delete the block's file from disk
                 from pathlib import Path
@@ -531,17 +512,48 @@ class Session:
                 # Add to memory chain (creates index entry)
                 self.qube.memory_chain.add_block(permanent_block)
 
-                # Update chain state
+                # Emit block added event
+                from core.events import Events
                 block_type = permanent_block.block_type if isinstance(permanent_block.block_type, str) else permanent_block.block_type.value
-                self.qube.chain_state.increment_block_count(block_type)
+                self.qube.events.emit(Events.BLOCK_ADDED, {
+                    "block_type": block_type,
+                    "block_number": permanent_block.block_number
+                })
 
                 converted_blocks.append(permanent_block)
+
+            # CALCULATE PENDING STATS BEFORE clearing session
+            # Must count from in-memory blocks BEFORE cleanup deletes the session block files
+            # These counts will be committed to chain_state at the end of anchor
+            pending_messages_sent = 0
+            pending_messages_received = 0
+            pending_tool_calls = 0
+            for block in self.session_blocks:
+                block_type = block.block_type if isinstance(block.block_type, str) else (block.block_type.value if hasattr(block.block_type, 'value') else str(block.block_type))
+                if block_type == "MESSAGE":
+                    content = block.content if isinstance(block.content, dict) else {}
+                    message_type = content.get("message_type", "")
+                    # From qube's perspective:
+                    # - human_to_qube = qube RECEIVES
+                    # - qube_to_human = qube SENDS
+                    if message_type in ["human_to_qube", "human_to_group", "qube_to_qube_response"]:
+                        pending_messages_received += 1
+                    elif message_type in ["qube_to_human", "qube_to_group", "qube_to_qube"]:
+                        pending_messages_sent += 1
+                elif block_type == "ACTION":
+                    pending_tool_calls += 1
+
+            # Store pending counts for later commit
+            self._pending_stats_for_commit = {
+                "messages_sent": pending_messages_sent,
+                "messages_received": pending_messages_received,
+                "tool_calls": pending_tool_calls
+            }
 
             # CLEAR SESSION IMMEDIATELY after conversion
             # This ensures session blocks are removed even if optional processing below fails/is interrupted
             session_block_count = len(self.session_blocks)
             self.session_blocks = []
-            self.next_negative_index = -1
             self.cleanup()
             logger.info(
                 "session_cleared_after_conversion",
@@ -652,7 +664,9 @@ class Session:
                     # Save summary block BEFORE adding to chain (to avoid block not found error)
                     self._save_permanent_block(summary_block)
                     self.qube.memory_chain.add_block(summary_block)
-                    self.qube.chain_state.increment_block_count("SUMMARY")
+                    self.qube.events.emit(Events.SUMMARY_CREATED, {
+                        "block_number": summary_block.block_number
+                    })
                     converted_blocks.append(summary_block)
 
                     # Apply AI-evaluated relationship deltas to actual relationships
@@ -718,15 +732,25 @@ class Session:
                     relationship_count=len(relationship_snapshot)
                 )
 
-            # Update chain state with final values
+            # Emit chain updated event with final values
             final_chain_length = self.qube.memory_chain.get_chain_length()
             final_block = converted_blocks[-1]
-            self.qube.chain_state.update_chain(
-                chain_length=final_chain_length,
-                last_block_number=final_block.block_number,
-                last_block_hash=final_block.block_hash
-            )
-            self.qube.chain_state.end_session()
+            self.qube.events.emit(Events.CHAIN_UPDATED, {
+                "chain_length": final_chain_length,
+                "last_block_number": final_block.block_number,
+                "last_block_hash": final_block.block_hash
+            })
+
+            # Commit session data - session-scoped changes (skills, relationships, mood, owner_info)
+            # are now permanent since the session was successfully anchored
+            # Pass the pre-calculated pending stats (calculated before session blocks were deleted)
+            pending_stats = getattr(self, '_pending_stats_for_commit', None)
+            self.qube.chain_state.commit_staged_session(pending_stats=pending_stats)
+
+            # Emit session ended event
+            self.qube.events.emit(Events.SESSION_ENDED, {
+                "session_id": self.session_id
+            })
 
             # Session was already cleared immediately after conversion (line 471-481)
             # Just log completion
@@ -801,16 +825,32 @@ class Session:
         """
         Discard all session blocks without anchoring
 
+        Rolls back session-scoped changes (skills, relationships, mood, owner_info)
+        to their state at session start. Immediately persistent changes (settings,
+        financial transactions, stats) are NOT rolled back.
+
         Returns:
             Number of blocks discarded
         """
         block_count = len(self.session_blocks)
         self.session_blocks = []
-        self.next_negative_index = -1
 
-        # Update chain state
+        # Rollback session-scoped data (skills, relationships, mood, owner_info)
+        # to the snapshot taken when the session started
         try:
-            self.qube.chain_state.end_session()
+            rolled_back = self.qube.chain_state.rollback_session_data()
+            if rolled_back:
+                logger.info("session_scoped_data_rolled_back", session_id=self.session_id)
+        except Exception as e:
+            logger.warning("session_rollback_failed", error=str(e))
+
+        # Emit session ended event
+        try:
+            from core.events import Events
+            self.qube.events.emit(Events.SESSION_ENDED, {
+                "session_id": self.session_id,
+                "rolled_back": True
+            })
         except Exception as e:
             logger.warning("chain_state_end_session_failed", error=str(e))
 
@@ -1088,6 +1128,7 @@ Summary:"""
             return f"[Browsed: {url}]"
 
         elif action_type == "remember_about_owner":
+            # Legacy tool - kept for backward compatibility with existing blocks
             key = parameters.get("key", "info")
             value = str(parameters.get("value", ""))[:50]  # Truncate value
             sensitivity = parameters.get("sensitivity", "public")
@@ -1105,6 +1146,7 @@ Summary:"""
             return f"[Memory Search: \"{query}\" - {result_count} results]"
 
         elif action_type == "get_relationships":
+            # Legacy tool - kept for backward compatibility with existing blocks
             entity = parameters.get("entity_name", parameters.get("entity_id", ""))
             if entity:
                 return f"[Queried Relationship: {entity}]"
@@ -1127,10 +1169,26 @@ Summary:"""
             return "[Analyzed own avatar]"
 
         elif action_type == "describe_my_skills":
+            # Legacy tool - kept for backward compatibility with existing blocks
             category = parameters.get("category", "")
             if category:
                 return f"[Checked skills: {category}]"
             return "[Checked skill tree]"
+
+        elif action_type == "get_chain_state":
+            sections = parameters.get("sections", [])
+            if sections:
+                return f"[Read state: {', '.join(sections)}]"
+            return "[Read chain state]"
+
+        elif action_type == "update_chain_state":
+            section = parameters.get("section", "")
+            path = parameters.get("path", "")
+            if section and path:
+                return f"[Updated {section}.{path}]"
+            elif section:
+                return f"[Updated {section}]"
+            return "[Updated chain state]"
 
         # Skill-based tools - brief summaries
         elif action_type in ["think_step_by_step", "self_critique", "explore_alternatives"]:
@@ -1255,6 +1313,36 @@ Summary:"""
                     "block": block.block_number
                 })
         return actions
+
+    def _reindex_session_blocks(self) -> None:
+        """
+        Reindex all session blocks by timestamp order.
+
+        This is the core of timestamp-based indexing:
+        - Sort blocks by timestamp (earliest first)
+        - Assign block numbers: -1 for earliest, -2 for next, etc.
+        - Update previous_block_number references
+
+        This approach is stateless and deterministic - no counter to sync.
+        """
+        if not self.session_blocks:
+            return
+
+        # Sort by timestamp (earliest first)
+        self.session_blocks.sort(key=lambda b: (b.timestamp, id(b)))  # id() as tiebreaker for same-second
+
+        # Assign block numbers: -1 for earliest, -2 for next, etc.
+        for i, block in enumerate(self.session_blocks):
+            block.block_number = -(i + 1)
+
+        # Update previous_block_number references
+        for i, block in enumerate(self.session_blocks):
+            if i == 0:
+                # First session block references last permanent block
+                latest = self.qube.memory_chain.get_latest_block()
+                block.previous_block_number = latest.block_number if latest else 0
+            else:
+                block.previous_block_number = self.session_blocks[i - 1].block_number
 
     def _save_session_block(self, block: Block) -> None:
         """
@@ -2106,37 +2194,25 @@ IMPORTANT: Return ONLY valid JSON, no other text."""
                     block = Block.from_dict(block_data)
                     session_blocks.append(block)
 
-            # Sort by block_number (should already be sorted by filename, but ensure)
-            session_blocks.sort(key=lambda b: b.block_number, reverse=True)  # -1, -2, -3, etc.
-
             # Create session with "active" ID
             session = Session(qube, session_id="active")
             session.session_blocks = session_blocks
 
+            # Reindex blocks by timestamp (this is the source of truth)
+            # This fixes any blocks that had incorrect indices (e.g., all -1)
+            session._reindex_session_blocks()
+
             # Determine session_start from earliest block
             if session_blocks:
                 session.session_start = min(b.timestamp for b in session_blocks)
-                session.next_negative_index = min(b.block_number for b in session_blocks) - 1
 
-                # CRITICAL: Sync chain_state with recovered session
-                # This fixes issues where chain_state.json save failed or was corrupted
-                # The block files on disk are the source of truth
-                chain_state_index = qube.chain_state.state.get("next_negative_index", -1)
-                if chain_state_index != session.next_negative_index:
-                    logger.warning(
-                        "session_recovery_fixing_chain_state",
-                        chain_state_index=chain_state_index,
-                        recovered_index=session.next_negative_index,
-                        blocks_found=len(session_blocks),
-                        hint="chain_state.json was out of sync with session blocks on disk"
-                    )
-                    qube.chain_state.update_session(
-                        session_block_count=len(session_blocks),
-                        next_negative_index=session.next_negative_index
-                    )
+                # Emit session updated event with recovered block count
+                from core.events import Events
+                qube.events.emit(Events.SESSION_UPDATED, {
+                    "session_block_count": len(session_blocks)
+                })
             else:
                 session.session_start = int(datetime.now(timezone.utc).timestamp())
-                session.next_negative_index = -1
 
             logger.info("session_recovered", blocks=len(session.session_blocks))
 

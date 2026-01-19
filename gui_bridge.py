@@ -776,8 +776,8 @@ class GUIBridge:
                     logger.warning(f"Failed to record relationship: {e}")
                     # Don't fail the whole message - just log warning
 
-            # Get current model (may have changed via switch_model tool)
-            current_model = getattr(qube, 'current_ai_model', None) or qube.genesis_block.ai_model
+            # Get current model from chain_state (source of truth for runtime settings)
+            current_model = qube.chain_state.get_current_model() if qube.chain_state else getattr(qube, 'current_ai_model', None) or qube.genesis_block.ai_model
 
             return {
                 "success": True,
@@ -1099,8 +1099,8 @@ class GUIBridge:
                     "error": "Audio manager not initialized for this qube"
                 }
 
-            # Get voice model from genesis block (default to 'openai:alloy')
-            voice_model = getattr(qube.genesis_block, 'voice_model', 'openai:alloy')
+            # Get voice model from chain_state (source of truth for runtime settings)
+            voice_model = qube.chain_state.get_voice_model() if qube.chain_state else getattr(qube.genesis_block, 'voice_model', 'openai:alloy')
 
             # Parse provider and voice from format "provider:voice"
             if ':' in voice_model:
@@ -1158,20 +1158,31 @@ class GUIBridge:
             # Update mutable settings (NOT genesis_block - that's immutable!)
             updated_fields = []
             if ai_model is not None:
-                # Update chain_state.json directly (works even if qube not loaded)
-                chain_state_path = qube_dir / "chain" / "chain_state.json"
-                if chain_state_path.exists():
-                    with open(chain_state_path, "r") as f:
-                        chain_state = json.load(f)
-                    chain_state["current_model_override"] = ai_model
-                    with open(chain_state_path, "w") as f:
-                        json.dump(chain_state, f, indent=2)
-                    logger.info(f"✅ Updated chain_state.json current_model_override={ai_model}")
+                # Update chain_state using ChainState class (handles encryption)
+                encryption_key = self._get_qube_encryption_key(qube_dir)
+                if encryption_key:
+                    from core.chain_state import ChainState
+                    chain_dir = qube_dir / "chain"
+                    chain_state = ChainState(data_dir=chain_dir, encryption_key=encryption_key)
+                    chain_state.set_current_model_override(ai_model)
+                    logger.info(f"Updated chain_state current_model_override={ai_model}")
+                else:
+                    logger.warning("Cannot update chain_state - no encryption key available")
                 updated_fields.append(f"ai_model={ai_model}")
 
             if voice_model is not None:
                 metadata["genesis_block"]["voice_model"] = voice_model
                 updated_fields.append(f"voice_model={voice_model}")
+                # Also update chain_state (the single source of truth)
+                encryption_key = self._get_qube_encryption_key(qube_dir)
+                if encryption_key:
+                    from core.chain_state import ChainState
+                    chain_dir = qube_dir / "chain"
+                    chain_state = ChainState(data_dir=chain_dir, encryption_key=encryption_key)
+                    settings = chain_state.state.setdefault("settings", {})
+                    settings["voice_model"] = voice_model
+                    chain_state._save(preserve_gui_fields=False)
+                    logger.info(f"Updated chain_state voice_model={voice_model}")
 
             if favorite_color is not None:
                 metadata["genesis_block"]["favorite_color"] = favorite_color
@@ -1181,6 +1192,16 @@ class GUIBridge:
                 metadata["genesis_block"]["tts_enabled"] = tts_enabled
                 updated_fields.append(f"tts_enabled={tts_enabled}")
                 logger.info(f"🔊 Setting tts_enabled={tts_enabled} for qube {qube_id}")
+                # Also update chain_state (the single source of truth)
+                encryption_key = self._get_qube_encryption_key(qube_dir)
+                if encryption_key:
+                    from core.chain_state import ChainState
+                    chain_dir = qube_dir / "chain"
+                    chain_state = ChainState(data_dir=chain_dir, encryption_key=encryption_key)
+                    settings = chain_state.state.setdefault("settings", {})
+                    settings["tts_enabled"] = tts_enabled
+                    chain_state._save(preserve_gui_fields=False)
+                    logger.info(f"Updated chain_state tts_enabled={tts_enabled}")
 
             if evaluation_model is not None:
                 metadata["genesis_block"]["evaluation_model"] = evaluation_model
@@ -1261,7 +1282,7 @@ class GUIBridge:
                 "error": str(e)
             }
 
-    async def reset_qube(self, qube_id: str) -> Dict[str, Any]:
+    async def reset_qube(self, qube_id: str, password: str = None) -> Dict[str, Any]:
         """
         Reset a qube to fresh state while preserving identity.
 
@@ -1271,11 +1292,16 @@ class GUIBridge:
 
         Args:
             qube_id: Qube ID to reset
+            password: Master password for encryption key access
 
         Returns:
             Dict with success status
         """
         try:
+            # Set master key if password provided
+            if password:
+                self.orchestrator.set_master_key(password)
+
             success = await self.orchestrator.reset_qube(qube_id)
 
             return {
@@ -1320,19 +1346,20 @@ class GUIBridge:
             relationships = qube.relationships.get_all_relationships()
             count = len(relationships)
 
-            # Clear all relationships by deleting the storage file
-            from pathlib import Path
-            relationships_file = Path(qube.data_dir) / "relationships" / "relationships.json"
-
-            if relationships_file.exists():
-                relationships_file.unlink()
-                logger.info(f"Deleted relationships file: {relationships_file}")
-
-            # Reinitialize empty storage
+            # Clear all relationships via the storage (which uses ChainState)
+            # This properly handles encryption and persistence
             qube.relationships.storage.relationships = {}
             qube.relationships.storage._save_relationships()
 
-            logger.info(f"✅ Reset {count} relationships for {qube_id[:16]}")
+            # Also delete legacy relationships folder if it exists
+            from pathlib import Path
+            relationships_dir = Path(qube.data_dir) / "relationships"
+            if relationships_dir.exists():
+                import shutil
+                shutil.rmtree(relationships_dir)
+                logger.info(f"Deleted legacy relationships directory: {relationships_dir}")
+
+            logger.info(f"Reset {count} relationships for {qube_id[:16]}")
 
             return {
                 "success": True,
@@ -2067,7 +2094,7 @@ class GUIBridge:
 
     async def get_owner_info(self, qube_id: str, password: str) -> Dict[str, Any]:
         """
-        Get owner info for a specific qube.
+        Get owner info for a specific qube from chain_state.
 
         Args:
             qube_id: Qube ID
@@ -2077,30 +2104,22 @@ class GUIBridge:
             Dict with owner_info data and summary
         """
         try:
-            from utils.owner_info_manager import OwnerInfoManager
-
-            # Load qube to get encryption key
+            # Load qube to access chain_state
             self.orchestrator.set_master_key(password)
             qube = await self.orchestrator.load_qube(qube_id)
 
             if not qube:
                 return {"success": False, "error": f"Qube {qube_id} not found"}
 
-            if not qube.private_key:
-                return {"success": False, "error": "Qube private key not available"}
-
-            # Derive encryption key
-            encryption_key = self._derive_owner_info_encryption_key(qube)
-
-            # Load owner info
-            owner_info_manager = OwnerInfoManager(qube.data_dir, encryption_key)
-            owner_info = owner_info_manager.load()
+            # Get owner info from chain_state
+            owner_info = qube.chain_state.get_owner_info()
+            summary = qube.chain_state.get_owner_info_summary()
 
             return {
                 "success": True,
                 "qube_id": qube_id,
                 "owner_info": owner_info,
-                "summary": owner_info_manager.get_summary()
+                "summary": summary
             }
 
         except Exception as e:
@@ -2120,12 +2139,12 @@ class GUIBridge:
         block_id: str = None
     ) -> Dict[str, Any]:
         """
-        Set or update a single owner info field.
+        Set or update a single owner info field in chain_state.
 
         Args:
             qube_id: Qube ID
             password: User's master password
-            category: Field category (standard, physical, preferences, people, dates, dynamic)
+            category: Field category (standard, physical, preferences, people, dates, dynamic, or custom)
             key: Field key
             value: Field value
             sensitivity: Sensitivity level (public/private/secret)
@@ -2137,24 +2156,15 @@ class GUIBridge:
             Dict with success status and updated summary
         """
         try:
-            from utils.owner_info_manager import OwnerInfoManager
-
-            # Load qube to get encryption key
+            # Load qube to access chain_state
             self.orchestrator.set_master_key(password)
             qube = await self.orchestrator.load_qube(qube_id)
 
             if not qube:
                 return {"success": False, "error": f"Qube {qube_id} not found"}
 
-            if not qube.private_key:
-                return {"success": False, "error": "Qube private key not available"}
-
-            # Derive encryption key
-            encryption_key = self._derive_owner_info_encryption_key(qube)
-
-            # Set field
-            owner_info_manager = OwnerInfoManager(qube.data_dir, encryption_key)
-            success = owner_info_manager.set_field(
+            # Set field via chain_state
+            success = qube.chain_state.set_owner_field(
                 category=category,
                 key=key,
                 value=value,
@@ -2168,10 +2178,10 @@ class GUIBridge:
                 return {
                     "success": True,
                     "qube_id": qube_id,
-                    "summary": owner_info_manager.get_summary()
+                    "summary": qube.chain_state.get_owner_info_summary()
                 }
             else:
-                return {"success": False, "error": "Failed to set field"}
+                return {"success": False, "error": "Failed to set field (may have hit limits)"}
 
         except Exception as e:
             logger.error(f"Failed to set owner info field for qube {qube_id}: {e}", exc_info=True)
@@ -2185,42 +2195,33 @@ class GUIBridge:
         key: str
     ) -> Dict[str, Any]:
         """
-        Delete an owner info field.
+        Delete an owner info field from chain_state.
 
         Args:
             qube_id: Qube ID
             password: User's master password
-            category: Field category
+            category: Field category (or custom section name)
             key: Field key
 
         Returns:
             Dict with success status
         """
         try:
-            from utils.owner_info_manager import OwnerInfoManager
-
-            # Load qube to get encryption key
+            # Load qube to access chain_state
             self.orchestrator.set_master_key(password)
             qube = await self.orchestrator.load_qube(qube_id)
 
             if not qube:
                 return {"success": False, "error": f"Qube {qube_id} not found"}
 
-            if not qube.private_key:
-                return {"success": False, "error": "Qube private key not available"}
-
-            # Derive encryption key
-            encryption_key = self._derive_owner_info_encryption_key(qube)
-
-            # Delete field
-            owner_info_manager = OwnerInfoManager(qube.data_dir, encryption_key)
-            success = owner_info_manager.delete_field(category, key)
+            # Delete field via chain_state
+            success = qube.chain_state.delete_owner_field(category, key)
 
             if success:
                 return {
                     "success": True,
                     "qube_id": qube_id,
-                    "summary": owner_info_manager.get_summary()
+                    "summary": qube.chain_state.get_owner_info_summary()
                 }
             else:
                 return {"success": False, "error": "Field not found"}
@@ -2238,12 +2239,12 @@ class GUIBridge:
         sensitivity: str
     ) -> Dict[str, Any]:
         """
-        Update the sensitivity level of an owner info field.
+        Update the sensitivity level of an owner info field in chain_state.
 
         Args:
             qube_id: Qube ID
             password: User's master password
-            category: Field category
+            category: Field category (or custom section name)
             key: Field key
             sensitivity: New sensitivity level (public/private/secret)
 
@@ -2251,36 +2252,40 @@ class GUIBridge:
             Dict with success status
         """
         try:
-            from utils.owner_info_manager import OwnerInfoManager
-
             if sensitivity not in ("public", "private", "secret"):
                 return {"success": False, "error": "Invalid sensitivity level"}
 
-            # Load qube to get encryption key
+            # Load qube to access chain_state
             self.orchestrator.set_master_key(password)
             qube = await self.orchestrator.load_qube(qube_id)
 
             if not qube:
                 return {"success": False, "error": f"Qube {qube_id} not found"}
 
-            if not qube.private_key:
-                return {"success": False, "error": "Qube private key not available"}
+            # Get existing field
+            field = qube.chain_state.get_owner_field(category, key)
+            if not field:
+                return {"success": False, "error": "Field not found"}
 
-            # Derive encryption key
-            encryption_key = self._derive_owner_info_encryption_key(qube)
-
-            # Update sensitivity
-            owner_info_manager = OwnerInfoManager(qube.data_dir, encryption_key)
-            success = owner_info_manager.update_sensitivity(category, key, sensitivity)
+            # Update field with new sensitivity (preserves other values)
+            success = qube.chain_state.set_owner_field(
+                category=category,
+                key=key,
+                value=field.get("value", ""),
+                sensitivity=sensitivity,
+                source=field.get("source", "explicit"),
+                confidence=field.get("confidence", 100),
+                block_id=field.get("block_id")
+            )
 
             if success:
                 return {
                     "success": True,
                     "qube_id": qube_id,
-                    "summary": owner_info_manager.get_summary()
+                    "summary": qube.chain_state.get_owner_info_summary()
                 }
             else:
-                return {"success": False, "error": "Field not found"}
+                return {"success": False, "error": "Failed to update sensitivity"}
 
         except Exception as e:
             logger.error(f"Failed to update sensitivity for qube {qube_id}: {e}", exc_info=True)
@@ -2581,16 +2586,19 @@ class GUIBridge:
 
     # ==================== Clearance Profile Methods (v2) ====================
 
-    async def get_clearance_profiles(self, qube_id: str) -> Dict[str, Any]:
-        """Get all clearance profiles for a Qube."""
+    async def get_clearance_profiles(self, qube_id: str, password: str) -> Dict[str, Any]:
+        """Get all clearance profiles for a Qube from chain_state."""
         try:
             from utils.clearance_profiles import ClearanceConfig
 
-            qube_dir = self._find_qube_dir(qube_id)
-            if not qube_dir:
+            # Load qube to access chain_state
+            self.orchestrator.set_master_key(password)
+            qube = await self.orchestrator.load_qube(qube_id)
+
+            if not qube:
                 return {"success": False, "error": "Qube not found"}
 
-            config = ClearanceConfig(qube_dir)
+            config = ClearanceConfig(qube.chain_state)
             profiles = config.get_all_profiles()
 
             return {
@@ -2609,19 +2617,17 @@ class GUIBridge:
         profile_name: str,
         updates: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Update a clearance profile configuration."""
+        """Update a clearance profile configuration in chain_state."""
         try:
             from utils.clearance_profiles import ClearanceConfig
 
             self.orchestrator.set_master_key(password)
-            if qube_id not in self.orchestrator.qubes:
-                await self.orchestrator.load_qube(qube_id)
+            qube = await self.orchestrator.load_qube(qube_id)
 
-            qube = self.orchestrator.qubes.get(qube_id)
             if not qube:
                 return {"success": False, "error": "Qube not found"}
 
-            config = ClearanceConfig(qube.data_dir)
+            config = ClearanceConfig(qube.chain_state)
             profile = config.update_profile(profile_name, updates)
 
             return {"success": True, "profile": profile.to_dict()}
@@ -2629,16 +2635,19 @@ class GUIBridge:
             logger.error(f"Failed to update clearance profile: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
 
-    async def get_available_tags(self, qube_id: str) -> Dict[str, Any]:
-        """Get all available tags for a Qube."""
+    async def get_available_tags(self, qube_id: str, password: str) -> Dict[str, Any]:
+        """Get all available tags for a Qube from chain_state."""
         try:
             from utils.clearance_profiles import ClearanceConfig
 
-            qube_dir = self._find_qube_dir(qube_id)
-            if not qube_dir:
+            # Load qube to access chain_state
+            self.orchestrator.set_master_key(password)
+            qube = await self.orchestrator.load_qube(qube_id)
+
+            if not qube:
                 return {"success": False, "error": "Qube not found"}
 
-            config = ClearanceConfig(qube_dir)
+            config = ClearanceConfig(qube.chain_state)
             tags = config.get_all_tags()
 
             return {
@@ -2769,26 +2778,28 @@ class GUIBridge:
     async def suggest_clearance(
         self,
         qube_id: str,
+        password: str,
         entity_id: str
     ) -> Dict[str, Any]:
         """Get clearance suggestion for a relationship based on status and tags."""
         try:
             from utils.clearance_suggest import suggest_clearance as do_suggest
             from utils.clearance_profiles import ClearanceConfig
-            from relationships.relationship import RelationshipStorage
 
-            qube_dir = self._find_qube_dir(qube_id)
-            if not qube_dir:
+            # Load qube to access chain_state
+            self.orchestrator.set_master_key(password)
+            qube = await self.orchestrator.load_qube(qube_id)
+
+            if not qube:
                 return {"success": False, "error": "Qube not found"}
 
-            # Load relationship (without password - read-only)
-            storage = RelationshipStorage(qube_dir)
-            relationship = storage.get_relationship(entity_id)
+            # Get relationship from qube's relationships manager
+            relationship = qube.relationships.get_relationship(entity_id)
 
             if not relationship:
                 return {"success": False, "error": "Relationship not found"}
 
-            config = ClearanceConfig(qube_dir)
+            config = ClearanceConfig(qube.chain_state)
             suggested, reason = do_suggest(
                 relationship.status,
                 relationship.tags,
@@ -4299,11 +4310,15 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
             ).decode('utf-8')
             export_data["private_key_pem"] = private_key_pem
 
-            # Load chain state
-            chain_state_file = qube_dir / "chain" / "chain_state.json"
-            if chain_state_file.exists():
-                with open(chain_state_file, 'r', encoding='utf-8') as f:
-                    export_data["chain_state"] = json.load(f)
+            # Load chain state (using ChainState class for proper decryption)
+            encryption_key = self._get_qube_encryption_key(qube_dir)
+            if encryption_key:
+                from core.chain_state import ChainState
+                chain_dir = qube_dir / "chain"
+                cs = ChainState(data_dir=chain_dir, encryption_key=encryption_key)
+                export_data["chain_state"] = cs.state  # Decrypted state for export
+            else:
+                logger.warning("Cannot export chain_state - no encryption key available")
 
             # Load all memory blocks
             blocks_dir = qube_dir / "blocks" / "permanent"
@@ -4491,10 +4506,43 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
             with open(qube_dir / "chain" / "qube_metadata.json", 'w', encoding='utf-8') as f:
                 json.dump(qube_metadata, f, indent=2)
 
-            # Save chain state
+            # Generate new encryption key for this qube
+            from crypto.encryption import generate_encryption_key
+            import secrets as crypto_secrets
+
+            encryption_key = generate_encryption_key()
+
+            # Save encryption key encrypted by master key
+            key_file = qube_dir / "chain" / "encryption_key.enc"
+            aesgcm_key = AESGCM(self.orchestrator.master_key)
+            key_nonce = crypto_secrets.token_bytes(12)
+            key_ciphertext = aesgcm_key.encrypt(key_nonce, encryption_key, None)
+
+            with open(key_file, 'w', encoding='utf-8') as f:
+                json.dump({
+                    "nonce": key_nonce.hex(),
+                    "ciphertext": key_ciphertext.hex(),
+                    "algorithm": "AES-256-GCM",
+                    "version": "1.0"
+                }, f, indent=2)
+
+            # Save chain state using ChainState class (with encryption)
             if export_data.get("chain_state"):
-                with open(qube_dir / "chain" / "chain_state.json", 'w', encoding='utf-8') as f:
-                    json.dump(export_data["chain_state"], f, indent=2)
+                from core.chain_state import ChainState
+                chain_dir = qube_dir / "chain"
+                cs = ChainState(data_dir=chain_dir, encryption_key=encryption_key, qube_id=qube_id)
+                # Update the state with imported data
+                imported_state = export_data["chain_state"]
+                # Preserve important sections from import
+                if "settings" in imported_state:
+                    cs.update_settings(imported_state["settings"])
+                if "skills" in imported_state:
+                    cs.state["skills"] = imported_state["skills"]
+                if "relationships" in imported_state:
+                    cs.state["relationships"] = imported_state["relationships"]
+                if "financial" in imported_state:
+                    cs.state["financial"] = imported_state["financial"]
+                cs._save()  # Save the imported state
 
             # Save memory blocks
             for block in export_data.get("memory_blocks", []):
@@ -5836,6 +5884,9 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
         """
         Get wallet address, balance, and pending transactions for a Qube.
 
+        Reads from chain_state (single source of truth) for instant response.
+        Balance is synced in background when qube loads.
+
         Args:
             qube_id: Qube ID
             password: User's master password
@@ -5843,8 +5894,6 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
         Returns:
             Dict with wallet info including address, balance, pending_txs
         """
-        from blockchain.wallet_tx import WalletTransactionManager
-
         try:
             self.orchestrator.set_master_key(password)
             qube = await self.orchestrator.load_qube(qube_id)
@@ -5861,10 +5910,6 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
             if not p2sh_address:
                 return {"success": False, "error": "Wallet address not found in genesis block"}
 
-            # Initialize wallet transaction manager
-            wallet_manager = WalletTransactionManager(qube)
-            pending_txs = wallet_manager.get_pending_transactions()
-
             # Get owner pubkey and derive NFT address
             owner_pubkey = wallet_info.get("owner_pubkey")
             nft_address = None
@@ -5872,29 +5917,114 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
                 from crypto.bch_script import pubkey_to_token_address
                 nft_address = pubkey_to_token_address(owner_pubkey, "mainnet")
 
-            # Fetch both balances in parallel for speed
-            import aiohttp
-            import asyncio
+            # Check if chain_state needs sync (never synced or stale > 5 min)
+            import time
+            financial = qube.chain_state.state.get("financial", {})
+            wallet_data = financial.get("wallet", {})
+            last_sync = wallet_data.get("last_sync")
 
-            async def fetch_p2sh_balance():
+            needs_sync = (
+                last_sync is None or
+                (time.time() - last_sync) > 300  # 5 minutes
+            )
+
+            if needs_sync:
+                # Sync now (blocking) to ensure chain_state is current
                 try:
-                    return await asyncio.wait_for(
-                        wallet_manager.wallet.get_balance(),
+                    await asyncio.wait_for(
+                        qube.wallet_manager.sync_balances_to_chain_state(owner_pubkey),
                         timeout=10.0
                     )
+                    # Reload data after sync
+                    financial = qube.chain_state.state.get("financial", {})
+                    wallet_data = financial.get("wallet", {})
                 except asyncio.TimeoutError:
-                    logger.warning("P2SH balance fetch timed out")
-                    return 0
-                except Exception as e:
-                    logger.warning(f"P2SH balance fetch failed: {e}")
-                    return 0
+                    logger.warning("Wallet sync timed out, using cached data")
+                except Exception as sync_err:
+                    logger.warning(f"Wallet sync failed: {sync_err}")
 
-            async def fetch_nft_balance():
-                if not nft_address:
-                    return 0
+            nft_data = financial.get("nft_balance", {})
+
+            p2sh_balance = wallet_data.get("balance_satoshis", 0)
+            nft_balance = nft_data.get("balance_satoshis", 0)
+
+            # Get pending transactions from chain_state (source of truth)
+            pending_txs = qube.chain_state.get_pending_transactions()
+
+            return {
+                "success": True,
+                "qube_id": qube_id,
+                "wallet_address": p2sh_address,
+                "nft_address": nft_address,
+                "owner_pubkey": wallet_info.get("owner_pubkey"),
+                "qube_pubkey": wallet_info.get("qube_pubkey"),
+                "balance_sats": p2sh_balance,
+                "balance_bch": p2sh_balance / 100_000_000,
+                "nft_balance_sats": nft_balance,
+                "nft_balance_bch": nft_balance / 100_000_000,
+                "last_sync": wallet_data.get("last_sync"),
+                "pending_transactions": [
+                    {
+                        "tx_id": tx.get("tx_id"),
+                        "outputs": tx.get("outputs", []),
+                        "total_amount": tx.get("total_amount", 0),
+                        "fee": tx.get("fee", 0),
+                        "status": tx.get("status"),
+                        "created_at": datetime.fromtimestamp(tx.get("created_at", 0)).isoformat() if tx.get("created_at") else None,
+                        "expires_at": datetime.fromtimestamp(tx.get("expires_at")).isoformat() if tx.get("expires_at") else None,
+                        "memo": tx.get("memo")
+                    }
+                    for tx in pending_txs
+                ]
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to get wallet info: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def sync_wallet_balances(self, qube) -> None:
+        """
+        Sync wallet balances from blockchain to chain_state.
+
+        Called automatically when qube loads. Updates chain_state with
+        current balances so UI reads are instant.
+
+        Args:
+            qube: Loaded Qube instance
+        """
+        import aiohttp
+
+        try:
+            wallet_info = self._get_wallet_info_from_genesis(qube.genesis_block)
+            if not wallet_info:
+                return
+
+            p2sh_address = wallet_info.get("p2sh_address")
+            owner_pubkey = wallet_info.get("owner_pubkey")
+
+            if not p2sh_address:
+                return
+
+            # Fetch P2SH balance
+            p2sh_balance = 0
+            try:
+                addr = p2sh_address.split(":")[-1] if ":" in p2sh_address else p2sh_address
+                timeout = aiohttp.ClientTimeout(total=10)
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    url = f"https://rest.bch.actorforth.org/v2/address/details/{addr}"
+                    async with session.get(url) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            balance = data.get("balanceSat") or data.get("balance")
+                            if balance is not None:
+                                p2sh_balance = int(balance)
+            except Exception as e:
+                logger.debug(f"P2SH balance sync failed: {e}")
+
+            # Fetch NFT/BCH balance (q address)
+            nft_balance = 0
+            if owner_pubkey:
                 try:
-                    # Use Blockchair API (same as wallet uses) - need to use q address
-                    # since z and q share the same pubkey hash
                     from crypto.bch_script import pubkey_to_p2pkh_address
                     q_address = pubkey_to_p2pkh_address(owner_pubkey, "mainnet", token_aware=False)
 
@@ -5905,47 +6035,32 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
                             if resp.status == 200:
                                 data = await resp.json()
                                 if "data" in data and q_address in data["data"]:
-                                    return data["data"][q_address]["address"]["balance"]
-                    return 0
+                                    nft_balance = data["data"][q_address]["address"]["balance"]
                 except Exception as e:
-                    logger.warning(f"NFT balance fetch failed: {e}")
-                    return 0
+                    logger.debug(f"NFT balance sync failed: {e}")
 
-            # Run both fetches in parallel
-            p2sh_balance, nft_balance = await asyncio.gather(
-                fetch_p2sh_balance(),
-                fetch_nft_balance()
-            )
+            # Update chain_state
+            import time
+            financial = qube.chain_state.state.setdefault("financial", {})
 
-            return {
-                "success": True,
-                "qube_id": qube_id,
-                "wallet_address": p2sh_address,
-                "nft_address": nft_address,  # Owner's 'z' address
-                "owner_pubkey": wallet_info.get("owner_pubkey"),
-                "qube_pubkey": wallet_info.get("qube_pubkey"),
-                "balance_sats": p2sh_balance,  # P2SH wallet balance
-                "balance_bch": p2sh_balance / 100_000_000,
-                "nft_balance_sats": nft_balance,  # Owner's NFT address balance
-                "nft_balance_bch": nft_balance / 100_000_000,
-                "pending_transactions": [
-                    {
-                        "tx_id": tx.tx_id,
-                        "outputs": tx.outputs,
-                        "total_amount": tx.total_amount,
-                        "fee": tx.fee,
-                        "status": tx.status,
-                        "created_at": datetime.fromtimestamp(tx.created_at).isoformat(),
-                        "expires_at": datetime.fromtimestamp(tx.expires_at).isoformat() if tx.expires_at else None,
-                        "memo": tx.memo
-                    }
-                    for tx in pending_txs
-                ]
-            }
+            # P2SH wallet balance
+            wallet_data = financial.setdefault("wallet", {})
+            wallet_data["balance_satoshis"] = p2sh_balance
+            wallet_data["balance_bch"] = p2sh_balance / 100_000_000
+            wallet_data["last_sync"] = time.time()
+            wallet_data["address"] = p2sh_address
+
+            # NFT/BCH balance
+            nft_data = financial.setdefault("nft_balance", {})
+            nft_data["balance_satoshis"] = nft_balance
+            nft_data["balance_bch"] = nft_balance / 100_000_000
+            nft_data["last_sync"] = time.time()
+
+            qube.chain_state._save()
+            logger.debug("wallet_balances_synced", p2sh=p2sh_balance, nft=nft_balance)
 
         except Exception as e:
-            logger.error(f"Failed to get wallet info: {e}", exc_info=True)
-            return {"success": False, "error": str(e)}
+            logger.warning(f"Failed to sync wallet balances: {e}")
 
     async def get_context_preview(
         self,
@@ -5972,21 +6087,45 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
             if not qube:
                 return {"success": False, "error": f"Qube {qube_id} not found"}
 
-            # Initialize session if needed (to access session blocks)
-            if not hasattr(qube, 'session') or qube.session is None:
-                from core.session import Session
-                qube.session = Session(qube)
+            # Note: Do NOT start a session just for viewing context preview
+            # Session should only start when actually chatting with the Qube
 
-            # Build active context (always-present identity data)
+            # Get raw chain_state directly from file (unmodified)
+            raw_chain_state = {}
+            try:
+                raw_chain_state = qube.chain_state.get_sections(None)  # All sections, no modifications
+            except Exception as raw_err:
+                logger.warning(f"Failed to get raw chain_state: {raw_err}")
+
+            # Build active context (what AI sees after handler enhancements)
             active_context = await self._build_active_context_preview(qube)
 
             # Build short-term memory (blocks in context window)
             short_term_memory = await self._build_short_term_memory_preview(qube)
 
+            # Compute content hash for cache invalidation
+            # Hash key fields that would indicate meaningful changes
+            import hashlib
+            hash_data = {
+                "stats_sessions": active_context.get("stats", {}).get("total_sessions", 0) if active_context.get("stats") else 0,
+                "stats_tokens": active_context.get("stats", {}).get("total_tokens", 0) if active_context.get("stats") else 0,
+                "chain_blocks": active_context.get("chain", {}).get("total_blocks", 0) if active_context.get("chain") else 0,
+                "session_messages": active_context.get("session", {}).get("messages_this_session", 0) if active_context.get("session") else 0,
+                "relationships_count": active_context.get("relationships", {}).get("count", 0),
+                "skills_xp": active_context.get("skills", {}).get("totals", {}).get("total_xp", 0),
+                "owner_info_count": active_context.get("owner_info", {}).get("total_fields", 0) if active_context.get("owner_info") else 0,
+                "stm_semantic": short_term_memory.get("semantic_recalls", {}).get("count", 0),
+                "stm_recent": short_term_memory.get("recent_permanent", {}).get("count", 0),
+                "stm_session": short_term_memory.get("session", {}).get("count", 0),
+            }
+            content_hash = hashlib.md5(json.dumps(hash_data, sort_keys=True).encode()).hexdigest()[:12]
+
             return {
                 "success": True,
-                "active_context": active_context,
-                "short_term_memory": short_term_memory
+                "raw_chain_state": raw_chain_state,  # Unmodified chain_state.json contents
+                "active_context": active_context,     # What AI sees (with handler enhancements)
+                "short_term_memory": short_term_memory,
+                "content_hash": content_hash
             }
 
         except Exception as e:
@@ -5995,247 +6134,21 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
 
     async def _build_active_context_preview(self, qube) -> Dict[str, Any]:
         """
-        Build preview of active context (always-present identity data).
+        Build preview of active context by calling the same handler the AI uses.
+
+        This ensures the Debug Modal shows exactly what the AI sees when it
+        calls get_chain_state.
         """
-        from utils.time_format import format_timestamp
+        from ai.tools.handlers import get_chain_state_handler
 
-        genesis = qube.genesis_block
+        # Call the same handler the AI uses - no sections means get all
+        result = await get_chain_state_handler(qube, {"sections": []})
 
-        # Genesis Identity
-        # Get wallet info if available
-        wallet_info = self._get_wallet_info_from_genesis(genesis)
-        p2sh_address = wallet_info.get("p2sh_address") if wallet_info else None
-
-        # Determine AI provider from model name
-        ai_provider = "Unknown"
-        ai_model_lower = (genesis.ai_model or "").lower()
-        if "claude" in ai_model_lower or "anthropic" in ai_model_lower:
-            ai_provider = "Anthropic"
-        elif "gpt" in ai_model_lower or "openai" in ai_model_lower:
-            ai_provider = "OpenAI"
-        elif "gemini" in ai_model_lower or "google" in ai_model_lower:
-            ai_provider = "Google"
-        elif "venice" in ai_model_lower:
-            ai_provider = "Venice"
-        elif "grok" in ai_model_lower or "xai" in ai_model_lower:
-            ai_provider = "xAI"
-        elif "deepseek" in ai_model_lower:
-            ai_provider = "DeepSeek"
-        elif "mistral" in ai_model_lower:
-            ai_provider = "Mistral"
-
-        # Get available tools
-        available_tools = getattr(genesis, 'tools', []) or []
-
-        genesis_identity = {
-            "name": genesis.qube_name,
-            "qube_id": qube.qube_id,
-            "birth_date": format_timestamp(genesis.birth_timestamp) if genesis.birth_timestamp else None,
-            "genesis_prompt": genesis.genesis_prompt,
-            "favorite_color": genesis.favorite_color or "#4A90E2",
-            "ai_model": genesis.ai_model,
-            "ai_provider": ai_provider,
-            "voice_model": genesis.voice_model,
-            "creator": genesis.creator,
-            "nft_category_id": getattr(genesis, 'nft_category_id', None),
-            "mint_txid": getattr(genesis, 'mint_txid', None),
-            "qube_wallet_address": p2sh_address,
-            "blockchain": "Bitcoin Cash" if p2sh_address else None,
-            "available_tools": available_tools
-        }
-
-        # Relationships (top 5 by interaction count)
-        relationships = []
-        try:
-            # Reload relationships from disk to get latest
-            qube.relationships.storage._load_relationships()
-            all_rels = qube.relationships.get_all_relationships()
-
-            # Sort by total messages (sent + received) and take top 5
-            sorted_rels = sorted(
-                all_rels,
-                key=lambda r: (r.messages_sent or 0) + (r.messages_received or 0),
-                reverse=True
-            )[:5]
-
-            for rel in sorted_rels:
-                entity_type = getattr(rel, 'entity_type', 'qube')
-                entity_id = rel.entity_id
-
-                # Determine display name based on entity type
-                name = entity_id  # Default fallback
-                if entity_type == "qube":
-                    if entity_id in self.orchestrator.qubes:
-                        # It's another Qube that's loaded - use their name
-                        name = self.orchestrator.qubes[entity_id].name
-                    else:
-                        # Try to find Qube name from filesystem (directory pattern: {name}_{id})
-                        qubes_dir = self.orchestrator.data_dir / "qubes"
-                        if qubes_dir.exists():
-                            for qube_dir in qubes_dir.iterdir():
-                                if qube_dir.is_dir() and qube_dir.name.endswith(f"_{entity_id}"):
-                                    # Extract name from directory (everything before _ID)
-                                    name = qube_dir.name[:-len(f"_{entity_id}")]
-                                    break
-                        # If still not found, check entity_name on relationship
-                        if name == entity_id and getattr(rel, 'entity_name', None):
-                            name = rel.entity_name
-                elif getattr(rel, 'entity_name', None):
-                    # Entity name is stored on the relationship
-                    name = rel.entity_name
-
-                # Trust is 0-100, convert to 0-1 for display
-                trust = getattr(rel, 'trust', 0) / 100.0
-                # Calculate interaction count from messages
-                interaction_count = (getattr(rel, 'messages_sent', 0) or 0) + (getattr(rel, 'messages_received', 0) or 0)
-
-                relationships.append({
-                    "entity_id": entity_id,
-                    "name": name,
-                    "entity_type": entity_type,
-                    "status": getattr(rel, 'status', 'unknown') or "unknown",
-                    "trust_level": round(trust, 2),
-                    "interaction_count": interaction_count
-                })
-        except Exception as e:
-            logger.warning(f"Failed to load relationships for context preview: {e}")
-
-        # Skills - return all skills organized by category
-        skills_by_category = {}
-        skills_total = {"total_xp": 0, "unlocked_skills": 0, "categories": 0}
-        try:
-            from utils.skills_manager import SkillsManager
-            skills_manager = SkillsManager(qube.data_dir)
-            skills_data = skills_manager.load_skills()
-            summary = skills_manager.get_skill_summary()
-
-            # Organize all skills by category
-            for skill in skills_data.get("skills", []):
-                category = skill.get("category", "unknown")
-                if category not in skills_by_category:
-                    skills_by_category[category] = {
-                        "category_id": category,
-                        "category_name": category.replace("_", " ").title(),
-                        "total_xp": 0,
-                        "skills": []
-                    }
-
-                skill_info = {
-                    "skill_id": skill.get("id", ""),
-                    "name": skill.get("name", skill.get("id", "").replace("_", " ").title()),
-                    "xp": skill.get("xp", 0),
-                    "level": skill.get("level", 1),
-                    "unlocked": skill.get("unlocked", False),
-                    "tier": skill.get("tier", "moon"),
-                    "parent_skill": skill.get("parentSkill"),
-                    "tool_unlock": skill.get("toolUnlock")
-                }
-                skills_by_category[category]["skills"].append(skill_info)
-                skills_by_category[category]["total_xp"] += skill.get("xp", 0)
-
-            # Sort skills within each category by tier (sun > planet > moon) then by XP
-            tier_order = {"sun": 0, "planet": 1, "moon": 2}
-            for category in skills_by_category.values():
-                category["skills"].sort(key=lambda s: (tier_order.get(s["tier"], 3), -s["xp"]))
-
-            # Add total stats
-            skills_total = {
-                "total_xp": summary.get("total_xp", 0),
-                "unlocked_skills": summary.get("unlocked_skills", 0),
-                "categories": len(skills_by_category)
-            }
-        except Exception as e:
-            logger.warning(f"Failed to load skills for context preview: {e}")
-
-        # Wallet info with balance and recent transactions
-        wallet = None
-        try:
-            wallet_info = self._get_wallet_info_from_genesis(genesis)
-            if wallet_info:
-                p2sh_address = wallet_info.get("p2sh_address")
-                balance_sats = 0
-                recent_transactions = []
-
-                # Try to fetch balance and transactions
-                try:
-                    from blockchain.wallet_tx import WalletTransactionManager
-                    wallet_manager = WalletTransactionManager(qube)
-
-                    # Get balance with persistent caching (loads from disk if API fails)
-                    balance_sats = await asyncio.wait_for(
-                        wallet_manager.get_balance_with_cache(),
-                        timeout=5.0
-                    )
-
-                    # Get recent transactions (up to 3)
-                    try:
-                        tx_history = await asyncio.wait_for(
-                            wallet_manager.wallet.get_transaction_history(limit=3),
-                            timeout=5.0
-                        )
-                        for tx in tx_history:
-                            recent_transactions.append({
-                                "txid": tx.get("txid", "")[:16] + "..." if tx.get("txid") else "",
-                                "amount_sats": tx.get("amount", 0),
-                                "type": "received" if tx.get("amount", 0) > 0 else "sent",
-                                "timestamp": tx.get("timestamp"),
-                                "confirmations": tx.get("confirmations", 0)
-                            })
-                    except Exception as tx_err:
-                        logger.debug(f"Could not fetch transaction history: {tx_err}")
-
-                except Exception as bal_err:
-                    logger.debug(f"Could not fetch wallet balance: {bal_err}")
-
-                wallet = {
-                    "p2sh_address": p2sh_address,
-                    "balance_sats": balance_sats,
-                    "balance_bch": balance_sats / 100_000_000 if balance_sats else 0,
-                    "recent_transactions": recent_transactions,
-                    "has_wallet": True
-                }
-        except Exception as e:
-            logger.warning(f"Failed to load wallet for context preview: {e}")
-
-        # Owner Info summary
-        owner_info = None
-        try:
-            from utils.owner_info_manager import OwnerInfoManager
-            from crypto.keys import serialize_private_key
-            import hashlib
-
-            # Derive encryption key
-            private_key_bytes = serialize_private_key(qube.private_key)
-            encryption_key = hashlib.sha256(private_key_bytes).digest()
-
-            manager = OwnerInfoManager(qube.data_dir, encryption_key)
-            summary = manager.get_summary()
-
-            if summary.get("total_fields", 0) > 0:
-                owner_info = {
-                    "total_fields": summary.get("total_fields", 0),
-                    "public_fields": summary.get("public_fields", 0),
-                    "private_fields": summary.get("private_fields", 0),
-                    "secret_fields": summary.get("secret_fields", 0),
-                    "categories_populated": summary.get("categories_populated", 0),
-                    "top_fields": summary.get("top_fields", [])
-                }
-        except Exception as e:
-            logger.warning(f"Failed to load owner info for context preview: {e}")
-
-        return {
-            "genesis_identity": genesis_identity,
-            "relationships": {
-                "count": len(relationships),
-                "top_relationships": relationships
-            },
-            "skills": {
-                "totals": skills_total,
-                "categories": skills_by_category
-            },
-            "owner_info": owner_info,
-            "wallet": wallet
-        }
+        if result.get("success"):
+            return result.get("sections", {})
+        else:
+            # Return error info if handler failed
+            return {"error": result.get("error", "Failed to get chain state")}
 
     async def _build_short_term_memory_preview(self, qube) -> Dict[str, Any]:
         """
@@ -6320,23 +6233,44 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
         session_blocks_content_chars = 0
         try:
             session = qube.current_session
+            blocks_to_process = []
+
+            # Try to get blocks from active session first
             if session and hasattr(session, 'session_blocks') and session.session_blocks:
-                for block in session.session_blocks[-10:]:
-                    content = block.content if isinstance(block.content, dict) else {}
+                blocks_to_process = session.session_blocks[-10:]
+            else:
+                # Fallback: Load session blocks directly from disk
+                # This allows viewing session blocks even without an active session
+                from pathlib import Path
+                from core.block import Block
+                session_dir = Path(qube.data_dir) / "blocks" / "session"
+                if session_dir.exists():
+                    block_files = sorted(session_dir.glob("*.json"))
+                    for block_file in block_files[-10:]:  # Last 10 blocks
+                        try:
+                            with open(block_file, 'r') as f:
+                                block_data = json.load(f)
+                                block = Block.from_dict(block_data)
+                                blocks_to_process.append(block)
+                        except Exception as load_err:
+                            logger.debug(f"Failed to load session block {block_file}: {load_err}")
 
-                    # Track actual content size for token estimation
-                    try:
-                        content_str = json.dumps(content, default=str) if isinstance(content, dict) else str(content)
-                        session_blocks_content_chars += len(content_str)
-                    except:
-                        session_blocks_content_chars += 500  # Fallback estimate
+            for block in blocks_to_process:
+                content = block.content if isinstance(block.content, dict) else {}
 
-                    session_blocks.append({
-                        "block_number": block.block_number,
-                        "block_type": block.block_type if isinstance(block.block_type, str) else block.block_type.value,
-                        "timestamp": block.timestamp,
-                        "preview": self._get_block_preview({"content": content, "block_type": block.block_type})
-                    })
+                # Track actual content size for token estimation
+                try:
+                    content_str = json.dumps(content, default=str) if isinstance(content, dict) else str(content)
+                    session_blocks_content_chars += len(content_str)
+                except:
+                    session_blocks_content_chars += 500  # Fallback estimate
+
+                session_blocks.append({
+                    "block_number": block.block_number,
+                    "block_type": block.block_type if isinstance(block.block_type, str) else block.block_type.value,
+                    "timestamp": block.timestamp,
+                    "preview": self._get_block_preview({"content": content, "block_type": block.block_type})
+                })
         except Exception as e:
             logger.warning(f"Failed to get session blocks: {e}")
 
@@ -6361,17 +6295,10 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
         total_chars += len(genesis_prompt)
         total_chars += 1000  # Base system prompt overhead
 
-        # Add estimate for owner info context
+        # Add estimate for owner info context from chain_state
         # Each field is roughly 50-100 chars (key + value + formatting)
         try:
-            from utils.owner_info_manager import OwnerInfoManager
-            from crypto.keys import serialize_private_key
-            import hashlib
-
-            private_key_bytes = serialize_private_key(qube.private_key)
-            encryption_key = hashlib.sha256(private_key_bytes).digest()
-            manager = OwnerInfoManager(qube.data_dir, encryption_key)
-            summary = manager.get_summary()
+            summary = qube.chain_state.get_owner_info_summary()
 
             # Estimate: each injectable field is ~75 chars on average
             # Only count non-secret fields (public + private)
@@ -6571,7 +6498,7 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
                 return {"success": False, "error": "Qube does not have a wallet configured"}
 
             # Initialize wallet transaction manager
-            wallet_manager = WalletTransactionManager(qube)
+            wallet_manager = qube.wallet_manager
 
             # Propose the transaction (Qube signs, waits for owner approval)
             pending_tx = await wallet_manager.propose_send(to_address, amount_satoshis, memo)
@@ -6628,10 +6555,42 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
                 return {"success": False, "error": "Qube does not have a wallet configured"}
 
             # Initialize wallet transaction manager
-            wallet_manager = WalletTransactionManager(qube)
+            wallet_manager = qube.wallet_manager
+
+            # Get pending tx details before approval
+            pending_tx = wallet_manager.get_pending_transaction(pending_tx_id)
 
             # Approve and broadcast (owner co-signs)
             txid = await wallet_manager.owner_approve(pending_tx_id, owner_wif)
+
+            # Emit events to update chain_state
+            if pending_tx:
+                from core.events import Events
+
+                # Emit pending tx approved event (removes from pending)
+                qube.events.emit(Events.PENDING_TX_APPROVED, {
+                    "tx_id": pending_tx_id
+                })
+
+                # Emit transaction sent event (adds to history)
+                qube.events.emit(Events.TRANSACTION_SENT, {
+                    "txid": txid,
+                    "to_address": pending_tx.to_address,
+                    "amount_satoshis": pending_tx.total_amount,
+                    "memo": pending_tx.memo,
+                    "auto_approved": False
+                })
+
+                # Update balance via event
+                try:
+                    balance = await wallet_manager.get_balance()
+                    if balance:
+                        qube.events.emit(Events.BALANCE_UPDATED, {
+                            "balance_satoshis": balance.get("confirmed", 0),
+                            "unconfirmed_satoshis": balance.get("unconfirmed", 0)
+                        })
+                except Exception:
+                    pass
 
             return {
                 "success": True,
@@ -6675,10 +6634,16 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
                 return {"success": False, "error": "Qube does not have a wallet configured"}
 
             # Initialize wallet transaction manager
-            wallet_manager = WalletTransactionManager(qube)
+            wallet_manager = qube.wallet_manager
 
             # Reject the transaction
             wallet_manager.owner_reject(pending_tx_id)
+
+            # Emit pending tx rejected event
+            from core.events import Events
+            qube.events.emit(Events.PENDING_TX_REJECTED, {
+                "tx_id": pending_tx_id
+            })
 
             return {
                 "success": True,
@@ -6728,7 +6693,7 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
                 return {"success": False, "error": "Qube does not have a wallet configured"}
 
             # Initialize wallet transaction manager
-            wallet_manager = WalletTransactionManager(qube)
+            wallet_manager = qube.wallet_manager
 
             # Owner withdraw (uses IF branch - owner alone)
             if amount_satoshis == 0:
@@ -6785,41 +6750,42 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
 
             p2sh_address = wallet_info.get("p2sh_address")
 
-            # Initialize wallet transaction manager
-            wallet_manager = WalletTransactionManager(qube)
+            # Get pending transactions from chain_state (source of truth)
+            pending_txs = qube.chain_state.get_pending_transactions()
 
-            # Get pending transactions
-            pending_txs = wallet_manager.get_pending_transactions()
+            # Get transaction history from chain_state (source of truth)
+            all_transactions = qube.chain_state.get_transaction_history(limit=0)  # Get all
+            total_count = len(all_transactions)
 
-            # Get merged blockchain + local transaction history
-            history_result = await wallet_manager.get_full_transaction_history(
-                limit=limit,
-                offset=offset
-            )
+            # Apply pagination
+            paginated_transactions = all_transactions[offset:offset + limit] if offset else all_transactions[:limit]
+            has_more = offset + limit < total_count
 
             # Format timestamps in transaction history for frontend
-            transactions = history_result.get("transactions", [])
-            for tx in transactions:
+            transactions = []
+            for tx in paginated_transactions:
+                formatted_tx = dict(tx)
                 # Convert Unix timestamp to ISO format
-                if "timestamp" in tx and isinstance(tx["timestamp"], (int, float)):
-                    tx["timestamp"] = datetime.fromtimestamp(tx["timestamp"]).isoformat()
+                if "timestamp" in formatted_tx and isinstance(formatted_tx["timestamp"], (int, float)):
+                    formatted_tx["timestamp"] = datetime.fromtimestamp(formatted_tx["timestamp"]).isoformat()
+                transactions.append(formatted_tx)
 
             return {
                 "success": True,
                 "wallet_address": p2sh_address,
                 "transactions": transactions,
-                "total_count": history_result.get("total_count", 0),
-                "has_more": history_result.get("has_more", False),
+                "total_count": total_count,
+                "has_more": has_more,
                 "pending_transactions": [
                     {
-                        "tx_id": tx.tx_id,
-                        "outputs": tx.outputs,
-                        "total_amount": tx.total_amount,
-                        "fee": tx.fee,
-                        "status": tx.status,
-                        "created_at": datetime.fromtimestamp(tx.created_at).isoformat(),
-                        "expires_at": datetime.fromtimestamp(tx.expires_at).isoformat() if tx.expires_at else None,
-                        "memo": tx.memo
+                        "tx_id": tx.get("tx_id"),
+                        "outputs": tx.get("outputs", []),
+                        "total_amount": tx.get("total_amount", 0),
+                        "fee": tx.get("fee", 0),
+                        "status": tx.get("status"),
+                        "created_at": datetime.fromtimestamp(tx.get("created_at", 0)).isoformat() if tx.get("created_at") else None,
+                        "expires_at": datetime.fromtimestamp(tx.get("expires_at")).isoformat() if tx.get("expires_at") else None,
+                        "memo": tx.get("memo")
                     }
                     for tx in pending_txs
                 ]
@@ -6846,27 +6812,123 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
                             return dir_entry
         return None
 
-    def _load_chain_state(self, qube_dir: Path) -> Dict[str, Any]:
-        """Load chain_state.json for a qube directory."""
-        chain_state_path = qube_dir / "chain" / "chain_state.json"
-        if chain_state_path.exists():
-            with open(chain_state_path, "r") as f:
-                return json.load(f)
-        # Return default state if file doesn't exist
-        return {
-            "model_preferences": {},
-            "current_model_override": None,
-            "model_locked": False,
-            "model_locked_to": None,
-            "revolver_mode_enabled": False,
-            "revolver_last_index": 0
-        }
+    def _get_qube_encryption_key(self, qube_dir: Path) -> Optional[bytes]:
+        """
+        Get the encryption key for a qube.
 
-    def _save_chain_state(self, qube_dir: Path, state: Dict[str, Any]) -> None:
-        """Save chain_state.json for a qube directory."""
-        chain_state_path = qube_dir / "chain" / "chain_state.json"
-        with open(chain_state_path, "w") as f:
-            json.dump(state, f, indent=2)
+        The qube's encryption key is stored encrypted by the master key in:
+        {qube_dir}/chain/encryption_key.enc
+
+        Falls back to master_key for legacy qubes without encryption_key.enc.
+
+        Args:
+            qube_dir: Qube data directory
+
+        Returns:
+            Encryption key bytes, or None if not available
+        """
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+        if not self.orchestrator.master_key:
+            logger.warning("Cannot get qube encryption key - master key not set")
+            return None
+
+        key_file = qube_dir / "chain" / "encryption_key.enc"
+        if not key_file.exists():
+            # Legacy qube without encrypted key file - use master key directly
+            logger.debug("No encryption_key.enc found, using master key fallback")
+            return self.orchestrator.master_key
+
+        try:
+            with open(key_file, 'r') as f:
+                enc_data = json.load(f)
+
+            nonce = bytes.fromhex(enc_data["nonce"])
+            ciphertext = bytes.fromhex(enc_data["ciphertext"])
+
+            aesgcm = AESGCM(self.orchestrator.master_key)
+            qube_key = aesgcm.decrypt(nonce, ciphertext, None)
+            return qube_key
+
+        except Exception as e:
+            logger.error(f"Failed to decrypt qube encryption key: {e}")
+            return None
+
+    def _get_chain_state(self, qube_id: str) -> Optional["ChainState"]:
+        """
+        Get ChainState instance for a qube with proper encryption.
+
+        Args:
+            qube_id: The Qube's ID
+
+        Returns:
+            ChainState instance, or None if qube not found or key unavailable
+        """
+        from core.chain_state import ChainState
+
+        qube_dir = self._find_qube_dir(qube_id)
+        if not qube_dir:
+            logger.warning(f"Qube directory not found for {qube_id}")
+            return None
+
+        encryption_key = self._get_qube_encryption_key(qube_dir)
+        if not encryption_key:
+            logger.warning(f"Cannot access chain_state for {qube_id} - no encryption key")
+            return None
+
+        chain_dir = qube_dir / "chain"
+        return ChainState(data_dir=chain_dir, encryption_key=encryption_key, qube_id=qube_id)
+
+    def _load_chain_state(self, qube_dir: Path) -> Dict[str, Any]:
+        """
+        Load chain_state using ChainState class with encryption.
+
+        DEPRECATED: Prefer using _get_chain_state() directly for proper ChainState access.
+        This method provides backward compatibility for code that expects raw dict access.
+        """
+        encryption_key = self._get_qube_encryption_key(qube_dir)
+        if not encryption_key:
+            # Return default state if encryption key not available
+            return {
+                "model_preferences": {},
+                "current_model_override": None,
+                "model_locked": False,
+                "model_locked_to": None,
+                "revolver_mode_enabled": False,
+                "revolver_mode_pool": [],
+                "autonomous_mode_enabled": False,
+                "autonomous_mode_pool": []
+            }
+
+        from core.chain_state import ChainState
+        chain_dir = qube_dir / "chain"
+        chain_state = ChainState(data_dir=chain_dir, encryption_key=encryption_key)
+
+        # Return settings section for backward compatibility
+        return chain_state.get_all_settings()
+
+    def _save_chain_state(self, qube_dir: Path, state: Dict[str, Any]) -> bool:
+        """
+        Save chain_state using ChainState class with encryption.
+
+        DEPRECATED: Prefer using _get_chain_state() and update_settings() directly.
+        This method provides backward compatibility.
+
+        Returns:
+            True if save succeeded, False if failed
+        """
+        encryption_key = self._get_qube_encryption_key(qube_dir)
+        if not encryption_key:
+            logger.error("Cannot save chain_state - no encryption key (master_key not set?)")
+            return False
+
+        from core.chain_state import ChainState
+        chain_dir = qube_dir / "chain"
+        chain_state = ChainState(data_dir=chain_dir, encryption_key=encryption_key)
+
+        # Update settings section from GUI (don't preserve old GUI-managed values from disk)
+        chain_state.update_settings(state, from_gui=True)
+        return True
 
     async def set_model_lock(self, qube_id: str, locked: bool, model_name: str = None) -> Dict[str, Any]:
         """
@@ -6897,7 +6959,8 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
             if locked:
                 state["revolver_mode_enabled"] = False
 
-            self._save_chain_state(qube_dir, state)
+            if not self._save_chain_state(qube_dir, state):
+                return {"success": False, "error": "Failed to save settings - encryption key not available"}
 
             logger.info(f"Model lock set for {qube_id}: locked={locked}, model={model_name}")
 
@@ -6933,21 +6996,12 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
             if not qube_dir:
                 return {"success": False, "error": f"Qube {qube_id} not found"}
 
-            state = self._load_chain_state(qube_dir)
-            state["revolver_mode_enabled"] = enabled
+            # Use ChainState object directly to properly handle runtime fields
+            chain_state = self._get_chain_state(qube_dir, qube_id)
+            if not chain_state:
+                return {"success": False, "error": "Failed to access chain state - encryption key not available"}
 
-            # Mutually exclusive: disable lock when enabling revolver
-            if enabled:
-                state["model_locked"] = False
-                state["model_locked_to"] = None
-                # Reset rotation state when enabling
-                state["revolver_last_index"] = 0
-                state["revolver_first_response_done"] = False
-                # Record when revolver mode was enabled (for first-response detection)
-                import time
-                state["revolver_enabled_at"] = int(time.time())
-
-            self._save_chain_state(qube_dir, state)
+            chain_state.set_revolver_mode(enabled)
 
             logger.info(f"Revolver mode set for {qube_id}: enabled={enabled}")
 
@@ -6960,17 +7014,17 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
             logger.error(f"Failed to set revolver mode: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
 
-    async def set_revolver_providers(self, qube_id: str, providers: List[str]) -> Dict[str, Any]:
+    async def set_revolver_mode_pool(self, qube_id: str, models: List[str]) -> Dict[str, Any]:
         """
-        Set the list of providers to include in revolver mode rotation.
+        Set the model pool for revolver mode rotation.
         Works directly with chain_state.json without loading the full qube.
 
         Args:
             qube_id: The Qube's ID
-            providers: List of provider names. Empty list means use all configured providers.
+            models: List of model IDs for revolver rotation.
 
         Returns:
-            Dict with success status and current providers list
+            Dict with success status and current pool
         """
         try:
             qube_dir = self._find_qube_dir(qube_id)
@@ -6978,90 +7032,83 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
                 return {"success": False, "error": f"Qube {qube_id} not found"}
 
             state = self._load_chain_state(qube_dir)
-            state["revolver_providers"] = providers
-            self._save_chain_state(qube_dir, state)
+            state["revolver_mode_pool"] = models
+            if not self._save_chain_state(qube_dir, state):
+                return {"success": False, "error": "Failed to save settings - encryption key not available"}
 
-            logger.info(f"Revolver providers set for {qube_id}: {providers}")
+            logger.info(f"Revolver mode pool set for {qube_id}: {len(models)} models")
 
             return {
                 "success": True,
-                "providers": providers
+                "pool": models
             }
 
         except Exception as e:
-            logger.error(f"Failed to set revolver providers: {e}", exc_info=True)
+            logger.error(f"Failed to set revolver mode pool: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
+
+    async def get_revolver_mode_pool(self, qube_id: str) -> Dict[str, Any]:
+        """
+        Get the model pool for revolver mode rotation.
+        Works directly with chain_state.json without loading the full qube.
+
+        Args:
+            qube_id: The Qube's ID
+
+        Returns:
+            Dict with success status and pool list
+        """
+        try:
+            qube_dir = self._find_qube_dir(qube_id)
+            if not qube_dir:
+                return {"success": False, "error": f"Qube {qube_id} not found"}
+
+            state = self._load_chain_state(qube_dir)
+            pool = state.get("revolver_mode_pool", [])
+
+            return {
+                "success": True,
+                "pool": pool
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to get revolver mode pool: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    # Deprecated: Use set_revolver_mode_pool instead
+    async def set_revolver_providers(self, qube_id: str, providers: List[str]) -> Dict[str, Any]:
+        """Deprecated: Use set_revolver_mode_pool instead."""
+        return await self.set_revolver_mode_pool(qube_id, providers)
 
     async def get_revolver_providers(self, qube_id: str) -> Dict[str, Any]:
-        """
-        Get the list of providers configured for revolver mode rotation.
-        Works directly with chain_state.json without loading the full qube.
-
-        Args:
-            qube_id: The Qube's ID
-
-        Returns:
-            Dict with success status and providers list
-        """
-        try:
-            qube_dir = self._find_qube_dir(qube_id)
-            if not qube_dir:
-                return {"success": False, "error": f"Qube {qube_id} not found"}
-
-            state = self._load_chain_state(qube_dir)
-            providers = state.get("revolver_providers", [])
-
-            return {
-                "success": True,
-                "providers": providers
-            }
-
-        except Exception as e:
-            logger.error(f"Failed to get revolver providers: {e}", exc_info=True)
-            return {"success": False, "error": str(e)}
+        """Deprecated: Use get_revolver_mode_pool instead."""
+        result = await self.get_revolver_mode_pool(qube_id)
+        if result.get("success"):
+            return {"success": True, "providers": result.get("pool", [])}
+        return result
 
     async def set_revolver_models(self, qube_id: str, models: List[str]) -> Dict[str, Any]:
-        """
-        Set the list of specific models to include in revolver mode rotation.
-        Works directly with chain_state.json without loading the full qube.
-
-        Args:
-            qube_id: The Qube's ID
-            models: List of model IDs. Empty list means use all models from selected providers.
-
-        Returns:
-            Dict with success status and current models list
-        """
-        try:
-            qube_dir = self._find_qube_dir(qube_id)
-            if not qube_dir:
-                return {"success": False, "error": f"Qube {qube_id} not found"}
-
-            state = self._load_chain_state(qube_dir)
-            state["revolver_models"] = models
-            self._save_chain_state(qube_dir, state)
-
-            logger.info(f"Revolver models set for {qube_id}: {len(models)} models")
-
-            return {
-                "success": True,
-                "models": models
-            }
-
-        except Exception as e:
-            logger.error(f"Failed to set revolver models: {e}", exc_info=True)
-            return {"success": False, "error": str(e)}
+        """Deprecated: Use set_revolver_mode_pool instead."""
+        return await self.set_revolver_mode_pool(qube_id, models)
 
     async def get_revolver_models(self, qube_id: str) -> Dict[str, Any]:
+        """Deprecated: Use get_revolver_mode_pool instead."""
+        result = await self.get_revolver_mode_pool(qube_id)
+        if result.get("success"):
+            return {"success": True, "models": result.get("pool", [])}
+        return result
+
+    async def set_autonomous_mode_pool(self, qube_id: str, models: List[str]) -> Dict[str, Any]:
         """
-        Get the list of specific models configured for revolver mode rotation.
+        Set the model pool for autonomous mode.
         Works directly with chain_state.json without loading the full qube.
 
         Args:
             qube_id: The Qube's ID
+            models: List of model IDs for autonomous mode.
 
         Returns:
-            Dict with success status and models list
+            Dict with success status and current pool
         """
         try:
             qube_dir = self._find_qube_dir(qube_id)
@@ -7069,85 +7116,83 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
                 return {"success": False, "error": f"Qube {qube_id} not found"}
 
             state = self._load_chain_state(qube_dir)
-            models = state.get("revolver_models", [])
+            state["autonomous_mode_pool"] = models
+            if not self._save_chain_state(qube_dir, state):
+                return {"success": False, "error": "Failed to save settings - encryption key not available"}
+
+            logger.info(f"Autonomous mode pool set for {qube_id}: {len(models)} models")
 
             return {
                 "success": True,
-                "models": models
+                "pool": models
             }
 
         except Exception as e:
-            logger.error(f"Failed to get revolver models: {e}", exc_info=True)
+            logger.error(f"Failed to set autonomous mode pool: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
+
+    async def get_autonomous_mode_pool(self, qube_id: str) -> Dict[str, Any]:
+        """
+        Get the model pool for autonomous mode.
+        Works directly with chain_state.json without loading the full qube.
+
+        Args:
+            qube_id: The Qube's ID
+
+        Returns:
+            Dict with success status and pool list
+        """
+        try:
+            qube_dir = self._find_qube_dir(qube_id)
+            if not qube_dir:
+                return {"success": False, "error": f"Qube {qube_id} not found"}
+
+            state = self._load_chain_state(qube_dir)
+            pool = state.get("autonomous_mode_pool", [])
+
+            return {
+                "success": True,
+                "pool": pool
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to get autonomous mode pool: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    # Deprecated: Use set_autonomous_mode_pool instead
+    async def set_autonomous_mode_pools(self, qube_id: str, pools: Dict[str, List[str]]) -> Dict[str, Any]:
+        """Deprecated: Use set_autonomous_mode_pool instead."""
+        # Flatten all pools into a single list
+        all_models = [m for models in pools.values() for m in models]
+        return await self.set_autonomous_mode_pool(qube_id, all_models)
+
+    async def get_autonomous_mode_pools(self, qube_id: str) -> Dict[str, Any]:
+        """Deprecated: Use get_autonomous_mode_pool instead."""
+        result = await self.get_autonomous_mode_pool(qube_id)
+        if result.get("success"):
+            pool = result.get("pool", [])
+            return {"success": True, "pools": {"default": pool} if pool else {}}
+        return result
 
     async def set_free_mode_models(self, qube_id: str, models: List[str]) -> Dict[str, Any]:
-        """
-        Set the list of models available in free mode (autonomous selection).
-        Works directly with chain_state.json without loading the full qube.
-
-        Args:
-            qube_id: The Qube's ID
-            models: List of model IDs. Empty list means all configured models are available.
-
-        Returns:
-            Dict with success status and current models list
-        """
-        try:
-            qube_dir = self._find_qube_dir(qube_id)
-            if not qube_dir:
-                return {"success": False, "error": f"Qube {qube_id} not found"}
-
-            state = self._load_chain_state(qube_dir)
-            state["free_mode_models"] = models
-            self._save_chain_state(qube_dir, state)
-
-            logger.info(f"Free mode models set for {qube_id}: {len(models)} models")
-
-            return {
-                "success": True,
-                "models": models
-            }
-
-        except Exception as e:
-            logger.error(f"Failed to set free mode models: {e}", exc_info=True)
-            return {"success": False, "error": str(e)}
+        """Deprecated: Use set_autonomous_mode_pool instead."""
+        return await self.set_autonomous_mode_pool(qube_id, models)
 
     async def get_free_mode_models(self, qube_id: str) -> Dict[str, Any]:
+        """Deprecated: Use get_autonomous_mode_pool instead."""
+        result = await self.get_autonomous_mode_pool(qube_id)
+        if result.get("success"):
+            return {"success": True, "models": result.get("pool", [])}
+        return result
+
+    async def set_autonomous_mode(self, qube_id: str, enabled: bool) -> Dict[str, Any]:
         """
-        Get the list of models available in free mode.
+        Enable or disable autonomous mode (AI-driven model selection).
         Works directly with chain_state.json without loading the full qube.
 
         Args:
             qube_id: The Qube's ID
-
-        Returns:
-            Dict with success status and models list
-        """
-        try:
-            qube_dir = self._find_qube_dir(qube_id)
-            if not qube_dir:
-                return {"success": False, "error": f"Qube {qube_id} not found"}
-
-            state = self._load_chain_state(qube_dir)
-            models = state.get("free_mode_models", [])
-
-            return {
-                "success": True,
-                "models": models
-            }
-
-        except Exception as e:
-            logger.error(f"Failed to get free mode models: {e}", exc_info=True)
-            return {"success": False, "error": str(e)}
-
-    async def set_free_mode(self, qube_id: str, enabled: bool) -> Dict[str, Any]:
-        """
-        Enable or disable free mode (autonomous model selection).
-        Works directly with chain_state.json without loading the full qube.
-
-        Args:
-            qube_id: The Qube's ID
-            enabled: True to enable free mode, False to disable
+            enabled: True to enable autonomous mode, False to disable
 
         Returns:
             Dict with success status and current enabled state
@@ -7158,10 +7203,16 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
                 return {"success": False, "error": f"Qube {qube_id} not found"}
 
             state = self._load_chain_state(qube_dir)
-            state["free_mode"] = enabled
-            self._save_chain_state(qube_dir, state)
+            state["autonomous_mode_enabled"] = enabled
+            # Mutually exclusive: disable other modes when enabling autonomous mode
+            if enabled:
+                state["model_locked"] = False
+                state["model_locked_to"] = None
+                state["revolver_mode_enabled"] = False
+            if not self._save_chain_state(qube_dir, state):
+                return {"success": False, "error": "Failed to save settings - encryption key not available"}
 
-            logger.info(f"Free mode {'enabled' if enabled else 'disabled'} for {qube_id}")
+            logger.info(f"Autonomous mode {'enabled' if enabled else 'disabled'} for {qube_id}")
 
             return {
                 "success": True,
@@ -7169,8 +7220,13 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
             }
 
         except Exception as e:
-            logger.error(f"Failed to set free mode: {e}", exc_info=True)
+            logger.error(f"Failed to set autonomous mode: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
+
+    # Backward compatibility alias
+    async def set_free_mode(self, qube_id: str, enabled: bool) -> Dict[str, Any]:
+        """Deprecated: Use set_autonomous_mode instead."""
+        return await self.set_autonomous_mode(qube_id, enabled)
 
     async def get_model_preferences(self, qube_id: str) -> Dict[str, Any]:
         """
@@ -7200,9 +7256,9 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
 
             # Determine modes: model_locked is the default if none are explicitly set
             revolver_mode = state.get("revolver_mode_enabled", False)
-            free_mode = state.get("free_mode", False)
-            # Default to model_locked if neither revolver nor free mode is on
-            model_locked = state.get("model_locked", not revolver_mode and not free_mode)
+            autonomous_mode = state.get("autonomous_mode_enabled", False)
+            # Default to model_locked if neither revolver nor autonomous mode is on
+            model_locked = state.get("model_locked", not revolver_mode and not autonomous_mode)
 
             return {
                 "success": True,
@@ -7213,10 +7269,9 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
                 "model_locked": model_locked,
                 "locked_to": state.get("model_locked_to"),
                 "revolver_mode": revolver_mode,
-                "revolver_providers": state.get("revolver_providers", []),
-                "revolver_models": state.get("revolver_models", []),
-                "free_mode": free_mode,
-                "free_mode_models": state.get("free_mode_models", [])
+                "revolver_mode_pool": state.get("revolver_mode_pool", []),
+                "autonomous_mode": autonomous_mode,
+                "autonomous_mode_pool": state.get("autonomous_mode_pool", [])
             }
 
         except Exception as e:
@@ -7761,6 +7816,8 @@ async def main():
 
             # Get data directory from orchestrator
             user_bridge = GUIBridge(user_id=user_id)
+            if password:
+                user_bridge.orchestrator.set_master_key(password)
             qube_dir = user_bridge.orchestrator.data_dir / "qubes"
 
             # Find qube directory (starts with name, ends with _QUBEID)
@@ -7773,7 +7830,6 @@ async def main():
             blocks_discarded = 0
             if qube_path:
                 session_dir = qube_path / "blocks" / "session"
-                chain_state_file = qube_path / "chain_state.json"
 
                 # Delete session block files with retry
                 if session_dir.exists():
@@ -7790,28 +7846,26 @@ async def main():
                                 logger.warning("delete_block_failed", file=str(block_file), error=str(e))
                                 break
 
-                # Update chain_state to clear session info
-                if chain_state_file.exists():
-                    try:
-                        with open(chain_state_file, 'r') as f:
-                            state = json.load(f)
+                # Update chain_state to clear session info using ChainState class
+                try:
+                    encryption_key = user_bridge._get_qube_encryption_key(qube_path)
+                    if encryption_key:
+                        from core.chain_state import ChainState
+                        chain_dir = qube_path / "chain"
+                        cs = ChainState(data_dir=chain_dir, encryption_key=encryption_key)
 
-                        state["current_session_id"] = None
-                        state["session_block_count"] = 0
-                        state["next_negative_index"] = -1
-                        state["session_start_timestamp"] = None
+                        # Rollback session-scoped data (skills, relationships, mood, owner_info)
+                        # to the snapshot taken when the session started
+                        rolled_back = cs.rollback_session_data()
+                        if rolled_back:
+                            logger.info("session_scoped_data_rolled_back")
 
-                        # Write with retry
-                        for attempt in range(3):
-                            try:
-                                with open(chain_state_file, 'w') as f:
-                                    json.dump(state, f, indent=2)
-                                break
-                            except PermissionError:
-                                if attempt < 2:
-                                    time.sleep(0.1 * (attempt + 1))
-                    except Exception as e:
-                        logger.warning("update_chain_state_failed", error=str(e))
+                        # Clear session state
+                        cs.end_session()
+                    else:
+                        logger.warning("Cannot update chain_state - no encryption key")
+                except Exception as e:
+                    logger.warning("update_chain_state_failed", error=str(e))
 
             print(json.dumps({"success": True, "blocks_discarded": blocks_discarded}))
 
@@ -7922,8 +7976,16 @@ async def main():
             # Parse evaluation_model from 8th argument
             evaluation_model = sys.argv[8] if len(sys.argv) > 8 and sys.argv[8] else None
 
+            # Parse password from 9th argument (needed for chain_state encryption)
+            password = get_secret("password", argv_index=9)
+
             # Create bridge with correct user
             user_bridge = GUIBridge(user_id=user_id)
+
+            # Set master key if password provided (required for chain_state updates)
+            if password:
+                user_bridge.orchestrator.set_master_key(password)
+
             result = await user_bridge.update_qube_config(qube_id, ai_model, voice_model, favorite_color, tts_enabled, evaluation_model)
             print(json.dumps(result))
 
@@ -7967,10 +8029,12 @@ async def main():
             user_id = sys.argv[2]
             # SECURITY: Validate qube_id
             qube_id = validate_qube_id(sys.argv[3])
+            # Password passed via stdin for security - needed for encrypted chain_state
+            password = get_secret("password", required=False)
 
             # Create bridge with correct user
             user_bridge = GUIBridge(user_id=user_id)
-            result = await user_bridge.reset_qube(qube_id)
+            result = await user_bridge.reset_qube(qube_id, password)
             print(json.dumps(result))
 
         elif command == "save-image":
@@ -9323,24 +9387,52 @@ async def main():
                     print(json.dumps({"success": False, "error": f"Qube {qube_id} not found"}), file=sys.stderr)
                     sys.exit(1)
 
-                settings_file = qube_dir / "visualizer_settings.json"
+                # Get password for chain_state access
+                password = get_secret("password", argv_index=4, required=False)
 
-                # Load settings or return defaults
-                if settings_file.exists():
-                    with open(settings_file, 'r') as f:
-                        settings = json.load(f)
-                else:
-                    settings = {
-                        "enabled": False,
-                        "waveform_style": 1,
-                        "color_theme": "qube-color",
-                        "gradient_style": "gradient-dark",
-                        "sensitivity": 50,
-                        "animation_smoothness": "medium",
-                        "audio_offset_ms": 0,
-                        "frequency_range": 20,
-                        "output_monitor": 0
-                    }
+                # Default settings
+                default_settings = {
+                    "enabled": False,
+                    "waveform_style": 1,
+                    "color_theme": "qube-color",
+                    "gradient_style": "gradient-dark",
+                    "sensitivity": 50,
+                    "animation_smoothness": "medium",
+                    "audio_offset_ms": 0,
+                    "frequency_range": 20,
+                    "output_monitor": 0
+                }
+
+                # Try to load from chain_state first
+                settings = None
+                if password:
+                    try:
+                        from core.chain_state import ChainState
+                        from orchestrator.user_orchestrator import UserOrchestrator
+
+                        # Derive encryption key from password
+                        orchestrator = UserOrchestrator(user_id)
+                        orchestrator.set_master_key(password)
+                        qube_key = orchestrator._get_encryption_key(qube_dir)
+
+                        if qube_key:
+                            chain_dir = qube_dir / "chain"
+                            cs = ChainState(chain_dir, qube_key, qube_id)
+                            settings = cs.get_visualizer_settings()
+                            if settings:
+                                # Add enabled flag from chain_state
+                                settings["enabled"] = cs.is_visualizer_enabled()
+                    except Exception as e:
+                        logger.debug(f"Could not load visualizer settings from chain_state: {e}")
+
+                # Fallback to legacy file if chain_state didn't have settings
+                if not settings:
+                    settings_file = qube_dir / "visualizer_settings.json"
+                    if settings_file.exists():
+                        with open(settings_file, 'r') as f:
+                            settings = json.load(f)
+                    else:
+                        settings = default_settings
 
                 print(json.dumps(settings))
 
@@ -9357,6 +9449,7 @@ async def main():
             user_id = sys.argv[2]
             qube_id = sys.argv[3]
             settings_json = sys.argv[4]
+            password = get_secret("password", argv_index=5, required=False)
 
             try:
                 # Find qube directory
@@ -9371,14 +9464,43 @@ async def main():
                     print(json.dumps({"success": False, "error": f"Qube {qube_id} not found"}), file=sys.stderr)
                     sys.exit(1)
 
-                settings_file = qube_dir / "visualizer_settings.json"
                 settings_data = json.loads(settings_json)
 
-                # Save settings
+                # Save to chain_state if password is provided
+                saved_to_chain_state = False
+                enabled = settings_data.pop("enabled", False)  # Extract enabled for both paths
+                if password:
+                    try:
+                        from core.chain_state import ChainState
+                        from orchestrator.user_orchestrator import UserOrchestrator
+
+                        # Derive encryption key from password
+                        orchestrator = UserOrchestrator(user_id)
+                        orchestrator.set_master_key(password)
+                        qube_key = orchestrator._get_encryption_key(qube_dir)
+
+                        if qube_key:
+                            chain_dir = qube_dir / "chain"
+                            cs = ChainState(chain_dir, qube_key, qube_id)
+
+                            # Save enabled flag separately
+                            cs.set_visualizer_enabled(enabled)
+
+                            # Save the rest of the settings
+                            cs.set_visualizer_settings(settings_data)
+                            saved_to_chain_state = True
+                            logger.info("Visualizer settings saved to chain_state")
+                    except Exception as e:
+                        logger.warning(f"Could not save visualizer settings to chain_state: {e}")
+
+                # Also save to legacy file as backup
+                settings_file = qube_dir / "visualizer_settings.json"
+                # Re-add enabled for legacy file (we popped it earlier)
+                settings_data["enabled"] = enabled
                 with open(settings_file, 'w') as f:
                     json.dump(settings_data, f, indent=2)
 
-                print(json.dumps({"success": True, "message": "Visualizer settings saved"}))
+                print(json.dumps({"success": True, "message": "Visualizer settings saved", "chain_state": saved_to_chain_state}))
 
             except Exception as e:
                 logger.error(f"Failed to save visualizer settings: {e}", exc_info=True)
@@ -9392,34 +9514,39 @@ async def main():
 
             user_id = sys.argv[2]
             qube_id = sys.argv[3]
+            # Password passed via stdin for security
+            password = get_secret("password", argv_index=4, required=False)
 
             try:
-                from utils.file_lock import FileLock
+                # Create bridge and set master key
+                user_bridge = GUIBridge(user_id=user_id)
+                if password:
+                    user_bridge.orchestrator.set_master_key(password)
 
                 # Find qube directory
-                data_dir = get_user_qubes_dir(user_id)
-                qube_dir = None
-                for dir_path in data_dir.iterdir():
-                    if dir_path.is_dir() and qube_id in dir_path.name:
-                        qube_dir = dir_path
-                        break
+                qube_dir = user_bridge._find_qube_dir(qube_id)
 
                 if not qube_dir:
                     print(json.dumps({"success": False, "error": f"Qube {qube_id} not found"}), file=sys.stderr)
                     sys.exit(1)
 
-                chain_state_file = qube_dir / "chain_state.json"
-                lock_file = qube_dir / ".chain_state.lock"
+                # Try to get trust_profile from chain_state
+                trust_profile = "balanced"  # Default
 
-                # Load chain_state with file locking
-                lock = FileLock(lock_file, timeout=5.0)
-                with lock:
-                    if chain_state_file.exists():
-                        with open(chain_state_file, 'r') as f:
+                # Use ChainState with encryption if we have the key
+                encryption_key = user_bridge._get_qube_encryption_key(qube_dir)
+                if encryption_key:
+                    from core.chain_state import ChainState
+                    chain_dir = qube_dir / "chain"
+                    cs = ChainState(chain_dir, encryption_key, qube_id)
+                    trust_profile = cs.get_setting("trust_profile", "balanced")
+                else:
+                    # Try reading plain JSON for legacy qubes
+                    chain_state_path = qube_dir / "chain" / "chain_state.json"
+                    if chain_state_path.exists():
+                        with open(chain_state_path, "r") as f:
                             chain_state = json.load(f)
-                        trust_profile = chain_state.get("trust_profile", "balanced")
-                    else:
-                        trust_profile = "balanced"
+                            trust_profile = chain_state.get("trust_profile", "balanced")
 
                 print(json.dumps({"trust_profile": trust_profile}))
 
@@ -9429,59 +9556,44 @@ async def main():
                 sys.exit(1)
 
         elif command == "update-trust-personality":
-            if len(sys.argv) < 5:
-                print(json.dumps({"success": False, "error": "User ID, Qube ID, and trust profile required"}), file=sys.stderr)
+            if len(sys.argv) < 6:
+                print(json.dumps({"success": False, "error": "User ID, Qube ID, trust profile, and password required"}), file=sys.stderr)
                 sys.exit(1)
 
             user_id = sys.argv[2]
             qube_id = sys.argv[3]
             trust_profile = sys.argv[4]
+            password = get_secret("password", argv_index=5)
 
             try:
-                from utils.file_lock import FileLock
-
                 # Validate trust_profile
                 valid_profiles = ["cautious", "balanced", "social", "analytical"]
                 if trust_profile not in valid_profiles:
                     print(json.dumps({"success": False, "error": f"Invalid trust profile. Must be one of: {', '.join(valid_profiles)}"}), file=sys.stderr)
                     sys.exit(1)
 
+                # Create bridge and set master key
+                user_bridge = GUIBridge(user_id=user_id)
+                if password:
+                    user_bridge.orchestrator.set_master_key(password)
+
                 # Find qube directory
-                data_dir = get_user_qubes_dir(user_id)
-                qube_dir = None
-                for dir_path in data_dir.iterdir():
-                    if dir_path.is_dir() and qube_id in dir_path.name:
-                        qube_dir = dir_path
-                        break
+                qube_dir = user_bridge._find_qube_dir(qube_id)
 
                 if not qube_dir:
                     print(json.dumps({"success": False, "error": f"Qube {qube_id} not found"}), file=sys.stderr)
                     sys.exit(1)
 
-                chain_state_file = qube_dir / "chain_state.json"
-                lock_file = qube_dir / ".chain_state.lock"
-
-                # Update chain_state with file locking
-                lock = FileLock(lock_file, timeout=5.0)
-                with lock:
-                    # Load existing chain_state
-                    if chain_state_file.exists():
-                        with open(chain_state_file, 'r') as f:
-                            chain_state = json.load(f)
-                    else:
-                        # Initialize if doesn't exist
-                        chain_state = {"qube_id": qube_id}
-
-                    # Update trust_profile
-                    chain_state["trust_profile"] = trust_profile
-
-                    # Save atomically
-                    temp_file = chain_state_file.with_suffix('.json.tmp')
-                    with open(temp_file, 'w') as f:
-                        json.dump(chain_state, f, indent=2)
-                    temp_file.replace(chain_state_file)
-
-                print(json.dumps({"success": True, "trust_profile": trust_profile}))
+                # Use ChainState with encryption
+                encryption_key = user_bridge._get_qube_encryption_key(qube_dir)
+                if encryption_key:
+                    from core.chain_state import ChainState
+                    chain_dir = qube_dir / "chain"
+                    cs = ChainState(data_dir=chain_dir, encryption_key=encryption_key)
+                    cs.update_settings({"trust_profile": trust_profile})
+                    print(json.dumps({"success": True, "trust_profile": trust_profile}))
+                else:
+                    print(json.dumps({"success": False, "error": "Cannot access chain_state - no encryption key"}))
 
             except Exception as e:
                 logger.error(f"Failed to update trust personality: {e}", exc_info=True)
@@ -10982,11 +11094,12 @@ async def main():
         # ==================== Clearance Profile CLI Commands ====================
 
         elif command == "get-clearance-profiles":
-            # Args: user_id, qube_id
+            # Args: user_id, qube_id, password
             user_id = sys.argv[2]
             qube_id = sys.argv[3]
+            password = sys.argv[4] if len(sys.argv) > 4 else ""
             user_bridge = GUIBridge(user_id=user_id)
-            result = await user_bridge.get_clearance_profiles(qube_id)
+            result = await user_bridge.get_clearance_profiles(qube_id, password)
             print(json.dumps(result))
 
         elif command == "get-available-tags":
@@ -11056,92 +11169,86 @@ async def main():
 
         # ==================== Model Control CLI Commands ====================
         elif command == "set-model-lock":
-            # Args: user_id, qube_id, locked (true/false), [model_name]
+            # Args: user_id, qube_id, locked (true/false), [model_name], password (via stdin)
             user_id = sys.argv[2]
             qube_id = sys.argv[3]
             locked = sys.argv[4].lower() == "true"
-            model_name = sys.argv[5] if len(sys.argv) > 5 else None
+            model_name = sys.argv[5] if len(sys.argv) > 5 and sys.argv[5] else None
+            password = get_secret("password", argv_index=6)
             user_bridge = GUIBridge(user_id=user_id)
+            user_bridge.orchestrator.set_master_key(password)
             result = await user_bridge.set_model_lock(qube_id, locked, model_name)
             print(json.dumps(result))
 
         elif command == "set-revolver-mode":
-            # Args: user_id, qube_id, enabled (true/false)
+            # Args: user_id, qube_id, enabled (true/false), password (via stdin)
             user_id = sys.argv[2]
             qube_id = sys.argv[3]
             enabled = sys.argv[4].lower() == "true"
+            password = get_secret("password", argv_index=5)
             user_bridge = GUIBridge(user_id=user_id)
+            user_bridge.orchestrator.set_master_key(password)
             result = await user_bridge.set_revolver_mode(qube_id, enabled)
             print(json.dumps(result))
 
-        elif command == "set-revolver-providers":
-            # Args: user_id, qube_id, providers (JSON array)
+        elif command == "set-revolver-mode-pool":
+            # Args: user_id, qube_id, pool (JSON array), password (via stdin)
             user_id = sys.argv[2]
             qube_id = sys.argv[3]
-            providers_json = sys.argv[4] if len(sys.argv) > 4 else "[]"
-            providers = json.loads(providers_json)
+            pool_json = sys.argv[4] if len(sys.argv) > 4 else "[]"
+            pool = json.loads(pool_json)
+            password = get_secret("password", argv_index=5)
             user_bridge = GUIBridge(user_id=user_id)
-            result = await user_bridge.set_revolver_providers(qube_id, providers)
+            user_bridge.orchestrator.set_master_key(password)
+            result = await user_bridge.set_revolver_mode_pool(qube_id, pool)
             print(json.dumps(result))
 
-        elif command == "get-revolver-providers":
+        elif command == "get-revolver-mode-pool":
             # Args: user_id, qube_id
             user_id = sys.argv[2]
             qube_id = sys.argv[3]
             user_bridge = GUIBridge(user_id=user_id)
-            result = await user_bridge.get_revolver_providers(qube_id)
+            result = await user_bridge.get_revolver_mode_pool(qube_id)
             print(json.dumps(result))
 
-        elif command == "set-revolver-models":
-            # Args: user_id, qube_id, models (JSON array)
+        elif command == "set-autonomous-mode-pool":
+            # Args: user_id, qube_id, pool (JSON array), password (via stdin)
             user_id = sys.argv[2]
             qube_id = sys.argv[3]
-            models_json = sys.argv[4] if len(sys.argv) > 4 else "[]"
-            models = json.loads(models_json)
+            pool_json = sys.argv[4] if len(sys.argv) > 4 else "[]"
+            pool = json.loads(pool_json)
+            password = get_secret("password", argv_index=5)
             user_bridge = GUIBridge(user_id=user_id)
-            result = await user_bridge.set_revolver_models(qube_id, models)
+            user_bridge.orchestrator.set_master_key(password)
+            result = await user_bridge.set_autonomous_mode_pool(qube_id, pool)
             print(json.dumps(result))
 
-        elif command == "get-revolver-models":
+        elif command == "get-autonomous-mode-pool":
             # Args: user_id, qube_id
             user_id = sys.argv[2]
             qube_id = sys.argv[3]
             user_bridge = GUIBridge(user_id=user_id)
-            result = await user_bridge.get_revolver_models(qube_id)
+            result = await user_bridge.get_autonomous_mode_pool(qube_id)
             print(json.dumps(result))
 
-        elif command == "set-free-mode-models":
-            # Args: user_id, qube_id, models (JSON array)
-            user_id = sys.argv[2]
-            qube_id = sys.argv[3]
-            models_json = sys.argv[4] if len(sys.argv) > 4 else "[]"
-            models = json.loads(models_json)
-            user_bridge = GUIBridge(user_id=user_id)
-            result = await user_bridge.set_free_mode_models(qube_id, models)
-            print(json.dumps(result))
-
-        elif command == "get-free-mode-models":
-            # Args: user_id, qube_id
-            user_id = sys.argv[2]
-            qube_id = sys.argv[3]
-            user_bridge = GUIBridge(user_id=user_id)
-            result = await user_bridge.get_free_mode_models(qube_id)
-            print(json.dumps(result))
-
-        elif command == "set-free-mode":
-            # Args: user_id, qube_id, enabled (true/false)
+        elif command == "set-autonomous-mode":
+            # Args: user_id, qube_id, enabled (true/false), password (via stdin)
             user_id = sys.argv[2]
             qube_id = sys.argv[3]
             enabled = sys.argv[4].lower() == "true" if len(sys.argv) > 4 else True
+            password = get_secret("password", argv_index=5)
             user_bridge = GUIBridge(user_id=user_id)
-            result = await user_bridge.set_free_mode(qube_id, enabled)
+            user_bridge.orchestrator.set_master_key(password)
+            result = await user_bridge.set_autonomous_mode(qube_id, enabled)
             print(json.dumps(result))
 
         elif command == "get-model-preferences":
-            # Args: user_id, qube_id
+            # Args: user_id, qube_id, password (via stdin)
             user_id = sys.argv[2]
             qube_id = sys.argv[3]
+            password = get_secret("password", argv_index=4)
             user_bridge = GUIBridge(user_id=user_id)
+            user_bridge.orchestrator.set_master_key(password)
             result = await user_bridge.get_model_preferences(qube_id)
             print(json.dumps(result))
 
@@ -11163,6 +11270,73 @@ async def main():
             print(json.dumps(result))
 
         # ==================== End Model Control CLI Commands ====================
+
+        # ==================== Event Streaming Commands ====================
+
+        elif command == "watch-events":
+            # Stream chain_state events for a qube in real-time
+            # This command runs indefinitely and outputs JSON events to stdout
+            # Usage: python gui_bridge.py watch-events <user_id> <qube_id>
+            # Password is read from stdin
+            if len(sys.argv) < 4:
+                print(json.dumps({"error": "Usage: watch-events <user_id> <qube_id>"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = validate_user_id(sys.argv[2])
+            qube_id = validate_qube_id(sys.argv[3])
+            password = get_secret("password")
+
+            if not password:
+                print(json.dumps({"error": "Password required"}), file=sys.stderr)
+                sys.exit(1)
+
+            # Import events
+            from core.events import Events, ChainStateEvent
+
+            # Create bridge and load qube
+            bridge = GUIBridge(user_id)
+            if not bridge.orchestrator.unlock(password):
+                print(json.dumps({"error": "Invalid password"}), file=sys.stderr)
+                sys.exit(1)
+
+            qube = await bridge.orchestrator.load_qube(qube_id)
+            if not qube:
+                print(json.dumps({"error": f"Qube {qube_id} not found"}), file=sys.stderr)
+                sys.exit(1)
+
+            # Event callback that prints JSON to stdout
+            def on_event(event: ChainStateEvent):
+                event_data = {
+                    "type": "chain_state_event",
+                    "qube_id": qube_id,
+                    "event_type": event.event_type.value,
+                    "payload": event.payload,
+                    "timestamp": event.timestamp,
+                    "source": event.source
+                }
+                # Print JSON and flush immediately for real-time streaming
+                print(json.dumps(event_data), flush=True)
+
+            # Subscribe to events
+            qube.events.subscribe(on_event)
+
+            # Signal that we're ready
+            print(json.dumps({
+                "type": "ready",
+                "qube_id": qube_id,
+                "message": "Event watcher started"
+            }), flush=True)
+
+            # Keep running until process is terminated
+            try:
+                while True:
+                    await asyncio.sleep(1)
+            except (KeyboardInterrupt, asyncio.CancelledError):
+                pass
+            finally:
+                qube.events.unsubscribe(on_event)
+
+        # ==================== End Event Streaming Commands ====================
 
         else:
             print(json.dumps({"error": f"Unknown command: {command}"}), file=sys.stderr)

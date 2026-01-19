@@ -5,6 +5,7 @@ import { listen } from '@tauri-apps/api/event';
 interface ModelModeIndicatorProps {
   qubeId: string | null;
   userId: string;
+  password: string | null;
 }
 
 /**
@@ -12,13 +13,13 @@ interface ModelModeIndicatorProps {
  * This prevents model mode updates from causing the entire TabContent to re-render,
  * which would break the typewriter effect during streaming.
  */
-export const ModelModeIndicator: React.FC<ModelModeIndicatorProps> = ({ qubeId, userId }) => {
+export const ModelModeIndicator: React.FC<ModelModeIndicatorProps> = ({ qubeId, userId, password }) => {
   const [modelMode, setModelMode] = useState<'manual' | 'revolver' | 'autonomous'>('manual');
 
   // Fetch model mode when qube changes
   useEffect(() => {
     const fetchModelMode = async () => {
-      if (!qubeId || !userId) {
+      if (!qubeId || !userId || !password) {
         setModelMode('manual');
         return;
       }
@@ -28,17 +29,18 @@ export const ModelModeIndicator: React.FC<ModelModeIndicatorProps> = ({ qubeId, 
           success: boolean;
           model_locked?: boolean;
           revolver_mode?: boolean;
-          free_mode?: boolean;
+          autonomous_mode?: boolean;
           error?: string;
         }>('get_model_preferences', {
           userId,
           qubeId,
+          password,
         });
 
         if (result.success) {
           if (result.revolver_mode) {
             setModelMode('revolver');
-          } else if (result.free_mode) {
+          } else if (result.autonomous_mode) {
             setModelMode('autonomous');
           } else {
             setModelMode('manual');
@@ -51,7 +53,7 @@ export const ModelModeIndicator: React.FC<ModelModeIndicatorProps> = ({ qubeId, 
     };
 
     fetchModelMode();
-  }, [qubeId, userId]);
+  }, [qubeId, userId, password]);
 
   // Listen for model mode changes from QubeSettingsModal
   useEffect(() => {
@@ -60,13 +62,13 @@ export const ModelModeIndicator: React.FC<ModelModeIndicatorProps> = ({ qubeId, 
         qubeId: string;
         modelLocked: boolean;
         revolverMode: boolean;
-        freeMode: boolean;
+        autonomousMode: boolean;
       }>('model-mode-changed', (event) => {
         // Only update if the changed qube matches the selected qube
         if (qubeId && event.payload.qubeId === qubeId) {
           if (event.payload.revolverMode) {
             setModelMode('revolver');
-          } else if (event.payload.freeMode) {
+          } else if (event.payload.autonomousMode) {
             setModelMode('autonomous');
           } else {
             setModelMode('manual');

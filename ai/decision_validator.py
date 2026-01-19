@@ -69,7 +69,7 @@ class DecisionValidator:
         # Skip validation for non-sensitive tools
         low_stakes_tools = {
             "web_search", "generate_image", "memory_search",
-            "browse_url", "describe_my_avatar", "get_relationships",
+            "browse_url", "describe_my_avatar", "get_chain_state",
             "query_decision_context", "compare_options", "check_my_capability"
         }
 

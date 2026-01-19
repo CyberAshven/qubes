@@ -163,35 +163,6 @@ def register_default_tools(registry: ToolRegistry) -> None:
         handler=lambda params: describe_avatar_handler(qube, params)
     ))
 
-    # Describe Skills
-    registry.register(ToolDefinition(
-        name="describe_my_skills",
-        description="Query your complete skill tree from skills.json. Access all 112 skills with filtering options. Use this when asked about your skills, abilities, what you can unlock, skill progression, or to check specific skill details. Provides the full skill database including descriptions, levels, XP, unlock status, and prerequisites.",
-        parameters={
-            "type": "object",
-            "properties": {
-                "category": {
-                    "type": "string",
-                    "description": "Filter by skill category (e.g., 'AI Reasoning', 'Social Intelligence', 'Technical Expertise', 'Creative Expression', 'Knowledge Domains', 'Security & Privacy', 'Games')"
-                },
-                "node_type": {
-                    "type": "string",
-                    "enum": ["sun", "planet", "moon"],
-                    "description": "Filter by skill type: sun (categories), planet (major skills), or moon (sub-skills)"
-                },
-                "unlocked": {
-                    "type": "boolean",
-                    "description": "Filter by unlock status (true = unlocked skills, false = locked skills)"
-                },
-                "min_level": {
-                    "type": "integer",
-                    "description": "Filter by minimum skill level (0-100)"
-                }
-            }
-        },
-        handler=lambda params: describe_my_skills_handler(qube, params)
-    ))
-
     # Browse URL
     registry.register(ToolDefinition(
         name="browse_url",
@@ -212,37 +183,6 @@ def register_default_tools(registry: ToolRegistry) -> None:
             "required": ["url"]
         },
         handler=lambda params: browse_url_handler(qube, params)
-    ))
-
-    # Get Relationships
-    registry.register(ToolDefinition(
-        name="get_relationships",
-        description="Query detailed information about your relationships with specific entities (people, other Qubes, etc.). Use this to check trust scores, friendship levels, interaction history, and relationship status. You can query by entity name or ID, or get all relationships sorted by a specific metric.",
-        parameters={
-            "type": "object",
-            "properties": {
-                "entity_id": {
-                    "type": "string",
-                    "description": "Specific entity ID to query (optional - if not provided, returns all relationships)"
-                },
-                "entity_name": {
-                    "type": "string",
-                    "description": "Search for entity by name (optional - partial matches supported)"
-                },
-                "sort_by": {
-                    "type": "string",
-                    "enum": ["trust", "friendship", "messages", "recent"],
-                    "description": "How to sort results (default: trust)",
-                    "default": "trust"
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum number of relationships to return (default: 10)",
-                    "default": 10
-                }
-            }
-        },
-        handler=lambda params: get_relationships_handler(qube, params)
     ))
 
     # Query Decision Context
@@ -658,42 +598,10 @@ def register_default_tools(registry: ToolRegistry) -> None:
         handler=lambda params: chess_move_handler(qube, params)
     ))
 
-    # Remember About Owner Tool
-    registry.register(ToolDefinition(
-        name="remember_about_owner",
-        description="Store personal information about your owner when they share it with you. Use this when your owner tells you things like their name, birthday, preferences, family members, or any other personal details they want you to remember. The information is stored encrypted and used to personalize your interactions. IMPORTANT: Only use this for information your owner explicitly shares - never infer or assume personal details.",
-        parameters={
-            "type": "object",
-            "properties": {
-                "category": {
-                    "type": "string",
-                    "enum": ["standard", "physical", "preferences", "people", "dates", "dynamic"],
-                    "description": "Category for the information: standard (name, nickname, occupation), physical (eye color, hair), preferences (favorite things), people (family, pets), dates (birthday, anniversary), dynamic (anything else)"
-                },
-                "key": {
-                    "type": "string",
-                    "description": "Field name for the information (e.g., 'name', 'birthday', 'favorite_color', 'pet_name')"
-                },
-                "value": {
-                    "type": "string",
-                    "description": "The information to remember"
-                },
-                "sensitivity": {
-                    "type": "string",
-                    "enum": ["public", "private", "secret"],
-                    "description": "Privacy level: public (can share with anyone), private (only share in private chats), secret (never share). Default is private for most info.",
-                    "default": "private"
-                }
-            },
-            "required": ["category", "key", "value"]
-        },
-        handler=lambda params: remember_about_owner_handler(qube, params)
-    ))
-
     # Send BCH (proposes transaction - requires owner approval)
     registry.register(ToolDefinition(
         name="send_bch",
-        description="Send BCH from your wallet. CALL THIS TOOL IMMEDIATELY when owner asks to send BCH - do NOT call get_relationships or any other tool first. No confirmation needed, no relationship required. Use to_qube_name for fellow Qubes (e.g., to_qube_name='Anastasia'). The system looks up addresses automatically.",
+        description="Send BCH from your wallet. CALL THIS TOOL IMMEDIATELY when owner asks to send BCH. No confirmation needed, no relationship required. Use to_qube_name for fellow Qubes (e.g., to_qube_name='Anastasia'). The system looks up addresses automatically.",
         parameters={
             "type": "object",
             "properties": {
@@ -732,6 +640,59 @@ def register_default_tools(registry: ToolRegistry) -> None:
             reason=params.get("reason"),
             save_preference=params.get("save_preference", False)
         )
+    ))
+
+    # =========================================================================
+    # UNIFIED CHAIN STATE TOOLS
+    # =========================================================================
+
+    # Get Chain State - unified read access to all Qube state
+    registry.register(ToolDefinition(
+        name="get_chain_state",
+        description="Get your state data from chain_state - the single source of truth for all your information. Use this to check your relationships, skills, owner info, mood, wallet balance, stats, and settings. Returns all sections by default, or specify which sections you need.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "sections": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Specific sections to retrieve. If not provided, returns all. Valid: chain, session, settings, stats, skills, relationships, financial, mood, health, owner_info, block_counts"
+                }
+            },
+            "required": []
+        },
+        handler=lambda params: get_chain_state_handler(qube, params)
+    ))
+
+    # Update Chain State - unified write access to Qube state
+    registry.register(ToolDefinition(
+        name="update_chain_state",
+        description="Update your state data in chain_state. Use this to remember things about your owner, update your mood, track skills, or modify settings. Replaces remember_about_owner for storing owner information.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "section": {
+                    "type": "string",
+                    "enum": ["owner_info", "relationships", "mood", "skills", "settings"],
+                    "description": "Section to update"
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Dot-notation path within section. Examples: 'standard.name' for owner_info, 'current_mood' for mood, 'entities.qube_123' for relationships"
+                },
+                "value": {
+                    "description": "Value to set. For owner_info, can be string or {value, sensitivity} object"
+                },
+                "operation": {
+                    "type": "string",
+                    "enum": ["set", "delete"],
+                    "default": "set",
+                    "description": "Operation: 'set' to add/update, 'delete' to remove"
+                }
+            },
+            "required": ["section", "path", "value"]
+        },
+        handler=lambda params: update_chain_state_handler(qube, params)
     ))
 
     logger.info("default_tools_registered", tool_count=len(registry.tools), qube_id=qube.qube_id)
@@ -1108,106 +1069,6 @@ async def describe_avatar_handler(qube, params: Dict[str, Any]) -> Dict[str, Any
         }
 
 
-async def describe_my_skills_handler(qube, params: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Query and describe the qube's skill tree from skills.json
-
-    Provides access to the complete 112-skill tree with filtering options.
-
-    Args:
-        params: {
-            "category": str (optional) - Filter by category (e.g., "AI Reasoning")
-            "node_type": str (optional) - Filter by sun/planet/moon
-            "unlocked": bool (optional) - Filter by unlocked status
-            "min_level": int (optional) - Filter by minimum level
-        }
-
-    Returns:
-        {
-            "skills": List[dict] - List of skill objects
-            "total_count": int - Total number of skills returned
-            "summary": dict - Summary statistics
-            "success": bool
-        }
-    """
-    try:
-        from utils.skills_manager import SkillsManager
-
-        # Load skills from skills.json
-        skills_manager = SkillsManager(qube.data_dir)
-        skills_data = skills_manager.load_skills()
-
-        if not skills_data or 'skills' not in skills_data:
-            return {
-                "skills": [],
-                "total_count": 0,
-                "summary": {"message": "No skills data found"},
-                "success": True
-            }
-
-        all_skills = skills_data['skills']
-
-        # Apply filters
-        filtered_skills = all_skills
-
-        # Filter by category
-        if "category" in params and params["category"]:
-            category = params["category"]
-            filtered_skills = [s for s in filtered_skills if s.get('category', '').lower() == category.lower()]
-
-        # Filter by node_type (sun, planet, moon)
-        if "node_type" in params and params["node_type"]:
-            node_type = params["node_type"].lower()
-            filtered_skills = [s for s in filtered_skills if s.get('nodeType', '').lower() == node_type]
-
-        # Filter by unlocked status
-        if "unlocked" in params and isinstance(params["unlocked"], bool):
-            unlocked = params["unlocked"]
-            filtered_skills = [s for s in filtered_skills if s.get('unlocked', False) == unlocked]
-
-        # Filter by minimum level
-        if "min_level" in params and isinstance(params["min_level"], int):
-            min_level = params["min_level"]
-            filtered_skills = [s for s in filtered_skills if s.get('level', 0) >= min_level]
-
-        # Build summary statistics
-        summary = {
-            "total_skills": len(all_skills),
-            "filtered_count": len(filtered_skills),
-            "by_type": {
-                "suns": len([s for s in filtered_skills if s.get('nodeType') == 'sun']),
-                "planets": len([s for s in filtered_skills if s.get('nodeType') == 'planet']),
-                "moons": len([s for s in filtered_skills if s.get('nodeType') == 'moon'])
-            },
-            "unlocked_count": len([s for s in filtered_skills if s.get('unlocked', False)]),
-            "locked_count": len([s for s in filtered_skills if not s.get('unlocked', False)]),
-            "highest_level": max([s.get('level', 0) for s in filtered_skills]) if filtered_skills else 0
-        }
-
-        logger.info(
-            "skills_queried_via_tool",
-            qube_id=qube.qube_id,
-            filters=params,
-            result_count=len(filtered_skills)
-        )
-
-        return {
-            "skills": filtered_skills,
-            "total_count": len(filtered_skills),
-            "summary": summary,
-            "success": True
-        }
-
-    except Exception as e:
-        logger.error("describe_my_skills_tool_failed", qube_id=qube.qube_id, exc_info=True)
-        return {
-            "error": str(e),
-            "skills": [],
-            "total_count": 0,
-            "success": False
-        }
-
-
 async def browse_url_handler(qube, params: Dict[str, Any]) -> Dict[str, Any]:
     """
     Fetch and read content from a URL using a headless browser with JavaScript support
@@ -1322,227 +1183,6 @@ async def browse_url_handler(qube, params: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "error": f"Browser error: {str(e)}",
             "success": False
-        }
-
-
-async def get_relationships_handler(qube, params: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Query relationship information
-
-    IMPORTANT: All relationship metrics are on a 0-100 scale.
-    A value of 5.0 means 5 out of 100 (5%), NOT 5 out of 5 (100%).
-    Values build gradually through interactions over time.
-
-    Args:
-        params: {
-            "entity_id": str (optional) - Specific entity ID to query
-            "entity_name": str (optional) - Search by name (partial match)
-            "sort_by": str - How to sort results (trust, friendship, messages, recent)
-            "limit": int - Max results to return
-        }
-
-    Returns:
-        {
-            "relationships": [
-                {
-                    "entity_id": str,
-                    "entity_name": str,
-                    "relationship_status": str,
-                    "trust_score": float (0-100 scale),
-                    "friendship_level": float (0-100 scale),
-                    "honesty_score": float (0-100 scale),
-                    "reliability_score": float (0-100 scale),
-                    "responsiveness_score": float (0-100 scale),
-                    "affection_level": float (0-100 scale),
-                    "respect_level": float (0-100 scale),
-                    "loyalty": float (0-100 scale),
-                    "support": float (0-100 scale),
-                    "engagement": float (0-100 scale),
-                    "depth": float (0-100 scale),
-                    "humor": float (0-100 scale),
-                    "understanding": float (0-100 scale),
-                    "compatibility": float (0-100 scale),
-                    "expertise_score": float (0-100 scale),
-                    "messages_sent": int,
-                    "messages_received": int,
-                    "total_messages": int,
-                    "successful_collaborations": int,
-                    "failed_collaborations": int,
-                    "has_met": bool,
-                    "is_best_friend": bool,
-                    "days_known": int
-                },
-                ...
-            ],
-            "total_count": int,
-            "success": bool
-        }
-    """
-    try:
-        from utils.input_validation import validate_integer_range
-        from core.exceptions import QubesError
-
-        entity_id = params.get("entity_id")
-        entity_name = params.get("entity_name")
-        sort_by = params.get("sort_by", "trust")
-        limit = params.get("limit", 10)
-
-        # Validate limit parameter (prevent excessive results)
-        try:
-            limit = validate_integer_range(limit, 1, 100, "limit")
-        except QubesError as e:
-            return {
-                "error": str(e),
-                "success": False
-            }
-
-        # Get all relationships
-        all_relationships = qube.relationships.get_all_relationships()
-
-        if not all_relationships:
-            return {
-                "relationships": [],
-                "total_count": 0,
-                "success": True,
-                "message": "No relationships found"
-            }
-
-        # all_relationships is already a list, no need to call .values()
-        relationships_list = all_relationships
-
-        # Filter by specific entity_id if provided
-        if entity_id:
-            relationships_list = [r for r in relationships_list if r.entity_id == entity_id]
-            if not relationships_list:
-                return {
-                    "relationships": [],
-                    "total_count": 0,
-                    "success": True,
-                    "message": f"No relationship found for entity_id: {entity_id}"
-                }
-
-        # Filter by entity_name if provided (partial match, case-insensitive)
-        # Search both entity_name field and entity_id
-        elif entity_name:
-            search_term = entity_name.lower()
-            relationships_list = [
-                r for r in relationships_list
-                if (r.entity_name and search_term in r.entity_name.lower()) or  # Search by stored name
-                   (r.entity_id and search_term in r.entity_id.lower())  # Fallback: search by ID
-            ]
-            if not relationships_list:
-                # Check if this is a fellow Qube we can send BCH to
-                fellow_qube_hint = ""
-                orchestrator = getattr(qube, '_orchestrator', None)
-                if orchestrator and hasattr(orchestrator, 'data_dir'):
-                    try:
-                        import json as json_mod
-                        qubes_dir = orchestrator.data_dir / "qubes"
-                        if qubes_dir.exists():
-                            for qube_dir in qubes_dir.iterdir():
-                                if qube_dir.is_dir() and qube.qube_id not in qube_dir.name:
-                                    metadata_path = qube_dir / "chain" / "qube_metadata.json"
-                                    if not metadata_path.exists():
-                                        metadata_path = qube_dir / "qube.json"
-                                    if metadata_path.exists():
-                                        with open(metadata_path, "r", encoding="utf-8") as f:
-                                            qube_data = json_mod.load(f)
-                                            genesis = qube_data.get("genesis_block", {})
-                                            qube_name = genesis.get("qube_name", "")
-                                            wallet = genesis.get("wallet", {})
-                                            if qube_name.lower() == search_term and wallet.get("p2sh_address"):
-                                                fellow_qube_hint = (
-                                                    f"\n\nHowever, {qube_name} is a fellow Qube with a BCH wallet! "
-                                                    f"You can send BCH to them directly using the send_bch tool: "
-                                                    f"send_bch(to_qube_name=\"{qube_name}\", amount_sats=YOUR_AMOUNT). "
-                                                    f"No relationship required."
-                                                )
-                                                break
-                    except Exception:
-                        pass
-
-                return {
-                    "relationships": [],
-                    "total_count": 0,
-                    "success": True,
-                    "message": f"No relationships found matching name: {entity_name}{fellow_qube_hint}"
-                }
-
-        # Sort relationships
-        if sort_by == "trust":
-            relationships_list.sort(key=lambda r: r.trust, reverse=True)
-        elif sort_by == "friendship":
-            relationships_list.sort(key=lambda r: r.friendship, reverse=True)
-        elif sort_by == "messages":
-            relationships_list.sort(
-                key=lambda r: r.messages_sent + r.messages_received,
-                reverse=True
-            )
-        elif sort_by == "recent":
-            relationships_list.sort(
-                key=lambda r: r.last_interaction or 0,
-                reverse=True
-            )
-
-        # Limit results
-        relationships_list = relationships_list[:limit]
-
-        # Format results
-        formatted_relationships = []
-        for rel in relationships_list:
-            formatted_relationships.append({
-                "entity_id": rel.entity_id,
-                "entity_name": rel.entity_name or rel.entity_id,  # Use name if available, fallback to ID
-                "entity_type": rel.entity_type or "unknown",
-                "relationship_status": rel.status,
-                "trust_score": round(rel.trust, 1),
-                "friendship_level": round(rel.friendship, 1),
-                "affection_level": round(rel.affection, 1),
-                "respect_level": round(rel.respect, 1),
-                "honesty_score": round(rel.honesty, 1),
-                "reliability_score": round(rel.reliability, 1),
-                "responsiveness_score": round(rel.responsiveness, 1),
-                "expertise_score": round(rel.expertise, 1),
-                "loyalty": round(rel.loyalty, 1),
-                "support": round(rel.support, 1),
-                "engagement": round(rel.engagement, 1),
-                "depth": round(rel.depth, 1),
-                "humor": round(rel.humor, 1),
-                "understanding": round(rel.understanding, 1),
-                "compatibility": round(rel.compatibility, 1),
-                "messages_sent": rel.messages_sent,
-                "messages_received": rel.messages_received,
-                "total_messages": rel.messages_sent + rel.messages_received,
-                "successful_collaborations": rel.collaborations_successful,
-                "failed_collaborations": rel.collaborations_failed,
-                "has_met": rel.has_met,
-                "is_best_friend": rel.is_best_friend,
-                "first_contact": rel.first_contact,
-                "last_interaction": rel.last_interaction,
-                "days_known": rel.days_known
-            })
-
-        logger.info(
-            "get_relationships_tool_used",
-            qube_id=qube.qube_id,
-            entity_id=entity_id,
-            entity_name=entity_name,
-            sort_by=sort_by,
-            results=len(formatted_relationships)
-        )
-
-        return {
-            "relationships": formatted_relationships,
-            "total_count": len(formatted_relationships),
-            "success": True
-        }
-
-    except Exception as e:
-        logger.error("get_relationships_tool_failed", qube_id=qube.qube_id, exc_info=True)
-        return {
-            "error": str(e),
-            "success": False,
-            "relationships": []
         }
 
 
@@ -2921,94 +2561,6 @@ async def chess_move_handler(qube, params: Dict[str, Any]) -> Dict[str, Any]:
         }
 
 
-async def remember_about_owner_handler(qube, params: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Store personal information about the owner.
-
-    Args:
-        params: {
-            "category": str (standard, physical, preferences, people, dates, dynamic),
-            "key": str (field name),
-            "value": str (information to store),
-            "sensitivity": str (public, private, secret)
-        }
-
-    Returns:
-        {"success": bool, "message": str} or {"error": str}
-    """
-    try:
-        from utils.owner_info_manager import OwnerInfoManager, DEFAULT_SENSITIVITIES
-        from crypto.keys import serialize_private_key
-        import hashlib
-
-        category = params.get("category", "dynamic")
-        key = params.get("key")
-        value = params.get("value")
-        sensitivity = params.get("sensitivity")
-
-        if not key or not value:
-            return {
-                "error": "Both key and value are required",
-                "success": False
-            }
-
-        # Normalize key - remove spaces and convert to snake_case
-        key = key.lower().replace(" ", "_").replace("-", "_")
-
-        # Use default sensitivity if not provided
-        if not sensitivity:
-            sensitivity = DEFAULT_SENSITIVITIES.get(key, "private")
-
-        # Validate category
-        valid_categories = ["standard", "physical", "preferences", "people", "dates", "dynamic"]
-        if category not in valid_categories:
-            category = "dynamic"
-
-        # Derive encryption key from qube's private key
-        private_key_bytes = serialize_private_key(qube.private_key)
-        encryption_key = hashlib.sha256(private_key_bytes).digest()
-
-        # Initialize manager and set field
-        manager = OwnerInfoManager(qube.data_dir, encryption_key)
-        success = manager.set_field(
-            category=category,
-            key=key,
-            value=value,
-            sensitivity=sensitivity,
-            source="explicit",  # Info came directly from owner
-            confidence=100  # High confidence for explicitly stated info
-        )
-
-        if success:
-            sensitivity_emoji = {"public": "🌐", "private": "🔒", "secret": "🔐"}.get(sensitivity, "🔒")
-            logger.info(
-                "owner_info_stored_via_tool",
-                qube_id=qube.qube_id,
-                category=category,
-                key=key,
-                sensitivity=sensitivity
-            )
-            return {
-                "success": True,
-                "message": f"I'll remember that! {sensitivity_emoji} Stored '{key}' as {sensitivity} information.",
-                "category": category,
-                "key": key,
-                "sensitivity": sensitivity
-            }
-        else:
-            return {
-                "error": "Failed to store information",
-                "success": False
-            }
-
-    except Exception as e:
-        logger.error("remember_about_owner_handler_failed", qube_id=qube.qube_id, error=str(e), exc_info=True)
-        return {
-            "error": str(e),
-            "success": False
-        }
-
-
 async def send_bch_handler(qube, params: Dict[str, Any]) -> Dict[str, Any]:
     """
     Propose a BCH transaction from the Qube's wallet.
@@ -3139,7 +2691,7 @@ async def send_bch_handler(qube, params: Dict[str, Any]) -> Dict[str, Any]:
                 "success": False
             }
 
-        wallet_manager = WalletTransactionManager(qube)
+        wallet_manager = qube.wallet_manager
 
         # === AUTO-APPROVAL CHECK ===
         # Check if address is whitelisted for auto-approval
@@ -3179,6 +2731,28 @@ async def send_bch_handler(qube, params: Dict[str, Any]) -> Dict[str, Any]:
                         )
 
                         bch_amount = amount_sats / 100_000_000
+
+                        # Emit event to record transaction in chain_state
+                        from core.events import Events
+                        qube.events.emit(Events.TRANSACTION_SENT, {
+                            "txid": txid,
+                            "to_address": to_address,
+                            "amount_satoshis": amount_sats,
+                            "memo": memo or f"Auto-sent by {qube.name}",
+                            "auto_approved": True
+                        })
+
+                        # Emit event to update balance
+                        try:
+                            balance = await wallet_manager.get_balance()
+                            if balance:
+                                qube.events.emit(Events.BALANCE_UPDATED, {
+                                    "balance_satoshis": balance.get("confirmed", 0),
+                                    "unconfirmed_satoshis": balance.get("unconfirmed", 0)
+                                })
+                        except Exception:
+                            pass
+
                         return {
                             "success": True,
                             "txid": txid,
@@ -3228,6 +2802,24 @@ async def send_bch_handler(qube, params: Dict[str, Any]) -> Dict[str, Any]:
             # Format amount for display
             bch_amount = amount_sats / 100_000_000
 
+            # Emit event to add pending transaction to chain_state
+            from core.events import Events
+            qube.events.emit(Events.PENDING_TX_CREATED, {
+                "tx_id": pending_tx.tx_id,
+                "direction": "sent",
+                "to_address": to_address,
+                "amount_satoshis": amount_sats,
+                "amount_bch": bch_amount,
+                "fee_sats": pending_tx.fee,
+                "total_amount": amount_sats,
+                "outputs": pending_tx.outputs,
+                "fee": pending_tx.fee,
+                "memo": memo or f"Proposed by {qube.name}",
+                "status": "pending_approval",
+                "created_at": pending_tx.created_at,
+                "expires_at": pending_tx.expires_at
+            })
+
             return {
                 "success": True,
                 "pending_tx_id": pending_tx.tx_id,
@@ -3248,6 +2840,454 @@ async def send_bch_handler(qube, params: Dict[str, Any]) -> Dict[str, Any]:
 
     except Exception as e:
         logger.error("send_bch_handler_failed", qube_id=qube.qube_id, error=str(e), exc_info=True)
+        return {
+            "error": str(e),
+            "success": False
+        }
+
+
+# =============================================================================
+# UNIFIED CHAIN STATE TOOLS
+# =============================================================================
+
+async def get_chain_state_handler(qube, params: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Get chain_state data - the single source of truth for all Qube information.
+
+    This unified tool provides access to all your state data including identity,
+    settings, relationships, wallet, skills, and more.
+
+    Args:
+        params: {
+            "sections": list[str] (optional) - Specific sections to retrieve.
+                If not provided, returns all sections.
+                Valid sections:
+                - "identity" - Your core identity (name, ID, birth date, NFT info)
+                - "settings" - Model mode, current model, TTS, available models
+                - "stats" - Usage statistics (tokens, costs, block counts)
+                - "skills" - Skill tree progress (only earned skills shown)
+                - "relationships" - All relationships with trust scores
+                - "financial" - Wallet balance, address, recent transactions
+                - "mood" - Current mood, energy, stress levels
+                - "health" - System health status
+                - "owner_info" - What you know about your owner
+                - "chain" - Memory chain info (block counts, hashes)
+                - "block_counts" - Detailed block type counts
+        }
+
+    Returns:
+        {
+            "success": bool,
+            "sections": dict - Requested chain_state sections
+        }
+
+    Examples:
+        # Get your current model and settings
+        get_chain_state(sections=["settings"])
+
+        # Check your wallet balance and recent transactions
+        get_chain_state(sections=["financial"])
+
+        # Get all your relationships
+        get_chain_state(sections=["relationships"])
+    """
+    try:
+        sections = params.get("sections", [])
+
+        # Handle "identity" as a virtual section (built from genesis block)
+        include_identity = "identity" in sections if sections else True
+        if sections and "identity" in sections:
+            sections = [s for s in sections if s != "identity"]
+
+        # Get requested sections from chain_state
+        data = qube.chain_state.get_sections(sections if sections else None)
+
+        # Build identity section from genesis block
+        if include_identity and hasattr(qube, 'genesis_block') and qube.genesis_block:
+            genesis = qube.genesis_block
+            from utils.time_format import format_timestamp
+
+            # Get available tools (core tools that are always available)
+            from ai.tools.registry import ALWAYS_AVAILABLE_TOOLS
+            available_tools = sorted(list(ALWAYS_AVAILABLE_TOOLS))
+
+            # GUI expects 'genesis_identity' key
+            data["genesis_identity"] = {
+                "name": genesis.qube_name,
+                "qube_id": qube.qube_id,
+                "birth_date": format_timestamp(genesis.birth_timestamp) if genesis.birth_timestamp else None,
+                "creator": genesis.creator,
+                "favorite_color": genesis.favorite_color,
+                "ai_model": genesis.ai_model,
+                "ai_provider": genesis.ai_model.split(":")[0] if genesis.ai_model and ":" in genesis.ai_model else "anthropic",
+                "voice_model": genesis.voice_model,
+                "genesis_prompt": genesis.genesis_prompt,
+                "genesis_prompt_preview": (genesis.genesis_prompt[:200] + "...") if genesis.genesis_prompt and len(genesis.genesis_prompt) > 200 else genesis.genesis_prompt,
+                "nft_category_id": getattr(genesis, 'nft_category_id', None),
+                "mint_txid": getattr(genesis, 'mint_txid', None),
+                "is_minted": bool(getattr(genesis, 'nft_category_id', None)),
+                "avatar_description": qube.chain_state.get_avatar_description(),
+                "available_tools": available_tools,
+                # Also include qube_wallet_address and blockchain for GUI
+                "qube_wallet_address": getattr(genesis, 'wallet', {}).get('p2sh_address') if hasattr(genesis, 'wallet') else None,
+                "blockchain": getattr(genesis, 'home_blockchain', 'bitcoincash')
+            }
+            # Also provide as 'identity' for AI tool compatibility
+            data["identity"] = data["genesis_identity"]
+
+        # Post-process settings section
+        if "settings" in data:
+            # Convert model lock flags to a single model_mode field
+            # Priority: Revolver > Autonomous > Manual
+            revolver_enabled = data["settings"].get("revolver_mode_enabled", False)
+            autonomous_enabled = data["settings"].get("autonomous_mode_enabled", False)
+
+            if revolver_enabled:
+                data["settings"]["model_mode"] = "Revolver"
+            elif autonomous_enabled:
+                data["settings"]["model_mode"] = "Autonomous"
+            else:
+                data["settings"]["model_mode"] = "Manual"
+
+            # Current model - read from chain_state runtime (source of truth)
+            runtime = qube.chain_state.state.get("runtime", {})
+            current_model = runtime.get("current_model")
+            # Fallback to genesis block if runtime not set
+            if not current_model and hasattr(qube, 'genesis_block') and qube.genesis_block:
+                current_model = qube.genesis_block.ai_model
+            data["settings"]["current_model"] = current_model
+            data["settings"]["current_provider"] = runtime.get("current_provider")
+
+            # Get model pools (flat lists of model names)
+            revolver_pool = data["settings"].get("revolver_mode_pool", [])
+            autonomous_pool = data["settings"].get("autonomous_mode_pool", [])
+
+            # If model pools are empty, populate with all available/configured models
+            if not revolver_pool or not autonomous_pool:
+                try:
+                    # Get configured providers and their models
+                    from ai.model_registry import ModelRegistry
+                    registry = ModelRegistry()
+                    available_models = []
+                    for provider, models in registry.get_available_models().items():
+                        for model in models:
+                            model_id = f"{provider}:{model['id']}" if ':' not in model['id'] else model['id']
+                            available_models.append(model_id)
+
+                    if not revolver_pool:
+                        data["settings"]["revolver_mode_pool"] = available_models
+                    if not autonomous_pool:
+                        data["settings"]["autonomous_mode_pool"] = available_models
+                except Exception as model_err:
+                    logger.debug(f"Could not populate model lists: {model_err}")
+
+            # Remove confusing individual flags - model_mode is the source of truth for Qubes
+            data["settings"].pop("model_locked", None)
+            data["settings"].pop("model_locked_to", None)
+            data["settings"].pop("revolver_mode_enabled", None)
+            data["settings"].pop("autonomous_mode_enabled", None)
+
+            # TTS: Use chain_state value, fall back to genesis block if not set
+            if data["settings"].get("tts_enabled") is None:
+                if hasattr(qube, 'genesis_block') and qube.genesis_block:
+                    voice_model = getattr(qube.genesis_block, 'voice_model', None)
+                    # Default to True if voice model is configured
+                    data["settings"]["tts_enabled"] = bool(voice_model)
+                    if data["settings"].get("voice_model") is None:
+                        data["settings"]["voice_model"] = voice_model
+
+        # Remove session section - Qubes use anchors, not sessions
+        data.pop("session", None)
+
+        # Enhance stats section
+        if "stats" in data:
+            # Use get_stats_with_pending() to include pending session counts
+            # This adds pending message/tool counts from session block files
+            # Gives real-time visibility while preserving rollback semantics
+            stats = qube.chain_state.get_stats_with_pending()
+            data["stats"] = stats
+
+            # Map field names to match GUI expectations
+            # Backend uses total_tokens_used, GUI expects total_tokens
+            if "total_tokens_used" in stats:
+                stats["total_tokens"] = stats.pop("total_tokens_used")
+            # Backend uses total_api_cost, GUI expects total_cost
+            if "total_api_cost" in stats:
+                stats["total_cost"] = stats.pop("total_api_cost")
+
+            # Remove session-related fields (Qubes use anchors, not sessions)
+            # But keep total_sessions as 0 for GUI compatibility
+            stats["total_sessions"] = stats.get("total_sessions", 0)
+            stats.pop("first_interaction", None)  # Often stale/null
+
+            # Add messages in current conversation (from session block count)
+            # This is more reliable than qube.current_session since subprocess may not have it loaded
+            pending = qube.chain_state.get_pending_session_stats()
+            stats["messages_this_conversation"] = pending["pending_messages_sent"] + pending["pending_messages_received"]
+
+            # Get actual block counts from memory chain
+            try:
+                if hasattr(qube, 'memory_chain') and hasattr(qube.memory_chain, 'block_index'):
+                    stats["total_permanent_blocks"] = len(qube.memory_chain.block_index)
+            except Exception:
+                pass
+
+        # Fix chain section - sync block counts from actual memory chain
+        if "chain" in data:
+            chain = data["chain"]
+            try:
+                actual_block_count = 0
+                if hasattr(qube, 'memory_chain') and hasattr(qube.memory_chain, 'block_index'):
+                    actual_block_count = len(qube.memory_chain.block_index)
+
+                # If chain_state shows 0 but memory chain has blocks, use actual count
+                if chain.get("total_blocks", 0) == 0 and actual_block_count > 0:
+                    chain["total_blocks"] = actual_block_count
+                    chain["permanent_blocks"] = actual_block_count
+            except Exception:
+                pass
+
+        # Fix block_counts section - rebuild from actual memory chain if needed
+        if "block_counts" in data:
+            block_counts = data["block_counts"]
+            try:
+                chain_state_total = sum(block_counts.values()) if block_counts else 0
+                actual_block_count = 0
+                if hasattr(qube, 'memory_chain') and hasattr(qube.memory_chain, 'block_index'):
+                    actual_block_count = len(qube.memory_chain.block_index)
+
+                # Rebuild if chain_state shows 0 but memory chain has blocks
+                if chain_state_total == 0 and actual_block_count > 0:
+                    rebuilt_counts = {"GENESIS": 0, "MESSAGE": 0, "ACTION": 0, "SUMMARY": 0, "GAME": 0}
+                    for block_num in qube.memory_chain.block_index.keys():
+                        try:
+                            block = qube.memory_chain.get_block(block_num)
+                            block_type = block.block_type if hasattr(block, 'block_type') else "MESSAGE"
+                            if block_type in rebuilt_counts:
+                                rebuilt_counts[block_type] += 1
+                        except Exception:
+                            pass
+                    data["block_counts"] = rebuilt_counts
+            except Exception:
+                pass
+
+        # Financial section - read directly from chain_state (source of truth)
+        # Wallet operations should update chain_state; we just read it here
+        if "financial" in data:
+            financial = data["financial"]
+            # Add wallet address from genesis for reference (static identity info)
+            if hasattr(qube, 'genesis_block') and qube.genesis_block:
+                wallet_data = getattr(qube.genesis_block, 'wallet', None)
+                if wallet_data:
+                    financial["wallet_address"] = wallet_data.get("p2sh_address")
+                    # Also add p2sh_address for GUI compatibility
+                    financial["p2sh_address"] = wallet_data.get("p2sh_address")
+                    financial["has_wallet"] = True
+
+            # GUI expects 'wallet' key with specific structure
+            wallet_info = financial.get("wallet", {})
+            data["wallet"] = {
+                "p2sh_address": financial.get("p2sh_address") or financial.get("wallet_address") or wallet_info.get("address"),
+                "balance_sats": wallet_info.get("balance_satoshis", 0),
+                "balance_bch": wallet_info.get("balance_bch", 0),
+                "has_wallet": financial.get("has_wallet", bool(financial.get("p2sh_address"))),
+                "recent_transactions": wallet_info.get("recent_transactions", []),
+                "last_sync": wallet_info.get("last_sync")
+            }
+
+        # Relationships: Format for GUI ActiveContextPanel (expects count + top_relationships)
+        if "relationships" in data:
+            rel_section = data["relationships"]
+            entities = rel_section.get("entities", {})
+
+            # Convert entities dict to list format for GUI
+            relationships_list = []
+            for entity_id, rel_data in entities.items():
+                relationships_list.append({
+                    "entity_id": entity_id,
+                    "name": rel_data.get("name", entity_id),
+                    "entity_type": rel_data.get("entity_type", "unknown"),
+                    "status": rel_data.get("status", "active"),
+                    "trust_level": rel_data.get("trust_level", 0.5),
+                    "interaction_count": rel_data.get("interaction_count", 0)
+                })
+
+            # Sort by interaction_count descending for "top" relationships
+            relationships_list.sort(key=lambda x: x["interaction_count"], reverse=True)
+
+            # GUI expects: { count: number, top_relationships: array }
+            data["relationships"] = {
+                "count": len(relationships_list),
+                "top_relationships": relationships_list[:10],  # Top 10 for display
+                # Also include clearance settings if present
+                "clearance_settings": rel_section.get("clearance_settings")
+            }
+
+        # Skills: Format for GUI ActiveContextPanel (expects totals + categories structure)
+        if "skills" in data:
+            skills_section = data["skills"]
+            if isinstance(skills_section, dict):
+                # Chain state stores skills in "unlocked" key (not "skills" key)
+                unlocked_skills = skills_section.get("unlocked", [])
+                total_xp = skills_section.get("total_xp", 0)
+
+                # Group skills by category for GUI display
+                categories_map: Dict[str, Dict[str, Any]] = {}
+                for skill in unlocked_skills:
+                    category = skill.get("category", "unknown")
+                    if category not in categories_map:
+                        categories_map[category] = {
+                            "category_id": category,
+                            "category_name": category.replace("_", " ").title(),
+                            "total_xp": 0,
+                            "skills": []
+                        }
+                    categories_map[category]["skills"].append({
+                        "id": skill.get("id", ""),
+                        "name": skill.get("name", skill.get("id", "").replace("_", " ").title()),
+                        "description": skill.get("description", ""),
+                        "xp": skill.get("xp", 0),
+                        "level": skill.get("level", 1),
+                        "is_unlocked": True,
+                        "tier": skill.get("tier", "novice"),
+                        "parent_skill": skill.get("parentSkill"),
+                        "tool_unlock": skill.get("toolCallReward")
+                    })
+                    categories_map[category]["total_xp"] += skill.get("xp", 0)
+
+                # Format for GUI: totals wrapper + categories dict
+                data["skills"] = {
+                    "totals": {
+                        "total_xp": total_xp,
+                        "unlocked_skills": len(unlocked_skills),
+                        "categories": len(categories_map)
+                    },
+                    "categories": categories_map,
+                    # Also include raw data for AI context
+                    "earned_skills": unlocked_skills,
+                    "last_updated": skills_section.get("last_xp_gain")
+                }
+            else:
+                # Ensure skills section has default structure for GUI
+                data["skills"] = {
+                    "totals": {"total_xp": 0, "unlocked_skills": 0, "categories": 0},
+                    "categories": {},
+                    "earned_skills": [],
+                    "last_updated": None
+                }
+        else:
+            # Ensure skills key exists with default structure
+            data["skills"] = {
+                "totals": {"total_xp": 0, "unlocked_skills": 0, "categories": 0},
+                "categories": {},
+                "earned_skills": [],
+                "last_updated": None
+            }
+
+        logger.info(
+            "chain_state_retrieved",
+            qube_id=qube.qube_id,
+            sections_requested=sections or "all",
+            sections_returned=list(data.keys())
+        )
+
+        return {
+            "success": True,
+            "sections": data
+        }
+
+    except Exception as e:
+        logger.error("get_chain_state_failed", qube_id=qube.qube_id, error=str(e), exc_info=True)
+        return {
+            "error": str(e),
+            "success": False
+        }
+
+
+async def update_chain_state_handler(qube, params: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Update chain_state data - modify the single source of truth for Qube information.
+
+    This unified tool replaces individual tools like remember_about_owner, etc.
+    Use this to update owner info, relationships, mood, skills, and settings.
+
+    Args:
+        params: {
+            "section": str - Section to update. Valid sections:
+                - "owner_info" - Information about owner
+                - "relationships" - Relationship data and clearance settings
+                - "mood" - Mood, energy, stress levels
+                - "skills" - Skill unlocks and XP
+                - "settings" - Qube settings
+
+            "path": str - Dot-notation path within section. Examples:
+                - owner_info: "standard.name", "preferences.favorite_color", "work_projects.current_task"
+                - relationships: "entities.{entity_id}", "clearance_settings.custom_profiles.trusted"
+                - mood: "current_mood", "energy_level", "stress_level"
+                - skills: "{skill_id}"
+                - settings: "{setting_key}"
+
+            "value": any - Value to set. For owner_info, can be:
+                - string: Just the value (uses default sensitivity)
+                - dict: {"value": "...", "sensitivity": "public|private|secret"}
+
+            "operation": str (optional) - "set" (default) or "delete"
+        }
+
+    Returns:
+        {"success": bool, "message": str}
+
+    Examples:
+        # Remember owner's name
+        {"section": "owner_info", "path": "standard.name", "value": "John"}
+
+        # Remember owner's favorite color (with custom sensitivity)
+        {"section": "owner_info", "path": "preferences.favorite_color",
+         "value": {"value": "blue", "sensitivity": "public"}}
+
+        # Create custom section for work projects
+        {"section": "owner_info", "path": "work_projects.current_task",
+         "value": "Building the metaverse"}
+
+        # Update mood
+        {"section": "mood", "path": "current_mood", "value": "happy"}
+
+        # Unlock a skill
+        {"section": "skills", "path": "creative_writing", "value": 100}
+    """
+    try:
+        section = params.get("section")
+        path = params.get("path")
+        value = params.get("value")
+        operation = params.get("operation", "set")
+
+        if not section:
+            return {
+                "error": "Section is required",
+                "success": False
+            }
+
+        # Use chain_state's unified update method
+        result = qube.chain_state.update_section(
+            section=section,
+            path=path,
+            value=value,
+            operation=operation
+        )
+
+        if result.get("success"):
+            logger.info(
+                "chain_state_updated",
+                qube_id=qube.qube_id,
+                section=section,
+                path=path,
+                operation=operation
+            )
+
+        return result
+
+    except Exception as e:
+        logger.error("update_chain_state_failed", qube_id=qube.qube_id, error=str(e), exc_info=True)
         return {
             "error": str(e),
             "success": False

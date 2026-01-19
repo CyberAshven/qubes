@@ -1,10 +1,19 @@
 """
 Skills Manager - Handles skill progression, XP tracking, and unlocking for Qubes
 
-Storage Structure:
-    data/users/{user_id}/qubes/{qube_id}/skills/
-        skills.json - Current skill states (levels, XP, unlocked status)
-        skill_history.json - Historical skill progression events
+UPDATED FOR COMPACT STORAGE:
+- Only stores skills that have XP > 0 or are unlocked beyond defaults
+- Skill definitions loaded from skill_definitions.py at runtime
+- Significantly reduces chain_state size
+
+Storage Structure (within chain_state.json):
+    skills: {
+        skill_xp: {skill_id: {xp: int, level: int}, ...},  # Only skills with XP
+        extra_unlocked: [skill_id, ...],  # Skills unlocked beyond defaults (suns are default unlocked)
+        history: [...],  # Capped at 100 entries
+        total_xp: int,
+        last_xp_gain: timestamp or null
+    }
 
 Skills System Design:
     - 3 tiers: Sun (major categories), Planet (specific skills), Moon (sub-skills)
@@ -14,20 +23,21 @@ Skills System Design:
     - Levels: 1-100 with 4 tiers (novice, intermediate, advanced, expert)
     - Skills unlock based on prerequisites
     - Tool calls unlock when skills reach max level
-
-Integration Points:
-    - Blocks: Track which blocks contributed XP to which skills (evidence)
-    - Relationships: Social skills progress based on relationship interactions
-    - Tool Calls: New tools unlock when skills are maxed
 """
 
 import json
 from pathlib import Path
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, TYPE_CHECKING
 from datetime import datetime
 import structlog
 
+if TYPE_CHECKING:
+    from core.chain_state import ChainState
+
 logger = structlog.get_logger(__name__)
+
+# Maximum skill history entries to retain
+MAX_SKILL_HISTORY = 100
 
 
 # Skill category definitions
@@ -43,247 +53,348 @@ SKILL_CATEGORIES = [
 
 
 class SkillsManager:
-    """Manages skill progression and persistence for a single Qube"""
+    """
+    Manages skill progression and persistence for a single Qube.
 
-    def __init__(self, qube_dir: Path):
+    Uses compact storage format - only stores skills with XP gained.
+    Skill definitions are loaded from skill_definitions.py at runtime.
+    """
+
+    def __init__(self, chain_state: "ChainState"):
         """
-        Initialize SkillsManager for a specific qube
+        Initialize SkillsManager for a specific qube.
 
         Args:
-            qube_dir: Path to qube's data directory
+            chain_state: ChainState instance for this qube
         """
-        self.qube_dir = qube_dir
-        self.skills_dir = qube_dir / "skills"
-        self.skills_file = self.skills_dir / "skills.json"
-        self.history_file = self.skills_dir / "skill_history.json"
+        self.chain_state = chain_state
+        self._skill_definitions_cache = None
 
-        # Ensure skills directory exists
-        self.skills_dir.mkdir(exist_ok=True)
+    def _get_skill_definitions(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Get skill definitions from skill_definitions.py (cached).
+
+        Returns:
+            Dict mapping skill_id -> skill definition
+        """
+        if self._skill_definitions_cache is None:
+            from utils.skill_definitions import generate_all_skills
+            skills_list = generate_all_skills()
+            self._skill_definitions_cache = {s["id"]: s for s in skills_list}
+        return self._skill_definitions_cache
+
+    def _get_compact_skills_data(self) -> Dict[str, Any]:
+        """
+        Get the compact skills data from chain_state.
+
+        Returns:
+            Dict with skill_xp, extra_unlocked, history, total_xp, last_xp_gain
+        """
+        skills_section = self.chain_state.state.get("skills", {})
+
+        # Handle migration from old format (has "skills" array)
+        if "skills" in skills_section and isinstance(skills_section.get("skills"), list):
+            return self._migrate_from_old_format(skills_section)
+
+        # Return compact format with defaults
+        return {
+            "skill_xp": skills_section.get("skill_xp", {}),
+            "extra_unlocked": skills_section.get("extra_unlocked", []),
+            "history": skills_section.get("history", []),
+            "total_xp": skills_section.get("total_xp", 0),
+            "last_xp_gain": skills_section.get("last_xp_gain", None)
+        }
+
+    def _migrate_from_old_format(self, old_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Migrate from old format (full skill tree) to compact format.
+
+        Args:
+            old_data: Old skills data with "skills" array
+
+        Returns:
+            Compact format data
+        """
+        logger.info("Migrating skills from old format to compact format")
+
+        skill_definitions = self._get_skill_definitions()
+        skill_xp = {}
+        extra_unlocked = []
+        total_xp = 0
+
+        for skill in old_data.get("skills", []):
+            skill_id = skill.get("id")
+            if not skill_id:
+                continue
+
+            xp = skill.get("xp", 0)
+            level = skill.get("level", 0)
+            unlocked = skill.get("unlocked", False)
+
+            # Get default unlocked state from definitions
+            default_def = skill_definitions.get(skill_id, {})
+            default_unlocked = default_def.get("unlocked", False)
+
+            # Store XP if > 0 or level > 0
+            if xp > 0 or level > 0:
+                skill_xp[skill_id] = {"xp": xp, "level": level}
+                total_xp += xp
+
+            # Store unlocked if different from default
+            if unlocked and not default_unlocked:
+                extra_unlocked.append(skill_id)
+
+        compact_data = {
+            "skill_xp": skill_xp,
+            "extra_unlocked": extra_unlocked,
+            "history": old_data.get("history", [])[-MAX_SKILL_HISTORY:],
+            "total_xp": total_xp,
+            "last_xp_gain": old_data.get("last_updated")
+        }
+
+        # Save migrated data
+        self.chain_state.state["skills"] = compact_data
+        self.chain_state._save()
+
+        logger.info(f"Migrated to compact format: {len(skill_xp)} skills with XP, {len(extra_unlocked)} extra unlocked")
+        return compact_data
+
+    def _save_compact_data(self, data: Dict[str, Any]) -> bool:
+        """
+        Save compact skills data to chain_state.
+
+        Args:
+            data: Compact skills data
+
+        Returns:
+            True if successful
+        """
+        try:
+            self.chain_state.state["skills"] = data
+            self.chain_state._save()
+            return True
+        except Exception as e:
+            logger.error(f"Failed to save skills: {e}")
+            return False
 
     def load_skills(self) -> Dict[str, Any]:
         """
-        Load current skill states from skills.json
+        Load current skill states, merging compact storage with definitions.
 
         Returns:
-            Dictionary containing skills data or default structure if file doesn't exist
+            Dictionary containing full skills data for compatibility
         """
-        if not self.skills_file.exists():
-            logger.info(f"No skills file found at {self.skills_file}, initializing default skills")
-            return self._initialize_default_skills()
+        compact_data = self._get_compact_skills_data()
+        skill_definitions = self._get_skill_definitions()
 
-        try:
-            with open(self.skills_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                logger.debug(f"Loaded {len(data.get('skills', []))} skills from {self.skills_file}")
-                return data
-        except Exception as e:
-            logger.error(f"Failed to load skills from {self.skills_file}: {e}")
-            return self._initialize_default_skills()
+        # Build full skill list by merging definitions with stored XP
+        skills_list = []
+        for skill_id, definition in skill_definitions.items():
+            skill = definition.copy()
+
+            # Apply stored XP/level
+            if skill_id in compact_data["skill_xp"]:
+                stored = compact_data["skill_xp"][skill_id]
+                skill["xp"] = stored.get("xp", 0)
+                skill["level"] = stored.get("level", 0)
+                # Update tier based on level
+                if skill["level"] >= 75:
+                    skill["tier"] = "expert"
+                elif skill["level"] >= 50:
+                    skill["tier"] = "advanced"
+                elif skill["level"] >= 25:
+                    skill["tier"] = "intermediate"
+                else:
+                    skill["tier"] = "novice"
+
+            # Apply extra unlocked status
+            if skill_id in compact_data["extra_unlocked"]:
+                skill["unlocked"] = True
+
+            skills_list.append(skill)
+
+        return {
+            "skills": skills_list,
+            "history": compact_data["history"],
+            "last_updated": compact_data["last_xp_gain"],
+            "total_xp": compact_data["total_xp"]
+        }
 
     def save_skills(self, skills_data: Dict[str, Any]) -> bool:
         """
-        Save skill states to skills.json
+        Save skill states to chain_state in compact format.
 
         Args:
-            skills_data: Dictionary containing skills data
+            skills_data: Dictionary containing skills data (full format)
 
         Returns:
             True if successful, False otherwise
         """
         try:
-            # Update last_updated timestamp
-            skills_data["last_updated"] = datetime.utcnow().isoformat() + "Z"
+            skill_definitions = self._get_skill_definitions()
+            skill_xp = {}
+            extra_unlocked = []
+            total_xp = 0
 
-            with open(self.skills_file, 'w', encoding='utf-8') as f:
-                json.dump(skills_data, f, indent=2, ensure_ascii=False)
+            for skill in skills_data.get("skills", []):
+                skill_id = skill.get("id")
+                if not skill_id:
+                    continue
 
-            logger.info(f"Saved {len(skills_data.get('skills', []))} skills to {self.skills_file}")
-            return True
+                xp = skill.get("xp", 0)
+                level = skill.get("level", 0)
+                unlocked = skill.get("unlocked", False)
+
+                # Get default unlocked state
+                default_def = skill_definitions.get(skill_id, {})
+                default_unlocked = default_def.get("unlocked", False)
+
+                # Store XP if > 0 or level > 0
+                if xp > 0 or level > 0:
+                    skill_xp[skill_id] = {"xp": xp, "level": level}
+                    total_xp += xp
+
+                # Store unlocked if different from default
+                if unlocked and not default_unlocked:
+                    if skill_id not in extra_unlocked:
+                        extra_unlocked.append(skill_id)
+
+            compact_data = {
+                "skill_xp": skill_xp,
+                "extra_unlocked": extra_unlocked,
+                "history": skills_data.get("history", [])[-MAX_SKILL_HISTORY:],
+                "total_xp": total_xp,
+                "last_xp_gain": datetime.utcnow().isoformat() + "Z"
+            }
+
+            return self._save_compact_data(compact_data)
 
         except Exception as e:
-            logger.error(f"Failed to save skills to {self.skills_file}: {e}")
+            logger.error(f"Failed to save skills: {e}")
             return False
 
     def _initialize_default_skills(self) -> Dict[str, Any]:
         """
-        Initialize default skill structure with all skills locked at level 0
-
-        Generates the complete skill tree matching the frontend skillDefinitions.ts
-        Structure: 7 categories, each with 1 sun + 5 planets + 10 moons
+        Initialize default skill structure (empty compact format).
 
         Returns:
-            Default skills data structure with all skills initialized
+            Default skills data structure
         """
-        from utils.skill_definitions import generate_all_skills
-
-        skills = generate_all_skills()
-
-        default_skills = {
-            "last_updated": datetime.utcnow().isoformat() + "Z",
-            "skills": skills
+        default_data = {
+            "skill_xp": {},
+            "extra_unlocked": [],
+            "history": [],
+            "total_xp": 0,
+            "last_xp_gain": None
         }
 
-        logger.info(f"Initialized {len(skills)} default skills")
+        self._save_compact_data(default_data)
+        logger.info("Initialized empty skills (compact format)")
 
-        # Save the initialized skills to disk so they persist
-        self.save_skills(default_skills)
+        return default_data
 
-        # Also initialize empty skill history file
-        if not self.history_file.exists():
-            with open(self.history_file, 'w', encoding='utf-8') as f:
-                json.dump([], f)
-            logger.info(f"Initialized empty skill history at {self.history_file}")
-
-        return default_skills
-
-    def add_xp(self, skill_id: str, xp_amount: int, evidence_block_id: Optional[str] = None, evidence_description: Optional[str] = None, tool_details: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def add_xp(
+        self,
+        skill_id: str,
+        xp_amount: int,
+        evidence_block_id: Optional[str] = None,
+        evidence_description: Optional[str] = None,
+        tool_details: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
         """
-        Add XP to a specific skill and handle level-ups
+        Add XP to a specific skill and handle level-ups.
 
-        If the skill is locked, XP flows to the unlocked parent:
-        - Locked moon → parent planet (if unlocked) → else parent sun (always unlocked)
-        - Locked planet → parent sun (always unlocked)
+        If the skill is locked, XP flows to the unlocked parent.
 
         Args:
             skill_id: ID of the skill to add XP to
             xp_amount: Amount of XP to add
             evidence_block_id: Optional block ID that contributed this XP
             evidence_description: Optional description of how skill was demonstrated
-            tool_details: Optional dict with tool-specific details (query, url, prompt, etc.)
+            tool_details: Optional dict with tool-specific details
 
         Returns:
             Dictionary with result including level_up status
         """
-        skills_data = self.load_skills()
+        compact_data = self._get_compact_skills_data()
+        skill_definitions = self._get_skill_definitions()
 
-        # Find the skill
-        skill = None
-        for s in skills_data["skills"]:
-            if s["id"] == skill_id:
-                skill = s
-                break
-
-        if not skill:
+        # Find the skill definition
+        if skill_id not in skill_definitions:
             logger.warning(f"Skill {skill_id} not found")
             return {"success": False, "error": f"Skill {skill_id} not found"}
+
+        skill_def = skill_definitions[skill_id]
+
+        # Check if skill is unlocked (default or extra)
+        is_unlocked = skill_def.get("unlocked", False) or skill_id in compact_data["extra_unlocked"]
 
         # If skill is locked, flow XP to unlocked parent
         original_skill_id = skill_id
         xp_flowed_to_parent = False
 
-        if not skill.get("unlocked", False):
-            xp_flowed_to_parent = True  # Track that XP was redirected
-            # Try parent skill first
-            parent_id = skill.get("parentSkill")
-            if parent_id:
-                parent_skill = None
-                for s in skills_data["skills"]:
-                    if s["id"] == parent_id:
-                        parent_skill = s
-                        break
+        if not is_unlocked:
+            xp_flowed_to_parent = True
+            parent_id = skill_def.get("parentSkill")
+            if parent_id and parent_id in skill_definitions:
+                parent_def = skill_definitions[parent_id]
+                parent_unlocked = parent_def.get("unlocked", False) or parent_id in compact_data["extra_unlocked"]
 
-                if parent_skill:
-                    if parent_skill.get("unlocked", False):
-                        # Parent is unlocked, give XP to parent
-                        skill = parent_skill
-                        skill_id = parent_id
-                        logger.info(f"Skill {original_skill_id} is locked, flowing XP to parent {skill_id}")
-                    else:
-                        # Parent also locked, try grandparent (should be sun, always unlocked)
-                        grandparent_id = parent_skill.get("parentSkill")
-                        if grandparent_id:
-                            for s in skills_data["skills"]:
-                                if s["id"] == grandparent_id:
-                                    skill = s
-                                    skill_id = grandparent_id
-                                    logger.info(f"Skill {original_skill_id} and parent {parent_id} are locked, flowing XP to sun {skill_id}")
-                                    break
+                if parent_unlocked:
+                    skill_id = parent_id
+                    skill_def = parent_def
+                    logger.info(f"Skill {original_skill_id} is locked, flowing XP to parent {skill_id}")
+                else:
+                    # Try grandparent (sun)
+                    grandparent_id = parent_def.get("parentSkill")
+                    if grandparent_id and grandparent_id in skill_definitions:
+                        skill_id = grandparent_id
+                        skill_def = skill_definitions[grandparent_id]
+                        logger.info(f"Skill {original_skill_id} and parent locked, flowing to sun {skill_id}")
+
+        # Get current XP/level for target skill
+        current = compact_data["skill_xp"].get(skill_id, {"xp": 0, "level": 0})
+        old_xp = current["xp"]
+        old_level = current["level"]
 
         # Add XP
-        old_xp = skill["xp"]
-        old_level = skill["level"]
-        skill["xp"] += xp_amount
-
-        # Add evidence if provided
-        if evidence_block_id:
-            if "evidence" not in skill:
-                skill["evidence"] = []
-
-            # Store evidence as dict with optional description
-            evidence_entry = {
-                "block_id": evidence_block_id,
-                "xp_gained": xp_amount,
-                "timestamp": datetime.utcnow().isoformat() + "Z"
-            }
-            if evidence_description:
-                evidence_entry["description"] = evidence_description
-
-            skill["evidence"].append(evidence_entry)
-
-        # Check for level-up
-        max_xp = skill["maxXP"]
+        new_xp = old_xp + xp_amount
+        new_level = old_level
+        max_xp = skill_def["maxXP"]
         leveled_up = False
         new_levels = 0
 
-        while skill["xp"] >= max_xp and skill["level"] < 100:
-            skill["xp"] -= max_xp
-            skill["level"] += 1
+        # Check for level-up
+        while new_xp >= max_xp and new_level < 100:
+            new_xp -= max_xp
+            new_level += 1
             new_levels += 1
             leveled_up = True
 
-            # Update tier based on level
-            if skill["level"] >= 75:
-                skill["tier"] = "expert"
-            elif skill["level"] >= 50:
-                skill["tier"] = "advanced"
-            elif skill["level"] >= 25:
-                skill["tier"] = "intermediate"
-            else:
-                skill["tier"] = "novice"
-
         # Cap at max level
-        if skill["level"] >= 100:
-            skill["level"] = 100
-            skill["xp"] = max_xp
+        if new_level >= 100:
+            new_level = 100
+            new_xp = max_xp
 
-        # PROPAGATE XP TO CHILDREN: When a parent skill gains XP, children should too
-        # This ensures Moon skills get XP when their parent Planet skill is used
-        children_updated = []
-        for child_skill in skills_data["skills"]:
-            if child_skill.get("parentSkill") == skill_id:
-                # Give child the same XP amount
-                child_old_xp = child_skill["xp"]
-                child_old_level = child_skill["level"]
-                child_skill["xp"] += xp_amount
+        # Update stored XP
+        compact_data["skill_xp"][skill_id] = {"xp": new_xp, "level": new_level}
+        compact_data["total_xp"] += xp_amount
 
-                # Check for child level-up
-                child_max_xp = child_skill["maxXP"]
-                child_leveled_up = False
-                child_new_levels = 0
+        # Save updated data
+        compact_data["last_xp_gain"] = datetime.utcnow().isoformat() + "Z"
 
-                while child_skill["xp"] >= child_max_xp and child_skill["level"] < 100:
-                    child_skill["xp"] -= child_max_xp
-                    child_skill["level"] += 1
-                    child_new_levels += 1
-                    child_leveled_up = True
+        # DEBUG: Log XP addition before save
+        logger.info(
+            f"[DEBUG] skills_manager.add_xp BEFORE save: skill={skill_id}, xp_amount={xp_amount}, "
+            f"total_xp={compact_data['total_xp']}, skill_xp_keys={list(compact_data['skill_xp'].keys())}"
+        )
 
-                # Cap at max level
-                if child_skill["level"] >= 100:
-                    child_skill["level"] = 100
-                    child_skill["xp"] = child_max_xp
+        self._save_compact_data(compact_data)
 
-                children_updated.append({
-                    "skill_id": child_skill["id"],
-                    "xp_gained": xp_amount,
-                    "old_level": child_old_level,
-                    "new_level": child_skill["level"],
-                    "leveled_up": child_leveled_up
-                })
-
-                logger.debug(f"Propagated {xp_amount} XP to child skill {child_skill['id']}")
-
-        # Save updated skills
-        self.save_skills(skills_data)
+        # DEBUG: Verify state after save
+        logger.info(
+            f"[DEBUG] skills_manager.add_xp AFTER save: chain_state skills total_xp={self.chain_state.state.get('skills', {}).get('total_xp', 0)}"
+        )
 
         # Log to history
         event_data = {
@@ -291,31 +402,24 @@ class SkillsManager:
             "skill_id": skill_id,
             "xp_amount": xp_amount,
             "old_xp": old_xp,
-            "new_xp": skill["xp"],
+            "new_xp": new_xp,
             "old_level": old_level,
-            "new_level": skill["level"],
+            "new_level": new_level,
             "leveled_up": leveled_up,
             "levels_gained": new_levels,
             "evidence_block_id": evidence_block_id,
             "timestamp": datetime.utcnow().isoformat() + "Z"
         }
 
-        # Add original skill if XP flowed to parent
         if xp_flowed_to_parent:
             event_data["original_skill_id"] = original_skill_id
             event_data["xp_flowed_to_parent"] = True
 
-        # Add description if provided
         if evidence_description:
             event_data["evidence_description"] = evidence_description
 
-        # Add tool details if provided
         if tool_details:
             event_data["tool_details"] = tool_details
-
-        # Include children in event data
-        if children_updated:
-            event_data["children_updated"] = children_updated
 
         self._log_skill_event(event_data)
 
@@ -323,29 +427,23 @@ class SkillsManager:
             "success": True,
             "skill_id": skill_id,
             "old_level": old_level,
-            "new_level": skill["level"],
+            "new_level": new_level,
             "xp_gained": xp_amount,
-            "current_xp": skill["xp"],
+            "current_xp": new_xp,
             "max_xp": max_xp,
             "leveled_up": leveled_up,
             "levels_gained": new_levels
         }
 
-        # Include children that also received XP
-        if children_updated:
-            result["children_updated"] = children_updated
-            logger.info(f"XP propagated to {len(children_updated)} child skill(s): {[c['skill_id'] for c in children_updated]}")
-
-        # Check if skill is now maxed and should unlock a tool
-        if skill["level"] == 100 and skill.get("toolCallReward"):
-            result["tool_unlocked"] = skill["toolCallReward"]
-            logger.info(f"Skill {skill_id} maxed! Unlocked tool: {skill['toolCallReward']}")
+        if new_level == 100 and skill_def.get("toolCallReward"):
+            result["tool_unlocked"] = skill_def["toolCallReward"]
+            logger.info(f"Skill {skill_id} maxed! Unlocked tool: {skill_def['toolCallReward']}")
 
         return result
 
     def unlock_skill(self, skill_id: str) -> Dict[str, Any]:
         """
-        Unlock a skill (check prerequisites first)
+        Unlock a skill (check prerequisites first).
 
         Args:
             skill_id: ID of skill to unlock
@@ -353,39 +451,31 @@ class SkillsManager:
         Returns:
             Dictionary with result
         """
-        skills_data = self.load_skills()
+        compact_data = self._get_compact_skills_data()
+        skill_definitions = self._get_skill_definitions()
 
-        # Find the skill
-        skill = None
-        for s in skills_data["skills"]:
-            if s["id"] == skill_id:
-                skill = s
-                break
-
-        if not skill:
+        if skill_id not in skill_definitions:
             return {"success": False, "error": f"Skill {skill_id} not found"}
 
-        if skill.get("unlocked", False):
+        skill_def = skill_definitions[skill_id]
+
+        # Check if already unlocked
+        is_unlocked = skill_def.get("unlocked", False) or skill_id in compact_data["extra_unlocked"]
+        if is_unlocked:
             return {"success": False, "error": f"Skill {skill_id} is already unlocked"}
 
         # Check prerequisite
-        if skill.get("prerequisite"):
-            prereq_id = skill["prerequisite"]
-            prereq_skill = None
-            for s in skills_data["skills"]:
-                if s["id"] == prereq_id:
-                    prereq_skill = s
-                    break
-
-            if not prereq_skill or not prereq_skill.get("unlocked", False):
-                return {
-                    "success": False,
-                    "error": f"Prerequisite skill {prereq_id} must be unlocked first"
-                }
+        prereq_id = skill_def.get("prerequisite")
+        if prereq_id:
+            prereq_def = skill_definitions.get(prereq_id, {})
+            prereq_unlocked = prereq_def.get("unlocked", False) or prereq_id in compact_data["extra_unlocked"]
+            if not prereq_unlocked:
+                return {"success": False, "error": f"Prerequisite skill {prereq_id} must be unlocked first"}
 
         # Unlock the skill
-        skill["unlocked"] = True
-        self.save_skills(skills_data)
+        if skill_id not in compact_data["extra_unlocked"]:
+            compact_data["extra_unlocked"].append(skill_id)
+        self._save_compact_data(compact_data)
 
         # Log event
         self._log_skill_event({
@@ -399,87 +489,171 @@ class SkillsManager:
 
     def get_skill_summary(self) -> Dict[str, Any]:
         """
-        Get a summary of all skills organized by category
+        Get a summary of all skills organized by category.
 
         Returns:
             Dictionary with skill summary statistics
         """
-        skills_data = self.load_skills()
+        compact_data = self._get_compact_skills_data()
+        skill_definitions = self._get_skill_definitions()
 
         summary = {
-            "total_skills": len(skills_data.get("skills", [])),
+            "total_skills": len(skill_definitions),
             "unlocked_skills": 0,
             "maxed_skills": 0,
-            "total_xp": 0,
+            "total_xp": compact_data["total_xp"],
             "by_category": {},
             "unlocked_tools": []
         }
 
-        for skill in skills_data.get("skills", []):
-            # Count unlocked and maxed
-            if skill.get("unlocked", False):
+        for skill_id, skill_def in skill_definitions.items():
+            # Check unlocked status
+            is_unlocked = skill_def.get("unlocked", False) or skill_id in compact_data["extra_unlocked"]
+            if is_unlocked:
                 summary["unlocked_skills"] += 1
-            if skill.get("level", 0) == 100:
+
+            # Get level from stored data
+            stored = compact_data["skill_xp"].get(skill_id, {})
+            level = stored.get("level", 0)
+
+            if level == 100:
                 summary["maxed_skills"] += 1
-                if skill.get("toolCallReward"):
-                    summary["unlocked_tools"].append(skill["toolCallReward"])
+                if skill_def.get("toolCallReward"):
+                    summary["unlocked_tools"].append(skill_def["toolCallReward"])
 
-            # Sum XP
-            summary["total_xp"] += skill.get("xp", 0)
-
-            # Organize by category
-            category_id = skill.get("category", "unknown")
+            # Category stats
+            category_id = skill_def.get("category", "unknown")
             if category_id not in summary["by_category"]:
                 summary["by_category"][category_id] = {
                     "total": 0,
                     "unlocked": 0,
                     "maxed": 0,
-                    "avg_level": 0.0
+                    "total_xp": 0
                 }
 
             cat = summary["by_category"][category_id]
             cat["total"] += 1
-            if skill.get("unlocked", False):
+            if is_unlocked:
                 cat["unlocked"] += 1
-            if skill.get("level", 0) == 100:
+            if level == 100:
                 cat["maxed"] += 1
-
-        # Calculate average levels
-        for category_id, cat in summary["by_category"].items():
-            if cat["total"] > 0:
-                total_levels = sum(
-                    s.get("level", 0)
-                    for s in skills_data.get("skills", [])
-                    if s.get("category") == category_id
-                )
-                cat["avg_level"] = total_levels / cat["total"]
+            cat["total_xp"] += stored.get("xp", 0)
 
         return summary
 
     def _log_skill_event(self, event_data: Dict[str, Any]) -> None:
         """
-        Log a skill event to history file
+        Log a skill event to history (capped at MAX_SKILL_HISTORY).
 
         Args:
             event_data: Event data to log
         """
         try:
-            # Load existing history
-            history = []
-            if self.history_file.exists():
-                with open(self.history_file, 'r', encoding='utf-8') as f:
-                    history = json.load(f)
+            compact_data = self._get_compact_skills_data()
+            history = compact_data.get("history", [])
 
             # Append new event
             history.append(event_data)
 
-            # Keep only last 1000 events to prevent file bloat
-            if len(history) > 1000:
-                history = history[-1000:]
+            # Cap at MAX_SKILL_HISTORY
+            if len(history) > MAX_SKILL_HISTORY:
+                history = history[-MAX_SKILL_HISTORY:]
 
-            # Save history
-            with open(self.history_file, 'w', encoding='utf-8') as f:
-                json.dump(history, f, indent=2, ensure_ascii=False)
+            compact_data["history"] = history
+            self._save_compact_data(compact_data)
 
         except Exception as e:
             logger.error(f"Failed to log skill event: {e}")
+
+    # =========================================================================
+    # MIGRATION HELPER (for transitioning from old file-based storage)
+    # =========================================================================
+
+    @classmethod
+    def migrate_from_files(cls, chain_state: "ChainState", qube_dir: Path) -> "SkillsManager":
+        """
+        Migrate skills from old file-based storage to chain_state.
+
+        Args:
+            chain_state: ChainState instance to migrate into
+            qube_dir: Path to qube's data directory
+
+        Returns:
+            New SkillsManager instance with migrated data
+        """
+        skills_file = qube_dir / "skills" / "skills.json"
+        history_file = qube_dir / "skills" / "skill_history.json"
+
+        manager = cls(chain_state)
+        skill_definitions = manager._get_skill_definitions()
+
+        skill_xp = {}
+        extra_unlocked = []
+        total_xp = 0
+        history = []
+
+        # Migrate skills.json
+        if skills_file.exists():
+            try:
+                with open(skills_file, 'r', encoding='utf-8') as f:
+                    old_data = json.load(f)
+
+                for skill in old_data.get("skills", []):
+                    skill_id = skill.get("id")
+                    if not skill_id:
+                        continue
+
+                    xp = skill.get("xp", 0)
+                    level = skill.get("level", 0)
+                    unlocked = skill.get("unlocked", False)
+
+                    default_def = skill_definitions.get(skill_id, {})
+                    default_unlocked = default_def.get("unlocked", False)
+
+                    if xp > 0 or level > 0:
+                        skill_xp[skill_id] = {"xp": xp, "level": level}
+                        total_xp += xp
+
+                    if unlocked and not default_unlocked:
+                        extra_unlocked.append(skill_id)
+
+                logger.info(f"Migrated {len(skill_xp)} skills with XP from {skills_file}")
+            except Exception as e:
+                logger.error(f"Failed to migrate skills: {e}")
+
+        # Migrate skill_history.json
+        if history_file.exists():
+            try:
+                with open(history_file, 'r', encoding='utf-8') as f:
+                    old_history = json.load(f)
+                history = old_history[-MAX_SKILL_HISTORY:]
+                logger.info(f"Migrated {len(history)} skill history events")
+            except Exception as e:
+                logger.error(f"Failed to migrate skill history: {e}")
+
+        # Save compact format
+        compact_data = {
+            "skill_xp": skill_xp,
+            "extra_unlocked": extra_unlocked,
+            "history": history,
+            "total_xp": total_xp,
+            "last_xp_gain": datetime.utcnow().isoformat() + "Z" if skill_xp else None
+        }
+        chain_state.state["skills"] = compact_data
+        chain_state._save()
+
+        # Delete old files
+        try:
+            if skills_file.exists():
+                skills_file.unlink()
+            if history_file.exists():
+                history_file.unlink()
+
+            skills_dir = qube_dir / "skills"
+            if skills_dir.exists() and not any(skills_dir.iterdir()):
+                skills_dir.rmdir()
+                logger.info("Removed empty skills directory")
+        except Exception as e:
+            logger.warning(f"Failed to cleanup old skill files: {e}")
+
+        return manager

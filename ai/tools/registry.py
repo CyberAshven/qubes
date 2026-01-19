@@ -7,7 +7,6 @@ Matches documentation in docs/09_AI_Integration_Tool_Calling.md Section 6.2
 
 from typing import Dict, Any, Callable, List, Optional, Awaitable, Set
 from dataclasses import dataclass, field
-
 from core.block import create_action_block, BlockType
 from core.exceptions import AIError
 from utils.logging import get_logger
@@ -18,27 +17,27 @@ logger = get_logger(__name__)
 # Core tools that are always available regardless of skill level
 # These are essential for basic qube functionality
 ALWAYS_AVAILABLE_TOOLS: Set[str] = {
-    # Memory operations (essential)
+    # Unified Chain State tools (single source of truth)
+    "get_chain_state",      # Read all state: relationships, skills, owner_info, mood, wallet, etc.
+    "update_chain_state",   # Write state: owner_info, mood, skills, settings
+    # Memory operations (search blocks directly)
     "search_memory",
     "get_recent_memories",
-    "remember_about_owner",  # Learning about owner is core functionality
     # Basic information
     "get_current_time",
-    "describe_my_skills",
     "describe_my_avatar",
-    "get_relationships",
-    # Communication (essential for interaction)
+    # Communication
     "send_message",
-    # Web access (fundamental capability)
+    # Web access
     "web_search",
     "browse_url",
-    # Image generation (creative capability)
+    # Image generation
     "generate_image",
     # Games (runtime check for active game)
     "chess_move",
-    # Wallet operations (core functionality for BCH-enabled qubes)
+    # Wallet operations
     "send_bch",
-    # Model switching (Qube agency over cognitive architecture)
+    # Model switching
     "switch_model",
 }
 
@@ -320,6 +319,12 @@ class ToolRegistry:
 
             MetricsRecorder.record_tool_execution(tool_name, "success")
 
+            # Emit tool called event
+            from core.events import Events
+            self.qube.events.emit(Events.TOOL_CALLED, {
+                "tool_name": tool_name
+            })
+
             logger.info(
                 "tool_execution_complete",
                 tool=tool_name,
@@ -365,11 +370,16 @@ class ToolRegistry:
 
                 self.qube.current_session.create_block(action_block_data)
             else:
-                # Add to permanent chain
+                # Add to permanent chain (rare case - tool called outside session)
+                from pathlib import Path
+                import json as json_module
+                from crypto.signing import sign_block
+
                 latest = self.qube.memory_chain.get_latest_block()
+                block_number = self.qube.memory_chain.get_chain_length()
                 action_block_data = create_action_block(
                     qube_id=self.qube.qube_id,
-                    block_number=self.qube.memory_chain.get_chain_length(),
+                    block_number=block_number,
                     previous_hash=latest.block_hash if latest else self.qube.genesis_block.block_hash,
                     action_type=tool_name,
                     parameters=parameters,
@@ -379,11 +389,37 @@ class ToolRegistry:
                     temporary=False
                 )
 
-                # Note: Relationship updates now handled by AI during SUMMARY blocks
-                # No need to set relationship_updates on individual ACTION blocks
+                # Encrypt content for permanent storage
+                if action_block_data.content:
+                    encrypted_content = self.qube.encrypt_block_content(action_block_data.content)
+                    action_block_data.content = encrypted_content
+                    action_block_data.encrypted = True
 
+                # Sign the block
+                action_block_data.block_hash = action_block_data.compute_hash()
+                action_block_data.signature = sign_block(action_block_data.to_dict(), self.qube.private_key)
+
+                # Save block to disk
+                permanent_dir = Path(self.qube.data_dir) / "blocks" / "permanent"
+                permanent_dir.mkdir(parents=True, exist_ok=True)
+                block_type_str = action_block_data.block_type if isinstance(action_block_data.block_type, str) else action_block_data.block_type.value
+                filename = f"{block_number}_{block_type_str}_{action_block_data.timestamp}.json"
+                with open(permanent_dir / filename, 'w') as f:
+                    json_module.dump(action_block_data.to_dict(), f, indent=2)
+
+                # Add to memory chain index
                 self.qube.memory_chain.add_block(action_block_data)
-                # Note: self.qube.storage was removed, blocks are saved as individual JSON files
+
+                # Emit events to update chain state
+                self.qube.events.emit(Events.BLOCK_ADDED, {
+                    "block_type": "ACTION",
+                    "block_number": block_number
+                })
+                self.qube.events.emit(Events.CHAIN_UPDATED, {
+                    "chain_length": block_number + 1,
+                    "last_block_number": block_number,
+                    "last_block_hash": action_block_data.block_hash
+                })
 
         return result
 

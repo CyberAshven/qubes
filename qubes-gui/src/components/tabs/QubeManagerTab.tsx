@@ -12,6 +12,7 @@ import { useQubeOrder } from '../../hooks/useQubeOrder';
 import { useQubeSelection } from '../../hooks/useQubeSelection';
 import { useWalletCache } from '../../hooks/useWalletCache';
 import { useModels } from '../../hooks/useModels';
+import { useChainState } from '../../contexts/ChainStateContext';
 import {
   DndContext,
   closestCenter,
@@ -200,6 +201,7 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
       const result = await invoke<{ success: boolean; error?: string }>('reset_qube', {
         userId,
         qubeId: qubeToReset.qube_id,
+        password: masterPassword,
       });
 
       if (result.success) {
@@ -1012,6 +1014,7 @@ const BlockchainLink: React.FC<BlockchainLinkProps> = ({ value, type, network = 
 const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, onReset, onSelect, onUpdateConfig, getAvatarPath, dragHandleProps, setCurrentTab, toggleSelection, isSelected = false }) => {
   const { userId, password: masterPassword } = useAuth();
   const { getWalletData, setBalance: setCachedBalance } = useWalletCache();
+  const { invalidateCache, loadChainState } = useChainState();
 
   // Fetch models from backend (all models from ModelRegistry)
   const {
@@ -1256,10 +1259,9 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
   const [modelLocked, setModelLocked] = useState(false);
   const [lockedToModel, setLockedToModel] = useState<string | null>(null);
   const [revolverMode, setRevolverMode] = useState(false);
-  const [revolverProviders, setRevolverProviders] = useState<string[]>([]);
-  const [revolverModels, setRevolverModels] = useState<string[]>([]);
-  const [freeMode, setFreeMode] = useState(false);  // Manual mode is default
-  const [freeModeModels, setFreeModeModels] = useState<string[]>([]);
+  const [revolverModePool, setRevolverModePool] = useState<string[]>([]);
+  const [autonomousMode, setAutonomousMode] = useState(false);  // Manual mode is default
+  const [autonomousModePool, setAutonomousModePool] = useState<string[]>([]);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [modelPreferences, setModelPreferences] = useState<Record<string, { model: string; reason?: string }>>({});
   const [loadingModelPrefs, setLoadingModelPrefs] = useState(false);
@@ -1364,23 +1366,22 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
           model_locked: boolean;
           locked_to: string | null;
           revolver_mode: boolean;
-          revolver_providers: string[];
-          revolver_models: string[];
-          free_mode: boolean;
-          free_mode_models: string[];
+          revolver_mode_pool: string[];
+          autonomous_mode: boolean;
+          autonomous_mode_pool: string[];
         }>('get_model_preferences', {
           userId,
-          qubeId: qube.qube_id
+          qubeId: qube.qube_id,
+          password: masterPassword,
         });
         if (result.success) {
           setModelLocked(result.model_locked);
           setLockedToModel(result.locked_to);
           setRevolverMode(result.revolver_mode);
-          setRevolverProviders(result.revolver_providers || []);
-          setRevolverModels(result.revolver_models || []);
-          // Default to free mode if neither locked nor revolver
-          setFreeMode(result.free_mode ?? (!result.model_locked && !result.revolver_mode));
-          setFreeModeModels(result.free_mode_models || []);
+          setRevolverModePool(result.revolver_mode_pool || []);
+          // Default to autonomous mode if neither locked nor revolver
+          setAutonomousMode(result.autonomous_mode ?? (!result.model_locked && !result.revolver_mode));
+          setAutonomousModePool(result.autonomous_mode_pool || []);
           setModelPreferences(result.preferences || {});
         }
       } catch (error) {
@@ -1390,7 +1391,7 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
       }
     };
     loadModelPreferences();
-  }, [userId, qube.qube_id]);
+  }, [userId, qube.qube_id, masterPassword]);
 
   // Toggle model lock (mutually exclusive with revolver mode)
   const handleToggleModelLock = async (e: React.MouseEvent) => {
@@ -1416,6 +1417,9 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
         if (result.locked) {
           setRevolverMode(false);
         }
+        // Invalidate chain state cache and refresh
+        invalidateCache(qube.qube_id);
+        await loadChainState(qube.qube_id, true);
       } else if (result.error) {
         console.error('Model lock error:', result.error);
       }
@@ -1446,6 +1450,9 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
           setModelLocked(false);
           setLockedToModel(null);
         }
+        // Invalidate chain state cache and refresh
+        invalidateCache(qube.qube_id);
+        await loadChainState(qube.qube_id, true);
       } else if (result.error) {
         console.error('Revolver mode error:', result.error);
       }
@@ -1465,7 +1472,8 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
       setLoadingVisualizerSettings(true);
       const result = await invoke('get_visualizer_settings', {
         userId,
-        qubeId: qube.qube_id
+        qubeId: qube.qube_id,
+        password: masterPassword
       });
       if (result) {
         // Merge with defaults to handle missing fields (like output_monitor)
@@ -1489,8 +1497,12 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
       await invoke('save_visualizer_settings', {
         userId,
         qubeId: qube.qube_id,
-        settings: JSON.stringify(visualizerSettings)
+        settings: JSON.stringify(visualizerSettings),
+        password: masterPassword
       });
+      // Invalidate chain state cache and refresh so other components see the update
+      invalidateCache(qube.qube_id);
+      await loadChainState(qube.qube_id, true);
       setToast({ message: 'Settings Saved', type: 'success' });
     } catch (error) {
       console.error('Failed to save visualizer settings:', error);
@@ -1547,8 +1559,13 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
       await invoke('save_visualizer_settings', {
         userId,
         qubeId: qube.qube_id,
-        settings: settingsJson
+        settings: settingsJson,
+        password: masterPassword
       });
+
+      // Invalidate chain state cache and refresh
+      invalidateCache(qube.qube_id);
+      await loadChainState(qube.qube_id, true);
 
       // Emit event to notify other components (like ChatInterface) to reload settings
       await emit('visualizer-settings-changed', { qubeId: qube.qube_id });
@@ -2010,10 +2027,10 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
               boxShadow: [
                 // Inner border for mode (inset shadow)
                 revolverMode ? 'inset 0 0 0 4px rgba(34, 197, 94, 0.8)' : null,  // green-500
-                freeMode ? 'inset 0 0 0 4px rgba(168, 85, 247, 0.8)' : null,  // purple-500
+                autonomousMode ? 'inset 0 0 0 4px rgba(168, 85, 247, 0.8)' : null,  // purple-500
                 // Glow effects for mode
                 revolverMode ? '0 0 20px rgba(34, 197, 94, 0.5)' : null,
-                freeMode ? '0 0 20px rgba(168, 85, 247, 0.5)' : null,
+                autonomousMode ? '0 0 20px rgba(168, 85, 247, 0.5)' : null,
               ].filter(Boolean).join(', ') || undefined,
             }}
           >
@@ -2674,8 +2691,12 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
                   await invoke('save_visualizer_settings', {
                     userId,
                     qubeId: qube.qube_id,
-                    settings: JSON.stringify({ ...visualizerSettings, enabled: newEnabled })
+                    settings: JSON.stringify({ ...visualizerSettings, enabled: newEnabled }),
+                    password: masterPassword
                   });
+                  // Invalidate chain state cache and refresh
+                  invalidateCache(qube.qube_id);
+                  await loadChainState(qube.qube_id, true);
                 } catch (error) {
                   console.error('Failed to save visualizer toggle:', error);
                 }
@@ -2941,19 +2962,17 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
         modelLocked={modelLocked}
         lockedToModel={lockedToModel}
         revolverMode={revolverMode}
-        revolverProviders={revolverProviders}
-        revolverModels={revolverModels}
-        freeMode={freeMode}
-        freeModeModels={freeModeModels}
+        revolverModePool={revolverModePool}
+        autonomousMode={autonomousMode}
+        autonomousModePool={autonomousModePool}
         onClose={() => setShowSettingsModal(false)}
         onUpdate={(updates) => {
           setModelLocked(updates.modelLocked);
           setLockedToModel(updates.lockedToModel);
           setRevolverMode(updates.revolverMode);
-          setRevolverProviders(updates.revolverProviders);
-          setRevolverModels(updates.revolverModels);
-          setFreeMode(updates.freeMode);
-          setFreeModeModels(updates.freeModeModels);
+          setRevolverModePool(updates.revolverModePool);
+          setAutonomousMode(updates.autonomousMode);
+          setAutonomousModePool(updates.autonomousModePool);
         }}
       />
     </div>

@@ -45,7 +45,8 @@ class Qube:
         genesis_block: Block,
         data_dir: Path,
         user_name: str,
-        anchor_interval: int = 100
+        anchor_interval: int = 100,
+        encryption_key: Optional[bytes] = None
     ):
         """
         Initialize Qube
@@ -58,6 +59,7 @@ class Qube:
             data_dir: Base data directory (Qubes/data/users/{user_name}/qubes/)
             user_name: Username owning this Qube
             anchor_interval: Create anchor every N blocks
+            encryption_key: Optional encryption key for chain_state (if None, generates new)
         """
         self.qube_id = qube_id
         self.private_key = private_key
@@ -178,9 +180,32 @@ class Qube:
         with open(genesis_path, 'w') as f:
             json.dump(self.genesis_block.to_dict() if hasattr(self.genesis_block, 'to_dict') else genesis_dict, f, indent=2)
 
-        # Initialize chain state in chain/ folder
+        # =====================================================================
+        # ENCRYPTION KEY SETUP (must happen before ChainState init)
+        # =====================================================================
+
+        # Use provided encryption key or generate new one
+        # Note: UserOrchestrator handles encrypted storage of the key
+        if encryption_key:
+            self.encryption_key = encryption_key
+        else:
+            # Generate new encryption key for new qubes
+            self.encryption_key = generate_encryption_key()
+
+        # =====================================================================
+        # CHAIN STATE INITIALIZATION (with encryption)
+        # =====================================================================
+
+        # Initialize chain state in chain/ folder with encryption
+        # Pass genesis_block so new qubes get proper initial values (tts_enabled, voice_model, etc.)
         chain_dir = qube_data_dir / "chain"
-        self.chain_state = ChainState(qube_id=qube_id, data_dir=chain_dir)
+        genesis_dict = self.genesis_block.to_dict() if hasattr(self.genesis_block, 'to_dict') else (genesis_block if isinstance(genesis_block, dict) else None)
+        self.chain_state = ChainState(
+            data_dir=chain_dir,
+            encryption_key=self.encryption_key,
+            qube_id=qube_id,
+            genesis_block=genesis_dict
+        )
 
         # Update chain state with genesis block (only if new qube)
         if is_new_qube:
@@ -190,19 +215,139 @@ class Qube:
                 last_block_hash=self.genesis_block.block_hash
             )
             self.chain_state.increment_block_count("GENESIS")
+        else:
+            # For existing qubes, rebuild block_counts if stale/zero
+            # This fixes qubes created before chain_state tracking was added
+            self.chain_state.rebuild_block_counts(self.memory_chain)
 
-        # Encryption key for blocks
-        self.encryption_key = generate_encryption_key()
+        # =====================================================================
+        # RELATIONSHIP STORAGE (migrates from file if needed)
+        # =====================================================================
 
-        # Session management (backed by chain_state)
+        from relationships.relationship import RelationshipStorage
+
+        old_relationships_file = qube_data_dir / "relationships" / "relationships.json"
+        if old_relationships_file.exists():
+            # Migrate from old file-based storage to chain_state
+            relationship_storage = RelationshipStorage.migrate_from_file(
+                self.chain_state,
+                qube_data_dir
+            )
+        else:
+            # Normal initialization from chain_state
+            relationship_storage = RelationshipStorage(self.chain_state)
+
+        # =====================================================================
+        # SKILLS MANAGER (migrates from files if needed)
+        # =====================================================================
+
+        from utils.skills_manager import SkillsManager
+
+        old_skills_file = qube_data_dir / "skills" / "skills.json"
+        if old_skills_file.exists():
+            # Migrate from old file-based storage to chain_state
+            self.skills_manager = SkillsManager.migrate_from_files(
+                self.chain_state,
+                qube_data_dir
+            )
+        else:
+            # Normal initialization from chain_state
+            self.skills_manager = SkillsManager(self.chain_state)
+
+        # =====================================================================
+        # WALLET TRANSACTION MANAGER (migrates from files if needed)
+        # =====================================================================
+
+        from blockchain.wallet_tx import WalletTransactionManager
+
+        old_pending_file = qube_data_dir / "pending_transactions.json"
+        old_history_file = qube_data_dir / "transaction_history.json"
+        old_balance_file = qube_data_dir / "balance_cache.json"
+
+        if old_pending_file.exists() or old_history_file.exists() or old_balance_file.exists():
+            # Migrate from old file-based storage to chain_state
+            self.wallet_manager = WalletTransactionManager.migrate_from_files(
+                self,
+                self.chain_state,
+                qube_data_dir
+            )
+        else:
+            # Normal initialization from chain_state
+            self.wallet_manager = WalletTransactionManager(self, self.chain_state)
+
+        # =====================================================================
+        # OWNER INFO MIGRATION (from legacy OwnerInfoManager files)
+        # =====================================================================
+
+        old_owner_info_file = qube_data_dir / "owner_info" / "owner_info.json"
+        if old_owner_info_file.exists() and not self.chain_state.state.get("owner_info"):
+            # Migrate from old OwnerInfoManager file to chain_state
+            try:
+                import json
+                from crypto.encryption import decrypt_block_data
+
+                with open(old_owner_info_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+
+                # Check if file is encrypted
+                if "ciphertext" in data:
+                    legacy_data = decrypt_block_data(data, self.encryption_key)
+                else:
+                    legacy_data = data
+
+                # Migrate to chain_state
+                self.chain_state.migrate_owner_info_from_file(legacy_data)
+                logger.info("owner_info_migrated_to_chain_state", qube_id=qube_id)
+
+                # Optionally rename old file to indicate migration
+                backup_file = old_owner_info_file.with_suffix('.json.migrated')
+                old_owner_info_file.rename(backup_file)
+                logger.info("owner_info_old_file_renamed", old=str(old_owner_info_file), new=str(backup_file))
+
+            except Exception as e:
+                logger.error("owner_info_migration_failed", error=str(e), qube_id=qube_id)
+
+        # =====================================================================
+        # CLEARANCE CONFIG MIGRATION (from legacy clearance/config.json)
+        # =====================================================================
+
+        old_clearance_file = qube_data_dir / "clearance" / "config.json"
+        if old_clearance_file.exists() and not self.chain_state.state.get("clearance"):
+            # Migrate from old file-based storage to chain_state
+            try:
+                import json
+
+                with open(old_clearance_file, 'r', encoding='utf-8') as f:
+                    legacy_data = json.load(f)
+
+                # Migrate to chain_state
+                self.chain_state.migrate_clearance_from_file(legacy_data)
+                logger.info("clearance_config_migrated_to_chain_state", qube_id=qube_id)
+
+                # Rename old file to indicate migration
+                backup_file = old_clearance_file.with_suffix('.json.migrated')
+                old_clearance_file.rename(backup_file)
+                logger.info("clearance_config_old_file_renamed", old=str(old_clearance_file), new=str(backup_file))
+
+            except Exception as e:
+                logger.error("clearance_config_migration_failed", error=str(e), qube_id=qube_id)
+
+        # =====================================================================
+        # SESSION MANAGEMENT
+        # =====================================================================
+
         self.current_session: Optional[Session] = None
         self.auto_anchor_enabled = self.chain_state.is_auto_anchor_enabled()
         self.auto_anchor_threshold = self.chain_state.get_auto_anchor_threshold()
 
-        # Relationship management
+        # =====================================================================
+        # RELATIONSHIP MANAGEMENT
+        # =====================================================================
+
+        # SocialDynamicsManager wraps RelationshipStorage
         trust_profile = None  # Could be set from genesis block or user preferences
         self.relationships = SocialDynamicsManager(
-            qube_data_dir=qube_data_dir,
+            relationship_storage=relationship_storage,
             trust_profile=trust_profile,
             qube=self
         )
@@ -352,6 +497,21 @@ class Qube:
             return self.genesis_block.avatar.get('ipfs_cid', '')
         return ''
 
+    @property
+    def events(self):
+        """
+        Get the event bus for event-driven state management.
+
+        Use this to emit events that update chain_state:
+
+            from core.events import Events
+            qube.events.emit(Events.TRANSACTION_SENT, {...})
+
+        Returns:
+            ChainStateEventBus instance
+        """
+        return self.chain_state.events
+
     @classmethod
     def create_new(
         cls,
@@ -471,6 +631,7 @@ class Qube:
         qube_data: Dict[str, Any],
         private_key: ec.EllipticCurvePrivateKey,
         user_name: str,
+        encryption_key: Optional[bytes] = None,
         **kwargs
     ) -> "Qube":
         """
@@ -486,6 +647,7 @@ class Qube:
                 - settings: dict
             private_key: Decrypted private key
             user_name: Username owning this Qube
+            encryption_key: Optional encryption key for chain_state
             **kwargs: Additional args (ignored for compatibility)
 
         Returns:
@@ -509,7 +671,8 @@ class Qube:
             public_key=public_key,
             genesis_block=qube_data["genesis_block"],
             data_dir=data_dir,
-            user_name=user_name
+            user_name=user_name,
+            encryption_key=encryption_key
         )
 
         # Try to recover any existing session
@@ -609,9 +772,14 @@ class Qube:
             return self.current_session.create_block(block)
 
         else:
-            # Add directly to chain
+            # Add directly to permanent chain (rare case - message outside session)
+            from pathlib import Path
+            import json as json_module
+            from crypto.signing import sign_block
+
             latest = self.memory_chain.get_latest_block()
             previous_hash = latest.block_hash if latest else self.genesis_block.block_hash
+            block_number = self.memory_chain.get_chain_length()
 
             # Determine sender/speaker for relationship tracking
             sender_id = None
@@ -623,7 +791,7 @@ class Qube:
 
             block = create_message_block(
                 qube_id=self.qube_id,
-                block_number=self.memory_chain.get_chain_length(),
+                block_number=block_number,
                 previous_hash=previous_hash,
                 message_type=message_type,
                 recipient_id=recipient_id,
@@ -641,8 +809,44 @@ class Qube:
                 estimated_cost_usd=estimated_cost_usd
             )
 
+            # Encrypt content for permanent storage
+            if block.content:
+                encrypted_content = self.encrypt_block_content(block.content)
+                block.content = encrypted_content
+                block.encrypted = True
+
+            # Sign the block
+            block.block_hash = block.compute_hash()
+            block.signature = sign_block(block.to_dict(), self.private_key)
+
+            # Save block to disk
+            permanent_dir = Path(self.data_dir) / "blocks" / "permanent"
+            permanent_dir.mkdir(parents=True, exist_ok=True)
+            block_type_str = block.block_type if isinstance(block.block_type, str) else block.block_type.value
+            filename = f"{block_number}_{block_type_str}_{block.timestamp}.json"
+            with open(permanent_dir / filename, 'w') as f:
+                json_module.dump(block.to_dict(), f, indent=2)
+
+            # Add to memory chain index
             self.memory_chain.add_block(block)
-            self.storage.write_block(block)
+
+            # Emit events to update chain state
+            from core.events import Events
+            self.events.emit(Events.BLOCK_ADDED, {
+                "block_type": "MESSAGE",
+                "block_number": block_number
+            })
+            self.events.emit(Events.CHAIN_UPDATED, {
+                "chain_length": block_number + 1,
+                "last_block_number": block_number,
+                "last_block_hash": block.block_hash
+            })
+
+            # Track message sent/received via events (from QUBE's perspective)
+            if message_type in ["qube_to_human", "qube_to_group", "qube_to_qube"]:
+                self.events.emit(Events.MESSAGE_SENT, {})  # Qube sends this message
+            elif message_type in ["human_to_qube", "human_to_group", "qube_to_qube_response"]:
+                self.events.emit(Events.MESSAGE_RECEIVED, {})  # Qube receives this message
 
             return block
 
@@ -658,6 +862,13 @@ class Qube:
 
         converted_blocks = await self.current_session.anchor_to_chain(create_summary=create_summary)
         self.current_session = None
+
+        # Emit anchor created event
+        if converted_blocks:
+            from core.events import Events
+            self.events.emit(Events.ANCHOR_CREATED, {
+                "blocks_anchored": len(converted_blocks)
+            })
 
         logger.info("session_anchored", blocks=len(converted_blocks))
         return len(converted_blocks)
@@ -763,8 +974,8 @@ class Qube:
         """
         from audio.audio_manager import AudioManager
 
-        # Get voice model from genesis block
-        voice_model = getattr(self.genesis_block, 'voice_model', 'alloy')
+        # Get voice model from chain_state (source of truth for runtime settings)
+        voice_model = self.chain_state.get_voice_model() if self.chain_state else getattr(self.genesis_block, 'voice_model', 'alloy')
 
         # Build config with API keys from self.api_keys
         config = {}
@@ -1118,8 +1329,11 @@ class Qube:
             # Generate new description
             description = await self.describe_my_appearance()
 
-            # Cache it
-            self.chain_state.set_avatar_description(description)
+            # Emit avatar updated event
+            from core.events import Events
+            self.events.emit(Events.AVATAR_UPDATED, {
+                "description": description
+            })
 
             logger.info(
                 "avatar_description_updated",

@@ -158,7 +158,8 @@ class QubeWallet:
         self,
         qube_private_key: bytes,
         owner_pubkey_hex: str,
-        network: str = "mainnet"
+        network: str = "mainnet",
+        qube_pubkey_hex: Optional[str] = None
     ):
         """
         Initialize Qube wallet.
@@ -167,6 +168,9 @@ class QubeWallet:
             qube_private_key: 32-byte private key (from Qube's keypair)
             owner_pubkey_hex: Owner's compressed public key (hex string, 02.../03...)
             network: "mainnet" or "testnet"
+            qube_pubkey_hex: Optional pre-computed qube public key (hex string).
+                             If provided, uses this instead of deriving from private key.
+                             This ensures address consistency with stored genesis data.
         """
         if len(qube_private_key) != 32:
             raise ValueError(f"Private key must be 32 bytes, got {len(qube_private_key)}")
@@ -178,9 +182,14 @@ class QubeWallet:
             raise ValueError("Owner pubkey must start with 02 or 03 (compressed format)")
 
         self._qube_privkey = qube_private_key
-        self._qube_pubkey = pubkey_from_privkey(qube_private_key)
         self._owner_pubkey = bytes.fromhex(owner_pubkey_hex)
         self._network = network
+
+        # Use provided qube pubkey if available, otherwise derive from private key
+        if qube_pubkey_hex:
+            self._qube_pubkey = bytes.fromhex(qube_pubkey_hex)
+        else:
+            self._qube_pubkey = pubkey_from_privkey(qube_private_key)
 
         # Build wallet
         wallet_info = create_wallet_address(
@@ -272,17 +281,20 @@ class QubeWallet:
                 url = f"{FULCRUM_API}/address/details/{addr}"
                 async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                     if resp.status != 200:
+                        logger.debug("fulcrum_api_error", status=resp.status, address=addr)
                         return None
                     data = await resp.json()
 
-                    # Fulcrum returns balance in satoshis as "balanceSat"
-                    if "balanceSat" in data:
-                        balance = data["balanceSat"]
-                        logger.debug("get_balance_from_fulcrum", balance=balance)
-                        return balance
+                    # Fulcrum returns balance in satoshis as "balanceSat" or "balance"
+                    balance = data.get("balanceSat") or data.get("balance")
+                    if balance is not None:
+                        logger.debug("get_balance_from_fulcrum", balance=balance, address=addr)
+                        return int(balance)
+
+                    logger.debug("fulcrum_no_balance_field", address=addr, response_keys=list(data.keys()))
                     return None
         except Exception as e:
-            logger.debug("fulcrum_balance_failed", error=str(e))
+            logger.debug("fulcrum_balance_failed", error=str(e), address=self._p2sh_address)
             return None
 
     async def _get_utxos_fulcrum(self) -> Optional[List[UTXO]]:
@@ -355,24 +367,38 @@ class QubeWallet:
 
         # Fallback to Blockchair
         try:
+            # Extract address without prefix for API query
+            addr_without_prefix = self._p2sh_address.split(":")[-1] if ":" in self._p2sh_address else self._p2sh_address
+
             async with aiohttp.ClientSession() as session:
                 url = f"{BLOCKCHAIR_API}/dashboards/address/{self._p2sh_address}"
                 async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                     data = await resp.json()
 
-                    if "data" in data and self._p2sh_address in data["data"]:
-                        balance = data["data"][self._p2sh_address]["address"]["balance"]
-                        # Update cache
-                        self._cached_balance = balance
-                        self._balance_last_updated = time.time()
-                        logger.debug("get_balance_from_blockchair", balance=balance)
-                        return balance
-                    # Address exists but empty
+                    if "data" in data:
+                        # Blockchair may return address with or without prefix
+                        # Try multiple key formats
+                        address_data = None
+                        for key in [self._p2sh_address, addr_without_prefix, f"bitcoincash:{addr_without_prefix}"]:
+                            if key in data["data"]:
+                                address_data = data["data"][key]
+                                break
+
+                        if address_data and "address" in address_data:
+                            balance = address_data["address"].get("balance", 0)
+                            # Update cache
+                            self._cached_balance = balance
+                            self._balance_last_updated = time.time()
+                            logger.debug("get_balance_from_blockchair", balance=balance, address=self._p2sh_address)
+                            return balance
+
+                    # Address not found or empty response
+                    logger.debug("blockchair_address_not_found", address=self._p2sh_address, response_keys=list(data.get("data", {}).keys()) if "data" in data else [])
                     self._cached_balance = 0
                     self._balance_last_updated = time.time()
                     return 0
         except Exception as e:
-            logger.error("get_balance_failed", error=str(e))
+            logger.error("get_balance_failed", error=str(e), address=self._p2sh_address)
             # Return cached value if available, even if stale
             if self._cached_balance is not None:
                 logger.warning("get_balance_returning_stale_cache", cached_balance=self._cached_balance)

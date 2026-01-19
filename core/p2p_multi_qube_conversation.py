@@ -39,7 +39,6 @@ class FakeSession:
     """Minimal session stub for remote Qube proxies"""
     def __init__(self):
         self.session_blocks = []
-        self.next_negative_index = -1
 
     def create_block(self, block: Block):
         """No-op - blocks for remote Qubes go through hub"""
@@ -486,25 +485,8 @@ class P2PMultiQubeConversation(MultiQubeConversation):
                             timestamp=block.timestamp
                         )
 
-        # Sync next_negative_index for all local qubes
-        # (Same logic as parent lock_in_response but only for local qubes)
-        min_block_number = None
-        for qube in self.local_qubes:
-            if qube.current_session and qube.current_session.session_blocks:
-                for block in qube.current_session.session_blocks:
-                    if block.timestamp == response_timestamp:
-                        if min_block_number is None or block.block_number < min_block_number:
-                            min_block_number = block.block_number
-
-        if min_block_number is not None:
-            new_index = min_block_number - 1
-            for qube in self.local_qubes:
-                if qube.current_session:
-                    qube.current_session.next_negative_index = new_index
-                    qube.chain_state.update_session(
-                        session_block_count=len(qube.current_session.session_blocks),
-                        next_negative_index=qube.current_session.next_negative_index
-                    )
+        # Note: With timestamp-based indexing, no counter sync needed
+        # Each qube's _reindex_session_blocks computes indices from timestamps
 
     def get_conversation_state(self) -> Dict[str, Any]:
         """Get current conversation state for GUI"""

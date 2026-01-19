@@ -91,6 +91,29 @@ def derive_block_key(master_key: bytes, block_number: int) -> bytes:
     return hkdf.derive(master_key)
 
 
+def derive_chain_state_key(qube_encryption_key: bytes) -> bytes:
+    """
+    Derive chain_state-specific encryption key using HKDF.
+
+    Uses a unique context ('chain_state') to derive a key specifically
+    for encrypting the chain_state.json file, separate from block encryption.
+
+    Args:
+        qube_encryption_key: Qube's master encryption key (32 bytes)
+
+    Returns:
+        32-byte chain_state-specific key
+    """
+    hkdf = HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=None,
+        info=b"chain_state",
+        backend=default_backend()
+    )
+    return hkdf.derive(qube_encryption_key)
+
+
 def generate_encryption_key() -> bytes:
     """Generate random 32-byte encryption key"""
     return secrets.token_bytes(32)

@@ -319,3 +319,276 @@ export interface TransactionHistoryResponse {
   has_more?: boolean;
   error?: string;
 }
+
+// =============================================================================
+// CHAIN STATE V2.0 - Consolidated encrypted state
+// =============================================================================
+
+export interface ChainStateV2 {
+  version: "2.0";
+  qube_id: string;
+  last_updated: number;
+
+  chain: ChainSection;
+  session: SessionSection;
+  settings: SettingsSection;
+  runtime: RuntimeSection;
+  stats: StatsSection;
+  skills: SkillsSection;
+  relationships: RelationshipsSection;
+  financial: FinancialSection;
+  mood: MoodSection;
+  health: HealthSection;
+  attestation: AttestationSection;
+}
+
+// Chain Section - Blockchain tracking
+export interface ChainSection {
+  block_height: number;
+  latest_block_hash: string | null;
+  genesis_hash: string;
+  genesis_timestamp: number;
+  total_blocks: number;
+  permanent_blocks: number;
+  session_blocks: number;
+}
+
+// Session Section - Current conversation (ephemeral)
+export interface SessionSection {
+  session_id: string | null;
+  started_at: number | null;
+  messages_this_session: number;
+  context_window_used: number;
+  last_message_at: number | null;
+  short_term_memory: unknown[];
+}
+
+// Settings Section - GUI-managed settings
+export interface SettingsSection {
+  // Model Mode (mutually exclusive)
+  model_locked: boolean;
+  model_locked_to: string | null;
+  revolver_mode_enabled: boolean;
+  revolver_mode_pool: string[];
+  autonomous_mode_enabled: boolean;
+  autonomous_mode_pool: string[];
+
+  // Auto-anchor settings
+  auto_anchor_enabled: boolean;
+  auto_anchor_threshold: number;
+
+  // TTS settings
+  tts_enabled: boolean;
+  voice_model: string | null;
+
+  // Visualizer settings
+  visualizer_enabled: boolean;
+  visualizer_settings: VisualizerSettings | null;
+
+  // Trust profile
+  trust_profile?: string;
+}
+
+// Runtime Section - Active state (ephemeral)
+export interface RuntimeSection {
+  is_online: boolean;
+  current_model: string | null;
+  current_provider: string | null;
+  last_api_call: number | null;
+  pending_tool_calls: string[];
+  active_conversation_id: string | null;
+}
+
+// Stats Section - Usage metrics
+export interface StatsSection {
+  total_messages_sent: number;
+  total_messages_received: number;
+  total_tokens_used: number;
+  total_tool_calls: number;
+  total_sessions: number;
+  total_anchors: number;
+  created_at: number;
+  first_interaction: number | null;
+  last_interaction: number | null;
+}
+
+// Skills Section - Unlocked skills only
+export interface SkillsSection {
+  unlocked: UnlockedSkill[];
+  total_xp: number;
+  last_xp_gain: number | null;
+  history: SkillHistoryEntry[];
+}
+
+export interface UnlockedSkill {
+  id: string;
+  xp: number;
+  level: number;
+  unlocked_at: number;
+  last_updated: number;
+}
+
+export interface SkillHistoryEntry {
+  timestamp: number;
+  skill_id: string;
+  xp_gained: number;
+  reason: string;
+  block_id?: string;
+}
+
+// Relationships Section
+export interface RelationshipsSection {
+  entities: Record<string, RelationshipEntity>;
+  total_entities_known: number;
+  best_friend: string | null;
+  owner: string;
+}
+
+export interface RelationshipEntity {
+  entity_id: string;
+  entity_type: 'human' | 'qube' | 'system';
+  relationship_id: string;
+  public_key: string | null;
+
+  // Positive metrics (0-100)
+  reliability: number;
+  honesty: number;
+  responsiveness: number;
+  expertise: number;
+  trust: number;
+  friendship: number;
+  affection: number;
+  respect: number;
+  loyalty: number;
+  support: number;
+  engagement: number;
+  depth: number;
+  humor: number;
+  understanding: number;
+  compatibility: number;
+  admiration: number;
+  warmth: number;
+  openness: number;
+  patience: number;
+  empowerment: number;
+
+  // Negative metrics (0-100)
+  antagonism: number;
+  resentment: number;
+  annoyance: number;
+  distrust: number;
+  rivalry: number;
+  tension: number;
+  condescension: number;
+  manipulation: number;
+  dismissiveness: number;
+  betrayal: number;
+
+  // Interaction stats
+  messages_sent: number;
+  messages_received: number;
+  response_time_avg: number;
+  last_interaction: number;
+  collaborations: number;
+  collaborations_successful: number;
+  collaborations_failed: number;
+
+  // Status
+  first_contact: number;
+  days_known: number;
+  has_met: boolean;
+  status: 'stranger' | 'acquaintance' | 'friend' | 'close_friend' | 'best_friend';
+  is_best_friend: boolean;
+
+  // Clearance
+  clearance_profile: string;
+  clearance_categories: string[];
+  clearance_fields: string[];
+}
+
+// Financial Section
+export interface FinancialSection {
+  wallet: WalletInfo;
+  transactions: TransactionsInfo;
+  pending: PendingTransactionEntry[];
+}
+
+export interface WalletInfo {
+  address: string | null;
+  balance_satoshis: number;
+  balance_bch: number;
+  last_sync: number | null;
+  utxo_count: number;
+}
+
+export interface TransactionsInfo {
+  history: TransactionEntry[];
+  total_count: number;
+  archived_count: number;
+}
+
+export interface TransactionEntry {
+  txid: string;
+  tx_type: 'deposit' | 'withdrawal' | 'qube_spend';
+  amount: number;
+  timestamp: number;
+  block_height: number | null;
+  confirmations: number;
+  memo: string | null;
+}
+
+export interface PendingTransactionEntry {
+  txid: string;
+  created_at: number;
+  amount: number;
+  destination: string;
+  status: 'pending' | 'broadcast' | 'confirmed' | 'failed';
+}
+
+// Mood Section
+export interface MoodSection {
+  current_mood: string;
+  energy_level: number;
+  stress_level: number;
+  last_mood_update: number | null;
+  mood_history: MoodHistoryEntry[];
+}
+
+export interface MoodHistoryEntry {
+  timestamp: number;
+  mood: string;
+  energy: number;
+  trigger: string | null;
+}
+
+// Health Section
+export interface HealthSection {
+  overall_status: 'healthy' | 'degraded' | 'critical';
+  last_health_check: number | null;
+  issues: string[];
+  integrity_verified: boolean;
+  last_integrity_check: number | null;
+}
+
+// Attestation Section (ephemeral)
+export interface AttestationSection {
+  last_attestation: number | null;
+  attestation_hash: string | null;
+  signed_by: string | null;
+  verified: boolean;
+}
+
+// =============================================================================
+// MODEL PREFERENCES RESPONSE (from Tauri command)
+// =============================================================================
+
+export interface ModelPreferencesResponse {
+  success: boolean;
+  model_locked?: boolean;
+  model_locked_to?: string | null;
+  revolver_mode?: boolean;
+  revolver_mode_pool?: string[];
+  autonomous_mode?: boolean;
+  autonomous_mode_pool?: string[];
+  error?: string;
+}

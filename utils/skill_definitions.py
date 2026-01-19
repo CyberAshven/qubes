@@ -70,7 +70,7 @@ def generate_all_skills() -> List[Dict[str, Any]]:
     skills.append(_create_skill("planning_adaptation", "Plan Adaptation", "Adjust plans based on changing conditions", "ai_reasoning", "moon", "multistep_planning", "multistep_planning", icon="🔄"))
 
     # ===== SOCIAL INTELLIGENCE (16 skills) =====
-    skills.append(_create_skill("social_intelligence_sun", "Social Intelligence", "Master social dynamics and interpersonal skills", "social_intelligence", "sun", tool_reward="get_relationships", icon="🤝"))
+    skills.append(_create_skill("social_intelligence_sun", "Social Intelligence", "Master social dynamics and interpersonal skills", "social_intelligence", "sun", icon="🤝"))
     # Planets
     skills.append(_create_skill("emotional_intelligence", "Emotional Intelligence", "Understand and respond to emotions effectively", "social_intelligence", "planet", "social_intelligence_sun", tool_reward="emotion_analysis", icon="❤️"))
     skills.append(_create_skill("communication", "Communication", "Communicate clearly and effectively", "social_intelligence", "planet", "social_intelligence_sun", tool_reward="communication_strategy", icon="💭"))
@@ -170,7 +170,7 @@ def generate_all_skills() -> List[Dict[str, Any]]:
     skills.append(_create_skill("threat_pentesting", "Penetration Testing", "Test security through ethical hacking", "security_privacy", "moon", "threat_analysis", "threat_analysis", icon="⚔️"))
 
     # ===== GAMES (16 skills) =====
-    skills.append(_create_skill("games_sun", "Games", "Master strategic and tactical games", "games", "sun", tool_reward="describe_my_skills", icon="🎮"))
+    skills.append(_create_skill("games_sun", "Games", "Master strategic and tactical games", "games", "sun", icon="🎮"))
     # Planets
     skills.append(_create_skill("chess", "Chess", "Master chess strategy and tactics", "games", "planet", "games_sun", tool_reward="chess_move", icon="♟️"))
     skills.append(_create_skill("checkers", "Checkers", "Master checkers gameplay", "games", "planet", "games_sun", tool_reward="checkers_move", icon="⚫"))

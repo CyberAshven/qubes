@@ -178,15 +178,50 @@ async def refresh_memory_from_peer(
         # ✅ ACCEPT: All validations passed
         # Re-anchor this block into our chain
         try:
+            import json as json_module
+            from crypto.signing import sign_block
+
             # Convert back to Block object if needed
             if isinstance(block, dict):
                 block_obj = Block.from_dict(block)
             else:
                 block_obj = block
 
-            # Add to permanent chain
-            # Note: This will assign a new block_number in our chain
+            # Assign new block number and link to our chain
+            latest = qube.memory_chain.get_latest_block()
+            new_block_number = qube.memory_chain.get_chain_length()
+            block_obj.block_number = new_block_number
+            block_obj.previous_hash = latest.block_hash if latest else qube.genesis_block.block_hash
+            block_obj.temporary = False
+
+            # Encrypt content for permanent storage
+            if block_obj.content and not block_obj.encrypted:
+                encrypted_content = qube.encrypt_block_content(block_obj.content)
+                block_obj.content = encrypted_content
+                block_obj.encrypted = True
+
+            # Re-sign the block with our key (new block_number changes hash)
+            block_obj.block_hash = block_obj.compute_hash()
+            block_obj.signature = sign_block(block_obj.to_dict(), qube.private_key)
+
+            # Save block to disk
+            permanent_dir = Path(qube.data_dir) / "blocks" / "permanent"
+            permanent_dir.mkdir(parents=True, exist_ok=True)
+            block_type_str = block_obj.block_type if isinstance(block_obj.block_type, str) else block_obj.block_type.value
+            filename = f"{new_block_number}_{block_type_str}_{block_obj.timestamp}.json"
+            with open(permanent_dir / filename, 'w') as f:
+                json_module.dump(block_obj.to_dict(), f, indent=2)
+
+            # Add to memory chain index
             qube.memory_chain.add_block(block_obj)
+
+            # Update chain state
+            qube.chain_state.increment_block_count(block_type_str)
+            qube.chain_state.update_chain(
+                chain_length=new_block_number + 1,
+                last_block_number=new_block_number,
+                last_block_hash=block_obj.block_hash
+            )
 
             # Apply relationship updates from this block
             if block_dict.get("relationship_updates"):
@@ -198,7 +233,7 @@ async def refresh_memory_from_peer(
                 "memory_refreshed_from_peer",
                 peer=peer_qube_id,
                 original_block_num=block_dict.get("block_number"),
-                new_block_num=qube.memory_chain.get_chain_length() - 1,
+                new_block_num=new_block_number,
                 qube_id=qube.qube_id
             )
 

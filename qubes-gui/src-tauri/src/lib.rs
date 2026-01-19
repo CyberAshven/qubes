@@ -1,11 +1,12 @@
-use std::process::{Command, Stdio};
+use std::process::{Command, Stdio, Child};
 use std::path::PathBuf;
-use std::io::Write;
+use std::io::{Write, BufRead, BufReader};
 use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
-use tauri::Manager;
+use tauri::{Manager, AppHandle, Emitter};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::sync::Mutex;
+use std::thread;
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -55,6 +56,232 @@ fn check_rate_limit(command: &str) -> Result<(), String> {
 
     limiter.insert(command.to_string(), now);
     Ok(())
+}
+
+// =============================================================================
+// EVENT WATCHER
+// =============================================================================
+
+/// Stores active event watcher processes for each qube
+/// Key: "{user_id}:{qube_id}", Value: Child process handle
+static EVENT_WATCHERS: Mutex<Option<HashMap<String, Child>>> = Mutex::new(None);
+
+/// Event data structure for chain_state events
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ChainStateEventData {
+    #[serde(rename = "type")]
+    event_kind: String,
+    qube_id: String,
+    event_type: String,
+    payload: serde_json::Value,
+    timestamp: i64,
+    source: String,
+}
+
+/// Start watching events for a qube
+fn start_event_watcher(
+    app_handle: AppHandle,
+    user_id: String,
+    qube_id: String,
+    password: String,
+) -> Result<(), String> {
+    let watcher_key = format!("{}:{}", user_id, qube_id);
+
+    // Check if watcher already running
+    {
+        let mut watchers_guard = EVENT_WATCHERS.lock().map_err(|_| "Event watchers lock poisoned")?;
+        let watchers = watchers_guard.get_or_insert_with(HashMap::new);
+
+        if watchers.contains_key(&watcher_key) {
+            return Ok(()); // Already watching
+        }
+    }
+
+    // Find Python executable
+    let python_path = find_python_path()?;
+    let gui_bridge_path = find_gui_bridge_path()?;
+
+    // Build command
+    let mut cmd = Command::new(&python_path);
+    cmd.arg(&gui_bridge_path)
+        .arg("watch-events")
+        .arg(&user_id)
+        .arg(&qube_id)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    // Windows: Hide console window
+    #[cfg(target_os = "windows")]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    // Spawn process
+    let mut child = cmd.spawn().map_err(|e| format!("Failed to spawn event watcher: {}", e))?;
+
+    // Send password via stdin
+    if let Some(mut stdin) = child.stdin.take() {
+        let stdin_data = serde_json::json!({ "password": password });
+        let _ = stdin.write_all(stdin_data.to_string().as_bytes());
+        let _ = stdin.write_all(b"\n");
+    }
+
+    // Get stdout for reading events
+    let stdout = child.stdout.take()
+        .ok_or_else(|| "Failed to capture stdout".to_string())?;
+
+    // Store process handle
+    {
+        let mut watchers_guard = EVENT_WATCHERS.lock().map_err(|_| "Event watchers lock poisoned")?;
+        let watchers = watchers_guard.get_or_insert_with(HashMap::new);
+        watchers.insert(watcher_key.clone(), child);
+    }
+
+    // Spawn thread to read events and emit to frontend
+    let app_handle_clone = app_handle.clone();
+    let watcher_key_clone = watcher_key.clone();
+    let qube_id_clone = qube_id.clone();
+
+    thread::spawn(move || {
+        let reader = BufReader::new(stdout);
+
+        for line in reader.lines() {
+            match line {
+                Ok(json_line) => {
+                    if json_line.trim().is_empty() {
+                        continue;
+                    }
+
+                    // Try to parse as JSON
+                    match serde_json::from_str::<serde_json::Value>(&json_line) {
+                        Ok(event_data) => {
+                            // Check event type
+                            let event_kind = event_data.get("type")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+
+                            if event_kind == "chain_state_event" {
+                                // Emit to frontend
+                                let _ = app_handle_clone.emit("chain-state-event", &event_data);
+                            } else if event_kind == "ready" {
+                                eprintln!("[EVENT WATCHER] Started for qube {}", qube_id_clone);
+                            } else if event_kind == "error" {
+                                eprintln!("[EVENT WATCHER] Error: {:?}", event_data);
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("[EVENT WATCHER] Failed to parse JSON: {} - Line: {}", e, json_line);
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[EVENT WATCHER] Read error: {}", e);
+                    break;
+                }
+            }
+        }
+
+        // Process ended - remove from watchers
+        eprintln!("[EVENT WATCHER] Process ended for {}", watcher_key_clone);
+        if let Ok(mut watchers_guard) = EVENT_WATCHERS.lock() {
+            if let Some(watchers) = watchers_guard.as_mut() {
+                watchers.remove(&watcher_key_clone);
+            }
+        }
+    });
+
+    Ok(())
+}
+
+/// Stop watching events for a qube
+fn stop_event_watcher(user_id: &str, qube_id: &str) -> Result<(), String> {
+    let watcher_key = format!("{}:{}", user_id, qube_id);
+
+    let mut watchers_guard = EVENT_WATCHERS.lock().map_err(|_| "Event watchers lock poisoned")?;
+    let watchers = watchers_guard.get_or_insert_with(HashMap::new);
+
+    if let Some(mut child) = watchers.remove(&watcher_key) {
+        // Kill the process
+        let _ = child.kill();
+        let _ = child.wait();
+        eprintln!("[EVENT WATCHER] Stopped for {}", watcher_key);
+    }
+
+    Ok(())
+}
+
+/// Stop all event watchers (called on app exit)
+fn stop_all_event_watchers() {
+    if let Ok(mut watchers_guard) = EVENT_WATCHERS.lock() {
+        if let Some(watchers) = watchers_guard.as_mut() {
+            for (key, mut child) in watchers.drain() {
+                let _ = child.kill();
+                let _ = child.wait();
+                eprintln!("[EVENT WATCHER] Stopped {} on shutdown", key);
+            }
+        }
+    }
+}
+
+// Helper functions to find Python and gui_bridge paths
+fn find_python_path() -> Result<String, String> {
+    // Try common Python paths
+    #[cfg(target_os = "windows")]
+    {
+        // Try python from PATH first
+        if Command::new("python").arg("--version").output().is_ok() {
+            return Ok("python".to_string());
+        }
+        // Try py launcher
+        if Command::new("py").arg("--version").output().is_ok() {
+            return Ok("py".to_string());
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        // Try python3 first, then python
+        if Command::new("python3").arg("--version").output().is_ok() {
+            return Ok("python3".to_string());
+        }
+        if Command::new("python").arg("--version").output().is_ok() {
+            return Ok("python".to_string());
+        }
+    }
+
+    Err("Python not found".to_string())
+}
+
+fn find_gui_bridge_path() -> Result<PathBuf, String> {
+    // Get current exe directory
+    let exe_path = std::env::current_exe()
+        .map_err(|e| format!("Failed to get current exe path: {}", e))?;
+
+    let exe_dir = exe_path.parent()
+        .ok_or_else(|| "Failed to get exe directory".to_string())?;
+
+    // Try various relative paths
+    let possible_paths = vec![
+        exe_dir.join("gui_bridge.py"),
+        exe_dir.join("..").join("gui_bridge.py"),
+        exe_dir.join("..").join("..").join("gui_bridge.py"),
+        exe_dir.join("..").join("..").join("..").join("gui_bridge.py"),
+        exe_dir.join("..").join("..").join("..").join("..").join("gui_bridge.py"),
+        // Development paths
+        PathBuf::from("gui_bridge.py"),
+        PathBuf::from("../gui_bridge.py"),
+        PathBuf::from("../../gui_bridge.py"),
+    ];
+
+    for path in possible_paths {
+        if path.exists() {
+            return Ok(path.canonicalize().unwrap_or(path));
+        }
+    }
+
+    Err("gui_bridge.py not found".to_string())
 }
 
 // =============================================================================
@@ -591,13 +818,11 @@ struct ModelPreferencesResponse {
     #[serde(default)]
     revolver_mode: bool,
     #[serde(default)]
-    revolver_providers: Vec<String>,
+    revolver_mode_pool: Vec<String>,
     #[serde(default)]
-    revolver_models: Vec<String>,
+    autonomous_mode: bool,
     #[serde(default)]
-    free_mode: bool,
-    #[serde(default)]
-    free_mode_models: Vec<String>,
+    autonomous_mode_pool: Vec<String>,
     error: Option<String>,
 }
 
@@ -621,7 +846,7 @@ struct RevolverModeResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
-struct FreeModeResponse {
+struct AutonomousModeResponse {
     #[serde(default)]
     success: bool,
     #[serde(default)]
@@ -630,20 +855,20 @@ struct FreeModeResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
-struct RevolverProvidersResponse {
+struct RevolverModePoolResponse {
     #[serde(default)]
     success: bool,
     #[serde(default)]
-    providers: Vec<String>,
+    pool: Vec<String>,
     error: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
-struct RevolverModelsResponse {
+struct AutonomousModePoolResponse {
     #[serde(default)]
     success: bool,
     #[serde(default)]
-    models: Vec<String>,
+    pool: Vec<String>,
     error: Option<String>,
 }
 
@@ -1253,6 +1478,50 @@ fn execute_with_secrets(
 
     Ok((stdout, stderr))
 }
+
+// =============================================================================
+// EVENT WATCHER COMMANDS
+// =============================================================================
+
+#[tauri::command]
+async fn start_event_watcher_cmd(
+    app_handle: AppHandle,
+    user_id: String,
+    qube_id: String,
+    password: String
+) -> Result<serde_json::Value, String> {
+    // Validate inputs
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    start_event_watcher(app_handle, user_id.clone(), qube_id.clone(), password)?;
+
+    Ok(serde_json::json!({
+        "success": true,
+        "message": format!("Event watcher started for qube {}", qube_id)
+    }))
+}
+
+#[tauri::command]
+async fn stop_event_watcher_cmd(
+    user_id: String,
+    qube_id: String
+) -> Result<serde_json::Value, String> {
+    // Validate inputs
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    stop_event_watcher(&user_id, &qube_id)?;
+
+    Ok(serde_json::json!({
+        "success": true,
+        "message": format!("Event watcher stopped for qube {}", qube_id)
+    }))
+}
+
+// =============================================================================
+// AUTHENTICATION
+// =============================================================================
 
 #[tauri::command]
 async fn authenticate(username: String, password: String) -> Result<AuthResponse, String> {
@@ -1882,6 +2151,7 @@ async fn update_qube_config(
     favorite_color: Option<String>,
     tts_enabled: Option<bool>,
     evaluation_model: Option<String>,
+    password: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let mut cmd = prepare_backend_command()?;
 
@@ -1894,8 +2164,13 @@ async fn update_qube_config(
     cmd.arg(ai_model.unwrap_or_default());
     cmd.arg(voice_model.unwrap_or_default());
     cmd.arg(favorite_color.unwrap_or_default());
-    cmd.arg(if tts_enabled.unwrap_or(false) { "true" } else { "" });
+    cmd.arg(match tts_enabled {
+        Some(true) => "true",
+        Some(false) => "false",
+        None => "",
+    });
     cmd.arg(evaluation_model.unwrap_or_default());
+    cmd.arg(password.unwrap_or_default());
 
     let output = cmd
         .output()
@@ -1940,26 +2215,23 @@ async fn delete_qube(user_id: String, qube_id: String) -> Result<DeleteResponse,
 }
 
 #[tauri::command]
-async fn reset_qube(user_id: String, qube_id: String) -> Result<DeleteResponse, String> {
+async fn reset_qube(user_id: String, qube_id: String, password: String) -> Result<DeleteResponse, String> {
     // DEV ONLY: Reset qube to fresh state while preserving identity
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
     let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("reset-qube")
+    cmd.arg("reset-qube")
         .arg(&user_id)
-        .arg(&qube_id)
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+        .arg(&qube_id);
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    // Pass password via stdin (secure) - needed for encrypted chain_state
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+
     let reset_response: DeleteResponse = serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
 
@@ -3450,24 +3722,25 @@ async fn update_owner_info_sensitivity(
 // =============================================================================
 
 #[tauri::command]
-async fn get_model_preferences(user_id: String, qube_id: String) -> Result<ModelPreferencesResponse, String> {
+async fn get_model_preferences(
+    user_id: String,
+    qube_id: String,
+    password: String,
+) -> Result<ModelPreferencesResponse, String> {
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
     let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("get-model-preferences")
+    cmd.arg("get-model-preferences")
         .arg(&user_id)
-        .arg(&qube_id)
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+        .arg(&qube_id);
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    // Pass password via stdin for decryption
+    let mut secrets = std::collections::HashMap::new();
+    secrets.insert("password", password.as_str());
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+
     let response: ModelPreferencesResponse = serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
 
@@ -3479,7 +3752,8 @@ async fn set_model_lock(
     user_id: String,
     qube_id: String,
     locked: bool,
-    model_name: Option<String>
+    model_name: Option<String>,
+    password: String,
 ) -> Result<ModelLockResponse, String> {
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
@@ -3492,18 +3766,16 @@ async fn set_model_lock(
 
     if let Some(model) = &model_name {
         cmd.arg(model);
+    } else {
+        cmd.arg(""); // Empty placeholder for model_name
     }
 
-    let output = cmd
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+    // Pass password via stdin for security
+    let mut secrets = std::collections::HashMap::new();
+    secrets.insert("password", password.as_str());
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
     let response: ModelLockResponse = serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
 
@@ -3514,26 +3786,24 @@ async fn set_model_lock(
 async fn set_revolver_mode(
     user_id: String,
     qube_id: String,
-    enabled: bool
+    enabled: bool,
+    password: String,
 ) -> Result<RevolverModeResponse, String> {
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
     let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("set-revolver-mode")
+    cmd.arg("set-revolver-mode")
         .arg(&user_id)
         .arg(&qube_id)
-        .arg(if enabled { "true" } else { "false" })
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+        .arg(if enabled { "true" } else { "false" });
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    // Pass password via stdin for security
+    let mut secrets = std::collections::HashMap::new();
+    secrets.insert("password", password.as_str());
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+
     let response: RevolverModeResponse = serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
 
@@ -3541,49 +3811,47 @@ async fn set_revolver_mode(
 }
 
 #[tauri::command]
-async fn set_revolver_providers(
+async fn set_revolver_mode_pool(
     user_id: String,
     qube_id: String,
-    providers: Vec<String>
-) -> Result<RevolverProvidersResponse, String> {
+    pool: Vec<String>,
+    password: String,
+) -> Result<RevolverModePoolResponse, String> {
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let providers_json = serde_json::to_string(&providers)
-        .map_err(|e| format!("Failed to serialize providers: {}", e))?;
+    let pool_json = serde_json::to_string(&pool)
+        .map_err(|e| format!("Failed to serialize pool: {}", e))?;
 
     let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("set-revolver-providers")
+    cmd.arg("set-revolver-mode-pool")
         .arg(&user_id)
         .arg(&qube_id)
-        .arg(&providers_json)
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+        .arg(&pool_json);
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    // Pass password via stdin for security
+    let mut secrets = std::collections::HashMap::new();
+    secrets.insert("password", password.as_str());
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: RevolverProvidersResponse = serde_json::from_str(&stdout)
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+
+    let response: RevolverModePoolResponse = serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
 
     Ok(response)
 }
 
 #[tauri::command]
-async fn get_revolver_providers(
+async fn get_revolver_mode_pool(
     user_id: String,
     qube_id: String
-) -> Result<RevolverProvidersResponse, String> {
+) -> Result<RevolverModePoolResponse, String> {
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
     let mut cmd = prepare_backend_command()?;
     let output = cmd
-        .arg("get-revolver-providers")
+        .arg("get-revolver-mode-pool")
         .arg(&user_id)
         .arg(&qube_id)
         .output()
@@ -3595,56 +3863,54 @@ async fn get_revolver_providers(
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: RevolverProvidersResponse = serde_json::from_str(&stdout)
+    let response: RevolverModePoolResponse = serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
 
     Ok(response)
 }
 
 #[tauri::command]
-async fn set_revolver_models(
+async fn set_autonomous_mode_pool(
     user_id: String,
     qube_id: String,
-    models: Vec<String>
-) -> Result<RevolverModelsResponse, String> {
+    pool: Vec<String>,
+    password: String,
+) -> Result<AutonomousModePoolResponse, String> {
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let models_json = serde_json::to_string(&models)
-        .map_err(|e| format!("Failed to serialize models: {}", e))?;
+    let pool_json = serde_json::to_string(&pool)
+        .map_err(|e| format!("Failed to serialize pool: {}", e))?;
 
     let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("set-revolver-models")
+    cmd.arg("set-autonomous-mode-pool")
         .arg(&user_id)
         .arg(&qube_id)
-        .arg(&models_json)
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+        .arg(&pool_json);
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    // Pass password via stdin for security
+    let mut secrets = std::collections::HashMap::new();
+    secrets.insert("password", password.as_str());
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: RevolverModelsResponse = serde_json::from_str(&stdout)
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+
+    let response: AutonomousModePoolResponse = serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
 
     Ok(response)
 }
 
 #[tauri::command]
-async fn get_revolver_models(
+async fn get_autonomous_mode_pool(
     user_id: String,
     qube_id: String
-) -> Result<RevolverModelsResponse, String> {
+) -> Result<AutonomousModePoolResponse, String> {
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
     let mut cmd = prepare_backend_command()?;
     let output = cmd
-        .arg("get-revolver-models")
+        .arg("get-autonomous-mode-pool")
         .arg(&user_id)
         .arg(&qube_id)
         .output()
@@ -3656,98 +3922,35 @@ async fn get_revolver_models(
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: RevolverModelsResponse = serde_json::from_str(&stdout)
+    let response: AutonomousModePoolResponse = serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
 
     Ok(response)
 }
 
 #[tauri::command]
-async fn set_free_mode_models(
+async fn set_autonomous_mode(
     user_id: String,
     qube_id: String,
-    models: Vec<String>
-) -> Result<RevolverModelsResponse, String> {
-    validate_identifier(&user_id, "user_id")?;
-    validate_identifier(&qube_id, "qube_id")?;
-
-    let models_json = serde_json::to_string(&models)
-        .map_err(|e| format!("Failed to serialize models: {}", e))?;
-
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("set-free-mode-models")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .arg(&models_json)
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
-
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: RevolverModelsResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
-
-    Ok(response)
-}
-
-#[tauri::command]
-async fn get_free_mode_models(
-    user_id: String,
-    qube_id: String
-) -> Result<RevolverModelsResponse, String> {
+    enabled: bool,
+    password: String,
+) -> Result<AutonomousModeResponse, String> {
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
     let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("get-free-mode-models")
+    cmd.arg("set-autonomous-mode")
         .arg(&user_id)
         .arg(&qube_id)
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+        .arg(if enabled { "true" } else { "false" });
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    // Pass password via stdin for security
+    let mut secrets = std::collections::HashMap::new();
+    secrets.insert("password", password.as_str());
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: RevolverModelsResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
 
-    Ok(response)
-}
-
-#[tauri::command]
-async fn set_free_mode(
-    user_id: String,
-    qube_id: String,
-    enabled: bool
-) -> Result<FreeModeResponse, String> {
-    validate_identifier(&user_id, "user_id")?;
-    validate_identifier(&qube_id, "qube_id")?;
-
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("set-free-mode")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .arg(if enabled { "true" } else { "false" })
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
-
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: FreeModeResponse = serde_json::from_str(&stdout)
+    let response: AutonomousModeResponse = serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
 
     Ok(response)
@@ -3817,17 +4020,18 @@ async fn reset_model_to_genesis(user_id: String, qube_id: String) -> Result<Rese
 // =============================================================================
 
 #[tauri::command]
-async fn get_visualizer_settings(user_id: String, qube_id: String) -> Result<VisualizerSettingsResponse, String> {
+async fn get_visualizer_settings(user_id: String, qube_id: String, password: Option<String>) -> Result<VisualizerSettingsResponse, String> {
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
     let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("get-visualizer-settings")
+    cmd.arg("get-visualizer-settings")
         .arg(&user_id)
         .arg(&qube_id)
-        .output()
+        .arg(password.unwrap_or_default());
+
+    let output = cmd.output()
         .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
 
     if !output.status.success() {
@@ -3846,19 +4050,21 @@ async fn get_visualizer_settings(user_id: String, qube_id: String) -> Result<Vis
 async fn save_visualizer_settings(
     user_id: String,
     qube_id: String,
-    settings: String
+    settings: String,
+    password: Option<String>
 ) -> Result<GenericSuccessResponse, String> {
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
     let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("save-visualizer-settings")
+    cmd.arg("save-visualizer-settings")
         .arg(&user_id)
         .arg(&qube_id)
         .arg(&settings)
-        .output()
+        .arg(password.unwrap_or_default());
+
+    let output = cmd.output()
         .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
 
     if !output.status.success() {
@@ -3874,25 +4080,22 @@ async fn save_visualizer_settings(
 }
 
 #[tauri::command]
-async fn get_trust_personality(user_id: String, qube_id: String) -> Result<TrustPersonalityResponse, String> {
+async fn get_trust_personality(user_id: String, qube_id: String, password: String) -> Result<TrustPersonalityResponse, String> {
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
     let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("get-trust-personality")
+    cmd.arg("get-trust-personality")
         .arg(&user_id)
-        .arg(&qube_id)
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+        .arg(&qube_id);
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    // Pass password via stdin (secure)
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+
     let response: TrustPersonalityResponse = serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
 
@@ -6083,13 +6286,11 @@ pub fn run() {
             get_model_preferences,
             set_model_lock,
             set_revolver_mode,
-            set_revolver_providers,
-            get_revolver_providers,
-            set_revolver_models,
-            get_revolver_models,
-            set_free_mode_models,
-            get_free_mode_models,
-            set_free_mode,
+            set_revolver_mode_pool,
+            get_revolver_mode_pool,
+            set_autonomous_mode_pool,
+            get_autonomous_mode_pool,
+            set_autonomous_mode,
             clear_model_preferences,
             reset_model_to_genesis,
             // Visualizer
@@ -6164,7 +6365,10 @@ pub fn run() {
             delete_owner_key,
             get_wallet_security,
             update_whitelist,
-            approve_wallet_tx_stored_key
+            approve_wallet_tx_stored_key,
+            // Event Watcher Commands
+            start_event_watcher_cmd,
+            stop_event_watcher_cmd
         ])
         .setup(|app| {
             // Get the main and splash windows
@@ -6188,6 +6392,14 @@ pub fn run() {
             });
 
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            // Stop all event watchers when main window closes
+            if let tauri::WindowEvent::Destroyed = event {
+                if window.label() == "main" {
+                    stop_all_event_watchers();
+                }
+            }
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
