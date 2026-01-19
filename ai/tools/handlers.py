@@ -646,10 +646,10 @@ def register_default_tools(registry: ToolRegistry) -> None:
     # UNIFIED CHAIN STATE TOOLS
     # =========================================================================
 
-    # Get Chain State - unified read access to all Qube state
+    # Get System State - unified read access to all Qube state
     registry.register(ToolDefinition(
-        name="get_chain_state",
-        description="Get your state data from chain_state - the single source of truth for all your information. Use this to check your relationships, skills, owner info, mood, wallet balance, stats, and settings. Returns all sections by default, or specify which sections you need.",
+        name="get_system_state",
+        description="Get your state data - the single source of truth for all your information. Use this to check your relationships, skills, owner info, mood, wallet balance, stats, and settings. Returns all sections by default, or specify which sections you need.",
         parameters={
             "type": "object",
             "properties": {
@@ -661,13 +661,13 @@ def register_default_tools(registry: ToolRegistry) -> None:
             },
             "required": []
         },
-        handler=lambda params: get_chain_state_handler(qube, params)
+        handler=lambda params: get_system_state_handler(qube, params)
     ))
 
-    # Update Chain State - unified write access to Qube state
+    # Update System State - unified write access to Qube state
     registry.register(ToolDefinition(
-        name="update_chain_state",
-        description="Update your state data in chain_state. Use this to remember things about your owner, update your mood, track skills, or modify settings. Replaces remember_about_owner for storing owner information.",
+        name="update_system_state",
+        description="Update your state data. Use this to remember things about your owner, update your mood, track skills, or modify settings. Replaces remember_about_owner for storing owner information.",
         parameters={
             "type": "object",
             "properties": {
@@ -692,7 +692,7 @@ def register_default_tools(registry: ToolRegistry) -> None:
             },
             "required": ["section", "path", "value"]
         },
-        handler=lambda params: update_chain_state_handler(qube, params)
+        handler=lambda params: update_system_state_handler(qube, params)
     ))
 
     logger.info("default_tools_registered", tool_count=len(registry.tools), qube_id=qube.qube_id)
@@ -2850,7 +2850,7 @@ async def send_bch_handler(qube, params: Dict[str, Any]) -> Dict[str, Any]:
 # UNIFIED CHAIN STATE TOOLS
 # =============================================================================
 
-async def get_chain_state_handler(qube, params: Dict[str, Any]) -> Dict[str, Any]:
+async def get_system_state_handler(qube, params: Dict[str, Any]) -> Dict[str, Any]:
     """
     Get chain_state data - the single source of truth for all Qube information.
 
@@ -2883,13 +2883,13 @@ async def get_chain_state_handler(qube, params: Dict[str, Any]) -> Dict[str, Any
 
     Examples:
         # Get your current model and settings
-        get_chain_state(sections=["settings"])
+        get_system_state(sections=["settings"])
 
         # Check your wallet balance and recent transactions
-        get_chain_state(sections=["financial"])
+        get_system_state(sections=["financial"])
 
         # Get all your relationships
-        get_chain_state(sections=["relationships"])
+        get_system_state(sections=["relationships"])
     """
     try:
         sections = params.get("sections", [])
@@ -3197,14 +3197,14 @@ async def get_chain_state_handler(qube, params: Dict[str, Any]) -> Dict[str, Any
         }
 
     except Exception as e:
-        logger.error("get_chain_state_failed", qube_id=qube.qube_id, error=str(e), exc_info=True)
+        logger.error("get_system_state_failed", qube_id=qube.qube_id, error=str(e), exc_info=True)
         return {
             "error": str(e),
             "success": False
         }
 
 
-async def update_chain_state_handler(qube, params: Dict[str, Any]) -> Dict[str, Any]:
+async def update_system_state_handler(qube, params: Dict[str, Any]) -> Dict[str, Any]:
     """
     Update chain_state data - modify the single source of truth for Qube information.
 
@@ -3287,7 +3287,7 @@ async def update_chain_state_handler(qube, params: Dict[str, Any]) -> Dict[str, 
         return result
 
     except Exception as e:
-        logger.error("update_chain_state_failed", qube_id=qube.qube_id, error=str(e), exc_info=True)
+        logger.error("update_system_state_failed", qube_id=qube.qube_id, error=str(e), exc_info=True)
         return {
             "error": str(e),
             "success": False

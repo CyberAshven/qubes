@@ -24,7 +24,7 @@ TOOL_TO_SKILL_MAPPING = {
     "generate_image": "visual_design",           # creative_expression → visual_design planet
     "search_memory": "knowledge_domains_sun",    # knowledge_domains → sun (general research)
     "describe_my_avatar": "analysis_critique",   # ai_reasoning → analysis_critique planet
-    # Note: get_chain_state and update_chain_state are general-purpose tools, not skill-specific
+    # Note: get_system_state and update_system_state are general-purpose tools, not skill-specific
 
     # AI Reasoning Tools
     "think_step_by_step": "chain_of_thought",    # ai_reasoning → chain_of_thought planet

@@ -287,7 +287,7 @@ export const PromptDebugModal: React.FC<PromptDebugModalProps> = ({
         {activeTab === 'ai_chain_state' && !loading && (
           <div className="overflow-y-auto flex-1">
             <div className="text-xs text-cyan-400 mb-2 px-1">
-              What the AI sees when it calls get_chain_state (with enhancements/fixes applied)
+              What the AI sees when it calls get_system_state (with enhancements/fixes applied)
             </div>
             {aiChainState ? (
               <pre className="text-sm text-text-primary whitespace-pre-wrap font-mono bg-black/30 p-4 rounded-lg border border-cyan-500/30 overflow-x-auto">

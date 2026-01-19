@@ -6137,12 +6137,12 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
         Build preview of active context by calling the same handler the AI uses.
 
         This ensures the Debug Modal shows exactly what the AI sees when it
-        calls get_chain_state.
+        calls get_system_state.
         """
-        from ai.tools.handlers import get_chain_state_handler
+        from ai.tools.handlers import get_system_state_handler
 
         # Call the same handler the AI uses - no sections means get all
-        result = await get_chain_state_handler(qube, {"sections": []})
+        result = await get_system_state_handler(qube, {"sections": []})
 
         if result.get("success"):
             return result.get("sections", {})

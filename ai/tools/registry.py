@@ -17,9 +17,9 @@ logger = get_logger(__name__)
 # Core tools that are always available regardless of skill level
 # These are essential for basic qube functionality
 ALWAYS_AVAILABLE_TOOLS: Set[str] = {
-    # Unified Chain State tools (single source of truth)
-    "get_chain_state",      # Read all state: relationships, skills, owner_info, mood, wallet, etc.
-    "update_chain_state",   # Write state: owner_info, mood, skills, settings
+    # Unified System State tools (single source of truth)
+    "get_system_state",      # Read all state: relationships, skills, owner_info, mood, wallet, etc.
+    "update_system_state",   # Write state: owner_info, mood, skills, settings
     # Memory operations (search blocks directly)
     "search_memory",
     "get_recent_memories",

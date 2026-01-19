@@ -926,7 +926,7 @@ Make your move using the chess_move tool. Use one of the legal moves listed abov
         model_injection = f"[You are currently running on: {current_model}]\n\n"
         base_genesis_prompt = model_injection + base_genesis_prompt
 
-        # Build lean identity block - detailed data is queryable via get_chain_state
+        # Build lean identity block - detailed data is queryable via get_system_state
         from utils.time_format import format_timestamp, get_current_timestamp_formatted
         birth_date_str = format_timestamp(genesis.birth_timestamp)
         current_time_str = get_current_timestamp_formatted()
@@ -973,7 +973,7 @@ Make your move using the chess_move tool. Use one of the legal moves listed abov
 {speaking_with}
 
 # Tools & Data Access:
-Use **get_chain_state** to query detailed information about yourself:
+Use **get_system_state** to query detailed information about yourself:
 - `sections: ["identity"]` - Full identity, NFT data, avatar description
 - `sections: ["financial"]` - BCH balance, wallet address, recent transactions
 - `sections: ["relationships"]` - All relationships with trust scores
@@ -982,7 +982,7 @@ Use **get_chain_state** to query detailed information about yourself:
 - `sections: ["owner_info"]` - What you know about your owner
 - `sections: ["settings"]` - Model mode, TTS, preferences
 
-Use **update_chain_state** to learn and remember things about your owner.
+Use **update_system_state** to learn and remember things about your owner.
 Use **search_memory** to recall past conversations (not for identity questions).
 
 # Security:
@@ -1373,7 +1373,7 @@ The image won't display unless you include this markdown with the actual path!
                     success_rate = (rel.collaborations_successful / total_collabs) * 100
                     context += f"   - Collaborations: {total_collabs} ({success_rate:.0f}% success rate)\n"
 
-            context += f"\nI can use get_chain_state with sections: [\"relationships\"] to query specific relationship details during conversation.\n"
+            context += f"\nI can use get_system_state with sections: [\"relationships\"] to query specific relationship details during conversation.\n"
 
             # Add Fellow Qubes section (for BCH transfers by name)
             try:
@@ -2645,12 +2645,12 @@ Multiple entities present. Be careful about what you share.
                 count = result.get('count', 0) if isinstance(result, dict) else 0
                 text = f"Recalled {count} memories about \"{query}\""
 
-            elif tool_name == "get_chain_state":
+            elif tool_name == "get_system_state":
                 sections = params.get('sections', ['state'])
                 section_str = ', '.join(sections) if isinstance(sections, list) else str(sections)
                 text = f"Checked {section_str}"
 
-            elif tool_name == "update_chain_state":
+            elif tool_name == "update_system_state":
                 section = params.get('section', '')
                 text = f"Updated {section}"
 

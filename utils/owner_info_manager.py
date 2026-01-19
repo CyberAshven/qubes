@@ -14,7 +14,7 @@ Owner Info System Design:
 
 Integration Points:
     - Context Injection: Injected into AI system prompt based on chat context
-    - AI Tool: update_chain_state tool with section="owner_info" for Qube to store info
+    - AI Tool: update_system_state tool with section="owner_info" for Qube to store info
     - Active Context Panel: Displayed in Block Browser UI
 """
 

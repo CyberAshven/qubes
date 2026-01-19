@@ -1175,13 +1175,13 @@ Summary:"""
                 return f"[Checked skills: {category}]"
             return "[Checked skill tree]"
 
-        elif action_type == "get_chain_state":
+        elif action_type == "get_system_state":
             sections = parameters.get("sections", [])
             if sections:
                 return f"[Read state: {', '.join(sections)}]"
-            return "[Read chain state]"
+            return "[Read system state]"
 
-        elif action_type == "update_chain_state":
+        elif action_type == "update_system_state":
             section = parameters.get("section", "")
             path = parameters.get("path", "")
             if section and path:
