@@ -39,6 +39,10 @@ ALWAYS_AVAILABLE_TOOLS: Set[str] = {
     "send_bch",
     # Model switching
     "switch_model",
+    # Decision Intelligence tools (relationship and self-evaluation based decisions)
+    "query_decision_context",  # Get decision context for an entity
+    "compare_options",         # Compare multiple entities for a decision
+    "check_my_capability",     # Assess own capability for a task
 }
 
 
@@ -312,7 +316,25 @@ class ToolRegistry:
             qube_id=self.qube.qube_id
         )
 
-        # Execute tool first
+        # Create in_progress ACTION block BEFORE executing (so frontend can show status)
+        in_progress_block = None
+        if record_blocks and self.qube.current_session:
+            from core.block import create_action_block
+            latest = self.qube.memory_chain.get_latest_block()
+            in_progress_block = create_action_block(
+                qube_id=self.qube.qube_id,
+                block_number=-1,
+                previous_block_number=latest.block_number if latest else 0,
+                action_type=tool_name,
+                parameters=parameters,
+                initiated_by="self",
+                status="in_progress",
+                result=None,
+                temporary=True
+            )
+            self.qube.current_session.create_block(in_progress_block)
+
+        # Execute tool
         try:
             result = await tool.handler(parameters)
             status = "completed"
@@ -348,27 +370,30 @@ class ToolRegistry:
                 "success": False
             }
 
-        # Record ACTION block with result included
+        # Update the in_progress block with result, or create new block if none exists
         if record_blocks:
             if self.qube.current_session:
-                # Add to session (temporary)
-                latest = self.qube.memory_chain.get_latest_block()
-                action_block_data = create_action_block(
-                    qube_id=self.qube.qube_id,
-                    block_number=-1,
-                    previous_block_number=latest.block_number if latest else 0,
-                    action_type=tool_name,
-                    parameters=parameters,
-                    initiated_by="self",
-                    status=status,
-                    result=result,
-                    temporary=True
-                )
-
-                # Note: Relationship updates now handled by AI during SUMMARY blocks
-                # No need to set relationship_updates on individual ACTION blocks
-
-                self.qube.current_session.create_block(action_block_data)
+                if in_progress_block:
+                    # Update the in_progress block with result
+                    in_progress_block.content["status"] = status
+                    in_progress_block.content["result"] = result
+                    # Re-save to disk (overwrites the in_progress file)
+                    self.qube.current_session._save_session_block(in_progress_block)
+                else:
+                    # No in_progress block (shouldn't happen, but fallback)
+                    latest = self.qube.memory_chain.get_latest_block()
+                    action_block_data = create_action_block(
+                        qube_id=self.qube.qube_id,
+                        block_number=-1,
+                        previous_block_number=latest.block_number if latest else 0,
+                        action_type=tool_name,
+                        parameters=parameters,
+                        initiated_by="self",
+                        status=status,
+                        result=result,
+                        temporary=True
+                    )
+                    self.qube.current_session.create_block(action_block_data)
             else:
                 # Add to permanent chain (rare case - tool called outside session)
                 from pathlib import Path

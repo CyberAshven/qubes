@@ -376,18 +376,30 @@ class Session:
             # Link to previous session block
             return self.session_blocks[-1].block_hash
 
-    def delete_block(self, block_number: int) -> Optional[Block]:
+    def delete_block(self, block_number: int = None, timestamp: int = None) -> Optional[Block]:
         """
-        Delete a session block by its negative index
+        Delete a session block by its negative index or timestamp.
+
+        IMPORTANT: Prefer using timestamp for deletion when deleting multiple blocks,
+        because block numbers are re-indexed when the session is loaded, but timestamps
+        are stable.
 
         Args:
-            block_number: Negative block number
+            block_number: Negative block number (may shift if session is reloaded)
+            timestamp: Block timestamp (stable identifier)
 
         Returns:
             Deleted block or None
         """
         for i, block in enumerate(self.session_blocks):
-            if block.block_number == block_number:
+            # Match by timestamp if provided (stable), otherwise by block_number (may shift)
+            match = False
+            if timestamp is not None:
+                match = (block.timestamp == timestamp)
+            elif block_number is not None:
+                match = (block.block_number == block_number)
+
+            if match:
                 deleted = self.session_blocks.pop(i)
 
                 # Emit session updated event
@@ -397,8 +409,11 @@ class Session:
                 })
 
                 # Delete the block's file from disk
+                # Search for file matching the timestamp since block numbers may have been reindexed
                 from pathlib import Path
                 session_dir = Path(self.qube.data_dir) / "blocks" / "session"
+
+                # Try exact filename first
                 block_type_str = deleted.block_type if isinstance(deleted.block_type, str) else deleted.block_type.value
                 filename = f"{deleted.block_number}_{block_type_str}_{deleted.timestamp}.json"
                 block_file = session_dir / filename
@@ -406,6 +421,25 @@ class Session:
                 if block_file.exists():
                     block_file.unlink()
                     logger.debug("session_block_file_deleted", file=filename)
+                else:
+                    # File not found with expected name - search by timestamp
+                    # This handles cases where block numbers were reindexed after recovery
+                    found = False
+                    if session_dir.exists():
+                        for f in session_dir.glob(f"*_{block_type_str}_{deleted.timestamp}.json"):
+                            f.unlink()
+                            logger.debug("session_block_file_deleted_by_timestamp", file=f.name)
+                            found = True
+                            break
+
+                    if not found:
+                        logger.warning(
+                            "session_block_file_not_found",
+                            expected_filename=filename,
+                            block_number=block_number,
+                            timestamp=deleted.timestamp,
+                            session_dir=str(session_dir)
+                        )
 
                 logger.info("session_block_deleted", block_number=block_number)
                 return deleted
@@ -492,6 +526,13 @@ class Session:
                     permanent_block.previous_hash = previous_hash
                 else:
                     permanent_block.previous_hash = converted_blocks[-1].block_hash
+
+                # Index block for semantic search BEFORE encryption (with raw content)
+                try:
+                    if self.qube.semantic_search is not None and permanent_block.content:
+                        self.qube.semantic_search.add_block(permanent_block)
+                except Exception as e:
+                    logger.debug("semantic_index_pre_encrypt_skip", block_number=permanent_block.block_number, error=str(e))
 
                 # Encrypt content for permanent storage
                 if permanent_block.content:
@@ -650,6 +691,13 @@ class Session:
                     if summary_block.content and skill_detections:
                         summary_block.content["skill_detections"] = skill_detections
                         logger.debug("skill_detections_stored_in_summary", count=len(skill_detections))
+
+                    # Index summary block for semantic search BEFORE encryption (with raw content)
+                    try:
+                        if self.qube.semantic_search is not None and summary_block.content:
+                            self.qube.semantic_search.add_block(summary_block)
+                    except Exception as e:
+                        logger.debug("semantic_index_summary_skip", block_number=summary_block.block_number, error=str(e))
 
                     # Encrypt summary block content (just like MESSAGE blocks)
                     if summary_block.content:
@@ -1542,12 +1590,8 @@ Return ONLY valid JSON with this exact structure:
         with open(block_file, 'w') as f:
             json.dump(block.to_dict(), f, indent=2)
 
-        # Index block for semantic search (if initialized)
-        try:
-            if self.qube.semantic_search is not None:
-                self.qube.semantic_search.add_block(block)
-        except Exception as e:
-            logger.debug("semantic_index_skip", block_number=block.block_number, error=str(e))
+        # NOTE: Semantic indexing is now done BEFORE encryption in anchor_to_chain()
+        # to ensure MESSAGE block content is properly indexed for recall
 
     def _extract_all_participants(self, blocks: List[Block]) -> set:
         """

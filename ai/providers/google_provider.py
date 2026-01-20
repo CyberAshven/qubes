@@ -256,24 +256,55 @@ class GoogleModel(AIModelInterface):
             MetricsRecorder.record_ai_api_call("google", self.model_name, "error")
             logger.error("google_generation_failed", model=self.model_name, exc_info=True)
 
-            # Classify error
+            # Classify error with helpful messages
             error_msg = str(e).lower()
-            if "quota" in error_msg or "rate" in error_msg:
+            error_str = str(e)
+
+            if "quota" in error_msg or "rate" in error_msg or "resource_exhausted" in error_msg:
                 raise ModelRateLimitError(
-                    f"Google rate limit exceeded: {str(e)}",
-                    context={"model": self.model_name},
+                    f"Google rate limit exceeded. Try again in a few minutes or switch to a different model. Original error: {error_str}",
+                    context={"model": self.model_name, "error_type": "rate_limit"},
                     cause=e
                 )
-            elif "api key" in error_msg or "unauthorized" in error_msg:
+            elif "api key" in error_msg or "unauthorized" in error_msg or "permission" in error_msg or "403" in error_msg:
                 raise ModelNotAvailableError(
-                    f"Google authentication failed: {str(e)}",
-                    context={"model": self.model_name},
+                    f"Google API key is invalid or doesn't have permission for model '{self.model_name}'. "
+                    f"Check your API key in Settings > API Keys. Original error: {error_str}",
+                    context={"model": self.model_name, "error_type": "auth_failed"},
+                    cause=e
+                )
+            elif "not found" in error_msg or "404" in error_msg or "invalid model" in error_msg or "does not exist" in error_msg:
+                raise ModelNotAvailableError(
+                    f"Model '{self.model_name}' not found in Google's API. "
+                    f"This model may have been renamed or deprecated. Try 'gemini-2.5-pro' or 'gemini-2.5-flash'. "
+                    f"Original error: {error_str}",
+                    context={"model": self.model_name, "error_type": "model_not_found"},
+                    cause=e
+                )
+            elif "safety" in error_msg or "blocked" in error_msg or "harm" in error_msg:
+                raise ModelAPIError(
+                    f"Content was blocked by Google's safety filters. Try rephrasing your message. Original error: {error_str}",
+                    context={"model": self.model_name, "error_type": "content_blocked"},
+                    cause=e
+                )
+            elif "timeout" in error_msg or "deadline" in error_msg:
+                raise ModelAPIError(
+                    f"Request timed out. The model may be overloaded. Try again or use a faster model like 'gemini-2.5-flash'. "
+                    f"Original error: {error_str}",
+                    context={"model": self.model_name, "error_type": "timeout"},
+                    cause=e
+                )
+            elif "invalid" in error_msg and "argument" in error_msg:
+                raise ModelAPIError(
+                    f"Invalid request parameters for model '{self.model_name}'. "
+                    f"This might be a tool format issue or unsupported feature. Original error: {error_str}",
+                    context={"model": self.model_name, "error_type": "invalid_request"},
                     cause=e
                 )
             else:
                 raise ModelAPIError(
-                    f"Google API error: {str(e)}",
-                    context={"model": self.model_name},
+                    f"Google API error with model '{self.model_name}': {error_str}",
+                    context={"model": self.model_name, "error_type": "unknown"},
                     cause=e
                 )
 

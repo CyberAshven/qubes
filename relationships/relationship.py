@@ -138,6 +138,7 @@ class Relationship:
         self.entity_type = entity_type
         self.public_key = public_key
         self.entity_name = entity_name  # Store entity name for search
+        self.is_creator = is_creator    # Whether this is the qube's creator
 
         # Core Trust Metrics (6) - 5 AI-evaluated + 1 calculated
         self.honesty = 0.0              # 0-100, how truthful/transparent
@@ -227,16 +228,17 @@ class Relationship:
         self.manual_trait_overrides: Dict[str, bool] = {}  # User overrides (False = hidden)
         self.trait_scores_version: str = "1.0"  # For migration
 
-        # Creator Bonus: Start with elevated metrics for qube-creator relationships
+        # Owner relationship: Special permanent status, standard starting metrics
+        # Metrics start at 25 like everyone else, but status is always "owner"
         if is_creator:
-            # Core Trust Metrics
+            # Core Trust Metrics - Start at 25 (standard baseline)
             self.honesty = 25.0
             self.reliability = 25.0
             self.support = 25.0
             self.loyalty = 25.0
             self.respect = 25.0
 
-            # Positive Social Metrics
+            # Positive Social Metrics - Start at 25 (standard baseline)
             self.friendship = 25.0
             self.affection = 25.0
             self.engagement = 25.0
@@ -252,8 +254,18 @@ class Relationship:
             self.responsiveness = 25.0
             self.expertise = 25.0
 
-            # Update trust score based on new core trust values
+            # Update trust score based on core trust values
             self.trust = self.calculate_trust_score()
+
+            # Owner has permanent "owner" status - doesn't progress like other relationships
+            self.status = "owner"
+            self.progression_history = [
+                {
+                    "status": "owner",
+                    "timestamp": int(datetime.now(timezone.utc).timestamp()),
+                    "reason": "Creator/owner relationship"
+                }
+            ]
 
             # Creators get elevated clearance (trusted profile by default)
             self.clearance_profile = "trusted"
@@ -458,11 +470,13 @@ class Relationship:
     def to_dict(self) -> Dict[str, Any]:
         """Convert relationship to dictionary for JSON serialization"""
         return {
-            # Essential Identity (4)
+            # Essential Identity (6)
             "entity_id": self.entity_id,
             "entity_type": self.entity_type,
             "relationship_id": self.relationship_id,
             "public_key": self.public_key,
+            "entity_name": self.entity_name,
+            "is_creator": self.is_creator,
 
             # Core Trust Metrics (5)
             "reliability": self.reliability,
@@ -556,7 +570,9 @@ class Relationship:
             entity_id=data["entity_id"],
             entity_type=data.get("entity_type", "qube"),
             public_key=data.get("public_key"),
-            has_met=data.get("has_met", False)
+            has_met=data.get("has_met", False),
+            entity_name=data.get("entity_name"),
+            is_creator=data.get("is_creator", False)
         )
 
         # Override generated ID with stored one
@@ -654,6 +670,33 @@ class Relationship:
         rel.trait_evolution = data.get("trait_evolution", [])
         rel.manual_trait_overrides = data.get("manual_trait_overrides", {})
         rel.trait_scores_version = data.get("trait_scores_version", "1.0")
+
+        # REPAIR: Fix creator relationships with anomalously low trust
+        # This handles relationships created before is_creator was properly persisted
+        if rel.is_creator and rel.trust < 20.0:
+            logger.info(
+                "repairing_creator_relationship",
+                entity_id=rel.entity_id,
+                old_trust=rel.trust
+            )
+            # Apply creator bonus to any metrics still at 0
+            if rel.honesty < 25.0:
+                rel.honesty = max(rel.honesty, 25.0)
+            if rel.reliability < 25.0:
+                rel.reliability = max(rel.reliability, 25.0)
+            if rel.support < 25.0:
+                rel.support = max(rel.support, 25.0)
+            if rel.loyalty < 25.0:
+                rel.loyalty = max(rel.loyalty, 25.0)
+            if rel.respect < 25.0:
+                rel.respect = max(rel.respect, 25.0)
+            # Recalculate trust score
+            rel.trust = rel.calculate_trust_score()
+            logger.info(
+                "creator_relationship_repaired",
+                entity_id=rel.entity_id,
+                new_trust=rel.trust
+            )
 
         return rel
 

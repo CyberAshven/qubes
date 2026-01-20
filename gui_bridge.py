@@ -1410,41 +1410,30 @@ class GUIBridge:
                 qube = self.orchestrator.qubes[qube_id]
                 logger.debug(f"[GET_RELATIONSHIPS] Qube instance obtained: {qube.name}")
 
-                # Reload relationships from disk to get latest updates
-                logger.debug(f"[GET_RELATIONSHIPS] Reloading relationships from disk...")
+                # Reload chain_state to get latest data from disk, then reload relationships
+                logger.debug(f"[GET_RELATIONSHIPS] Reloading chain_state from disk...")
+                qube.chain_state.reload()
+
+                # Check what's in chain_state relationships section
+                rel_data = qube.chain_state.get_relationships()
+                logger.debug(f"[GET_RELATIONSHIPS] chain_state.get_relationships() returned {len(rel_data)} entities: {list(rel_data.keys())}")
+
+                logger.debug(f"[GET_RELATIONSHIPS] Reloading relationships from chain_state...")
                 qube.relationships.storage._load_relationships()
                 logger.debug(f"[GET_RELATIONSHIPS] Reload complete. Storage dict has {len(qube.relationships.storage.relationships)} entries")
 
                 # Get all relationships via social manager
                 relationships = qube.relationships.get_all_relationships()
             else:
-                # No password provided - read relationships.json directly
-                logger.debug(f"[GET_RELATIONSHIPS] No password - reading relationships.json directly")
-
-                from pathlib import Path
-                from relationships.relationship import RelationshipStorage
-
-                # Find qube data directory
-                user_id_to_use = self.user_id if hasattr(self, 'user_id') and self.user_id else self.orchestrator.user_id
-                qube_data_dir = get_user_qubes_dir(user_id_to_use)
-                matching_dirs = [d for d in qube_data_dir.iterdir() if d.is_dir() and qube_id in d.name]
-
-                if not matching_dirs:
-                    logger.error(f"[GET_RELATIONSHIPS] No qube directory found for {qube_id}")
-                    return {
-                        "success": False,
-                        "relationships": [],
-                        "stats": {},
-                        "error": f"Qube directory not found for {qube_id}"
-                    }
-
-                qube_dir = matching_dirs[0]
-                logger.debug(f"[GET_RELATIONSHIPS] Found qube directory: {qube_dir}")
-
-                # Load relationships directly from storage
-                rel_storage = RelationshipStorage(qube_dir)
-                relationships = rel_storage.get_all_relationships()
-                logger.debug(f"[GET_RELATIONSHIPS] Direct load: {len(relationships)} relationships")
+                # No password provided - cannot decrypt chain_state to read relationships
+                # Relationships are stored encrypted in chain_state.json
+                logger.warning(f"[GET_RELATIONSHIPS] No password provided - cannot decrypt relationships")
+                return {
+                    "success": False,
+                    "relationships": [],
+                    "stats": {},
+                    "error": "Password required to load relationships (encrypted in chain_state)"
+                }
 
             logger.info(f"[GET_RELATIONSHIPS] Found {len(relationships)} relationships for {qube_id[:16]}")
             logger.debug(f"[GET_RELATIONSHIPS] Relationship entity_ids: {[r.entity_id for r in relationships]}")
@@ -1916,9 +1905,14 @@ class GUIBridge:
             }
 
     async def get_qube_skills(self, user_id: str, qube_id: str) -> Dict[str, Any]:
-        """Get all skills for a specific qube"""
+        """Get all skills for a specific qube.
+
+        Reads from skills_cache.json (unencrypted) which is maintained by the
+        backend when skills are updated. This allows GUI access without needing
+        the encryption key.
+        """
         try:
-            from utils.skills_manager import SkillsManager
+            from utils.skill_definitions import generate_all_skills
 
             # SECURITY: Validate inputs
             from utils.input_validation import validate_user_id, validate_qube_id
@@ -1942,16 +1936,69 @@ class GUIBridge:
                     "error": f"Qube {qube_id} not found"
                 }
 
-            # Load skills
-            skills_manager = SkillsManager(qube_dir)
-            skills_data = skills_manager.load_skills()
+            # Read from unencrypted skills cache (written by backend when skills update)
+            chain_dir = qube_dir / "chain"
+            cache_file = chain_dir / "skills_cache.json"
+
+            compact_data = {
+                "skill_xp": {},
+                "extra_unlocked": [],
+                "history": [],
+                "total_xp": 0,
+                "last_xp_gain": None
+            }
+
+            if cache_file.exists():
+                try:
+                    with open(cache_file, 'r', encoding='utf-8') as f:
+                        compact_data = json.load(f)
+                    logger.info(f"Loaded skills cache for {qube_id}: total_xp={compact_data.get('total_xp', 0)}")
+                except Exception as e:
+                    logger.warning(f"Failed to read skills cache, using defaults: {e}")
+
+            # Get skill definitions and merge with cached XP data
+            skill_definitions = {s["id"]: s for s in generate_all_skills()}
+            skills_list = []
+
+            for skill_id, definition in skill_definitions.items():
+                skill = definition.copy()
+
+                # Apply stored XP/level from cache
+                if skill_id in compact_data.get("skill_xp", {}):
+                    stored = compact_data["skill_xp"][skill_id]
+                    skill["xp"] = stored.get("xp", 0)
+                    skill["level"] = stored.get("level", 0)
+                    # Update tier based on level
+                    if skill["level"] >= 75:
+                        skill["tier"] = "expert"
+                    elif skill["level"] >= 50:
+                        skill["tier"] = "advanced"
+                    elif skill["level"] >= 25:
+                        skill["tier"] = "intermediate"
+                    else:
+                        skill["tier"] = "novice"
+
+                # Apply extra unlocked status
+                if skill_id in compact_data.get("extra_unlocked", []):
+                    skill["unlocked"] = True
+
+                skills_list.append(skill)
+
+            # Build summary
+            summary = {
+                "total_skills": len(skill_definitions),
+                "unlocked_skills": sum(1 for s in skills_list if s.get("unlocked", False)),
+                "maxed_skills": sum(1 for s in skills_list if s.get("level", 0) == 100),
+                "total_xp": compact_data.get("total_xp", 0),
+                "unlocked_tools": [s.get("toolCallReward") for s in skills_list if s.get("level", 0) == 100 and s.get("toolCallReward")]
+            }
 
             return {
                 "success": True,
                 "qube_id": qube_id,
-                "skills": skills_data.get("skills", []),
-                "last_updated": skills_data.get("last_updated"),
-                "summary": skills_manager.get_skill_summary()
+                "skills": skills_list,
+                "last_updated": compact_data.get("last_xp_gain"),
+                "summary": summary
             }
 
         except Exception as e:
@@ -1962,9 +2009,15 @@ class GUIBridge:
             }
 
     async def save_qube_skills(self, user_id: str, qube_id: str, skills_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Save skills for a specific qube"""
+        """Save skills for a specific qube.
+
+        Note: This saves to the skills_cache.json file only.
+        The encrypted chain_state is updated by the backend during chat sessions.
+        GUI-initiated saves go to cache and will be synced to chain_state on next session.
+        """
         try:
-            from utils.skills_manager import SkillsManager
+            from utils.skill_definitions import generate_all_skills
+            from datetime import datetime
 
             # SECURITY: Validate inputs
             from utils.input_validation import validate_user_id, validate_qube_id
@@ -1988,21 +2041,55 @@ class GUIBridge:
                     "error": f"Qube {qube_id} not found"
                 }
 
-            # Save skills
-            skills_manager = SkillsManager(qube_dir)
-            success = skills_manager.save_skills(skills_data)
+            # Convert full skills format to compact format for cache
+            skill_definitions = {s["id"]: s for s in generate_all_skills()}
+            skill_xp = {}
+            extra_unlocked = []
+            total_xp = 0
 
-            if success:
-                return {
-                    "success": True,
-                    "qube_id": qube_id,
-                    "message": "Skills saved successfully"
-                }
-            else:
-                return {
-                    "success": False,
-                    "error": "Failed to save skills"
-                }
+            for skill in skills_data.get("skills", []):
+                skill_id = skill.get("id")
+                if not skill_id:
+                    continue
+
+                xp = skill.get("xp", 0)
+                level = skill.get("level", 0)
+                unlocked = skill.get("unlocked", False)
+
+                # Get default unlocked state
+                default_def = skill_definitions.get(skill_id, {})
+                default_unlocked = default_def.get("unlocked", False)
+
+                # Store XP if > 0 or level > 0
+                if xp > 0 or level > 0:
+                    skill_xp[skill_id] = {"xp": xp, "level": level}
+                    total_xp += xp
+
+                # Store unlocked if different from default
+                if unlocked and not default_unlocked:
+                    if skill_id not in extra_unlocked:
+                        extra_unlocked.append(skill_id)
+
+            compact_data = {
+                "skill_xp": skill_xp,
+                "extra_unlocked": extra_unlocked,
+                "history": skills_data.get("history", [])[-100:],  # Cap at 100
+                "total_xp": total_xp,
+                "last_xp_gain": datetime.utcnow().isoformat() + "Z"
+            }
+
+            # Write to cache file
+            chain_dir = qube_dir / "chain"
+            cache_file = chain_dir / "skills_cache.json"
+
+            with open(cache_file, 'w', encoding='utf-8') as f:
+                json.dump(compact_data, f, indent=2)
+
+            return {
+                "success": True,
+                "qube_id": qube_id,
+                "message": "Skills saved successfully"
+            }
 
         except Exception as e:
             logger.error(f"Failed to save skills for qube {qube_id}: {e}", exc_info=True)
@@ -2012,17 +2099,29 @@ class GUIBridge:
             }
 
     async def add_skill_xp(self, user_id: str, qube_id: str, skill_id: str, xp_amount: int, evidence_block_id: Optional[str] = None) -> Dict[str, Any]:
-        """Add XP to a specific skill"""
+        """Add XP to a specific skill.
+
+        Note: This modifies the skills_cache.json file only.
+        The proper chain_state update happens during active chat sessions via the backend.
+        """
         try:
-            from utils.skills_manager import SkillsManager
+            from utils.skill_definitions import generate_all_skills
+            from datetime import datetime
 
             # SECURITY: Validate inputs
             from utils.input_validation import validate_user_id, validate_qube_id
             user_id = validate_user_id(user_id)
             qube_id = validate_qube_id(qube_id)
 
-            # Get qube directory
-            qube_dir = Path(__file__).parent / "data" / "users" / user_id / "qubes" / qube_id
+            # Get qube directory - need to find the actual folder name
+            qubes_base_dir = Path(__file__).parent / "data" / "users" / user_id / "qubes"
+            qube_dir = None
+
+            if qubes_base_dir.exists():
+                for dir_path in qubes_base_dir.iterdir():
+                    if dir_path.is_dir() and dir_path.name.endswith(qube_id):
+                        qube_dir = dir_path
+                        break
 
             if not qube_dir or not qube_dir.exists():
                 return {
@@ -2030,9 +2129,91 @@ class GUIBridge:
                     "error": f"Qube {qube_id} not found"
                 }
 
+            # Load skill definitions
+            skill_definitions = {s["id"]: s for s in generate_all_skills()}
+            if skill_id not in skill_definitions:
+                return {"success": False, "error": f"Skill {skill_id} not found"}
+
+            skill_def = skill_definitions[skill_id]
+
+            # Load existing cache
+            chain_dir = qube_dir / "chain"
+            cache_file = chain_dir / "skills_cache.json"
+
+            compact_data = {
+                "skill_xp": {},
+                "extra_unlocked": [],
+                "history": [],
+                "total_xp": 0,
+                "last_xp_gain": None
+            }
+
+            if cache_file.exists():
+                try:
+                    with open(cache_file, 'r', encoding='utf-8') as f:
+                        compact_data = json.load(f)
+                except Exception:
+                    pass
+
+            # Check if skill is unlocked
+            is_unlocked = skill_def.get("unlocked", False) or skill_id in compact_data.get("extra_unlocked", [])
+
+            # If locked, flow XP to parent
+            target_skill_id = skill_id
+            if not is_unlocked:
+                parent_id = skill_def.get("parentSkill")
+                if parent_id:
+                    target_skill_id = parent_id
+                    skill_def = skill_definitions.get(parent_id, skill_def)
+
+            # Get current XP/level
+            current = compact_data.get("skill_xp", {}).get(target_skill_id, {"xp": 0, "level": 0})
+            old_xp = current.get("xp", 0)
+            old_level = current.get("level", 0)
+
             # Add XP
-            skills_manager = SkillsManager(qube_dir)
-            result = skills_manager.add_xp(skill_id, xp_amount, evidence_block_id)
+            new_xp = old_xp + xp_amount
+            new_level = old_level
+            max_xp = skill_def.get("maxXP", 500)
+            leveled_up = False
+            levels_gained = 0
+
+            # Check for level-ups
+            while new_xp >= max_xp and new_level < 100:
+                new_xp -= max_xp
+                new_level += 1
+                levels_gained += 1
+                leveled_up = True
+
+            if new_level >= 100:
+                new_level = 100
+                new_xp = max_xp
+
+            # Update cache
+            if "skill_xp" not in compact_data:
+                compact_data["skill_xp"] = {}
+            compact_data["skill_xp"][target_skill_id] = {"xp": new_xp, "level": new_level}
+            compact_data["total_xp"] = compact_data.get("total_xp", 0) + xp_amount
+            compact_data["last_xp_gain"] = datetime.utcnow().isoformat() + "Z"
+
+            # Write to cache
+            with open(cache_file, 'w', encoding='utf-8') as f:
+                json.dump(compact_data, f, indent=2)
+
+            result = {
+                "success": True,
+                "skill_id": target_skill_id,
+                "old_level": old_level,
+                "new_level": new_level,
+                "xp_gained": xp_amount,
+                "current_xp": new_xp,
+                "max_xp": max_xp,
+                "leveled_up": leveled_up,
+                "levels_gained": levels_gained
+            }
+
+            if new_level == 100 and skill_def.get("toolCallReward"):
+                result["tool_unlocked"] = skill_def["toolCallReward"]
 
             return result
 
@@ -2044,17 +2225,28 @@ class GUIBridge:
             }
 
     async def unlock_skill(self, user_id: str, qube_id: str, skill_id: str) -> Dict[str, Any]:
-        """Unlock a specific skill"""
+        """Unlock a specific skill.
+
+        Note: This modifies the skills_cache.json file only.
+        """
         try:
-            from utils.skills_manager import SkillsManager
+            from utils.skill_definitions import generate_all_skills
+            from datetime import datetime
 
             # SECURITY: Validate inputs
             from utils.input_validation import validate_user_id, validate_qube_id
             user_id = validate_user_id(user_id)
             qube_id = validate_qube_id(qube_id)
 
-            # Get qube directory
-            qube_dir = Path(__file__).parent / "data" / "users" / user_id / "qubes" / qube_id
+            # Get qube directory - need to find the actual folder name
+            qubes_base_dir = Path(__file__).parent / "data" / "users" / user_id / "qubes"
+            qube_dir = None
+
+            if qubes_base_dir.exists():
+                for dir_path in qubes_base_dir.iterdir():
+                    if dir_path.is_dir() and dir_path.name.endswith(qube_id):
+                        qube_dir = dir_path
+                        break
 
             if not qube_dir or not qube_dir.exists():
                 return {
@@ -2062,11 +2254,57 @@ class GUIBridge:
                     "error": f"Qube {qube_id} not found"
                 }
 
-            # Unlock skill
-            skills_manager = SkillsManager(qube_dir)
-            result = skills_manager.unlock_skill(skill_id)
+            # Load skill definitions
+            skill_definitions = {s["id"]: s for s in generate_all_skills()}
+            if skill_id not in skill_definitions:
+                return {"success": False, "error": f"Skill {skill_id} not found"}
 
-            return result
+            skill_def = skill_definitions[skill_id]
+
+            # Load existing cache
+            chain_dir = qube_dir / "chain"
+            cache_file = chain_dir / "skills_cache.json"
+
+            compact_data = {
+                "skill_xp": {},
+                "extra_unlocked": [],
+                "history": [],
+                "total_xp": 0,
+                "last_xp_gain": None
+            }
+
+            if cache_file.exists():
+                try:
+                    with open(cache_file, 'r', encoding='utf-8') as f:
+                        compact_data = json.load(f)
+                except Exception:
+                    pass
+
+            # Check if already unlocked
+            is_unlocked = skill_def.get("unlocked", False) or skill_id in compact_data.get("extra_unlocked", [])
+            if is_unlocked:
+                return {"success": False, "error": f"Skill {skill_id} is already unlocked"}
+
+            # Check prerequisite
+            prereq_id = skill_def.get("prerequisite")
+            if prereq_id:
+                prereq_def = skill_definitions.get(prereq_id, {})
+                prereq_unlocked = prereq_def.get("unlocked", False) or prereq_id in compact_data.get("extra_unlocked", [])
+                if not prereq_unlocked:
+                    return {"success": False, "error": f"Prerequisite skill {prereq_id} must be unlocked first"}
+
+            # Unlock the skill
+            if "extra_unlocked" not in compact_data:
+                compact_data["extra_unlocked"] = []
+            if skill_id not in compact_data["extra_unlocked"]:
+                compact_data["extra_unlocked"].append(skill_id)
+
+            # Write to cache
+            with open(cache_file, 'w', encoding='utf-8') as f:
+                json.dump(compact_data, f, indent=2)
+
+            logger.info(f"Unlocked skill {skill_id} for qube {qube_id}")
+            return {"success": True, "skill_id": skill_id}
 
         except Exception as e:
             logger.error(f"Failed to unlock skill {skill_id} for qube {qube_id}: {e}", exc_info=True)
@@ -6167,7 +6405,10 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
             if session and hasattr(session, 'session_blocks') and session.session_blocks:
                 for block in session.session_blocks[-3:]:
                     content = block.content if isinstance(block.content, dict) else {}
-                    if "message" in content:
+                    # MESSAGE blocks use "message_body" not "message"
+                    if "message_body" in content:
+                        recent_messages.append(content["message_body"][:200])
+                    elif "message" in content:
                         recent_messages.append(content["message"][:200])
 
             if recent_messages:
@@ -6461,6 +6702,54 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
             return 4
         else:
             return 5
+
+    async def get_system_prompt_preview(
+        self,
+        qube_id: str,
+        password: str
+    ) -> Dict[str, Any]:
+        """
+        Get a real-time preview of the system prompt that would be sent to the AI.
+
+        This generates the system prompt as it would appear RIGHT NOW, with the
+        current model, provider, and all identity/context information. Unlike
+        the cached debug prompt (which shows what was sent in the last API call),
+        this shows what WOULD be sent if you started a conversation now.
+
+        Args:
+            qube_id: Qube ID
+            password: User's master password
+
+        Returns:
+            Dict with system_prompt, model, provider, qube_name, qube_id
+        """
+        try:
+            self.orchestrator.set_master_key(password)
+            qube = await self.orchestrator.load_qube(qube_id)
+
+            if not qube:
+                return {"success": False, "error": f"Qube {qube_id} not found"}
+
+            # Use the reasoner to build the system prompt preview
+            from ai.reasoner import QubeReasoner
+            reasoner = QubeReasoner(qube)
+            preview = await reasoner.build_system_prompt_preview()
+
+            return {
+                "success": True,
+                "system_prompt": preview.get("system_prompt", ""),
+                "messages": preview.get("messages", []),
+                "model": preview.get("model", "unknown"),
+                "provider": preview.get("provider", "unknown"),
+                "qube_name": preview.get("qube_name", ""),
+                "qube_id": preview.get("qube_id", qube_id),
+                "relevant_memories_count": preview.get("relevant_memories_count", 0),
+                "permanent_blocks_count": preview.get("permanent_blocks_count", 0),
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to get system prompt preview: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
 
     async def propose_wallet_transaction(
         self,
@@ -6955,9 +7244,11 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
             state["model_locked"] = locked
             state["model_locked_to"] = model_name if locked else None
 
-            # Mutually exclusive: disable revolver mode when locking
+            # Mutually exclusive: disable other modes when enabling manual mode
             if locked:
                 state["revolver_mode_enabled"] = False
+                state["autonomous_mode_enabled"] = False
+                state["model_mode"] = "manual"
 
             if not self._save_chain_state(qube_dir, state):
                 return {"success": False, "error": "Failed to save settings - encryption key not available"}
@@ -7209,6 +7500,11 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
                 state["model_locked"] = False
                 state["model_locked_to"] = None
                 state["revolver_mode_enabled"] = False
+                state["model_mode"] = "autonomous"
+            else:
+                # If disabling autonomous and no other mode is active, default to manual
+                if not state.get("revolver_mode_enabled"):
+                    state["model_mode"] = "manual"
             if not self._save_chain_state(qube_dir, state):
                 return {"success": False, "error": "Failed to save settings - encryption key not available"}
 
@@ -7260,6 +7556,16 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
             # Default to model_locked if neither revolver nor autonomous mode is on
             model_locked = state.get("model_locked", not revolver_mode and not autonomous_mode)
 
+            # Get model_mode (single source of truth) - derive if not stored
+            model_mode = state.get("model_mode")
+            if not model_mode:
+                if autonomous_mode:
+                    model_mode = "autonomous"
+                elif revolver_mode:
+                    model_mode = "revolver"
+                else:
+                    model_mode = "manual"
+
             return {
                 "success": True,
                 "preferences": state.get("model_preferences", {}),
@@ -7271,7 +7577,8 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
                 "revolver_mode": revolver_mode,
                 "revolver_mode_pool": state.get("revolver_mode_pool", []),
                 "autonomous_mode": autonomous_mode,
-                "autonomous_mode_pool": state.get("autonomous_mode_pool", [])
+                "autonomous_mode_pool": state.get("autonomous_mode_pool", []),
+                "model_mode": model_mode  # Single source of truth
             }
 
         except Exception as e:
@@ -7538,9 +7845,12 @@ async def main():
 
             # SECURITY: Validate user_id to prevent path traversal
             user_id = validate_user_id(sys.argv[2])
-            # Note: list_qubes doesn't need master key, it just reads metadata
-            # Create bridge with correct user
+            password = get_secret("password", argv_index=3)
+
+            # Create bridge with correct user and set master key for chain_state decryption
             user_bridge = GUIBridge(user_id=user_id)
+            if password:
+                user_bridge.orchestrator.set_master_key(password)
             qubes = await user_bridge.list_qubes()
             print(json.dumps(qubes))
 
@@ -7828,6 +8138,8 @@ async def main():
                     break
 
             blocks_discarded = 0
+            current_model = None
+            current_provider = None
             if qube_path:
                 session_dir = qube_path / "blocks" / "session"
 
@@ -7862,23 +8174,38 @@ async def main():
 
                         # Clear session state
                         cs.end_session()
+
+                        # Get the actual current model after rollback (for frontend sync)
+                        current_model = cs.get_current_model()
+                        current_provider = cs.get_current_provider()
                     else:
                         logger.warning("Cannot update chain_state - no encryption key")
                 except Exception as e:
                     logger.warning("update_chain_state_failed", error=str(e))
 
-            print(json.dumps({"success": True, "blocks_discarded": blocks_discarded}))
+            result = {"success": True, "blocks_discarded": blocks_discarded}
+            if current_model:
+                result["current_model"] = current_model
+            if current_provider:
+                result["current_provider"] = current_provider
+            print(json.dumps(result))
 
         elif command == "delete-session-block":
             if len(sys.argv) < 5:
-                print(json.dumps({"error": "User ID, Qube ID, and block number required"}), file=sys.stderr)
+                print(json.dumps({"error": "User ID, Qube ID, and block number or timestamp required"}), file=sys.stderr)
                 sys.exit(1)
 
             user_id = sys.argv[2]
             # SECURITY: Validate qube_id
             qube_id = validate_qube_id(sys.argv[3])
             block_number = int(sys.argv[4])
-            password = get_secret("password", argv_index=5)
+            password = get_secret("password")
+            # Optional timestamp for stable deletion (block numbers shift on reload)
+            # Timestamp is at argv[5] - password comes via stdin, not argv
+            # Frontend sends milliseconds (JS format), but blocks store seconds (Python format)
+            # Convert back: milliseconds -> seconds
+            timestamp_ms = int(sys.argv[5]) if len(sys.argv) > 5 and sys.argv[5] else None
+            timestamp = timestamp_ms // 1000 if timestamp_ms is not None else None
 
             # Create bridge with correct user
             user_bridge = GUIBridge(user_id=user_id)
@@ -7897,13 +8224,16 @@ async def main():
                 print(json.dumps({"success": False, "error": "No active session"}))
                 sys.exit(0)
 
-            # Delete the block (must be negative index for session blocks)
-            deleted_block = qube.current_session.delete_block(block_number)
+            # Delete by timestamp (stable) if provided, otherwise by block_number (may shift)
+            deleted_block = qube.current_session.delete_block(
+                block_number=block_number if timestamp is None else None,
+                timestamp=timestamp
+            )
 
             if deleted_block:
-                print(json.dumps({"success": True, "deleted_block_number": block_number}))
+                print(json.dumps({"success": True, "deleted_block_number": block_number, "deleted_timestamp": deleted_block.timestamp}))
             else:
-                print(json.dumps({"success": False, "error": f"Block {block_number} not found"}))
+                print(json.dumps({"success": False, "error": f"Block {block_number} (timestamp={timestamp}) not found"}))
 
         elif command == "get-qube-blocks":
             if len(sys.argv) < 4:
@@ -10788,6 +11118,31 @@ async def main():
 
             user_bridge = GUIBridge(user_id=user_id)
             result = await user_bridge.get_context_preview(
+                qube_id=args.qube_id,
+                password=password
+            )
+            print(json.dumps(result))
+
+        elif command == "get-system-prompt-preview":
+            # Get real-time system prompt preview (what WOULD be sent to AI now)
+            if len(sys.argv) < 3:
+                print(json.dumps({"success": False, "error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("command")
+            parser.add_argument("user_id")
+            parser.add_argument("--qube-id", required=True)
+            parser.add_argument("--password", default=None)
+
+            args = parser.parse_args()
+            password = get_secret("password", required=False) or args.password
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.get_system_prompt_preview(
                 qube_id=args.qube_id,
                 password=password
             )

@@ -163,6 +163,8 @@ class SkillsManager:
         """
         Save compact skills data to chain_state.
 
+        Also writes to unencrypted skills_cache.json for GUI access.
+
         Args:
             data: Compact skills data
 
@@ -172,20 +174,46 @@ class SkillsManager:
         try:
             self.chain_state.state["skills"] = data
             self.chain_state._save()
+
+            # Also write to unencrypted cache for GUI access
+            self._write_skills_cache(data)
+
             return True
         except Exception as e:
             logger.error(f"Failed to save skills: {e}")
             return False
 
+    def _write_skills_cache(self, data: Dict[str, Any]) -> None:
+        """
+        Write skills data to unencrypted cache file for GUI access.
+
+        The cache file is stored alongside chain_state.json.
+
+        Args:
+            data: Compact skills data to cache
+        """
+        try:
+            cache_file = self.chain_state.data_dir / "skills_cache.json"
+            with open(cache_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2)
+            logger.debug(f"Wrote skills cache to {cache_file}")
+        except Exception as e:
+            logger.warning(f"Failed to write skills cache: {e}")
+
     def load_skills(self) -> Dict[str, Any]:
         """
         Load current skill states, merging compact storage with definitions.
+
+        Also updates the skills cache file for GUI access.
 
         Returns:
             Dictionary containing full skills data for compatibility
         """
         compact_data = self._get_compact_skills_data()
         skill_definitions = self._get_skill_definitions()
+
+        # Update cache for GUI access (sync from chain_state)
+        self._write_skills_cache(compact_data)
 
         # Build full skill list by merging definitions with stored XP
         skills_list = []

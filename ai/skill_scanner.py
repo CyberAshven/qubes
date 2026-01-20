@@ -22,7 +22,7 @@ logger = get_logger(__name__)
 TOOL_TO_SKILL_MAPPING = {
     # Regular Tools
     "generate_image": "visual_design",           # creative_expression → visual_design planet
-    "search_memory": "knowledge_domains_sun",    # knowledge_domains → sun (general research)
+    "search_memory": "knowledge_domains",    # knowledge_domains → sun (general research)
     "describe_my_avatar": "analysis_critique",   # ai_reasoning → analysis_critique planet
     # Note: get_system_state and update_system_state are general-purpose tools, not skill-specific
 
@@ -129,9 +129,9 @@ def analyze_research_topic(query: str, url: str = None) -> str:
     if re.search(r'\b(chess|checkers|poker|game|strategy|tactics)\b', text):
         return "chess"
 
-    # Default: knowledge_domains_sun (general research)
-    logger.debug(f"No specific skill match for query '{query[:50]}...', defaulting to knowledge_domains_sun")
-    return "knowledge_domains_sun"
+    # Default: knowledge_domains (general research)
+    logger.debug(f"No specific skill match for query '{query[:50]}...', defaulting to knowledge_domains")
+    return "knowledge_domains"
 
 
 class SkillScanner:

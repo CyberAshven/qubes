@@ -30,6 +30,7 @@ export const ModelModeIndicator: React.FC<ModelModeIndicatorProps> = ({ qubeId, 
           model_locked?: boolean;
           revolver_mode?: boolean;
           autonomous_mode?: boolean;
+          model_mode?: 'manual' | 'revolver' | 'autonomous';  // Single source of truth
           error?: string;
         }>('get_model_preferences', {
           userId,
@@ -38,7 +39,10 @@ export const ModelModeIndicator: React.FC<ModelModeIndicatorProps> = ({ qubeId, 
         });
 
         if (result.success) {
-          if (result.revolver_mode) {
+          // Use model_mode directly if available, otherwise derive from booleans
+          if (result.model_mode) {
+            setModelMode(result.model_mode);
+          } else if (result.revolver_mode) {
             setModelMode('revolver');
           } else if (result.autonomous_mode) {
             setModelMode('autonomous');
@@ -63,10 +67,14 @@ export const ModelModeIndicator: React.FC<ModelModeIndicatorProps> = ({ qubeId, 
         modelLocked: boolean;
         revolverMode: boolean;
         autonomousMode: boolean;
+        modelMode?: 'manual' | 'revolver' | 'autonomous';  // New: single source of truth
       }>('model-mode-changed', (event) => {
         // Only update if the changed qube matches the selected qube
         if (qubeId && event.payload.qubeId === qubeId) {
-          if (event.payload.revolverMode) {
+          // Use modelMode directly if available, otherwise derive from booleans
+          if (event.payload.modelMode) {
+            setModelMode(event.payload.modelMode);
+          } else if (event.payload.revolverMode) {
             setModelMode('revolver');
           } else if (event.payload.autonomousMode) {
             setModelMode('autonomous');

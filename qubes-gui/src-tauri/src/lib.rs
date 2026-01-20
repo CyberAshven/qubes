@@ -1569,37 +1569,18 @@ async fn get_available_models() -> Result<AvailableModelsResponse, String> {
 }
 
 #[tauri::command]
-async fn list_qubes(user_id: String) -> Result<Vec<Qube>, String> {
+async fn list_qubes(user_id: String, password: String) -> Result<Vec<Qube>, String> {
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
 
-    let bridge_path = get_python_bridge_path();
-    let is_bundled = is_bundled_distribution();
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("list-qubes")
+        .arg(&user_id);
 
-    if !is_bundled && !bridge_path.exists() {
-        return Err(format!("Python bridge not found at: {}", bridge_path.display()));
-    }
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
 
-    let project_root = get_python_project_path();
-    let (mut cmd, skip_bridge_arg) = create_backend_command();
-    cmd.current_dir(&project_root);
-
-    if !skip_bridge_arg {
-        cmd.arg(&bridge_path);
-    }
-
-    let output = cmd
-        .arg("list-qubes")
-        .arg(&user_id)
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
-
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let (stdout, _) = execute_with_secrets(cmd, secrets)?;
 
     let qubes: Vec<Qube> = serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
@@ -2000,12 +1981,17 @@ async fn discard_session(user_id: String, qube_id: String, password: String) -> 
 }
 
 #[tauri::command]
-async fn delete_session_block(user_id: String, qube_id: String, block_number: i32, password: String) -> Result<serde_json::Value, String> {
+async fn delete_session_block(user_id: String, qube_id: String, block_number: i32, password: String, timestamp: Option<i64>) -> Result<serde_json::Value, String> {
     let mut cmd = prepare_backend_command()?;
     cmd.arg("delete-session-block")
         .arg(&user_id)
         .arg(&qube_id)
         .arg(block_number.to_string());
+
+    // Pass timestamp if provided (for stable deletion when deleting multiple blocks)
+    if let Some(ts) = timestamp {
+        cmd.arg(ts.to_string());
+    }
 
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
@@ -5895,6 +5881,32 @@ async fn get_context_preview(
 }
 
 #[tauri::command]
+async fn get_system_prompt_preview(
+    user_id: String,
+    qube_id: String,
+    password: String,
+) -> Result<serde_json::Value, String> {
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("get-system-prompt-preview")
+        .arg(&user_id)
+        .arg("--qube-id")
+        .arg(&qube_id);
+
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
+
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
 async fn propose_wallet_transaction(
     user_id: String,
     qube_id: String,
@@ -6355,6 +6367,7 @@ pub fn run() {
             // Wallet Commands
             get_wallet_info,
             get_context_preview,
+            get_system_prompt_preview,
             propose_wallet_transaction,
             approve_wallet_transaction,
             reject_wallet_transaction,

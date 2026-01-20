@@ -216,11 +216,26 @@ const ActionBlockContent: React.FC<{ content: any }> = memo(({ content }) => {
       </div>
 
       {result && (
-        <div className="bg-accent-success/5 border border-accent-success/20 rounded-lg p-4">
+        <div className={`rounded-lg p-4 ${
+          result.success === false || result.error
+            ? 'bg-red-500/10 border border-red-500/30'
+            : 'bg-accent-success/5 border border-accent-success/20'
+        }`}>
           <div className="flex items-center gap-2 mb-2">
-            <span className="text-lg">📊</span>
-            <span className="text-sm font-medium text-accent-success">Result</span>
+            <span className="text-lg">{result.success === false || result.error ? '❌' : '📊'}</span>
+            <span className={`text-sm font-medium ${
+              result.success === false || result.error ? 'text-red-400' : 'text-accent-success'
+            }`}>
+              {result.success === false || result.error ? 'Error' : 'Result'}
+            </span>
           </div>
+
+          {/* Show error message prominently if present */}
+          {result.error && (
+            <div className="bg-red-500/20 border border-red-500/40 rounded p-3 mb-3">
+              <div className="text-red-400 font-medium text-sm">{String(result.error)}</div>
+            </div>
+          )}
 
           {isWebSearchResult ? (
             <div className="space-y-3">

@@ -1915,6 +1915,10 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
       }
 
       setIsEditingModel(false);
+
+      // Emit events for Debug Inspector and other components
+      emit('qube-model-changed', { qubeId: qube.qube_id, newModel: selectedModel });
+      emit('qube-settings-changed', { qubeId: qube.qube_id });
     } catch (error) {
       console.error('Failed to update model:', error);
       alert(`Failed to update model: ${error}`);
@@ -1925,6 +1929,8 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
     try {
       await onUpdateConfig(qube.qube_id, { voice_model: selectedVoice });
       setIsEditingVoice(false);
+      // Emit event for Debug Inspector
+      emit('qube-settings-changed', { qubeId: qube.qube_id });
     } catch (error) {
       console.error('Failed to update voice:', error);
       alert(`Failed to update voice: ${error}`);
@@ -1935,6 +1941,8 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
     try {
       await onUpdateConfig(qube.qube_id, { favorite_color: selectedColor });
       setIsEditingColor(false);
+      // Emit event for Debug Inspector (favorite_color is in system prompt)
+      emit('qube-settings-changed', { qubeId: qube.qube_id });
     } catch (error) {
       console.error('Failed to update color:', error);
       alert(`Failed to update color: ${error}`);
@@ -1975,6 +1983,8 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
     try {
       const newTTSState = !qube.tts_enabled;
       await onUpdateConfig(qube.qube_id, { tts_enabled: newTTSState });
+      // Emit event for Debug Inspector
+      emit('qube-settings-changed', { qubeId: qube.qube_id });
     } catch (error) {
       console.error('Failed to toggle TTS:', error);
       alert(`Failed to toggle TTS: ${error}`);

@@ -356,7 +356,10 @@ class Qube:
         self.game_manager = GameManager(self)
 
         # AI configuration
-        self.current_ai_model = self.genesis_block.ai_model
+        # Prefer runtime.current_model from chain_state (reflects model switches)
+        # Fall back to genesis model if chain_state doesn't have a current model
+        runtime_model = self.chain_state.state.get("runtime", {}).get("current_model")
+        self.current_ai_model = runtime_model or self.genesis_block.ai_model
         self.api_keys: Dict[str, str] = {}  # Populated after creation
         self.reasoner = None  # Initialized with init_ai()
         self.tool_registry = None  # Initialized with init_ai()
@@ -866,8 +869,12 @@ class Qube:
         # Emit anchor created event
         if converted_blocks:
             from core.events import Events
+            last_block = converted_blocks[-1]
             self.events.emit(Events.ANCHOR_CREATED, {
-                "blocks_anchored": len(converted_blocks)
+                "blocks_anchored": len(converted_blocks),
+                "chain_update": {
+                    "last_anchor_block": last_block.block_number
+                }
             })
 
         logger.info("session_anchored", blocks=len(converted_blocks))

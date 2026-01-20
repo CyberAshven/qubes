@@ -2,6 +2,7 @@ import { calculateTokenCost, formatUSD, formatBCH } from '../../utils/tokenCostC
 import { formatModelName } from '../../utils/modelFormatter';
 import React, { useState, useEffect } from 'react';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
+import { emit } from '@tauri-apps/api/event';
 import { GlassCard, GlassButton } from '../glass';
 import { Qube } from '../../types';
 import { BlockContentViewer } from '../blocks/BlockContentViewer';
@@ -247,6 +248,9 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
   const loadedQubeId = React.useRef<string | null>(null);
   const [selectedBlock, setSelectedBlock] = useState<Block | null>(null);
   const [selectedSection, setSelectedSection] = useState<SelectionSection | null>(null);
+  // Multi-select state for session blocks
+  const [selectedSessionBlocks, setSelectedSessionBlocks] = useState<Set<number>>(new Set());
+  const [lastClickedSessionBlock, setLastClickedSessionBlock] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterType, setFilterType] = useState<string>('all');
@@ -356,6 +360,9 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
         // Reset pagination when blocks are loaded
         setSessionBlocksToShow(10);
         setPermanentBlocksToShow(10);
+        // Clear multi-select state when blocks are reloaded
+        setSelectedSessionBlocks(new Set());
+        setLastClickedSessionBlock(null);
         setLoading(false);
 
         // Return counts for comparison (don't update lastContextState here -
@@ -558,7 +565,7 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
     setShowDiscardConfirm(false);
 
     try {
-      await invoke('discard_session', {
+      const result = await invoke<{ success: boolean; blocks_discarded: number; current_model?: string }>('discard_session', {
         userId,
         qubeId: selectedQube.qube_id,
         password,
@@ -568,6 +575,18 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
       await loadContextPreview();
       setSelectedBlock(null);
       setSelectedSection(null);
+      setSelectedSessionBlocks(new Set());
+      setLastClickedSessionBlock(null);
+
+      // Sync frontend model state with backend after discard
+      // This fixes the issue where model switches during the discarded session
+      // leave the frontend showing the wrong model
+      if (result.current_model) {
+        emit('qube-model-changed', {
+          qubeId: selectedQube.qube_id,
+          newModel: result.current_model,
+        });
+      }
     } catch (error) {
       console.error('Failed to discard session:', error);
       alert(`Failed to discard session: ${error}`);
@@ -575,29 +594,56 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
   };
 
   const confirmDiscardSelected = async () => {
-    if (!selectedQube || !selectedBlock || selectedBlock.block_number >= 0) {
-      // Only allow discarding session blocks (negative indices)
+    if (!selectedQube) return;
+
+    // Determine which blocks to delete - collect both block_number and timestamp
+    // Timestamps are stable identifiers that don't change between delete calls,
+    // unlike block_numbers which get re-indexed when the session reloads.
+    const blocksToDelete: { blockNumber: number; timestamp: number }[] = [];
+
+    if (selectedSessionBlocks.size > 0) {
+      // Multi-select mode: find all selected blocks and get their timestamps
+      for (const blockNum of selectedSessionBlocks) {
+        const block = sessionBlocks.find(b => b.block_number === blockNum);
+        if (block) {
+          blocksToDelete.push({ blockNumber: block.block_number, timestamp: block.timestamp });
+        }
+      }
+    } else if (selectedBlock && selectedBlock.block_number < 0) {
+      // Single selection mode: use the selected block
+      blocksToDelete.push({ blockNumber: selectedBlock.block_number, timestamp: selectedBlock.timestamp });
+    } else {
       alert('Only session blocks can be discarded individually.');
       return;
     }
 
+    // Sort doesn't matter anymore since we use timestamps for deletion,
+    // but keep for consistency in logging/display
+    blocksToDelete.sort((a, b) => a.blockNumber - b.blockNumber);
+
     setShowDiscardConfirm(false);
 
     try {
-      await invoke('delete_session_block', {
-        userId,
-        qubeId: selectedQube.qube_id,
-        blockNumber: selectedBlock.block_number,
-        password,
-      });
+      // Delete blocks one by one using timestamps for stable identification
+      for (const { blockNumber, timestamp } of blocksToDelete) {
+        await invoke('delete_session_block', {
+          userId,
+          qubeId: selectedQube.qube_id,
+          blockNumber,
+          password,
+          timestamp,  // Pass timestamp for stable deletion
+        });
+      }
       await loadBlocks();
       // Refresh context preview since blocks changed
       await loadContextPreview();
       setSelectedBlock(null);
       setSelectedSection(null);
+      setSelectedSessionBlocks(new Set());
+      setLastClickedSessionBlock(null);
     } catch (error) {
-      console.error('Failed to discard block:', error);
-      alert(`Failed to discard block: ${error}`);
+      console.error('Failed to discard block(s):', error);
+      alert(`Failed to discard block(s): ${error}`);
     }
   };
 
@@ -605,8 +651,66 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
     setShowDiscardConfirm(false);
   };
 
-  const handleBlockClick = (block: Block, section: SelectionSection) => {
+  const handleBlockClick = (block: Block, section: SelectionSection, event?: React.MouseEvent) => {
     try {
+      // Handle multi-select for session blocks only
+      if (section === 'session' && event && (event.ctrlKey || event.metaKey || event.shiftKey)) {
+        // Prevent text selection on shift+click
+        if (event.shiftKey) {
+          event.preventDefault();
+        }
+        const blockNum = block.block_number;
+
+        if (event.shiftKey && lastClickedSessionBlock !== null) {
+          // Shift+click: select range from last clicked to current
+          // Session blocks have negative numbers, more negative = newer
+          const start = Math.min(lastClickedSessionBlock, blockNum);
+          const end = Math.max(lastClickedSessionBlock, blockNum);
+
+          // Find all session blocks in the range
+          const blocksInRange = sessionBlocks
+            .filter(b => b.block_number >= start && b.block_number <= end)
+            .map(b => b.block_number);
+
+          setSelectedSessionBlocks(prev => {
+            const next = new Set(prev);
+            // If this is the first multi-select and we have a previously selected block, include it
+            if (next.size === 0 && lastClickedSessionBlock !== null) {
+              next.add(lastClickedSessionBlock);
+            }
+            blocksInRange.forEach(num => next.add(num));
+            return next;
+          });
+        } else if (event.ctrlKey || event.metaKey) {
+          // Ctrl+click (or Cmd+click on Mac): toggle individual block
+          setSelectedSessionBlocks(prev => {
+            const next = new Set(prev);
+            // If this is the first ctrl+click and we have a previously selected block, include it
+            if (next.size === 0 && lastClickedSessionBlock !== null && lastClickedSessionBlock !== blockNum) {
+              next.add(lastClickedSessionBlock);
+            }
+            // Toggle the clicked block
+            if (next.has(blockNum)) {
+              next.delete(blockNum);
+            } else {
+              next.add(blockNum);
+            }
+            return next;
+          });
+        }
+
+        setLastClickedSessionBlock(blockNum);
+        // For multi-select, also set the clicked block as the "primary" selected block for display
+        setSelectedBlock(block);
+        setSelectedSection(section);
+        setSelectedContextSection(null);
+        setDecryptedContent(block.content);
+        return;
+      }
+
+      // Normal click: clear multi-select and select single block
+      setSelectedSessionBlocks(new Set());
+      setLastClickedSessionBlock(section === 'session' ? block.block_number : null);
       setSelectedBlock(block);
       setSelectedSection(section);
       // Clear context section selection when selecting a block
@@ -950,31 +1054,49 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                   </GlassButton>
                 </div>
 
+                {/* Multi-select hint */}
+                {sessionBlocks.length > 1 && (
+                  <div className="text-xs text-text-tertiary mb-2 italic">
+                    Tip: Ctrl+click to select multiple, Shift+click for range
+                  </div>
+                )}
+
                 <div className="space-y-2">
-                  {sortedSessionBlocks.slice(0, sessionBlocksToShow).map((block) => (
-                    <GlassCard
-                      key={block.block_number}
-                      variant="interactive"
-                      className={`p-3 cursor-pointer border-l-2 ${getBlockTypeBorder(block.block_type)} border border-dashed ${SECTION_COLORS.session.border}/30 bg-sky-400/5 ${
-                        selectedBlock?.block_number === block.block_number && selectedSection === 'session'
-                          ? `ring-2 ${getBlockTypeRing(block.block_type)}`
-                          : ''
-                      }`}
-                      onClick={() => handleBlockClick(block, 'session')}
-                    >
-                      <div className="flex items-center justify-between mb-1">
-                        <span className={`text-sm font-mono ${SECTION_COLORS.session.text}`}>
-                          Block #{block.block_number}
-                        </span>
-                        <span className={`text-xs px-2 py-0.5 rounded ${getBlockTypeColor(block.block_type)}`}>
-                          {block.block_type}
-                        </span>
-                      </div>
-                      <div className="text-xs text-text-tertiary">
-                        {new Date(block.timestamp).toLocaleString()}
-                      </div>
-                    </GlassCard>
-                  ))}
+                  {sortedSessionBlocks.slice(0, sessionBlocksToShow).map((block) => {
+                    const isMultiSelected = selectedSessionBlocks.has(block.block_number);
+                    const isPrimarySelected = selectedBlock?.block_number === block.block_number && selectedSection === 'session';
+
+                    return (
+                      <GlassCard
+                        key={block.block_number}
+                        variant="interactive"
+                        className={`p-3 cursor-pointer border-l-2 ${getBlockTypeBorder(block.block_type)} border border-dashed ${SECTION_COLORS.session.border}/30 bg-sky-400/5 select-none ${
+                          isPrimarySelected
+                            ? `ring-2 ${getBlockTypeRing(block.block_type)}`
+                            : isMultiSelected
+                            ? 'ring-2 ring-accent-warning bg-accent-warning/10'
+                            : ''
+                        }`}
+                        onMouseDown={(e) => { if (e.shiftKey) e.preventDefault(); }}
+                        onClick={(e) => handleBlockClick(block, 'session', e)}
+                      >
+                        <div className="flex items-center justify-between mb-1">
+                          <span className={`text-sm font-mono ${SECTION_COLORS.session.text} flex items-center gap-2`}>
+                            {isMultiSelected && (
+                              <span className="text-accent-warning">✓</span>
+                            )}
+                            Block #{block.block_number}
+                          </span>
+                          <span className={`text-xs px-2 py-0.5 rounded ${getBlockTypeColor(block.block_type)}`}>
+                            {block.block_type}
+                          </span>
+                        </div>
+                        <div className="text-xs text-text-tertiary">
+                          {new Date(block.timestamp).toLocaleString()}
+                        </div>
+                      </GlassCard>
+                    );
+                  })}
                 </div>
 
                 {sessionBlocks.length > sessionBlocksToShow && (
@@ -3019,18 +3141,31 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
               ⚠️ Discard Session Blocks?
             </h2>
 
-            {/* Show selected block info if applicable */}
-            {selectedBlock && selectedBlock.block_number < 0 && (
+            {/* Show multi-selected blocks info */}
+            {selectedSessionBlocks.size > 0 ? (
+              <div className="mb-4 p-3 bg-accent-warning/10 border border-accent-warning/30 rounded-lg">
+                <div className="text-sm text-text-secondary mb-1">Selected Blocks:</div>
+                <div className="text-sm font-mono text-accent-warning">
+                  {selectedSessionBlocks.size} block{selectedSessionBlocks.size !== 1 ? 's' : ''} selected
+                </div>
+                <div className="text-xs text-text-tertiary mt-1">
+                  {[...selectedSessionBlocks].sort((a, b) => b - a).slice(0, 5).map(n => `#${n}`).join(', ')}
+                  {selectedSessionBlocks.size > 5 && ` +${selectedSessionBlocks.size - 5} more`}
+                </div>
+              </div>
+            ) : selectedBlock && selectedBlock.block_number < 0 ? (
               <div className="mb-4 p-3 bg-accent-warning/10 border border-accent-warning/30 rounded-lg">
                 <div className="text-sm text-text-secondary mb-1">Selected Block:</div>
                 <div className="text-sm font-mono text-accent-warning">
                   Block #{selectedBlock.block_number} ({selectedBlock.block_type})
                 </div>
               </div>
-            )}
+            ) : null}
 
             <p className="text-text-primary mb-6">
-              {selectedBlock && selectedBlock.block_number < 0 ? (
+              {selectedSessionBlocks.size > 0 ? (
+                <>You can discard the {selectedSessionBlocks.size} selected block{selectedSessionBlocks.size !== 1 ? 's' : ''} or all {sessionBlocks.length} session blocks. This action cannot be undone.</>
+              ) : selectedBlock && selectedBlock.block_number < 0 ? (
                 <>You can discard the selected session block or all {sessionBlocks.length} session blocks. This action cannot be undone.</>
               ) : (
                 <>Are you sure you want to discard all {sessionBlocks.length} session blocks? This action cannot be undone.</>
@@ -3045,14 +3180,14 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                 Cancel
               </GlassButton>
 
-              {/* Only show "Discard Selected" if a session block is selected */}
-              {selectedBlock && selectedBlock.block_number < 0 && (
+              {/* Show "Discard Selected" if blocks are selected (multi or single) */}
+              {(selectedSessionBlocks.size > 0 || (selectedBlock && selectedBlock.block_number < 0)) && (
                 <GlassButton
                   variant="danger"
                   onClick={confirmDiscardSelected}
                   className="bg-accent-warning/20 hover:bg-accent-warning/30 text-accent-warning"
                 >
-                  Discard Selected
+                  Discard {selectedSessionBlocks.size > 0 ? selectedSessionBlocks.size : ''} Selected
                 </GlassButton>
               )}
 

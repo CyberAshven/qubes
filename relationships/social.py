@@ -7,6 +7,7 @@ Integrates relationship storage, trust scoring, and progression.
 
 from typing import Optional, List, Dict, Any
 from pathlib import Path
+from datetime import datetime, timezone
 
 from relationships.relationship import Relationship, RelationshipStorage
 from relationships.trust import TrustScorer
@@ -55,6 +56,11 @@ class SocialDynamicsManager:
         self.trust_scorer = TrustScorer()
         self.progression_manager = RelationshipProgressionManager(self.trust_scorer)
 
+        # REPAIR: Detect and fix creator relationships that weren't properly flagged
+        # This handles relationships created before is_creator was persisted
+        if qube and hasattr(qube, 'user_name'):
+            self._repair_creator_relationship()
+
         logger.info(
             "social_dynamics_manager_initialized",
             trust_profile=trust_profile,
@@ -81,7 +87,8 @@ class SocialDynamicsManager:
         entity_type: str = "qube",
         public_key: Optional[str] = None,
         nft_address: Optional[str] = None,
-        has_met: bool = False
+        has_met: bool = False,
+        entity_name: Optional[str] = None
     ) -> Relationship:
         """
         Create a new relationship
@@ -92,6 +99,7 @@ class SocialDynamicsManager:
             public_key: Public key of entity
             nft_address: NFT address if Qube
             has_met: Whether direct interaction has occurred
+            entity_name: Optional display name for the entity
 
         Returns:
             New Relationship instance
@@ -107,7 +115,8 @@ class SocialDynamicsManager:
             public_key=public_key,
             nft_address=nft_address,
             has_met=has_met,
-            is_creator=is_creator
+            is_creator=is_creator,
+            entity_name=entity_name
         )
 
     def get_or_create_relationship(
@@ -314,7 +323,7 @@ class SocialDynamicsManager:
         score = self.trust_scorer.calculate_trust_score(rel, profile)
 
         # Update stored score
-        rel.overall_trust_score = score
+        rel.trust = score
         self.storage.update_relationship(rel)
 
         return score
@@ -471,14 +480,14 @@ class SocialDynamicsManager:
         for status in ["unmet", "stranger", "acquaintance", "friend", "close_friend", "best_friend"]:
             status_counts[status] = len(self.get_relationships_by_status(status))
 
-        avg_trust = sum(r.overall_trust_score for r in all_rels) / len(all_rels) if all_rels else 0
+        avg_trust = sum(r.trust for r in all_rels) / len(all_rels) if all_rels else 0
 
         return {
             "total_relationships": len(all_rels),
             "status_breakdown": status_counts,
             "average_trust_score": round(avg_trust, 2),
-            "total_collaborations": sum(r.total_collaborations for r in all_rels),
-            "successful_collaborations": sum(r.successful_joint_tasks for r in all_rels),
+            "total_collaborations": sum(r.collaborations for r in all_rels),
+            "successful_collaborations": sum(r.collaborations_successful for r in all_rels),
             "best_friend": self.get_best_friend().entity_id if self.get_best_friend() else None
         }
 
@@ -493,5 +502,52 @@ class SocialDynamicsManager:
             List of top relationships
         """
         all_rels = self.storage.get_all_relationships()
-        sorted_rels = sorted(all_rels, key=lambda r: r.overall_trust_score, reverse=True)
+        sorted_rels = sorted(all_rels, key=lambda r: r.trust, reverse=True)
         return sorted_rels[:limit]
+
+    # ========== Internal Methods ==========
+
+    def _repair_creator_relationship(self) -> None:
+        """
+        Detect and repair the creator relationship if it exists but wasn't properly flagged.
+
+        This handles relationships created before is_creator was persisted.
+        """
+        if not self.qube or not hasattr(self.qube, 'user_name'):
+            return
+
+        user_name = self.qube.user_name
+        rel = self.storage.get_relationship(user_name)
+
+        if not rel:
+            return
+
+        # Check if this is a human relationship that should be creator
+        if rel.entity_type != "human":
+            return
+
+        # Mark as creator if not already
+        if not rel.is_creator:
+            logger.info(
+                "detected_unflagged_creator_relationship",
+                entity_id=user_name,
+                old_trust=rel.trust
+            )
+            rel.is_creator = True
+
+        # Owner status should always be "owner" - never changes
+        if rel.status != "owner":
+            logger.info(
+                "repairing_owner_status",
+                entity_id=user_name,
+                old_status=rel.status
+            )
+            rel.status = "owner"
+            rel.progression_history.append({
+                "status": "owner",
+                "timestamp": int(datetime.now(timezone.utc).timestamp()),
+                "reason": "Owner relationship repair"
+            })
+
+        # Save the repaired relationship
+        self.storage.update_relationship(rel)

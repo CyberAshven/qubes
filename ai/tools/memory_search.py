@@ -635,12 +635,12 @@ async def fulltext_search(
     if not query_tokens:
         # If query is all stopwords, fall back to simple matching
         logger.debug("fulltext_query_all_stopwords", query=query[:50])
-        return _fallback_simple_search(query, candidates, top_k)
+        return _fallback_simple_search(query, candidates, top_k, qube=qube)
 
-    # Extract and tokenize text from all candidate blocks
+    # Extract and tokenize text from all candidate blocks (decrypt if needed)
     doc_texts = []
     for block in candidates:
-        text = extract_text_from_block(block)
+        text = extract_text_from_block(block, qube=qube)
         tokens = tokenize(text)
         doc_texts.append(tokens)
 
@@ -674,7 +674,8 @@ async def fulltext_search(
 def _fallback_simple_search(
     query: str,
     candidates: List[Dict[str, Any]],
-    top_k: int
+    top_k: int,
+    qube=None
 ) -> List[Tuple[Dict[str, Any], float]]:
     """
     Fallback simple search when query has no meaningful tokens.
@@ -685,6 +686,7 @@ def _fallback_simple_search(
         query: Original query string
         candidates: Candidate blocks
         top_k: Number of results
+        qube: Optional Qube instance for decrypting encrypted content
 
     Returns:
         List of (block, score) tuples
@@ -693,7 +695,7 @@ def _fallback_simple_search(
     scored_blocks = []
 
     for block in candidates:
-        text = extract_text_from_block(block).lower()
+        text = extract_text_from_block(block, qube=qube).lower()
         words = set(text.split())
         matches = query_words.intersection(words)
 
@@ -705,12 +707,13 @@ def _fallback_simple_search(
     return scored_blocks[:top_k]
 
 
-def extract_text_from_block(block: Dict[str, Any]) -> str:
+def extract_text_from_block(block: Dict[str, Any], qube=None) -> str:
     """
     Extract searchable text from block content
 
     Args:
         block: Block dict
+        qube: Optional Qube instance for decrypting encrypted content
 
     Returns:
         Concatenated text from block
@@ -718,6 +721,17 @@ def extract_text_from_block(block: Dict[str, Any]) -> str:
     parts = []
 
     content = block.get("content", {})
+
+    # Check if content is encrypted (has ciphertext/nonce structure)
+    if content and "ciphertext" in content and "nonce" in content:
+        # Content is encrypted - try to decrypt if qube is available
+        if qube is not None:
+            try:
+                content = qube.decrypt_block_content(content)
+            except Exception as e:
+                logger.debug("block_decrypt_failed", block_number=block.get("block_number"), error=str(e))
+                # Fall back to just using block_type
+                content = {}
 
     # Add all string values from content
     for key, value in content.items():

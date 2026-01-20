@@ -388,7 +388,7 @@ export const SettingsTab: React.FC = () => {
 
   const loadAvailableQubes = async () => {
     try {
-      const qubes = await invoke<any[]>('list_qubes', { userId });
+      const qubes = await invoke<any[]>('list_qubes', { userId, password });
       setAvailableQubes(qubes.map(q => ({
         qube_id: q.qube_id,
         name: q.name

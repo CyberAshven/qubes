@@ -170,7 +170,39 @@ class NanoGPTModel(AIModelInterface):
 
             MetricsRecorder.record_ai_api_call("nanogpt", self.model_name, "error")
             logger.error("nanogpt_generation_failed", model=self.model_name, error=error_detail, exc_info=True)
-            raise ModelAPIError(f"NanoGPT API error: {error_detail}", cause=e)
+
+            # Classify error with helpful messages
+            error_msg = error_detail.lower()
+            if "rate_limit" in error_msg or "429" in error_msg or "too many" in error_msg:
+                raise ModelRateLimitError(
+                    f"NanoGPT rate limit exceeded. Wait a moment and try again. Original error: {error_detail}",
+                    context={"model": self.model_name, "error_type": "rate_limit"},
+                    cause=e
+                )
+            elif "unauthorized" in error_msg or "401" in error_msg or "invalid" in error_msg and "key" in error_msg:
+                raise ModelNotAvailableError(
+                    f"NanoGPT API key is invalid. Check your API key in Settings > API Keys. Original error: {error_detail}",
+                    context={"model": self.model_name, "error_type": "auth_failed"},
+                    cause=e
+                )
+            elif "model" in error_msg and ("not found" in error_msg or "invalid" in error_msg):
+                raise ModelNotAvailableError(
+                    f"Model '{self.model_name}' not available on NanoGPT. Check available models at nano-gpt.com. Original error: {error_detail}",
+                    context={"model": self.model_name, "error_type": "model_not_found"},
+                    cause=e
+                )
+            elif "credit" in error_msg or "balance" in error_msg or "billing" in error_msg:
+                raise ModelNotAvailableError(
+                    f"NanoGPT account has insufficient credits. Add credits at nano-gpt.com. Original error: {error_detail}",
+                    context={"model": self.model_name, "error_type": "billing"},
+                    cause=e
+                )
+            else:
+                raise ModelAPIError(
+                    f"NanoGPT API error with model '{self.model_name}': {error_detail}",
+                    context={"model": self.model_name, "error_type": "unknown"},
+                    cause=e
+                )
 
     async def stream_generate(
         self,

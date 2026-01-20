@@ -102,6 +102,20 @@ class DecisionValidator:
 
         # Validate with target entity if provided
         if target_entity:
+            # Check if the target is the owner - they have implicit maximum trust
+            if target_entity == self.qube.user_name:
+                # Owner always has full trust - skip all validation
+                logger.debug(
+                    "validation_skipped_owner",
+                    action_type=action_type,
+                    target_entity=target_entity,
+                    qube_id=self.qube.qube_id
+                )
+                return ValidationResult(
+                    allowed=True,
+                    confidence=1.0
+                )
+
             rel = self.qube.relationships.get_relationship(target_entity)
 
             if not rel:

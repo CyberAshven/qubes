@@ -196,7 +196,45 @@ class OllamaModel(AIModelInterface):
         except Exception as e:
             MetricsRecorder.record_ai_api_call("ollama", self.model_name, "error")
             logger.error("ollama_generation_failed", model=self.model_name, exc_info=True)
-            raise ModelAPIError(f"Ollama API error: {str(e)}", cause=e)
+
+            # Classify error with helpful messages
+            error_msg = str(e).lower()
+            error_str = str(e)
+
+            if "connection" in error_msg or "refused" in error_msg or "cannot connect" in error_msg:
+                raise ModelNotAvailableError(
+                    f"Cannot connect to Ollama. Make sure Ollama is running locally (ollama serve). "
+                    f"Original error: {error_str}",
+                    context={"model": self.model_name, "error_type": "connection_failed"},
+                    cause=e
+                )
+            elif "model" in error_msg and ("not found" in error_msg or "does not exist" in error_msg or "pull" in error_msg):
+                raise ModelNotAvailableError(
+                    f"Model '{self.model_name}' not found in Ollama. Run 'ollama pull {self.model_name}' to download it. "
+                    f"Original error: {error_str}",
+                    context={"model": self.model_name, "error_type": "model_not_found"},
+                    cause=e
+                )
+            elif "timeout" in error_msg or "timed out" in error_msg:
+                raise ModelAPIError(
+                    f"Ollama request timed out. The model may be loading or your system may be under load. Try again. "
+                    f"Original error: {error_str}",
+                    context={"model": self.model_name, "error_type": "timeout"},
+                    cause=e
+                )
+            elif "memory" in error_msg or "out of" in error_msg or "cuda" in error_msg:
+                raise ModelAPIError(
+                    f"Ollama ran out of memory. Try a smaller model or close other applications. "
+                    f"Original error: {error_str}",
+                    context={"model": self.model_name, "error_type": "out_of_memory"},
+                    cause=e
+                )
+            else:
+                raise ModelAPIError(
+                    f"Ollama API error with model '{self.model_name}': {error_str}",
+                    context={"model": self.model_name, "error_type": "unknown"},
+                    cause=e
+                )
 
     async def stream_generate(
         self,

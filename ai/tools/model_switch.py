@@ -25,7 +25,7 @@ async def switch_model(
 
     Args:
         qube: The Qube instance
-        model_name: Model to switch to (must be in ModelRegistry)
+        model_name: Model to switch to (can be "model" or "provider:model" format)
         task_type: Optional task category (e.g., "coding", "creative")
         reason: Optional reason for preference
         save_preference: Whether to save this as a preference for task_type
@@ -33,6 +33,16 @@ async def switch_model(
     Returns:
         Dict with success status, message, and previous model
     """
+    # Handle provider:model format - extract just the model name for registry lookup
+    # The pool shows "provider:model" format, so Qubes may use that format
+    original_input = model_name
+    if ":" in model_name:
+        # Extract provider and model name
+        parts = model_name.split(":", 1)
+        specified_provider = parts[0]
+        model_name = parts[1]
+        logger.debug("model_switch_parsed_format", original=original_input, provider=specified_provider, model=model_name)
+
     # Reload chain_state to get fresh settings (GUI may have updated them)
     qube.chain_state.reload()
 
@@ -51,9 +61,12 @@ async def switch_model(
 
     # Check if revolver mode is enabled (skip if autonomous mode - Qube can override)
     if not autonomous_mode and qube.chain_state.is_revolver_mode_enabled():
+        revolver_pool = qube.chain_state.get_revolver_mode_pool()
+        pool_models = [m.split(":")[-1] for m in revolver_pool[:5]] if revolver_pool else []
+        pool_info = f" Models in rotation: {', '.join(pool_models)}{'...' if len(revolver_pool) > 5 else ''}." if pool_models else ""
         return {
             "success": False,
-            "message": "Revolver mode is currently enabled - your model is automatically rotated between providers for each response. You cannot manually switch models while in revolver mode. Ask your owner to disable revolver mode if you want to use a specific model.",
+            "message": f"Revolver mode is currently enabled - your model is automatically rotated between providers for each response.{pool_info} You cannot manually switch models while in revolver mode. Ask your owner to disable revolver mode if you want to use a specific model.",
             "previous_model": qube.current_ai_model,
             "revolver_mode": True
         }
@@ -62,12 +75,34 @@ async def switch_model(
     model_info = ModelRegistry.get_model_info(model_name)
     if not model_info:
         # Try to find similar models for suggestion
-        suggestions = _find_similar_models(model_name)
+        # In autonomous mode, only suggest models from the allowed pool
+        if autonomous_mode:
+            allowed_pool = qube.chain_state.get_autonomous_mode_pool()
+            suggestions = _find_similar_models_in_pool(model_name, allowed_pool)
+        else:
+            suggestions = _find_similar_models(model_name)
         return {
             "success": False,
             "message": f"Model '{model_name}' not found in registry. {suggestions}",
             "previous_model": qube.current_ai_model
         }
+
+    # In Autonomous mode, validate model is in the allowed pool
+    if autonomous_mode:
+        allowed_pool = qube.chain_state.get_autonomous_mode_pool()
+        provider = model_info["provider"]
+        # Pool entries are formatted as "provider:model_name"
+        pool_entry = f"{provider}:{model_name}"
+        if allowed_pool and pool_entry not in allowed_pool:
+            # Also check without provider prefix for backwards compatibility
+            if model_name not in allowed_pool:
+                available_models = [m.split(":")[-1] for m in allowed_pool[:10]]
+                return {
+                    "success": False,
+                    "message": f"Model '{model_name}' is not in your Autonomous Mode pool. Your owner has restricted which models you can use. Available models include: {', '.join(available_models)}{'...' if len(allowed_pool) > 10 else ''}",
+                    "previous_model": qube.current_ai_model,
+                    "not_in_pool": True
+                }
 
     # Check if API key is available for this provider
     provider = model_info["provider"]
@@ -192,6 +227,35 @@ def _find_similar_models(model_name: str) -> str:
     return "Use your model awareness context to see available models."
 
 
+def _find_similar_models_in_pool(model_name: str, allowed_pool: list) -> str:
+    """Find similar model names within the allowed pool (autonomous mode)."""
+    if not allowed_pool:
+        return "Your autonomous mode pool is empty. Ask your owner to configure it."
+
+    model_lower = model_name.lower()
+    suggestions = []
+
+    for pool_entry in allowed_pool:
+        # Pool entries are "provider:model" format
+        if ":" in pool_entry:
+            entry_model = pool_entry.split(":", 1)[1]
+        else:
+            entry_model = pool_entry
+
+        # Check if query is substring of model name or vice versa
+        if model_lower in entry_model.lower() or entry_model.lower() in model_lower:
+            suggestions.append(pool_entry)
+        # Also check for partial matches (e.g., "gpt5" matches "gpt-5.2-pro")
+        elif any(part in entry_model.lower() for part in model_lower.split("-")):
+            suggestions.append(pool_entry)
+
+    if suggestions:
+        # Deduplicate and limit
+        unique_suggestions = list(dict.fromkeys(suggestions))[:5]
+        return f"Did you mean one of these from your pool: {', '.join(unique_suggestions)}?"
+    return f"No similar models in your pool. Check get_system_state with sections=['settings'] to see your available models."
+
+
 # Tool schema for registration
 SWITCH_MODEL_SCHEMA = {
     "type": "object",
@@ -222,6 +286,8 @@ SWITCH_MODEL_DESCRIPTION = """Switch your AI model to a different one. Use this 
 - Use a more capable model for complex reasoning
 - Save a preference for future similar tasks
 
-You can only switch to models your owner has API keys for. Check your model awareness context to see available options.
+IMPORTANT: Before switching, use get_system_state with sections=['settings'] to see your available models in autonomous_mode_pool or revolver_mode_pool. You can only switch to models in your pool.
+
+Model name format: Use just the model name (e.g., 'gpt-5.2-pro') or 'provider:model' format (e.g., 'openai:gpt-5.2-pro') - both work.
 
 When you switch, let your owner know naturally in conversation (e.g., "I'm going to switch to Claude for this coding task...")."""

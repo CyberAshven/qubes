@@ -20,7 +20,7 @@ import { SunNode } from '../skills/SunNode';
 import { PlanetNode } from '../skills/PlanetNode';
 import { MoonNode } from '../skills/MoonNode';
 import { SkillDetailsPanel } from '../skills/SkillDetailsPanel';
-import { SKILL_CATEGORIES, generateSkillsForQube } from '../../data/skillDefinitions';
+import { SKILL_CATEGORIES, generateSkillsForQube, ALWAYS_AVAILABLE_TOOLS, TOOL_DESCRIPTIONS } from '../../data/skillDefinitions';
 import { useAuth } from '../../hooks/useAuth';
 
 interface SkillsTabProps {
@@ -41,7 +41,7 @@ const calculateOrbitalPosition = (
 };
 
 // Generate nodes and edges for the skill tree
-const generateSkillTree = (qube: Qube, skills: Skill[], avatarUrl: string | undefined): { nodes: Node[]; edges: Edge[] } => {
+const generateSkillTree = (qube: Qube, skills: Skill[], avatarUrl: string | undefined, totalXP: number = 0): { nodes: Node[]; edges: Edge[] } => {
   const centerX = 0;
   const centerY = 0;
 
@@ -58,6 +58,7 @@ const generateSkillTree = (qube: Qube, skills: Skill[], avatarUrl: string | unde
       name: qube.name,
       avatarUrl: avatarUrl,  // Use the computed avatar URL (IPFS or local via convertFileSrc)
       favoriteColor: qube.favorite_color,
+      totalXP: totalXP,  // Pass total XP for display above avatar
     },
     draggable: false,
   });
@@ -286,9 +287,47 @@ export const SkillsTab: React.FC<SkillsTabProps> = ({ qubes }) => {
     return undefined;
   }, [userId]);
 
-  // Calculate unlocked tools count
-  const unlockedToolsCount = useMemo(() => {
-    return skills.filter(s => s.unlocked && s.toolCallReward).length;
+  // All tools are always available - count is fixed at 16
+  const totalToolsCount = ALWAYS_AVAILABLE_TOOLS.length;
+
+  // Build a map of tool -> skill for tools that are linked to skills
+  const toolToSkillMap = useMemo(() => {
+    const map: Record<string, typeof skills[0]> = {};
+    skills.forEach(skill => {
+      if (skill.toolCallReward) {
+        map[skill.toolCallReward] = skill;
+      }
+    });
+    return map;
+  }, [skills]);
+
+  // Core tools (not linked to any skill)
+  const coreTools = useMemo(() => {
+    return ALWAYS_AVAILABLE_TOOLS.filter(tool => !toolToSkillMap[tool]);
+  }, [toolToSkillMap]);
+
+  // Skill tools (linked to unlocked skills)
+  const skillTools = useMemo(() => {
+    return skills.filter(s => s.unlocked && s.toolCallReward);
+  }, [skills]);
+
+  // Calculate XP per category (branch)
+  const xpPerCategory = useMemo(() => {
+    const xpMap: Record<string, number> = {};
+    SKILL_CATEGORIES.forEach(cat => {
+      xpMap[cat.id] = 0;
+    });
+    skills.forEach(skill => {
+      if (skill.category && skill.xp) {
+        xpMap[skill.category] = (xpMap[skill.category] || 0) + skill.xp;
+      }
+    });
+    return xpMap;
+  }, [skills]);
+
+  // Calculate total XP
+  const totalXP = useMemo(() => {
+    return skills.reduce((sum, skill) => sum + (skill.xp || 0), 0);
   }, [skills]);
 
   // Filtered and sorted skills for grid view
@@ -381,7 +420,8 @@ export const SkillsTab: React.FC<SkillsTabProps> = ({ qubes }) => {
 
         // Generate visual tree
         const avatarUrl = getAvatarUrl(selectedQube);
-        const { nodes: newNodes, edges: newEdges } = generateSkillTree(selectedQube, loadedSkills, avatarUrl);
+        const skillsTotalXP = loadedSkills.reduce((sum, s) => sum + (s.xp || 0), 0);
+        const { nodes: newNodes, edges: newEdges } = generateSkillTree(selectedQube, loadedSkills, avatarUrl, skillsTotalXP);
         setSkills(loadedSkills);
         setNodes(newNodes);
         setEdges(newEdges);
@@ -390,7 +430,8 @@ export const SkillsTab: React.FC<SkillsTabProps> = ({ qubes }) => {
         // Fallback to generated skills on error
         const fallbackSkills = generateSkillsForQube(selectedQube.qube_id);
         const avatarUrl = getAvatarUrl(selectedQube);
-        const { nodes: newNodes, edges: newEdges } = generateSkillTree(selectedQube, fallbackSkills, avatarUrl);
+        const fallbackTotalXP = fallbackSkills.reduce((sum, s) => sum + (s.xp || 0), 0);
+        const { nodes: newNodes, edges: newEdges } = generateSkillTree(selectedQube, fallbackSkills, avatarUrl, fallbackTotalXP);
         setSkills(fallbackSkills);
         setNodes(newNodes);
         setEdges(newEdges);
@@ -442,7 +483,8 @@ export const SkillsTab: React.FC<SkillsTabProps> = ({ qubes }) => {
       if (response.success && response.skills) {
         const loadedSkills = response.skills as Skill[];
         const avatarUrl = getAvatarUrl(selectedQube);
-        const { nodes: newNodes, edges: newEdges } = generateSkillTree(selectedQube, loadedSkills, avatarUrl);
+        const refreshTotalXP = loadedSkills.reduce((sum, s) => sum + (s.xp || 0), 0);
+        const { nodes: newNodes, edges: newEdges } = generateSkillTree(selectedQube, loadedSkills, avatarUrl, refreshTotalXP);
         setSkills(loadedSkills);
         setNodes(newNodes);
         setEdges(newEdges);
@@ -577,8 +619,11 @@ export const SkillsTab: React.FC<SkillsTabProps> = ({ qubes }) => {
                           className="w-4 h-4 rounded-full"
                           style={{ backgroundColor: category.color }}
                         />
-                        <span className="text-sm text-text-primary">
+                        <span className="text-sm text-text-primary flex-1">
                           {category.icon} {category.name}
+                        </span>
+                        <span className={`text-xs px-1.5 py-0.5 rounded-full ${xpPerCategory[category.id] > 0 ? 'bg-accent-primary/20 text-accent-primary' : 'bg-glass-light text-text-secondary'}`}>
+                          {xpPerCategory[category.id] || 0}
                         </span>
                       </div>
                     ))}
@@ -589,7 +634,7 @@ export const SkillsTab: React.FC<SkillsTabProps> = ({ qubes }) => {
 
             {/* Tools Panel */}
             <div className="absolute bottom-4 left-4 z-10">
-              <GlassCard className="p-4 space-y-2 w-[260px]">
+              <GlassCard className="p-4 space-y-2 w-[280px]">
                 <h3
                   className="text-lg font-display text-accent-primary mb-3 flex items-center justify-between cursor-pointer"
                   onClick={() => setIsToolsExpanded(!isToolsExpanded)}
@@ -597,43 +642,73 @@ export const SkillsTab: React.FC<SkillsTabProps> = ({ qubes }) => {
                   <div className="flex items-center gap-2">
                     <span>🔓</span>
                     <span>Tools</span>
-                    <span className="text-xs bg-accent-primary/20 text-accent-primary px-2 py-0.5 rounded-full">{unlockedToolsCount}</span>
+                    <span className="text-xs bg-accent-primary/20 text-accent-primary px-2 py-0.5 rounded-full">{totalToolsCount}</span>
                   </div>
                   <span className="text-sm transition-transform" style={{ transform: isToolsExpanded ? 'rotate(0deg)' : 'rotate(180deg)' }}>▼</span>
                 </h3>
                 {isToolsExpanded && (
-                  <div className="space-y-2 max-h-96 overflow-y-auto custom-scrollbar pr-2">
-                    {/* Show unlocked skills with tool rewards */}
-                    {skills
-                      .filter(s => s.unlocked && s.toolCallReward)
-                      .sort((a, b) => (b.level || 0) - (a.level || 0))
-                      .map(skill => (
-                        <div
-                          key={skill.id}
-                          className="flex items-center gap-2 p-2 rounded bg-glass-light border border-glass-border hover:border-accent-primary transition-colors cursor-pointer"
-                          onClick={() => setSelectedSkillId(skill.id)}
-                        >
-                          <div
-                            className="w-2 h-2 rounded-full"
-                            style={{
-                              backgroundColor: SKILL_CATEGORIES.find(c => c.id === skill.category)?.color || '#888'
-                            }}
-                          />
-                          <div className="flex-1 min-w-0">
-                            <div className="text-xs font-medium text-text-primary truncate">
-                              {skill.name}
-                            </div>
-                            <div className="text-xs text-text-secondary">
-                              Lvl {skill.level || 0} • {skill.toolCallReward}
-                            </div>
-                          </div>
+                  <div className="space-y-3 max-h-[500px] overflow-y-auto custom-scrollbar pr-2">
+                    {/* Skill-based tools */}
+                    {skillTools.length > 0 && (
+                      <div className="space-y-2">
+                        <div className="text-xs font-medium text-text-secondary uppercase tracking-wider">
+                          Skill Tools ({skillTools.length})
                         </div>
-                      ))
-                    }
-                    {skills.filter(s => s.unlocked && s.toolCallReward).length === 0 && (
-                      <div className="text-sm text-text-secondary text-center py-4">
-                        No tools unlocked yet.<br/>
-                        Gain XP to unlock skills!
+                        {skillTools
+                          .sort((a, b) => (b.level || 0) - (a.level || 0))
+                          .map(skill => (
+                            <div
+                              key={skill.id}
+                              className="flex items-center gap-2 p-2 rounded bg-glass-light border border-glass-border hover:border-accent-primary transition-colors cursor-pointer"
+                              onClick={() => setSelectedSkillId(skill.id)}
+                            >
+                              <div
+                                className="w-2 h-2 rounded-full"
+                                style={{
+                                  backgroundColor: SKILL_CATEGORIES.find(c => c.id === skill.category)?.color || '#888'
+                                }}
+                              />
+                              <div className="flex-1 min-w-0">
+                                <div className="text-xs font-medium text-text-primary truncate">
+                                  {skill.icon} {skill.name}
+                                </div>
+                                <div className="text-xs text-text-secondary">
+                                  Lvl {skill.level || 0} • {skill.toolCallReward}
+                                </div>
+                              </div>
+                            </div>
+                          ))
+                        }
+                      </div>
+                    )}
+
+                    {/* Core tools (always available, not linked to skills) */}
+                    {coreTools.length > 0 && (
+                      <div className="space-y-2">
+                        <div className="text-xs font-medium text-text-secondary uppercase tracking-wider border-t border-glass-border pt-2">
+                          Core Tools ({coreTools.length})
+                        </div>
+                        {coreTools.map(toolId => {
+                          const toolInfo = TOOL_DESCRIPTIONS[toolId] || { name: toolId, description: '', icon: '🔧' };
+                          return (
+                            <div
+                              key={toolId}
+                              className="flex items-center gap-2 p-2 rounded bg-glass-light/50 border border-glass-border/50"
+                            >
+                              <div className="w-5 h-5 flex items-center justify-center text-sm">
+                                {toolInfo.icon}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <div className="text-xs font-medium text-text-primary truncate">
+                                  {toolInfo.name}
+                                </div>
+                                <div className="text-xs text-text-secondary truncate">
+                                  {toolInfo.description}
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
                     )}
                   </div>

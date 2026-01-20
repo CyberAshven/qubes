@@ -294,24 +294,49 @@ class VeniceModel(AIModelInterface):
             MetricsRecorder.record_ai_api_call("venice", self.model_name, "error")
             logger.error("venice_generation_failed", model=self.model_name, exc_info=True)
 
-            # Classify error
+            # Classify error with helpful messages
             error_msg = str(e).lower()
-            if "rate_limit" in error_msg or "429" in error_msg:
+            error_str = str(e)
+
+            if "rate_limit" in error_msg or "429" in error_msg or "too many" in error_msg:
                 raise ModelRateLimitError(
-                    f"Venice rate limit exceeded: {str(e)}",
-                    context={"model": self.model_name},
+                    f"Venice rate limit exceeded. Wait a moment and try again, or switch to a different model. "
+                    f"Original error: {error_str}",
+                    context={"model": self.model_name, "error_type": "rate_limit"},
                     cause=e
                 )
-            elif "unauthorized" in error_msg or "401" in error_msg:
+            elif "unauthorized" in error_msg or "401" in error_msg or "invalid" in error_msg and "key" in error_msg:
                 raise ModelNotAvailableError(
-                    f"Venice authentication failed: {str(e)}",
-                    context={"model": self.model_name},
+                    f"Venice API key is invalid. Check your API key in Settings > API Keys. "
+                    f"Original error: {error_str}",
+                    context={"model": self.model_name, "error_type": "auth_failed"},
+                    cause=e
+                )
+            elif "model" in error_msg and ("not found" in error_msg or "not available" in error_msg or "invalid" in error_msg):
+                raise ModelNotAvailableError(
+                    f"Model '{self.model_name}' not available on Venice. Try a different model. "
+                    f"Original error: {error_str}",
+                    context={"model": self.model_name, "error_type": "model_not_found"},
+                    cause=e
+                )
+            elif "credit" in error_msg or "balance" in error_msg or "billing" in error_msg:
+                raise ModelNotAvailableError(
+                    f"Venice account has insufficient credits. Add credits at venice.ai. "
+                    f"Original error: {error_str}",
+                    context={"model": self.model_name, "error_type": "billing"},
+                    cause=e
+                )
+            elif "context" in error_msg and "length" in error_msg:
+                raise ModelAPIError(
+                    f"Message too long for Venice model. Try shortening your conversation. "
+                    f"Original error: {error_str}",
+                    context={"model": self.model_name, "error_type": "context_exceeded"},
                     cause=e
                 )
             else:
                 raise ModelAPIError(
-                    f"Venice API error: {str(e)}",
-                    context={"model": self.model_name},
+                    f"Venice API error with model '{self.model_name}': {error_str}",
+                    context={"model": self.model_name, "error_type": "unknown"},
                     cause=e
                 )
 

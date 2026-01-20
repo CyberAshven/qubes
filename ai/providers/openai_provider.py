@@ -153,24 +153,64 @@ class OpenAIModel(AIModelInterface):
             MetricsRecorder.record_ai_api_call("openai", self.model_name, "error")
             logger.error("openai_generation_failed", model=self.model_name, exc_info=True)
 
-            # Classify error
+            # Classify error with helpful messages
             error_msg = str(e).lower()
-            if "rate_limit" in error_msg or "429" in error_msg:
+            error_str = str(e)
+
+            if "rate_limit" in error_msg or "429" in error_msg or "too many requests" in error_msg:
                 raise ModelRateLimitError(
-                    f"OpenAI rate limit exceeded: {str(e)}",
-                    context={"model": self.model_name},
+                    f"OpenAI rate limit exceeded. Wait a moment and try again, or switch to a different model. "
+                    f"Original error: {error_str}",
+                    context={"model": self.model_name, "error_type": "rate_limit"},
                     cause=e
                 )
-            elif "unauthorized" in error_msg or "401" in error_msg:
+            elif "unauthorized" in error_msg or "401" in error_msg or "invalid api key" in error_msg:
                 raise ModelNotAvailableError(
-                    f"OpenAI authentication failed: {str(e)}",
-                    context={"model": self.model_name},
+                    f"OpenAI API key is invalid. Check your API key in Settings > API Keys. "
+                    f"Original error: {error_str}",
+                    context={"model": self.model_name, "error_type": "auth_failed"},
+                    cause=e
+                )
+            elif "model_not_found" in error_msg or "does not exist" in error_msg or "invalid model" in error_msg:
+                raise ModelNotAvailableError(
+                    f"Model '{self.model_name}' not found in OpenAI's API. "
+                    f"This model may require special access or has been renamed. Try 'gpt-4o' or 'gpt-4o-mini'. "
+                    f"Original error: {error_str}",
+                    context={"model": self.model_name, "error_type": "model_not_found"},
+                    cause=e
+                )
+            elif "context_length" in error_msg or "maximum context" in error_msg or "too long" in error_msg:
+                raise ModelAPIError(
+                    f"Message too long for model '{self.model_name}'. Try shortening your conversation or using a model with larger context. "
+                    f"Original error: {error_str}",
+                    context={"model": self.model_name, "error_type": "context_exceeded"},
+                    cause=e
+                )
+            elif "content_policy" in error_msg or "flagged" in error_msg or "moderation" in error_msg:
+                raise ModelAPIError(
+                    f"Content was flagged by OpenAI's content policy. Try rephrasing your message. "
+                    f"Original error: {error_str}",
+                    context={"model": self.model_name, "error_type": "content_blocked"},
+                    cause=e
+                )
+            elif "timeout" in error_msg or "timed out" in error_msg:
+                raise ModelAPIError(
+                    f"Request timed out. OpenAI may be experiencing high load. Try again or use a faster model. "
+                    f"Original error: {error_str}",
+                    context={"model": self.model_name, "error_type": "timeout"},
+                    cause=e
+                )
+            elif "insufficient_quota" in error_msg or "billing" in error_msg:
+                raise ModelNotAvailableError(
+                    f"OpenAI account has insufficient quota or billing issues. Check your OpenAI account billing. "
+                    f"Original error: {error_str}",
+                    context={"model": self.model_name, "error_type": "billing"},
                     cause=e
                 )
             else:
                 raise ModelAPIError(
-                    f"OpenAI API error: {str(e)}",
-                    context={"model": self.model_name},
+                    f"OpenAI API error with model '{self.model_name}': {error_str}",
+                    context={"model": self.model_name, "error_type": "unknown"},
                     cause=e
                 )
 

@@ -1205,6 +1205,49 @@ async def query_decision_context_handler(qube, params: Dict[str, Any]) -> Dict[s
         entity_id = params["entity_id"]
         decision_type = params.get("decision_type", "general")
 
+        # Check if the entity is the owner - they have implicit maximum trust
+        if entity_id == qube.user_name:
+            # Owner has full trust - no relationship record needed
+            self_context = {}
+            if hasattr(qube, 'self_evaluation'):
+                metrics = qube.self_evaluation.metrics
+                self_context = {
+                    "my_confidence": round(metrics.get("confidence", 50), 1),
+                    "my_expertise": round(metrics.get("critical_thinking", 50), 1),
+                    "my_humility": round(metrics.get("humility", 50), 1)
+                }
+
+            logger.info(
+                "query_decision_context_owner",
+                qube_id=qube.qube_id,
+                entity_id=entity_id,
+                decision_type=decision_type
+            )
+
+            return {
+                "found": True,
+                "entity_id": entity_id,
+                "entity_name": entity_id,
+                "entity_type": "owner",
+                "is_owner": True,
+                "decision_score": 100.0,
+                "decision_recommendation": "This is your owner - full trust and collaboration recommended",
+                "relationship_quality": {
+                    "trust": 100.0,
+                    "reliability": 100.0,
+                    "honesty": 100.0,
+                    "expertise": 100.0,
+                    "friendship": 100.0,
+                },
+                "negative_flags": {
+                    "antagonism": 0.0,
+                    "distrust": 0.0,
+                    "betrayal": 0.0,
+                },
+                "self_context": self_context,
+                "success": True
+            }
+
         rel = qube.relationships.get_relationship(entity_id)
         if not rel:
             return {
@@ -1312,6 +1355,21 @@ async def compare_options_handler(qube, params: Dict[str, Any]) -> Dict[str, Any
 
         candidates = []
         for entity_id in entity_ids:
+            # Check if the entity is the owner - they have implicit maximum trust
+            if entity_id == qube.user_name:
+                candidates.append({
+                    "entity_id": entity_id,
+                    "entity_name": entity_id,
+                    "entity_type": "owner",
+                    "is_owner": True,
+                    "score": 100.0,
+                    "trust": 100.0,
+                    "expertise": 100.0,
+                    "reliability": 100.0,
+                    "reason": "This is your owner - full trust and collaboration recommended"
+                })
+                continue
+
             rel = qube.relationships.get_relationship(entity_id)
             if not rel:
                 candidates.append({
@@ -3103,13 +3161,17 @@ async def get_system_state_handler(qube, params: Dict[str, Any]) -> Dict[str, An
             # Convert entities dict to list format for GUI
             relationships_list = []
             for entity_id, rel_data in entities.items():
+                # Use 'trust' field from Relationship.to_dict(), fall back to 'trust_level' for legacy
+                trust = rel_data.get("trust", rel_data.get("trust_level", 0.0))
+                # Keep trust as 0-100 scale (do NOT normalize to 0-1)
+
                 relationships_list.append({
                     "entity_id": entity_id,
-                    "name": rel_data.get("name", entity_id),
+                    "name": rel_data.get("entity_name", rel_data.get("name", entity_id)),
                     "entity_type": rel_data.get("entity_type", "unknown"),
-                    "status": rel_data.get("status", "active"),
-                    "trust_level": rel_data.get("trust_level", 0.5),
-                    "interaction_count": rel_data.get("interaction_count", 0)
+                    "status": rel_data.get("relationship_status", rel_data.get("status", "stranger")),
+                    "trust_level": trust,  # 0-100 scale
+                    "interaction_count": rel_data.get("total_interactions", rel_data.get("interaction_count", 0))
                 })
 
             # Sort by interaction_count descending for "top" relationships

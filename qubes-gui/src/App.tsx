@@ -206,7 +206,7 @@ function App() {
     try {
       setLoading(true);
       setError(null);
-      const qubeList = await invoke<Qube[]>('list_qubes', { userId });
+      const qubeList = await invoke<Qube[]>('list_qubes', { userId, password });
       setQubes(qubeList);
     } catch (err) {
       console.error('Failed to load qubes:', err);

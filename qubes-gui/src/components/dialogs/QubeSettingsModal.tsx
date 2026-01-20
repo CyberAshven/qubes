@@ -6,6 +6,16 @@ import { useModels } from '../../hooks/useModels';
 import { useAuth } from '../../hooks/useAuth';
 import { useChainState } from '../../contexts/ChainStateContext';
 
+// Model mode type - single source of truth
+type ModelMode = 'autonomous' | 'revolver' | 'manual';
+
+// Helper to derive modelMode from boolean states
+const getModelMode = (autonomousMode: boolean, revolverMode: boolean): ModelMode => {
+  if (autonomousMode) return 'autonomous';
+  if (revolverMode) return 'revolver';
+  return 'manual';
+};
+
 interface QubeSettingsModalProps {
   isOpen: boolean;
   qubeId: string;
@@ -25,6 +35,7 @@ interface QubeSettingsModalProps {
     revolverModePool: string[];
     autonomousMode: boolean;
     autonomousModePool: string[];
+    modelMode: ModelMode;  // Single source of truth
   }) => void;
 }
 
@@ -394,6 +405,9 @@ export const QubeSettingsModal: React.FC<QubeSettingsModalProps> = ({
         password: masterPassword,
       });
 
+      // Compute modelMode from current state
+      const modelMode = getModelMode(autonomousMode, revolverMode);
+
       // Notify parent of changes
       onUpdate({
         modelLocked,
@@ -402,6 +416,7 @@ export const QubeSettingsModal: React.FC<QubeSettingsModalProps> = ({
         revolverModePool: revolverPool,
         autonomousMode,
         autonomousModePool: autonomousPool,
+        modelMode,  // Single source of truth
       });
 
       // Emit event for Chat tab to update mode indicator
@@ -410,7 +425,11 @@ export const QubeSettingsModal: React.FC<QubeSettingsModalProps> = ({
         modelLocked,
         revolverMode,
         autonomousMode,
+        modelMode,  // Include for easy access
       });
+
+      // Emit event for Debug Inspector to refresh preview
+      emit('qube-settings-changed', { qubeId });
 
       // Invalidate chain state cache and refresh so other components see the update
       invalidateCache(qubeId);

@@ -1086,9 +1086,11 @@ class UserOrchestrator:
                             avatar_url = f"https://ipfs.io/ipfs/{avatar_ipfs_cid}"
                         # Note: We pass avatar_local_path separately for frontend to handle
 
-                        # Load chain state for block counts using ChainState with encryption
+                        # Load chain state for block counts and current model using ChainState with encryption
                         total_blocks = 1  # At least genesis
                         block_breakdown = {}
+                        current_model = None  # Will be read from chain_state if available
+                        current_provider = None
                         try:
                             encryption_key = self._get_encryption_key(qube_dir)
                             if encryption_key:
@@ -1098,6 +1100,12 @@ class UserOrchestrator:
                                 chain_data = cs.state.get("chain", {})
                                 total_blocks = chain_data.get("total_blocks", 1)
                                 block_breakdown = cs.state.get("block_counts", {})
+                                # Get current model from runtime (actual model used for API calls)
+                                # Don't use get_current_model() as it checks current_model_override
+                                # which can be stale from discarded sessions
+                                runtime = cs.state.get("runtime", {})
+                                current_model = runtime.get("current_model")
+                                current_provider = runtime.get("current_provider")
                             else:
                                 # Fallback: try legacy plain JSON (for qubes not yet migrated)
                                 chain_state_path = qube_dir / "chain" / "chain_state.json"
@@ -1110,6 +1118,10 @@ class UserOrchestrator:
                                         else:
                                             total_blocks = chain_state.get("chain_length", 1)
                                         block_breakdown = chain_state.get("block_counts", {})
+                                        # Try to get current model from runtime (actual model used)
+                                        runtime = chain_state.get("runtime", {})
+                                        current_model = runtime.get("current_model")
+                                        current_provider = runtime.get("current_provider")
                         except Exception as cs_err:
                             logger.debug(f"Could not load chain_state for {qube_dir.name}: {cs_err}")
 
@@ -1245,8 +1257,10 @@ class UserOrchestrator:
                         qube_list.append({
                             "qube_id": qube_data["qube_id"],
                             "name": genesis["qube_name"],
-                            "ai_model": genesis["ai_model"],
-                            "ai_provider": genesis.get("ai_provider", "unknown"),
+                            # Use current model from chain_state if available (reflects model switches)
+                            # Otherwise fall back to genesis model (original model at creation)
+                            "ai_model": current_model or genesis["ai_model"],
+                            "ai_provider": current_provider or genesis.get("ai_provider", "unknown"),
                             "birth_timestamp": genesis["birth_timestamp"],
                             "creator": genesis.get("creator"),
                             "voice_model": genesis.get("voice_model"),
@@ -1571,10 +1585,12 @@ class UserOrchestrator:
             encrypted_data = encrypt_block_data(reset_state, chain_state_key)  # Pass dict, not string
             encrypted_data["encrypted"] = True  # CRITICAL: Mark as encrypted so ChainState doesn't "migrate" it
 
-            # Atomic write: temp file then rename
+            # Atomic write: temp file then rename (with proper flush for Windows)
             temp_path = chain_state_path.with_suffix(".tmp")
             with open(temp_path, "w", encoding="utf-8") as f:
                 json.dump(encrypted_data, f)
+                f.flush()
+                os.fsync(f.fileno())  # Ensure write is committed to disk
             temp_path.replace(chain_state_path)
             logger.debug("reset_chain_state_encrypted")
 

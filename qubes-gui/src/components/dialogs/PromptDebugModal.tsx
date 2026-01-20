@@ -1,24 +1,26 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { GlassCard, GlassButton } from '../glass';
 import { useQubeSelection } from '../../hooks/useQubeSelection';
 import { useAuth } from '../../hooks/useAuth';
 
-interface DebugPromptInfo {
-  qube_id: string;
-  qube_name: string;
-  messages: Array<{
-    role: string;
-    content: string;
-    tool_calls?: unknown[];
-  }>;
+// Polling interval for real-time updates (5 seconds)
+const POLL_INTERVAL_MS = 5000;
+
+interface MessagePreview {
+  role: string;
+  content: string;
+  name?: string;
+}
+
+interface SystemPromptPreview {
+  system_prompt: string;
+  messages: MessagePreview[];
   model: string;
   provider: string;
-  timestamp: string;
-  input_tokens: number | null;
-  output_tokens: number | null;
-  total_tokens: number | null;
-  response: string | null;
+  qube_name: string;
+  qube_id: string;
 }
 
 type TabType = 'prompt' | 'raw_chain_state' | 'ai_chain_state' | 'formatted_chain_state';
@@ -65,43 +67,38 @@ export const PromptDebugModal: React.FC<PromptDebugModalProps> = ({
   isOpen,
   onClose,
 }) => {
-  const [promptInfo, setPromptInfo] = useState<DebugPromptInfo | null>(null);
   const [rawChainState, setRawChainState] = useState<Record<string, unknown> | null>(null);
   const [aiChainState, setAiChainState] = useState<Record<string, unknown> | null>(null);
+  const [systemPromptPreview, setSystemPromptPreview] = useState<SystemPromptPreview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [expandedMessages, setExpandedMessages] = useState<Set<number>>(new Set());
   const [activeTab, setActiveTab] = useState<TabType>('prompt');
+  const [expandedMessages, setExpandedMessages] = useState<Set<number>>(new Set([0])); // System prompt expanded by default
+
+  const toggleMessage = (index: number) => {
+    setExpandedMessages(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(index)) {
+        newSet.delete(index);
+      } else {
+        newSet.add(index);
+      }
+      return newSet;
+    });
+  };
+
+  const expandAll = () => {
+    if (systemPromptPreview?.messages) {
+      setExpandedMessages(new Set(systemPromptPreview.messages.map((_, i) => i)));
+    }
+  };
+
+  const collapseAll = () => {
+    setExpandedMessages(new Set());
+  };
   const { activeQubeByTab, currentTab } = useQubeSelection();
   const { userId, password } = useAuth();
   const selectedQubeId = activeQubeByTab[currentTab];
-
-  const fetchPrompt = useCallback(async () => {
-    if (!selectedQubeId) {
-      setError('No qube selected');
-      return;
-    }
-
-    setLoading(true);
-    setError(null);
-
-    try {
-      const result = await invoke<{ success: boolean; prompt?: DebugPromptInfo; error?: string }>(
-        'get_debug_prompt',
-        { qubeId: selectedQubeId }
-      );
-
-      if (result.success && result.prompt) {
-        setPromptInfo(result.prompt);
-      } else {
-        setError(result.error || 'No prompt cached for this qube');
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to fetch prompt');
-    } finally {
-      setLoading(false);
-    }
-  }, [selectedQubeId]);
 
   const fetchChainState = useCallback(async () => {
     if (!selectedQubeId || !userId || !password) {
@@ -132,33 +129,146 @@ export const PromptDebugModal: React.FC<PromptDebugModalProps> = ({
     }
   }, [selectedQubeId, userId, password]);
 
+  const fetchSystemPromptPreview = useCallback(async () => {
+    if (!selectedQubeId || !userId || !password) {
+      return;
+    }
+
+    try {
+      const result = await invoke<{
+        success: boolean;
+        system_prompt?: string;
+        messages?: MessagePreview[];
+        model?: string;
+        provider?: string;
+        qube_name?: string;
+        qube_id?: string;
+        error?: string;
+      }>(
+        'get_system_prompt_preview',
+        { userId, qubeId: selectedQubeId, password }
+      );
+
+      if (result.success && result.system_prompt) {
+        setSystemPromptPreview({
+          system_prompt: result.system_prompt,
+          messages: result.messages || [],
+          model: result.model || 'unknown',
+          provider: result.provider || 'unknown',
+          qube_name: result.qube_name || '',
+          qube_id: result.qube_id || selectedQubeId,
+        });
+      }
+    } catch (err) {
+      console.error('Failed to fetch system prompt preview:', err);
+    }
+  }, [selectedQubeId, userId, password]);
+
   useEffect(() => {
     if (isOpen && selectedQubeId) {
-      fetchPrompt();
       fetchChainState();
+      fetchSystemPromptPreview();
     }
-  }, [isOpen, selectedQubeId, fetchPrompt, fetchChainState]);
+  }, [isOpen, selectedQubeId, fetchChainState, fetchSystemPromptPreview]);
 
-  const toggleMessage = (index: number) => {
-    setExpandedMessages(prev => {
-      const next = new Set(prev);
-      if (next.has(index)) {
-        next.delete(index);
-      } else {
-        next.add(index);
-      }
-      return next;
-    });
-  };
+  // Real-time updates: Event listeners + polling
+  // Events that can affect the system prompt:
+  // - qube-model-changed: Model was switched
+  // - model-mode-changed: Revolver/locked mode changed (could trigger model changes)
+  // - qube-reset: Qube state was reset
+  // Polling covers: mood changes, avatar updates, relationship changes, owner info updates
+  useEffect(() => {
+    if (!isOpen || !selectedQubeId) return;
 
-  const formatTokens = (tokens: number | null) => {
-    if (tokens === null) return '-';
-    return tokens.toLocaleString();
-  };
+    const unlisteners: Array<() => void> = [];
+
+    // Set up event listeners for immediate updates
+    const setupListeners = async () => {
+      // Listen for model changes
+      const unlistenModelChanged = await listen<{ qubeId: string; newModel: string }>(
+        'qube-model-changed',
+        (event) => {
+          if (event.payload.qubeId === selectedQubeId) {
+            console.log('[DebugInspector] Model changed, refreshing preview...');
+            fetchSystemPromptPreview();
+            fetchChainState();
+          }
+        }
+      );
+      unlisteners.push(unlistenModelChanged);
+
+      // Listen for model mode changes (revolver mode, locked mode, etc.)
+      const unlistenModeChanged = await listen<{ qubeId: string }>(
+        'model-mode-changed',
+        (event) => {
+          if (event.payload.qubeId === selectedQubeId) {
+            console.log('[DebugInspector] Model mode changed, refreshing preview...');
+            fetchSystemPromptPreview();
+            fetchChainState();
+          }
+        }
+      );
+      unlisteners.push(unlistenModeChanged);
+
+      // Listen for qube reset
+      const unlistenReset = await listen<{ qubeId: string }>(
+        'qube-reset',
+        (event) => {
+          if (event.payload.qubeId === selectedQubeId) {
+            console.log('[DebugInspector] Qube reset, refreshing all data...');
+            fetchChainState();
+            fetchSystemPromptPreview();
+          }
+        }
+      );
+      unlisteners.push(unlistenReset);
+
+      // Listen for settings changes (voice, TTS, etc.)
+      const unlistenSettingsChanged = await listen<{ qubeId: string }>(
+        'qube-settings-changed',
+        (event) => {
+          if (event.payload.qubeId === selectedQubeId) {
+            console.log('[DebugInspector] Settings changed, refreshing preview...');
+            fetchSystemPromptPreview();
+            fetchChainState();
+          }
+        }
+      );
+      unlisteners.push(unlistenSettingsChanged);
+
+      // Listen for mood changes
+      const unlistenMoodChanged = await listen<{ qubeId: string }>(
+        'qube-mood-changed',
+        (event) => {
+          if (event.payload.qubeId === selectedQubeId) {
+            console.log('[DebugInspector] Mood changed, refreshing preview...');
+            fetchSystemPromptPreview();
+            fetchChainState();
+          }
+        }
+      );
+      unlisteners.push(unlistenMoodChanged);
+    };
+
+    setupListeners();
+
+    // Set up polling as a fallback for changes that don't emit events
+    const pollInterval = setInterval(() => {
+      console.log('[DebugInspector] Polling for updates...');
+      fetchSystemPromptPreview();
+      fetchChainState();
+    }, POLL_INTERVAL_MS);
+
+    // Cleanup
+    return () => {
+      unlisteners.forEach((unlisten) => unlisten());
+      clearInterval(pollInterval);
+    };
+  }, [isOpen, selectedQubeId, fetchChainState, fetchSystemPromptPreview]);
 
   const copyToClipboard = async () => {
-    if (activeTab === 'prompt' && promptInfo) {
-      const text = JSON.stringify(promptInfo, null, 2);
+    if (activeTab === 'prompt' && systemPromptPreview) {
+      const text = JSON.stringify(systemPromptPreview, null, 2);
       await navigator.clipboard.writeText(text);
     } else if (activeTab === 'raw_chain_state' && rawChainState) {
       const text = JSON.stringify(rawChainState, null, 2);
@@ -173,7 +283,7 @@ export const PromptDebugModal: React.FC<PromptDebugModalProps> = ({
   };
 
   const getCopyButtonDisabled = () => {
-    if (activeTab === 'prompt') return !promptInfo;
+    if (activeTab === 'prompt') return !systemPromptPreview;
     if (activeTab === 'raw_chain_state') return !rawChainState;
     if (activeTab === 'ai_chain_state') return !aiChainState;
     if (activeTab === 'formatted_chain_state') return !rawChainState;
@@ -192,7 +302,7 @@ export const PromptDebugModal: React.FC<PromptDebugModalProps> = ({
           <div className="flex gap-2">
             <GlassButton
               variant="secondary"
-              onClick={() => { fetchPrompt(); fetchChainState(); }}
+              onClick={() => { fetchChainState(); fetchSystemPromptPreview(); }}
               disabled={loading}
             >
               Refresh
@@ -416,112 +526,116 @@ export const PromptDebugModal: React.FC<PromptDebugModalProps> = ({
         )}
 
         {/* Prompt Tab */}
-        {activeTab === 'prompt' && promptInfo && !loading && (
+        {activeTab === 'prompt' && !loading && (
           <div className="overflow-y-auto flex-1 space-y-4">
-            {/* Header info */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 p-4 bg-glass-bg rounded-lg border border-glass-border">
-              <div>
-                <div className="text-xs text-text-tertiary">Qube</div>
-                <div className="text-text-primary font-medium">{promptInfo.qube_name}</div>
-              </div>
-              <div>
-                <div className="text-xs text-text-tertiary">Model</div>
-                <div className="text-text-primary font-medium">{promptInfo.model}</div>
-              </div>
-              <div>
-                <div className="text-xs text-text-tertiary">Provider</div>
-                <div className="text-text-primary font-medium">{promptInfo.provider}</div>
-              </div>
-              <div>
-                <div className="text-xs text-text-tertiary">Timestamp</div>
-                <div className="text-text-primary font-medium text-sm">
-                  {new Date(promptInfo.timestamp).toLocaleString()}
-                </div>
-              </div>
-            </div>
-
-            {/* Token counts */}
-            <div className="flex gap-4 p-4 bg-glass-bg rounded-lg border border-glass-border">
-              <div className="flex-1 text-center">
-                <div className="text-xs text-text-tertiary">Input Tokens</div>
-                <div className="text-xl text-accent-primary font-bold">
-                  {formatTokens(promptInfo.input_tokens)}
-                </div>
-              </div>
-              <div className="flex-1 text-center">
-                <div className="text-xs text-text-tertiary">Output Tokens</div>
-                <div className="text-xl text-accent-secondary font-bold">
-                  {formatTokens(promptInfo.output_tokens)}
-                </div>
-              </div>
-              <div className="flex-1 text-center">
-                <div className="text-xs text-text-tertiary">Total Tokens</div>
-                <div className="text-xl text-text-primary font-bold">
-                  {formatTokens(promptInfo.total_tokens)}
-                </div>
-              </div>
-            </div>
-
-            {/* Messages */}
-            <div className="space-y-2">
-              <h3 className="text-lg font-medium text-text-primary">
-                Messages ({promptInfo.messages.length})
-              </h3>
-              {promptInfo.messages.map((msg, index) => (
-                <div
-                  key={index}
-                  className="border border-glass-border rounded-lg overflow-hidden"
-                >
-                  <button
-                    onClick={() => toggleMessage(index)}
-                    className="w-full p-3 bg-glass-bg hover:bg-glass-bg-hover flex justify-between items-center text-left"
-                  >
-                    <div className="flex items-center gap-3">
-                      <span className={`px-2 py-1 rounded text-xs font-medium ${
-                        msg.role === 'system' ? 'bg-purple-500/20 text-purple-300' :
-                        msg.role === 'assistant' ? 'bg-green-500/20 text-green-300' :
-                        msg.role === 'user' ? 'bg-blue-500/20 text-blue-300' :
-                        msg.role === 'tool' ? 'bg-orange-500/20 text-orange-300' :
-                        'bg-gray-500/20 text-gray-300'
-                      }`}>
-                        {msg.role}
-                      </span>
-                      <span className="text-text-secondary text-sm truncate max-w-md">
-                        {msg.content?.slice(0, 100)}...
-                      </span>
+            {/* Real-time System Prompt Preview */}
+            {systemPromptPreview ? (
+              <>
+                {/* Header info - real-time values */}
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-4 p-4 bg-glass-bg rounded-lg border border-green-500/30">
+                  <div>
+                    <div className="text-xs text-text-tertiary">Qube</div>
+                    <div className="text-text-primary font-medium">{systemPromptPreview.qube_name}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-text-tertiary flex items-center gap-1">
+                      Model
+                      <span className="text-green-400 text-[10px]">(live)</span>
                     </div>
-                    <span className="text-text-tertiary text-sm">
-                      {expandedMessages.has(index) ? '▼' : '▶'}
-                    </span>
-                  </button>
-                  {expandedMessages.has(index) && (
-                    <div className="p-4 bg-black/20 border-t border-glass-border">
-                      <pre className="text-sm text-text-primary whitespace-pre-wrap font-mono overflow-x-auto">
-                        {msg.content}
-                      </pre>
-                      {msg.tool_calls && (
-                        <div className="mt-4 pt-4 border-t border-glass-border">
-                          <div className="text-xs text-text-tertiary mb-2">Tool Calls:</div>
-                          <pre className="text-sm text-orange-300 whitespace-pre-wrap font-mono">
-                            {JSON.stringify(msg.tool_calls, null, 2)}
-                          </pre>
+                    <div className="text-text-primary font-medium">{systemPromptPreview.model}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-text-tertiary flex items-center gap-1">
+                      Provider
+                      <span className="text-green-400 text-[10px]">(live)</span>
+                    </div>
+                    <div className="text-text-primary font-medium">{systemPromptPreview.provider}</div>
+                  </div>
+                </div>
+
+                {/* Messages (system prompt + conversation) */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-lg font-medium text-text-primary">
+                        Messages ({systemPromptPreview.messages?.length || 0})
+                      </h3>
+                      <span className="text-green-400 text-xs bg-green-500/10 px-2 py-0.5 rounded">Real-time Preview</span>
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={expandAll}
+                        className="text-xs text-text-secondary hover:text-text-primary px-2 py-1 rounded bg-glass-bg/50 hover:bg-glass-bg transition-colors"
+                      >
+                        Expand All
+                      </button>
+                      <button
+                        onClick={collapseAll}
+                        className="text-xs text-text-secondary hover:text-text-primary px-2 py-1 rounded bg-glass-bg/50 hover:bg-glass-bg transition-colors"
+                      >
+                        Collapse All
+                      </button>
+                    </div>
+                  </div>
+                  <div className="text-xs text-green-400 mb-2">
+                    This is what WOULD be sent to the AI if you continued the conversation now
+                  </div>
+                  <div className="space-y-2">
+                    {(systemPromptPreview.messages || []).map((msg, index) => {
+                      const isExpanded = expandedMessages.has(index);
+                      const contentPreview = msg.content.length > 100
+                        ? msg.content.substring(0, 100) + '...'
+                        : msg.content;
+
+                      return (
+                        <div
+                          key={index}
+                          className="border border-glass-border rounded-lg overflow-hidden"
+                        >
+                          <button
+                            onClick={() => toggleMessage(index)}
+                            className="w-full p-3 bg-glass-bg flex items-center gap-3 hover:bg-glass-bg/80 transition-colors text-left"
+                          >
+                            <span className={`transition-transform duration-200 ${isExpanded ? 'rotate-90' : ''}`}>
+                              ▶
+                            </span>
+                            <span className={`px-2 py-1 rounded text-xs font-medium ${
+                              msg.role === 'system' ? 'bg-purple-500/20 text-purple-300' :
+                              msg.role === 'assistant' ? 'bg-green-500/20 text-green-300' :
+                              msg.role === 'user' ? 'bg-blue-500/20 text-blue-300' :
+                              msg.role === 'tool' ? 'bg-orange-500/20 text-orange-300' :
+                              'bg-gray-500/20 text-gray-300'
+                            }`}>
+                              {msg.name || msg.role}
+                            </span>
+                            {msg.name && msg.name !== msg.role && (
+                              <span className="text-text-tertiary text-xs">({msg.role})</span>
+                            )}
+                            {!isExpanded && (
+                              <span className="text-text-tertiary text-xs truncate flex-1 ml-2">
+                                {contentPreview}
+                              </span>
+                            )}
+                            <span className="text-text-tertiary text-xs ml-auto">
+                              {msg.content.length} chars
+                            </span>
+                          </button>
+                          {isExpanded && (
+                            <div className="p-4 bg-black/20 border-t border-glass-border">
+                              <pre className="text-sm text-text-primary whitespace-pre-wrap font-mono overflow-x-auto max-h-96 overflow-y-auto">
+                                {msg.content}
+                              </pre>
+                            </div>
+                          )}
                         </div>
-                      )}
-                    </div>
-                  )}
+                      );
+                    })}
+                  </div>
                 </div>
-              ))}
-            </div>
-
-            {/* Response preview */}
-            {promptInfo.response && (
-              <div className="space-y-2">
-                <h3 className="text-lg font-medium text-text-primary">Response Preview</h3>
-                <div className="p-4 bg-glass-bg rounded-lg border border-glass-border">
-                  <pre className="text-sm text-text-secondary whitespace-pre-wrap font-mono">
-                    {promptInfo.response}
-                  </pre>
-                </div>
+              </>
+            ) : (
+              <div className="text-text-secondary text-center py-8">
+                Loading system prompt preview...
               </div>
             )}
           </div>

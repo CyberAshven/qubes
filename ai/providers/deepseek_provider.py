@@ -156,7 +156,39 @@ class DeepSeekModel(AIModelInterface):
 
             MetricsRecorder.record_ai_api_call("deepseek", self.model_name, "error")
             logger.error("deepseek_generation_failed", model=self.model_name, error=error_detail, exc_info=True)
-            raise ModelAPIError(f"DeepSeek API error: {error_detail}", cause=e)
+
+            # Classify error with helpful messages
+            error_msg = error_detail.lower()
+            if "rate_limit" in error_msg or "429" in error_msg or "too many" in error_msg:
+                raise ModelRateLimitError(
+                    f"DeepSeek rate limit exceeded. Wait a moment and try again. Original error: {error_detail}",
+                    context={"model": self.model_name, "error_type": "rate_limit"},
+                    cause=e
+                )
+            elif "unauthorized" in error_msg or "401" in error_msg or "invalid" in error_msg and "key" in error_msg:
+                raise ModelNotAvailableError(
+                    f"DeepSeek API key is invalid. Check your API key in Settings > API Keys. Original error: {error_detail}",
+                    context={"model": self.model_name, "error_type": "auth_failed"},
+                    cause=e
+                )
+            elif "balance" in error_msg or "insufficient" in error_msg:
+                raise ModelNotAvailableError(
+                    f"DeepSeek account has insufficient balance. Add credits at platform.deepseek.com. Original error: {error_detail}",
+                    context={"model": self.model_name, "error_type": "billing"},
+                    cause=e
+                )
+            elif "context" in error_msg and "length" in error_msg:
+                raise ModelAPIError(
+                    f"Message too long for DeepSeek model. Try shortening your conversation. Original error: {error_detail}",
+                    context={"model": self.model_name, "error_type": "context_exceeded"},
+                    cause=e
+                )
+            else:
+                raise ModelAPIError(
+                    f"DeepSeek API error with model '{self.model_name}': {error_detail}",
+                    context={"model": self.model_name, "error_type": "unknown"},
+                    cause=e
+                )
 
     async def stream_generate(
         self,

@@ -292,10 +292,16 @@ class ChainState:
         # Event bus for event-driven state management (lazy initialization)
         self._event_bus: Optional["ChainStateEventBus"] = None
 
-        # Staged session tracking - session-scoped sections stay in memory until anchor
-        # When active, _save() excludes staged sections from disk writes
+        # Staged session tracking
+        # When active, session changes persist immediately to disk for cross-process visibility,
+        # but a snapshot is kept for rollback if session is discarded
         self._staged_session_active: bool = False
         self._staged_stats_baseline: Dict[str, Any] = {}  # Baseline for session-scoped stats
+
+        # Unified session snapshot - holds pre-session state for all rollback-able sections
+        # On discard: restore from this snapshot
+        # On commit/anchor: clear this snapshot (changes become permanent)
+        self._session_snapshot: Optional[Dict[str, Any]] = None
 
         # Load existing state or create new
         if self.state_file.exists():
@@ -306,6 +312,14 @@ class ChainState:
         # Update qube_id if provided and different
         if qube_id and self.state.get("qube_id") != qube_id:
             self.state["qube_id"] = qube_id
+
+        # Restore snapshot state from disk (for cross-process rollback support)
+        snapshot_data = self.state.get("_snapshot")
+        if snapshot_data and snapshot_data.get("active"):
+            self._staged_session_active = True
+            self._session_snapshot = snapshot_data.get("data")
+            self._staged_stats_baseline = snapshot_data.get("stats_baseline", {})
+            logger.info("session_snapshot_restored_from_disk", qube_id=self.qube_id)
 
         logger.info("chain_state_loaded", qube_id=self.qube_id, version=self.state.get("version"))
 
@@ -726,12 +740,49 @@ class ChainState:
             settings["group_auto_anchor_threshold"] = 20
             changed = True
 
-        # Populate model pools with all available models if empty
-        # Model pools should ALWAYS have models, even when modes are disabled
-        if not settings.get("revolver_mode_pool") or not settings.get("autonomous_mode_pool"):
-            try:
-                from ai.model_registry import ModelRegistry
-                all_models = list(ModelRegistry.MODELS.keys())
+        # Migrate and populate model pools
+        # IMPORTANT: Pools must use "provider:model" format (e.g., "openai:gpt-4o")
+        # to match GUI expectations. Old plain-name entries must be converted.
+        try:
+            from ai.model_registry import ModelRegistry
+
+            def migrate_pool(pool: list) -> list:
+                """Convert plain model names to provider:model format."""
+                if not pool:
+                    return pool
+                migrated = []
+                for entry in pool:
+                    if ":" in entry:
+                        # Already in provider:model format
+                        migrated.append(entry)
+                    else:
+                        # Plain model name - look up provider and convert
+                        model_info = ModelRegistry.get_model_info(entry)
+                        if model_info:
+                            migrated.append(f"{model_info['provider']}:{entry}")
+                        # If model not found, drop it (might be deprecated)
+                return migrated
+
+            # Migrate existing pools to provider:model format
+            revolver_pool = settings.get("revolver_mode_pool", [])
+            autonomous_pool = settings.get("autonomous_mode_pool", [])
+
+            migrated_revolver = migrate_pool(revolver_pool)
+            migrated_autonomous = migrate_pool(autonomous_pool)
+
+            if migrated_revolver != revolver_pool:
+                settings["revolver_mode_pool"] = migrated_revolver
+                changed = True
+                logger.info("migrated_revolver_pool_format", old_count=len(revolver_pool), new_count=len(migrated_revolver))
+
+            if migrated_autonomous != autonomous_pool:
+                settings["autonomous_mode_pool"] = migrated_autonomous
+                changed = True
+                logger.info("migrated_autonomous_pool_format", old_count=len(autonomous_pool), new_count=len(migrated_autonomous))
+
+            # Populate empty pools with all available models (in provider:model format)
+            if not settings.get("revolver_mode_pool") or not settings.get("autonomous_mode_pool"):
+                all_models = [f"{info['provider']}:{name}" for name, info in ModelRegistry.MODELS.items()]
                 if not settings.get("revolver_mode_pool"):
                     settings["revolver_mode_pool"] = all_models
                     changed = True
@@ -739,8 +790,19 @@ class ChainState:
                     settings["autonomous_mode_pool"] = all_models
                     changed = True
                 logger.info("populated_model_pools", count=len(all_models))
-            except Exception as e:
-                logger.warning("failed_to_populate_model_pools", error=str(e))
+        except Exception as e:
+            logger.warning("failed_to_process_model_pools", error=str(e))
+
+        # Migrate to unified model_mode field (derives from booleans if missing)
+        if "model_mode" not in settings:
+            if settings.get("autonomous_mode_enabled"):
+                settings["model_mode"] = "autonomous"
+            elif settings.get("revolver_mode_enabled"):
+                settings["model_mode"] = "revolver"
+            else:
+                settings["model_mode"] = "manual"
+            changed = True
+            logger.info("migrated_model_mode", mode=settings["model_mode"])
 
         if changed:
             logger.info("cleaned_up_deprecated_fields", qube_id=self.state.get("qube_id"))
@@ -791,11 +853,12 @@ class ChainState:
                                 if field in disk_state.get("settings", {}):
                                     merged_state["settings"][field] = disk_state["settings"][field]
                     else:
-                        # GUI saving: preserve ALL non-settings sections from disk
-                        # because GUI only manages settings, not stats/skills/relationships/etc.
-                        # This prevents GUI from overwriting backend stats with stale values
-                        non_settings_sections = ["stats", "skills", "relationships", "mood", "chain", "financial", "health", "owner_info", "block_counts", "runtime", "session"]
-                        for section in non_settings_sections:
+                        # GUI saving: preserve ALL backend-managed sections from disk
+                        # GUI only manages settings, not stats/skills/relationships/runtime/etc.
+                        # This prevents GUI from overwriting backend data with stale values
+                        # IMPORTANT: runtime is included to preserve current_model after reset
+                        backend_sections = ["stats", "skills", "relationships", "mood", "chain", "financial", "health", "owner_info", "block_counts", "session", "runtime"]
+                        for section in backend_sections:
                             if section in disk_state:
                                 merged_state[section] = disk_state[section]
 
@@ -808,21 +871,9 @@ class ChainState:
                                        if k not in EPHEMERAL_RUNTIME_FIELDS}
                         merged_state["runtime"] = runtime_copy
 
-                    # Staged session: keep session-scoped sections on disk unchanged
-                    # Changes to skills, relationships, mood, owner_info stay in memory
-                    # until the session is anchored (committed)
-                    if self._staged_session_active:
-                        for section in self.SESSION_SCOPED_SECTIONS:
-                            if section in disk_state:
-                                merged_state[section] = disk_state[section]
-                        # Also preserve session-scoped stats fields
-                        # IMPORTANT: Must copy the stats dict first to avoid corrupting self.state
-                        # (merged_state is a shallow copy, so merged_state["stats"] points to self.state["stats"])
-                        if "stats" in disk_state and "stats" in merged_state:
-                            merged_state["stats"] = merged_state["stats"].copy()
-                            for field in self.SESSION_SCOPED_STATS:
-                                if field in disk_state["stats"]:
-                                    merged_state["stats"][field] = disk_state["stats"][field]
+                    # UNIFIED SNAPSHOT APPROACH: All changes persist immediately to disk
+                    # Rollback is handled via snapshot/restore in discard_staged_session()
+                    # No need to exclude sections - everything writes through
 
                     # Update timestamp
                     merged_state["last_updated"] = int(datetime.now(timezone.utc).timestamp())
@@ -852,20 +903,7 @@ class ChainState:
 
                     temp_file.replace(self.state_file)
 
-                    # Update in-memory state
-                    # BUT preserve session-scoped sections if staged session is active
-                    # (we want disk to have old values, but memory to have new values)
-                    if self._staged_session_active:
-                        # Restore session-scoped sections from original self.state
-                        for section in self.SESSION_SCOPED_SECTIONS:
-                            if section in self.state:
-                                merged_state[section] = self.state[section]
-                        # Restore session-scoped stats fields
-                        if "stats" in self.state:
-                            for field in self.SESSION_SCOPED_STATS:
-                                if field in self.state["stats"]:
-                                    merged_state["stats"][field] = self.state["stats"][field]
-
+                    # Update in-memory state to match what was written to disk
                     self.state = merged_state
 
                     logger.debug("chain_state_saved", qube_id=self.state.get("qube_id"))
@@ -881,41 +919,12 @@ class ChainState:
     def reload(self) -> None:
         """Reload state from disk, picking up external changes.
 
-        IMPORTANT: If a staged session is active, session-scoped sections
-        (skills, relationships, mood, owner_info) and session-scoped stats
-        are preserved from memory - they should NOT be overwritten by disk values.
+        With unified snapshot approach, all changes persist immediately to disk.
+        Reload simply loads the current disk state. Rollback (if needed) is
+        handled via snapshot/restore in discard_staged_session().
         """
         if self.state_file.exists():
-            # If staged session is active, preserve session-scoped sections before reload
-            preserved_sections = {}
-            preserved_stats = {}
-            if self._staged_session_active:
-                for section in self.SESSION_SCOPED_SECTIONS:
-                    if section in self.state:
-                        # Deep copy to avoid reference issues
-                        preserved_sections[section] = json.loads(json.dumps(self.state[section]))
-                # Also preserve session-scoped stats
-                if "stats" in self.state:
-                    for field in self.SESSION_SCOPED_STATS:
-                        if field in self.state["stats"]:
-                            preserved_stats[field] = self.state["stats"][field]
-
             self._load()
-
-            # Restore preserved session-scoped data
-            if self._staged_session_active:
-                for section, data in preserved_sections.items():
-                    self.state[section] = data
-                if preserved_stats and "stats" in self.state:
-                    for field, value in preserved_stats.items():
-                        self.state["stats"][field] = value
-                logger.debug(
-                    "reload_preserved_session_data",
-                    qube_id=self.state.get("qube_id"),
-                    preserved_sections=list(preserved_sections.keys()),
-                    preserved_stats=list(preserved_stats.keys())
-                )
-
             logger.debug("chain_state_reloaded", qube_id=self.state.get("qube_id"))
 
     # =========================================================================
@@ -2307,15 +2316,29 @@ class ChainState:
         return self.state.get("settings", {}).get("model_locked_to")
 
     def set_model_lock(self, locked: bool, model_name: str = None) -> None:
-        """Lock or unlock model selection."""
+        """Lock or unlock model selection (manual mode)."""
         settings = self.state.setdefault("settings", {})
         settings["model_locked"] = locked
         settings["model_locked_to"] = model_name if locked else None
         if locked:
             settings["revolver_mode_enabled"] = False
             settings["autonomous_mode_enabled"] = False
+            settings["model_mode"] = "manual"
         # Use preserve_gui_fields=False since we're intentionally updating GUI-managed settings
         self._save(preserve_gui_fields=False)
+
+    def get_model_mode(self) -> str:
+        """Get the current model mode: 'autonomous', 'revolver', or 'manual'."""
+        settings = self.state.get("settings", {})
+        # Return stored model_mode if available
+        if "model_mode" in settings:
+            return settings["model_mode"]
+        # Derive from booleans for backward compatibility
+        if settings.get("autonomous_mode_enabled"):
+            return "autonomous"
+        elif settings.get("revolver_mode_enabled"):
+            return "revolver"
+        return "manual"
 
     def is_revolver_mode_enabled(self) -> bool:
         """Check if revolver mode is enabled."""
@@ -2329,6 +2352,11 @@ class ChainState:
             # Revolver mode uses random selection from pool - disable conflicting modes
             settings["model_locked"] = False
             settings["autonomous_mode_enabled"] = False
+            settings["model_mode"] = "revolver"
+        else:
+            # If disabling revolver and no other mode is active, default to manual
+            if not settings.get("autonomous_mode_enabled"):
+                settings["model_mode"] = "manual"
         # Use preserve_gui_fields=False since we're intentionally updating GUI-managed settings
         self._save(preserve_gui_fields=False)
 
@@ -2444,7 +2472,21 @@ class ChainState:
         self._save(preserve_gui_fields=False)
 
     def get_current_model(self) -> str:
-        """Get the current AI model (from runtime, falls back to settings)."""
+        """Get the current AI model (override > runtime > settings > default).
+
+        Priority order:
+        1. current_model_override - Set by switch_model tool (persistent user/AI choice)
+        2. runtime.current_model - Set by API call tracking (may lag behind override)
+        3. model_locked_to - Set by GUI settings
+        4. Default model
+        """
+        # Check for explicit model override first (e.g., from switch_model tool)
+        # This takes priority because the API call tracking may reset runtime.current_model
+        # before the response is returned, but the override represents the intended model
+        override = self.state.get("current_model_override")
+        if override:
+            return override
+
         runtime = self.state.get("runtime", {})
         if runtime.get("current_model"):
             return runtime["current_model"]
@@ -2455,7 +2497,17 @@ class ChainState:
         return "claude-sonnet-4-20250514"
 
     def get_current_provider(self) -> str:
-        """Get the current AI provider (from runtime)."""
+        """Get the current AI provider (derived from override model, or from runtime)."""
+        # If there's a model override, derive provider from that
+        override = self.state.get("current_model_override")
+        if override:
+            try:
+                from ai.model_registry import ModelRegistry
+                model_info = ModelRegistry.get_model_info(override)
+                if model_info:
+                    return model_info["provider"]
+            except Exception:
+                pass
         return self.state.get("runtime", {}).get("current_provider", "anthropic")
 
     # Backward compatibility aliases
@@ -2605,37 +2657,49 @@ class ChainState:
     # aren't persisted until commit.
     #
     # Flow:
-    # 1. begin_staged_session() - Start staging (changes stay in memory)
-    # 2. During session - _save() excludes staged sections from disk
-    # 3. commit_staged_session() - Write staged changes to disk (on anchor)
-    # 4. discard_staged_session() - Reload from disk, discarding memory changes
+    # UNIFIED SESSION SNAPSHOT APPROACH
+    # ================================
+    # All changes persist to disk immediately for cross-process visibility.
+    # A unified snapshot captures pre-session state for rollback on discard.
     #
-    # On crash: staged changes are lost, disk has pre-session state (same as discard)
+    # 1. begin_staged_session() - Snapshot all ROLLBACK_SECTIONS
+    # 2. During session - All changes persist immediately to disk
+    # 3. commit_staged_session() - Clear snapshot (changes are permanent)
+    # 4. discard_staged_session() - Restore from snapshot, save to disk
+    #
+    # On crash: disk has latest state (session changes persist). User can manually
+    # discard session blocks to trigger rollback if needed.
 
-    # Sections that are session-scoped (staged until anchor)
-    # These represent changes made during conversation
-    SESSION_SCOPED_SECTIONS = {"skills", "relationships", "mood", "owner_info"}
+    # Sections that roll back on session discard (snapshotted at session start)
+    # These represent session-accumulated changes that should undo if user discards
+    ROLLBACK_SECTIONS = {"relationships", "owner_info", "skills", "mood"}
 
-    # Specific stats fields that are session-scoped (committed at anchor, rolled back on discard)
-    # These are derived from session blocks at anchor time, not tracked incrementally.
-    # During session, display logic adds pending counts from session block files.
-    # This works with subprocess architecture (no in-memory state needed).
-    SESSION_SCOPED_STATS = {"total_messages_sent", "total_messages_received", "total_tool_calls"}
+    # Runtime fields that roll back on session discard
+    ROLLBACK_RUNTIME_FIELDS = {"current_model", "current_provider"}
 
-    # Sections that persist immediately (even during staged session)
-    # - settings: GUI-managed, user explicitly changed
+    # Stats fields that roll back on session discard
+    # These are message/action counts derived from session blocks
+    ROLLBACK_STATS = {"total_messages_sent", "total_messages_received", "total_tool_calls"}
+
+    # Sections that NEVER roll back (persist regardless of discard)
+    # - settings: User explicitly changed via GUI
     # - financial: Blockchain transactions are irrevocable
     # - chain: Block tracking is canonical state
-    # Note: Some stats (tokens, costs) persist because real money was spent
-    IMMEDIATELY_PERSISTENT_SECTIONS = {"settings", "financial", "chain", "block_counts"}
+    # - stats (except ROLLBACK_STATS): Token costs are real money spent
+    PERSIST_SECTIONS = {"settings", "financial", "chain", "block_counts"}
+
+    # Legacy aliases for compatibility during transition
+    SESSION_SCOPED_SECTIONS = set()  # No longer used - everything persists immediately
+    SESSION_SCOPED_STATS = ROLLBACK_STATS  # Alias
+    IMMEDIATELY_PERSISTENT_SECTIONS = PERSIST_SECTIONS  # Alias
 
     def begin_staged_session(self) -> None:
         """
-        Begin a staged session.
+        Begin a staged session with unified snapshot.
 
-        While staged, session-scoped sections (skills, relationships, mood, owner_info)
-        and session-scoped stats are kept in memory only. They won't be written to disk
-        until commit_staged_session() is called.
+        All changes persist to disk immediately for cross-process visibility.
+        A unified snapshot captures the pre-session state of all ROLLBACK_SECTIONS
+        so they can be restored if the session is discarded.
 
         Call this when starting a new conversation session.
         """
@@ -2643,19 +2707,44 @@ class ChainState:
             logger.warning("staged_session_already_active", qube_id=self.state.get("qube_id"))
             return
 
-        # Record baseline for session-scoped stats (for reference, not rollback)
+        # Create unified snapshot of all rollback-able state
+        # Deep copy to ensure isolation from live state
+        runtime = self.state.get("runtime", {})
         stats = self.state.get("stats", {})
-        self._staged_stats_baseline = {
-            field: stats.get(field, 0)
-            for field in self.SESSION_SCOPED_STATS
+
+        self._session_snapshot = {
+            # Sections that roll back
+            "relationships": json.loads(json.dumps(self.state.get("relationships", {}))),
+            "owner_info": json.loads(json.dumps(self.state.get("owner_info", {}))),
+            "skills": json.loads(json.dumps(self.state.get("skills", {}))),
+            "mood": json.loads(json.dumps(self.state.get("mood", {}))),
+            # Runtime fields that roll back (model switches)
+            "current_model_override": self.state.get("current_model_override"),
+            "runtime_model": runtime.get("current_model"),
+            "runtime_provider": runtime.get("current_provider"),
+            # Stats that roll back (message counts from session blocks)
+            "stats": {field: stats.get(field, 0) for field in self.ROLLBACK_STATS},
         }
+
+        # Also keep baseline stats for reference
+        self._staged_stats_baseline = self._session_snapshot["stats"].copy()
 
         self._staged_session_active = True
 
+        # Persist snapshot to disk for cross-process rollback support
+        # This allows GUI subprocess to restore snapshot if session is discarded
+        self.state["_snapshot"] = {
+            "active": True,
+            "data": self._session_snapshot,
+            "stats_baseline": self._staged_stats_baseline,
+        }
+        self._save()
+
         logger.info(
             "staged_session_started",
-            sections=list(self.SESSION_SCOPED_SECTIONS),
-            stats_fields=list(self.SESSION_SCOPED_STATS),
+            rollback_sections=list(self.ROLLBACK_SECTIONS),
+            rollback_stats=list(self.ROLLBACK_STATS),
+            snapshot_keys=list(self._session_snapshot.keys()),
             qube_id=self.state.get("qube_id")
         )
 
@@ -2694,28 +2783,36 @@ class ChainState:
         stats["total_messages_received"] = stats.get("total_messages_received", 0) + pending_received
         stats["total_tool_calls"] = stats.get("total_tool_calls", 0) + pending_tool_calls
 
-        # Clear staged flag BEFORE saving so changes are written to disk
+        # Clear staged flag and snapshot - changes are now permanent
         self._staged_session_active = False
         self._staged_stats_baseline = {}
+        self._session_snapshot = None  # Clear unified snapshot - changes are permanent
+
+        # Clear persisted snapshot from disk
+        if "_snapshot" in self.state:
+            del self.state["_snapshot"]
 
         # Reset session_blocks counter (session blocks are now permanent)
         chain = self.state.get("chain", {})
         chain["session_blocks"] = 0
 
-        # Save everything (including previously staged sections)
+        # Save to ensure everything is on disk
         self._save()
 
         logger.info(
             "staged_session_committed",
+            messages_sent=pending_sent,
+            messages_received=pending_received,
+            tool_calls=pending_tool_calls,
             qube_id=self.state.get("qube_id")
         )
 
     def discard_staged_session(self) -> bool:
         """
-        Discard staged session changes by reloading from disk.
+        Discard staged session by restoring from unified snapshot.
 
-        Called when session is discarded without anchoring. Reloads session-scoped
-        sections from disk, effectively discarding all in-memory changes.
+        Called when session is discarded without anchoring. Restores all
+        ROLLBACK_SECTIONS to their pre-session state from the snapshot.
 
         Returns:
             True if discard was performed, False if no staged session was active
@@ -2724,16 +2821,55 @@ class ChainState:
             logger.debug("discard_staged_session_not_active", qube_id=self.state.get("qube_id"))
             return False
 
-        # Clear staged flag
+        if not self._session_snapshot:
+            logger.warning("discard_staged_session_no_snapshot", qube_id=self.state.get("qube_id"))
+            self._staged_session_active = False
+            return False
+
+        restored_sections = []
+
+        # Restore all rollback sections from unified snapshot
+        for section in self.ROLLBACK_SECTIONS:
+            if section in self._session_snapshot:
+                self.state[section] = self._session_snapshot[section]
+                restored_sections.append(section)
+
+        # Restore model override
+        if "current_model_override" in self._session_snapshot:
+            self.state["current_model_override"] = self._session_snapshot["current_model_override"]
+
+        # Restore runtime model/provider
+        runtime = self.state.setdefault("runtime", {})
+        if self._session_snapshot.get("runtime_model"):
+            runtime["current_model"] = self._session_snapshot["runtime_model"]
+        if self._session_snapshot.get("runtime_provider"):
+            runtime["current_provider"] = self._session_snapshot["runtime_provider"]
+
+        # Restore rollback stats
+        if "stats" in self._session_snapshot:
+            stats = self.state.setdefault("stats", {})
+            for field, value in self._session_snapshot["stats"].items():
+                stats[field] = value
+
+        # Clear staged flag and snapshot
         self._staged_session_active = False
         self._staged_stats_baseline = {}
+        self._session_snapshot = None
 
-        # Reload from disk to get the pre-session state
-        # This will overwrite in-memory changes with disk values
-        self._load()
+        # Clear persisted snapshot from disk
+        if "_snapshot" in self.state:
+            del self.state["_snapshot"]
+
+        # Reset session_blocks counter (session blocks are discarded)
+        chain = self.state.get("chain", {})
+        chain["session_blocks"] = 0
+
+        # Save restored state to disk
+        self._save()
 
         logger.info(
             "staged_session_discarded",
+            restored_sections=restored_sections,
             qube_id=self.state.get("qube_id")
         )
 

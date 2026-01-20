@@ -60,6 +60,10 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
   const processingResponseRef = useRef<string | null>(null); // Track which response is being processed (guards against double execution)
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const emojiPickerRef = useRef<HTMLDivElement>(null);
+  const processedModelSwitches = useRef<Set<number>>(new Set()); // Track which switch_model actions we've already processed
+  // Track when we first saw each tool call (by timestamp) for minimum display time
+  const toolCallFirstSeen = useRef<Map<number, number>>(new Map()); // tool timestamp -> Date.now() when first seen
+  const MIN_TOOL_DISPLAY_MS = 1000; // Show tool indicator for at least 1 second
 
   // Visualizer state
   const [visualizerSettings, setVisualizerSettings] = useState({
@@ -638,6 +642,31 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
     setCurrentModel(null); // Reset so header uses new qube's ai_model
     setIsGeneratingTTS(false);
     setError(null);
+    processedModelSwitches.current.clear(); // Reset processed model switches for new qube
+    toolCallFirstSeen.current.clear(); // Reset tool call display tracking for new qube
+  }, [currentQubeId]);
+
+  // Listen for external model change events (e.g., from BlocksTab after session discard)
+  // This ensures ChatInterface's local model state stays in sync with backend
+  useEffect(() => {
+    const setupModelChangeListener = async () => {
+      const unlisten = await listen<{ qubeId: string; newModel: string }>(
+        'qube-model-changed',
+        (event) => {
+          const { qubeId, newModel } = event.payload;
+          // Only update if this event is for the currently selected qube
+          if (currentQubeId && qubeId === currentQubeId) {
+            setCurrentModel(newModel);
+          }
+        }
+      );
+      return unlisten;
+    };
+
+    const cleanupPromise = setupModelChangeListener();
+    return () => {
+      cleanupPromise.then((cleanup) => cleanup());
+    };
   }, [currentQubeId]);
 
   // Start/stop event watching when qube changes
@@ -998,7 +1027,6 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
     }
 
     const pollInterval = setInterval(async () => {
-      const now = Date.now();
       const recentActions: Array<{ action_type: string; timestamp: number }> = [];
 
       try {
@@ -1010,18 +1038,74 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
         });
 
         if (result?.session_blocks && Array.isArray(result.session_blocks)) {
-          const actionBlocks = result.session_blocks.filter((b: any) =>
-            b.block_type === 'ACTION' &&
-            b.content?.action_type &&
-            (now - b.timestamp) < 5000
+          // Sort blocks by timestamp (most recent first)
+          const sortedBlocks = [...result.session_blocks].sort(
+            (a: any, b: any) => b.timestamp - a.timestamp
           );
 
-          actionBlocks.forEach((b: any) => {
-            recentActions.push({
-              action_type: b.content.action_type,
-              timestamp: b.timestamp
+          // Find the timestamp of the most recent MESSAGE block (qube response)
+          const lastMessageBlock = sortedBlocks.find(
+            (b: any) => b.block_type === 'MESSAGE' && b.content?.message_type === 'qube_to_human'
+          );
+          const lastMessageTimestamp = lastMessageBlock?.timestamp || 0;
+
+          const now = Date.now();
+
+          // Get all ACTION blocks from current turn (after last message)
+          const currentTurnActions = result.session_blocks.filter((b: any) =>
+            b.block_type === 'ACTION' &&
+            b.content?.action_type &&
+            b.timestamp > lastMessageTimestamp
+          );
+
+          // Track first-seen time for new actions
+          currentTurnActions.forEach((b: any) => {
+            if (!toolCallFirstSeen.current.has(b.timestamp)) {
+              toolCallFirstSeen.current.set(b.timestamp, now);
+            }
+          });
+
+          // Show actions that are either:
+          // 1. Currently in_progress, OR
+          // 2. Recently completed but haven't been shown for MIN_TOOL_DISPLAY_MS yet
+          currentTurnActions.forEach((b: any) => {
+            const firstSeen = toolCallFirstSeen.current.get(b.timestamp) || now;
+            const displayedFor = now - firstSeen;
+
+            if (b.content?.status === 'in_progress' || displayedFor < MIN_TOOL_DISPLAY_MS) {
+              recentActions.push({
+                action_type: b.content.action_type,
+                timestamp: b.timestamp
+              });
+            }
+          });
+
+          // Check for completed switch_model actions to update model display immediately
+          const completedSwitchModels = currentTurnActions.filter((b: any) =>
+            b.content?.action_type === 'switch_model' &&
+            b.content?.status === 'completed' &&
+            b.content?.result?.success === true &&
+            b.content?.result?.new_model &&
+            !processedModelSwitches.current.has(b.timestamp)
+          );
+
+          completedSwitchModels.forEach((b: any) => {
+            processedModelSwitches.current.add(b.timestamp);
+            const newModel = b.content.result.new_model;
+            setCurrentModel(newModel);
+            // Emit event so other components (roster, etc.) can update
+            emit('qube-model-changed', {
+              qubeId: selectedQubes[0].qube_id,
+              newModel: newModel,
             });
           });
+
+          // Clean up old entries from toolCallFirstSeen (actions from previous turns)
+          for (const [ts] of toolCallFirstSeen.current) {
+            if (ts <= lastMessageTimestamp) {
+              toolCallFirstSeen.current.delete(ts);
+            }
+          }
         }
 
         if (recentActions.length > 0) {
@@ -1238,6 +1322,10 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
                 'write_file': 'writing file',
                 'run_command': 'running command',
                 'calculate': 'calculating',
+                // System tools
+                'get_system_state': 'checking system state',
+                'update_system_state': 'updating system state',
+                'switch_model': 'switching model',
                 // AI Reasoning Tools
                 'think_step_by_step': 'thinking step by step',
                 'self_critique': 'self-critiquing',

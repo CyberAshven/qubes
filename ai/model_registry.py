@@ -61,6 +61,14 @@ class ModelRegistry:
         "claude-3-7-sonnet-20250219": {"provider": "anthropic", "class": AnthropicModel, "description": "Claude 3.7 Sonnet, Feb 2025", "cost_per_1k_tokens": 0.006},
         "claude-3-5-haiku-20241022": {"provider": "anthropic", "class": AnthropicModel, "description": "Claude 3.5 Haiku, Oct 2024", "cost_per_1k_tokens": 0.001},
         "claude-3-haiku-20240307": {"provider": "anthropic", "class": AnthropicModel, "description": "Claude 3 Haiku, Mar 2024", "cost_per_1k_tokens": 0.0005},
+        # Anthropic aliases (short names for convenience)
+        "claude-opus-4-1": {"provider": "anthropic", "class": AnthropicModel, "alias_for": "claude-opus-4-1-20250805", "description": "Alias for Claude Opus 4.1", "cost_per_1k_tokens": 0.045},
+        "claude-opus-4": {"provider": "anthropic", "class": AnthropicModel, "alias_for": "claude-opus-4-20250514", "description": "Alias for Claude Opus 4", "cost_per_1k_tokens": 0.045},
+        "claude-sonnet-4-5": {"provider": "anthropic", "class": AnthropicModel, "alias_for": "claude-sonnet-4-5-20250929", "description": "Alias for Claude Sonnet 4.5", "cost_per_1k_tokens": 0.009},
+        "claude-sonnet-4": {"provider": "anthropic", "class": AnthropicModel, "alias_for": "claude-sonnet-4-20250514", "description": "Alias for Claude Sonnet 4", "cost_per_1k_tokens": 0.009},
+        "claude-3-7-sonnet": {"provider": "anthropic", "class": AnthropicModel, "alias_for": "claude-3-7-sonnet-20250219", "description": "Alias for Claude 3.7 Sonnet", "cost_per_1k_tokens": 0.006},
+        "claude-3-5-haiku": {"provider": "anthropic", "class": AnthropicModel, "alias_for": "claude-3-5-haiku-20241022", "description": "Alias for Claude 3.5 Haiku", "cost_per_1k_tokens": 0.001},
+        "claude-3-haiku": {"provider": "anthropic", "class": AnthropicModel, "alias_for": "claude-3-haiku-20240307", "description": "Alias for Claude 3 Haiku", "cost_per_1k_tokens": 0.0005},
 
         # Google - Gemini 3 and 2.5 generation (2025-2026)
         "gemini-3-pro-preview": {"provider": "google", "class": GoogleModel, "description": "Gemini 3 Pro Preview, multimodal", "cost_per_1k_tokens": 0.004},
@@ -72,6 +80,13 @@ class ModelRegistry:
         "gemini-2.5-flash-lite": {"provider": "google", "class": GoogleModel, "description": "Gemini 2.5 Flash Lite", "cost_per_1k_tokens": 0.0002},
         "gemini-2.0-flash": {"provider": "google", "class": GoogleModel, "description": "Gemini 2.0 Flash, Jan 2025", "cost_per_1k_tokens": 0.0003},
         "gemini-1.5-pro": {"provider": "google", "class": GoogleModel, "description": "Gemini 1.5 Pro", "cost_per_1k_tokens": 0.002},
+        # Google/Gemini aliases (short names for convenience)
+        "gemini-3-pro": {"provider": "google", "class": GoogleModel, "alias_for": "gemini-3-pro-preview", "description": "Alias for Gemini 3 Pro Preview", "cost_per_1k_tokens": 0.004},
+        "gemini-3-flash": {"provider": "google", "class": GoogleModel, "alias_for": "gemini-3-flash-preview", "description": "Alias for Gemini 3 Flash Preview", "cost_per_1k_tokens": 0.001},
+        "gemini-3": {"provider": "google", "class": GoogleModel, "alias_for": "gemini-3-pro-preview", "description": "Alias for Gemini 3 Pro Preview", "cost_per_1k_tokens": 0.004},
+        "gemini-2.5": {"provider": "google", "class": GoogleModel, "alias_for": "gemini-2.5-pro", "description": "Alias for Gemini 2.5 Pro", "cost_per_1k_tokens": 0.003},
+        "gemini-2": {"provider": "google", "class": GoogleModel, "alias_for": "gemini-2.0-flash", "description": "Alias for Gemini 2.0 Flash", "cost_per_1k_tokens": 0.0003},
+        "gemini": {"provider": "google", "class": GoogleModel, "alias_for": "gemini-2.5-pro", "description": "Alias for Gemini 2.5 Pro (default)", "cost_per_1k_tokens": 0.003},
 
         # Perplexity - Sonar generation (2025)
         "sonar-pro": {"provider": "perplexity", "class": PerplexityModel, "description": "Sonar Pro, web search", "cost_per_1k_tokens": 0.003},
@@ -163,14 +178,25 @@ class ModelRegistry:
         """
         model_info = cls.MODELS.get(model_name)
         if not model_info:
-            available_models = list(cls.MODELS.keys())
-            raise AIError(
-                f"Unknown model: {model_name}",
-                context={
-                    "model": model_name,
-                    "available_models": available_models[:10]  # Show first 10
-                }
-            )
+            # Try fuzzy matching to auto-fix slight variations in model name
+            fuzzy_match = cls._find_fuzzy_match(model_name)
+            if fuzzy_match:
+                logger.info(
+                    "model_name_auto_corrected",
+                    requested=model_name,
+                    corrected_to=fuzzy_match
+                )
+                model_name = fuzzy_match
+                model_info = cls.MODELS.get(model_name)
+            else:
+                available_models = list(cls.MODELS.keys())
+                raise AIError(
+                    f"Unknown model: {model_name}",
+                    context={
+                        "model": model_name,
+                        "available_models": available_models[:10]  # Show first 10
+                    }
+                )
 
         # Handle model aliases (legacy model names mapped to new ones)
         actual_model_name = model_info.get("alias_for", model_name)
@@ -212,6 +238,110 @@ class ModelRegistry:
                 context={"model": model_name, "provider": provider},
                 cause=e
             )
+
+    @classmethod
+    def _find_fuzzy_match(cls, model_name: str) -> Optional[str]:
+        """
+        Find a fuzzy match for a model name that doesn't exactly match.
+
+        Tries several strategies:
+        1. Case-insensitive match
+        2. Remove/add common suffixes (-preview, -pro, etc.)
+        3. Version number normalization (2.5 vs 25, etc.)
+        4. Levenshtein distance for close matches
+
+        Args:
+            model_name: The model name to find a match for
+
+        Returns:
+            The matching model name, or None if no good match found
+        """
+        model_lower = model_name.lower().strip()
+        all_models = list(cls.MODELS.keys())
+
+        # Strategy 1: Case-insensitive exact match
+        for m in all_models:
+            if m.lower() == model_lower:
+                return m
+
+        # Strategy 2: Normalize and try common variations
+        # Remove/add common suffixes
+        suffixes_to_try = ['-preview', '-pro', '-flash', '-lite', '']
+        base_name = model_lower
+        for suffix in ['-preview', '-pro-preview', '-flash-preview']:
+            if base_name.endswith(suffix):
+                base_name = base_name[:-len(suffix)]
+                break
+
+        # Try adding common suffixes to base name
+        for suffix in suffixes_to_try:
+            candidate = base_name + suffix
+            for m in all_models:
+                if m.lower() == candidate:
+                    return m
+
+        # Strategy 3: Version normalization (gemini-25-pro -> gemini-2.5-pro)
+        import re
+        # Convert "25" to "2.5", "30" to "3.0", etc.
+        normalized = re.sub(r'(\d)(\d)', r'\1.\2', model_lower)
+        for m in all_models:
+            if m.lower() == normalized:
+                return m
+
+        # Also try without dots (gemini-2.5-pro -> gemini-25-pro pattern)
+        normalized_no_dots = model_lower.replace('.', '')
+        for m in all_models:
+            if m.lower().replace('.', '') == normalized_no_dots:
+                return m
+
+        # Strategy 4: Prefix matching (if input is a prefix of a model name)
+        matches = [m for m in all_models if m.lower().startswith(model_lower)]
+        if len(matches) == 1:
+            return matches[0]
+
+        # Strategy 5: Contains matching (for partial names)
+        # Only if the input is reasonably long to avoid false positives
+        if len(model_lower) >= 6:
+            matches = [m for m in all_models if model_lower in m.lower()]
+            if len(matches) == 1:
+                return matches[0]
+
+        # Strategy 6: Simple Levenshtein distance for very close matches
+        def levenshtein(s1: str, s2: str) -> int:
+            if len(s1) < len(s2):
+                return levenshtein(s2, s1)
+            if len(s2) == 0:
+                return len(s1)
+            prev_row = range(len(s2) + 1)
+            for i, c1 in enumerate(s1):
+                curr_row = [i + 1]
+                for j, c2 in enumerate(s2):
+                    insertions = prev_row[j + 1] + 1
+                    deletions = curr_row[j] + 1
+                    substitutions = prev_row[j] + (c1 != c2)
+                    curr_row.append(min(insertions, deletions, substitutions))
+                prev_row = curr_row
+            return prev_row[-1]
+
+        # Find closest match with edit distance <= 3
+        best_match = None
+        best_distance = 4  # Max distance to consider
+        for m in all_models:
+            dist = levenshtein(model_lower, m.lower())
+            if dist < best_distance:
+                best_distance = dist
+                best_match = m
+
+        if best_match:
+            logger.debug(
+                "fuzzy_match_found",
+                requested=model_name,
+                match=best_match,
+                edit_distance=best_distance
+            )
+            return best_match
+
+        return None
 
     @classmethod
     def list_models(cls, provider: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
@@ -274,9 +404,12 @@ class ModelRegistry:
             "ollama": "llama3.3:70b"
         }
 
-        # Group models by provider
+        # Group models by provider (skip aliases - they're for programmatic use)
         models_by_provider: Dict[str, list] = {}
         for model_name, info in cls.MODELS.items():
+            # Skip alias entries - these are for Qubes to use abbreviated names
+            if "alias_for" in info:
+                continue
             provider = info["provider"]
             if provider not in models_by_provider:
                 models_by_provider[provider] = []
@@ -372,7 +505,7 @@ class ModelRegistry:
             "deepseek-v3.2": "DeepSeek V3.2",
             "google-gemma-3-27b-it": "Gemma 3 27B",
             "hermes-3-llama-3.1-405b": "Hermes 3 405B",
-            "dolphin-2.9.3-mistral-7b": "Venice Uncensored",
+            # "dolphin-2.9.3-mistral-7b" removed - legacy alias, use venice-uncensored
             # Ollama
             "llama3.3:70b": "Llama 3.3 70B",
             "llama3.2": "Llama 3.2",
