@@ -1031,8 +1031,28 @@ class GUIBridge:
             qube = self.orchestrator.qubes[qube_id]
 
             # PRIORITY 1: Check Short-term Memory (session blocks) for MESSAGE blocks
+            # First try in-memory session blocks
+            session_blocks = []
             if qube.current_session and qube.current_session.session_blocks:
-                for block in reversed(qube.current_session.session_blocks):
+                session_blocks = qube.current_session.session_blocks
+            else:
+                # Load session blocks from disk if not in memory
+                from pathlib import Path
+                from core.block import Block
+                session_dir = Path(qube.data_dir) / "blocks" / "session"
+                if session_dir.exists():
+                    block_files = sorted(session_dir.glob("*.json"))
+                    for block_file in block_files:
+                        try:
+                            with open(block_file, 'r') as f:
+                                block_data = json.load(f)
+                                block = Block.from_dict(block_data)
+                                session_blocks.append(block)
+                        except Exception:
+                            pass
+
+            if session_blocks:
+                for block in reversed(session_blocks):
                     block_type = block.block_type if isinstance(block.block_type, str) else block.block_type.value
                     if block_type == "MESSAGE":
                         content = block.content if isinstance(block.content, dict) else {}
