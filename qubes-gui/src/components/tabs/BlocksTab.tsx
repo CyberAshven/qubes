@@ -274,6 +274,11 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
   const [shortTermExpanded, setShortTermExpanded] = useState(false);
   const [longTermExpanded, setLongTermExpanded] = useState(false);
 
+  // Sub-section collapse states (Current Session expanded by default, others collapsed)
+  const [currentSessionExpanded, setCurrentSessionExpanded] = useState(true);
+  const [recentHistoryExpanded, setRecentHistoryExpanded] = useState(false);
+  const [recalledMemoriesExpanded, setRecalledMemoriesExpanded] = useState(true);
+
   // Sort order state (true = newest first, false = oldest first)
   const [shortTermNewestFirst, setShortTermNewestFirst] = useState(true);
   const [longTermNewestFirst, setLongTermNewestFirst] = useState(true);
@@ -965,21 +970,28 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
             {/* Session Blocks (Current Session) - shown first as most relevant */}
             {sessionBlocks.length > 0 ? (
               <>
-                <div className={`text-xs ${SECTION_COLORS.session.text} mb-2 flex items-center gap-2`}>
-                  <span>⚡</span> Current Session
-                  <span className={`${SECTION_COLORS.session.bg} ${SECTION_COLORS.session.text} px-1.5 py-0.5 rounded`}>
+                <button
+                  onClick={() => setCurrentSessionExpanded(!currentSessionExpanded)}
+                  className={`w-full text-left text-sm font-semibold ${SECTION_COLORS.session.text} mb-2 flex items-center gap-2 p-2 rounded hover:bg-glass-bg/30 transition-colors`}
+                >
+                  <span className="text-base">{currentSessionExpanded ? '▼' : '▶'}</span>
+                  <span className="text-lg">⚡</span>
+                  <span>Current Session</span>
+                  <span className={`${SECTION_COLORS.session.bg} ${SECTION_COLORS.session.text} px-2 py-0.5 rounded text-xs font-normal`}>
                     {sessionBlocks.length}
                   </span>
-                </div>
+                </button>
 
-                {/* Multi-select hint */}
-                {sessionBlocks.length > 1 && (
-                  <div className="text-xs text-text-tertiary mb-2 italic">
-                    Tip: Ctrl+click to select multiple, Shift+click for range
-                  </div>
-                )}
+                {currentSessionExpanded && (
+                  <>
+                    {/* Multi-select hint */}
+                    {sessionBlocks.length > 1 && (
+                      <div className="text-xs text-text-tertiary mb-2 italic ml-2">
+                        Tip: Ctrl+click to select multiple, Shift+click for range
+                      </div>
+                    )}
 
-                <div className="space-y-2">
+                    <div className="space-y-2">
                   {sortedSessionBlocks.slice(0, sessionBlocksToShow).map((block) => {
                     const isMultiSelected = selectedSessionBlocks.has(block.block_number);
                     const isPrimarySelected = selectedBlock?.block_number === block.block_number && selectedSection === 'session';
@@ -1017,15 +1029,17 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                   })}
                 </div>
 
-                {sessionBlocks.length > sessionBlocksToShow && (
-                  <div className="mt-3 text-center">
-                    <button
-                      onClick={() => setSessionBlocksToShow(prev => Math.min(prev + 10, sessionBlocks.length))}
-                      className="text-sm text-text-secondary hover:text-text-primary transition-colors px-4 py-2 rounded bg-glass-bg/30 hover:bg-glass-bg/50"
-                    >
-                      Show More ({sessionBlocks.length - sessionBlocksToShow} remaining)
-                    </button>
-                  </div>
+                    {sessionBlocks.length > sessionBlocksToShow && (
+                      <div className="mt-3 text-center">
+                        <button
+                          onClick={() => setSessionBlocksToShow(prev => Math.min(prev + 10, sessionBlocks.length))}
+                          className="text-sm text-text-secondary hover:text-text-primary transition-colors px-4 py-2 rounded bg-glass-bg/30 hover:bg-glass-bg/50"
+                        >
+                          Show More ({sessionBlocks.length - sessionBlocksToShow} remaining)
+                        </button>
+                      </div>
+                    )}
+                  </>
                 )}
               </>
             ) : (
@@ -1037,13 +1051,19 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
             {/* Recent History from Context */}
             {contextPreview?.short_term_memory?.recent_permanent?.blocks?.length > 0 && (
               <div className="mb-3 mt-3">
-                <div className={`text-xs ${SECTION_COLORS.recent.text} mb-2 flex items-center gap-2`}>
-                  <span>📚</span> Recent History
-                  <span className={`${SECTION_COLORS.recent.bg} ${SECTION_COLORS.recent.text} px-1.5 py-0.5 rounded`}>
+                <button
+                  onClick={() => setRecentHistoryExpanded(!recentHistoryExpanded)}
+                  className={`w-full text-left text-sm font-semibold ${SECTION_COLORS.recent.text} mb-2 flex items-center gap-2 p-2 rounded hover:bg-glass-bg/30 transition-colors`}
+                >
+                  <span className="text-base">{recentHistoryExpanded ? '▼' : '▶'}</span>
+                  <span className="text-lg">📚</span>
+                  <span>Recent History</span>
+                  <span className={`${SECTION_COLORS.recent.bg} ${SECTION_COLORS.recent.text} px-2 py-0.5 rounded text-xs font-normal`}>
                     {contextPreview.short_term_memory.recent_permanent.count}
                   </span>
-                </div>
-                <div className="space-y-2">
+                </button>
+                {recentHistoryExpanded && (
+                  <div className="space-y-2">
                   {contextPreview.short_term_memory.recent_permanent.blocks.map((block: any, idx: number) => (
                     <GlassCard
                       key={`recent-${idx}`}
@@ -1073,20 +1093,27 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                       </div>
                     </GlassCard>
                   ))}
-                </div>
+                  </div>
+                )}
               </div>
             )}
 
             {/* Recalled Memories from Context */}
             {contextPreview?.short_term_memory?.semantic_recalls?.blocks?.length > 0 && (
               <div className="mb-3">
-                <div className={`text-xs ${SECTION_COLORS.recalled.text} mb-2 flex items-center gap-2`}>
-                  <span>🔮</span> Recalled Memories
-                  <span className={`${SECTION_COLORS.recalled.bg} ${SECTION_COLORS.recalled.text} px-1.5 py-0.5 rounded`}>
+                <button
+                  onClick={() => setRecalledMemoriesExpanded(!recalledMemoriesExpanded)}
+                  className={`w-full text-left text-sm font-semibold ${SECTION_COLORS.recalled.text} mb-2 flex items-center gap-2 p-2 rounded hover:bg-glass-bg/30 transition-colors`}
+                >
+                  <span className="text-base">{recalledMemoriesExpanded ? '▼' : '▶'}</span>
+                  <span className="text-lg">🔮</span>
+                  <span>Recalled Memories</span>
+                  <span className={`${SECTION_COLORS.recalled.bg} ${SECTION_COLORS.recalled.text} px-2 py-0.5 rounded text-xs font-normal`}>
                     {contextPreview.short_term_memory.semantic_recalls.count}
                   </span>
-                </div>
-                <div className="space-y-2">
+                </button>
+                {recalledMemoriesExpanded && (
+                  <div className="space-y-2">
                   {contextPreview.short_term_memory.semantic_recalls.blocks.map((block: any, idx: number) => {
                     // Handle relevance score - cap at 100%, handle values > 1 (already percentages)
                     const rawScore = block.relevance_score || 0;
@@ -1128,9 +1155,8 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                       </GlassCard>
                     );
                   })}
-                </div>
-              </div>
-            )}
+                  </div>
+                )}
               </div>
             )}
           </GlassCard>
