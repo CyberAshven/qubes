@@ -1811,6 +1811,12 @@ Return ONLY valid JSON with this exact structure:
             logger.warning("no_reasoner_for_relationship_evaluation")
             return {}
 
+        # Get evaluation model (must pass model_name to avoid triggering revolver mode)
+        evaluation_model = getattr(self.qube.genesis_block, 'evaluation_model', None)
+        if not evaluation_model:
+            evaluation_model = self.qube.current_ai_model
+            logger.debug("relationship_eval_using_current_model", model=evaluation_model)
+
         # Build conversation context
         conversation_text = self._build_conversation_context_for_eval(blocks)
 
@@ -1906,9 +1912,11 @@ IMPORTANT: Return ONLY valid JSON, no other text."""
 
         try:
             # Call AI with temperature 0.3 for consistent evaluation
-            logger.debug("calling_ai_for_evaluation", prompt_length=len(prompt), participants=list(participants))
+            # IMPORTANT: Pass model_name to mark as internal call and avoid triggering revolver mode
+            logger.debug("calling_ai_for_evaluation", prompt_length=len(prompt), participants=list(participants), model=evaluation_model)
             response = await self.qube.reasoner.process_input(
                 input_message=prompt,
+                model_name=evaluation_model,  # Prevents revolver mode from creating switch block
                 temperature=0.3
             )
 
