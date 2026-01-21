@@ -211,8 +211,9 @@ async def switch_model(
         )
 
         # Track model switch in stats (only if model actually changed)
+        # Switches via switch_model tool are "autonomous" (AI-initiated)
         if previous_model != model_name:
-            qube.chain_state.increment_model_switch()
+            qube.chain_state.increment_model_switch("autonomous")
 
         result = {
             "success": True,

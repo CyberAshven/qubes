@@ -1798,15 +1798,15 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                   {/* Overview Grid */}
                   <div className="grid grid-cols-2 gap-3">
                     <div className="p-3 bg-glass-bg/30 rounded-lg">
-                      <span className="text-text-tertiary text-xs">Model Switches</span>
-                      <div className="text-2xl font-display text-accent-primary mt-1">
-                        {selectedContextSection.data.total_model_switches || 0}
-                      </div>
-                    </div>
-                    <div className="p-3 bg-glass-bg/30 rounded-lg">
                       <span className="text-text-tertiary text-xs">Total Tokens</span>
                       <div className="text-2xl font-display text-accent-primary mt-1">
                         {(selectedContextSection.data.total_tokens || 0).toLocaleString()}
+                      </div>
+                    </div>
+                    <div className="p-3 bg-glass-bg/30 rounded-lg">
+                      <span className="text-text-tertiary text-xs">Total Cost</span>
+                      <div className="text-2xl font-display text-emerald-400 mt-1">
+                        ${(selectedContextSection.data.total_cost || 0).toFixed(4)}
                       </div>
                     </div>
                     <div className="p-3 bg-glass-bg/30 rounded-lg">
@@ -1816,12 +1816,36 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                       </div>
                     </div>
                     <div className="p-3 bg-glass-bg/30 rounded-lg">
-                      <span className="text-text-tertiary text-xs">Total Cost</span>
-                      <div className="text-2xl font-display text-emerald-400 mt-1">
-                        ${(selectedContextSection.data.total_cost || 0).toFixed(4)}
+                      <span className="text-text-tertiary text-xs">Model Switches</span>
+                      <div className="text-2xl font-display text-accent-primary mt-1">
+                        {(() => {
+                          const switches = selectedContextSection.data.model_switches || {};
+                          return (switches.revolver || 0) + (switches.autonomous || 0) + (switches.manual || 0);
+                        })()}
                       </div>
                     </div>
                   </div>
+
+                  {/* Model Switches Breakdown */}
+                  {selectedContextSection.data.model_switches && (
+                    <div className="p-3 bg-glass-bg/20 rounded-lg">
+                      <div className="text-text-tertiary text-xs uppercase tracking-wider mb-3">Model Switches</div>
+                      <div className="space-y-2">
+                        <div className="flex justify-between text-sm">
+                          <span className="text-text-secondary">🔄 Revolver</span>
+                          <span className="text-text-primary font-mono">{selectedContextSection.data.model_switches.revolver || 0}</span>
+                        </div>
+                        <div className="flex justify-between text-sm">
+                          <span className="text-text-secondary">🤖 Autonomous</span>
+                          <span className="text-text-primary font-mono">{selectedContextSection.data.model_switches.autonomous || 0}</span>
+                        </div>
+                        <div className="flex justify-between text-sm">
+                          <span className="text-text-secondary">👆 Manual</span>
+                          <span className="text-text-primary font-mono">{selectedContextSection.data.model_switches.manual || 0}</span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
                   {/* Tokens by Model */}
                   {selectedContextSection.data.tokens_by_model && Object.keys(selectedContextSection.data.tokens_by_model).length > 0 && (

@@ -144,7 +144,11 @@ def create_default_chain_state(genesis_block: Dict[str, Any], qube_id: str = Non
             "tokens_by_model": {},
             "api_calls_by_tool": {},
             "total_tool_calls": 0,
-            "total_model_switches": 0,
+            "model_switches": {
+                "revolver": 0,
+                "autonomous": 0,
+                "manual": 0,
+            },
             "total_anchors": 0,
             "created_at": now,
             "first_interaction": None,
@@ -419,7 +423,11 @@ class ChainState:
                 "tokens_by_model": {},
                 "api_calls_by_tool": {},
                 "total_tool_calls": 0,
-                "total_model_switches": 0,
+                "model_switches": {
+                    "revolver": 0,
+                    "autonomous": 0,
+                    "manual": 0,
+                },
                 "total_anchors": 0,
                 "created_at": now,
                 "first_interaction": None,
@@ -645,7 +653,11 @@ class ChainState:
                 "tokens_by_model": old.get("tokens_by_model", {}),
                 "api_calls_by_tool": old.get("api_calls_by_tool", {}),
                 "total_tool_calls": sum(old.get("api_calls_by_tool", {}).values()) if old.get("api_calls_by_tool") else 0,
-                "total_model_switches": 0,
+                "model_switches": {
+                    "revolver": 0,
+                    "autonomous": 0,
+                    "manual": 0,
+                },
                 "total_anchors": 0,
                 "created_at": old.get("last_updated", now),
                 "first_interaction": None,
@@ -1241,10 +1253,20 @@ class ChainState:
         stats["total_anchors"] = stats.get("total_anchors", 0) + 1
         self._save()
 
-    def increment_model_switch(self) -> None:
-        """Track model switch operations (revolver, autonomous, or manual)."""
+    def increment_model_switch(self, switch_type: str = "manual") -> None:
+        """Track model switch operations by category.
+
+        Args:
+            switch_type: One of "revolver", "autonomous", or "manual"
+        """
         stats = self.state.setdefault("stats", {})
-        stats["total_model_switches"] = stats.get("total_model_switches", 0) + 1
+        model_switches = stats.setdefault("model_switches", {
+            "revolver": 0,
+            "autonomous": 0,
+            "manual": 0,
+        })
+        if switch_type in model_switches:
+            model_switches[switch_type] = model_switches.get(switch_type, 0) + 1
         self._save()
 
     def increment_message_sent(self) -> None:

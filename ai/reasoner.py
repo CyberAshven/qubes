@@ -307,7 +307,7 @@ class QubeReasoner:
                         self.qube.current_session.create_block(revolver_switch_block)
 
                         # Track model switch in stats
-                        self.qube.chain_state.increment_model_switch()
+                        self.qube.chain_state.increment_model_switch("revolver")
 
                         # Brief delay so frontend can show "switching model" indicator
                         await asyncio.sleep(1)
