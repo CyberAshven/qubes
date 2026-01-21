@@ -1237,6 +1237,7 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
   const [flipState, setFlipState] = useState(0); // 0 = front, 1 = blockchain, 2 = visualizer
   const [rotation, setRotation] = useState(0); // Track cumulative rotation
   const [isEditingModel, setIsEditingModel] = useState(false);
+  const [providerSelectedInEdit, setProviderSelectedInEdit] = useState(false); // Track if provider was selected during edit
 
   // Visualizer settings state
   const [visualizerSettings, setVisualizerSettings] = useState({
@@ -1886,6 +1887,7 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
 
   const handleProviderChange = (newProvider: string) => {
     setSelectedProvider(newProvider);
+    setProviderSelectedInEdit(true); // Collapse provider dropdown, expand model dropdown
     // Auto-select default model for new provider
     const defaultModel = getDefaultModel(newProvider);
     if (defaultModel) {
@@ -2135,8 +2137,8 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
                 <select
                   value={selectedProvider}
                   onChange={(e) => handleProviderChange(e.target.value)}
-                  className="flex-1 px-2 py-1 bg-bg-tertiary border border-glass-border rounded text-xs text-text-primary focus:outline-none focus:ring-1 focus:ring-accent-primary/50 scrollable-select"
-                  size={Math.min(6, availableProviders.length)}
+                  className={`flex-1 px-2 py-1 bg-bg-tertiary border border-glass-border rounded text-xs text-text-primary focus:outline-none focus:ring-1 focus:ring-accent-primary/50 ${!providerSelectedInEdit ? 'scrollable-select' : ''}`}
+                  size={!providerSelectedInEdit ? Math.min(6, availableProviders.length) : 1}
                 >
                   {availableProviders.map((option) => (
                     <option key={option.value} value={option.value}>
@@ -2149,7 +2151,8 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
                 <select
                   value={selectedModel}
                   onChange={(e) => setSelectedModel(e.target.value)}
-                  className="flex-1 px-2 py-1 bg-bg-tertiary border border-glass-border rounded text-xs text-text-primary focus:outline-none focus:ring-1 focus:ring-accent-primary/50"
+                  className={`flex-1 px-2 py-1 bg-bg-tertiary border border-glass-border rounded text-xs text-text-primary focus:outline-none focus:ring-1 focus:ring-accent-primary/50 ${providerSelectedInEdit ? 'scrollable-select' : ''}`}
+                  size={providerSelectedInEdit ? Math.min(8, getModelsForProvider(selectedProvider).length) : 1}
                 >
                   {getModelsForProvider(selectedProvider).map((option) => (
                     <option key={option.value} value={option.value}>
@@ -2168,6 +2171,7 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
                   onClick={() => {
                     setSelectedModel(qube.ai_model);
                     setSelectedProvider(qube.ai_provider);
+                    setProviderSelectedInEdit(false);
                     setIsEditingModel(false);
                   }}
                   className="px-2 py-1 bg-accent-danger/20 text-accent-danger rounded hover:bg-accent-danger/30 transition-all"
@@ -2181,7 +2185,7 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
             <div className="flex gap-1 items-center">
               <span className="text-text-primary font-medium">{formatModelName(qube.ai_model)}</span>
               <button
-                onClick={(e) => { e.stopPropagation(); setIsEditingModel(true); }}
+                onClick={(e) => { e.stopPropagation(); setProviderSelectedInEdit(false); setIsEditingModel(true); }}
                 className="px-1 text-accent-primary hover:text-accent-primary/70 transition-colors"
                 title="Edit model"
               >
