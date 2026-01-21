@@ -34,6 +34,7 @@ import aiohttp
 import json
 from typing import List, Optional, Tuple, Dict, Any, Literal
 from dataclasses import dataclass, field
+import time as time_module
 
 from crypto.bch_script import (
     create_wallet_address,
@@ -110,6 +111,17 @@ class ProposedTransaction:
             "created_at": self.created_at,
             "memo": self.memo,
         }
+
+
+@dataclass
+class BroadcastAttempt:
+    """Tracks a broadcast attempt for UTXO cooldown"""
+    tx_hex: str
+    utxo_keys: List[str]  # List of "txid:vout" strings
+    timestamp: float
+    success: bool = False
+    txid: Optional[str] = None
+    error: Optional[str] = None
 
 
 @dataclass
@@ -206,6 +218,10 @@ class QubeWallet:
         self._cached_balance: Optional[int] = None
         self._balance_last_updated: float = 0
         self._balance_cache_ttl: int = 300  # 5 minutes default TTL
+
+        # Broadcast attempt tracking for UTXO cooldown
+        self._broadcast_attempts: List[BroadcastAttempt] = []
+        self._utxo_cooldown_seconds: int = 600  # 10 minute cooldown for failed broadcasts
 
         logger.debug(
             "qube_wallet_initialized",
@@ -894,6 +910,346 @@ class QubeWallet:
         return None
 
     # =========================================================================
+    # UTXO SAFEGUARDS - Prevent mempool conflicts
+    # =========================================================================
+
+    async def check_utxo_mempool_status(self) -> Dict[str, Any]:
+        """
+        Check if any UTXOs are currently being spent by unconfirmed transactions.
+
+        This helps detect if a previous broadcast partially succeeded (tx is in
+        some nodes' mempools but not confirmed).
+
+        Returns:
+            Dict with:
+            - has_pending: bool - True if any UTXOs have pending spends
+            - pending_txids: List of transaction IDs spending our UTXOs
+            - safe_utxos: List of UTXOs not involved in pending transactions
+            - conflicted_utxos: List of UTXOs being spent by pending txs
+        """
+        try:
+            addr = self._p2sh_address.split(":")[-1] if ":" in self._p2sh_address else self._p2sh_address
+
+            async with aiohttp.ClientSession() as session:
+                # Get unconfirmed transactions for this address
+                url = f"{FULCRUM_API}/address/unconfirmed/{addr}"
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    if resp.status != 200:
+                        # Fallback: assume all UTXOs are safe
+                        logger.debug("mempool_check_failed_status", status=resp.status)
+                        return {"has_pending": False, "pending_txids": [], "safe_utxos": [], "conflicted_utxos": []}
+
+                    data = await resp.json()
+
+                    # Get current UTXOs
+                    utxos = await self.get_utxos()
+                    utxo_keys = {f"{u.txid}:{u.vout}" for u in utxos}
+
+                    # Check unconfirmed transactions for inputs spending our UTXOs
+                    pending_txids = []
+                    conflicted_keys = set()
+
+                    unconfirmed_txs = data if isinstance(data, list) else data.get("txs", [])
+
+                    for tx in unconfirmed_txs:
+                        if isinstance(tx, dict):
+                            txid = tx.get("txid", "")
+                            # Check inputs
+                            for vin in tx.get("vin", []):
+                                input_key = f"{vin.get('txid')}:{vin.get('vout')}"
+                                if input_key in utxo_keys:
+                                    pending_txids.append(txid)
+                                    conflicted_keys.add(input_key)
+
+                    # Separate safe and conflicted UTXOs
+                    safe_utxos = [u for u in utxos if f"{u.txid}:{u.vout}" not in conflicted_keys]
+                    conflicted_utxos = [u for u in utxos if f"{u.txid}:{u.vout}" in conflicted_keys]
+
+                    result = {
+                        "has_pending": len(pending_txids) > 0,
+                        "pending_txids": list(set(pending_txids)),
+                        "safe_utxos": safe_utxos,
+                        "conflicted_utxos": conflicted_utxos
+                    }
+
+                    if result["has_pending"]:
+                        logger.warning(
+                            "utxos_have_pending_spends",
+                            pending_count=len(pending_txids),
+                            conflicted_utxo_count=len(conflicted_utxos)
+                        )
+
+                    return result
+
+        except Exception as e:
+            logger.debug("mempool_check_exception", error=str(e))
+            # On error, return empty result (don't block transactions)
+            return {"has_pending": False, "pending_txids": [], "safe_utxos": [], "conflicted_utxos": []}
+
+    def get_utxos_on_cooldown(self) -> set:
+        """
+        Get UTXOs that are on cooldown due to recent failed broadcasts.
+
+        Returns:
+            Set of UTXO keys ("txid:vout") that should be avoided
+        """
+        now = time_module.time()
+        cooldown_keys = set()
+
+        # Clean up old attempts and collect cooled-down UTXOs
+        active_attempts = []
+        for attempt in self._broadcast_attempts:
+            age = now - attempt.timestamp
+            if age < self._utxo_cooldown_seconds:
+                # Still within cooldown period
+                if not attempt.success:
+                    # Failed broadcast - these UTXOs are on cooldown
+                    cooldown_keys.update(attempt.utxo_keys)
+                active_attempts.append(attempt)
+
+        # Update the list (remove expired attempts)
+        self._broadcast_attempts = active_attempts
+
+        if cooldown_keys:
+            logger.debug("utxos_on_cooldown", count=len(cooldown_keys), keys=list(cooldown_keys)[:3])
+
+        return cooldown_keys
+
+    def filter_safe_utxos(self, utxos: List[UTXO], cooldown_keys: set = None) -> List[UTXO]:
+        """
+        Filter UTXOs to exclude those on cooldown.
+
+        Args:
+            utxos: List of available UTXOs
+            cooldown_keys: Set of UTXO keys to exclude (if None, fetches from tracking)
+
+        Returns:
+            List of UTXOs safe to use
+        """
+        if cooldown_keys is None:
+            cooldown_keys = self.get_utxos_on_cooldown()
+
+        if not cooldown_keys:
+            return utxos
+
+        safe = [u for u in utxos if f"{u.txid}:{u.vout}" not in cooldown_keys]
+
+        if len(safe) < len(utxos):
+            logger.info(
+                "utxos_filtered_by_cooldown",
+                original=len(utxos),
+                filtered=len(safe),
+                excluded=len(utxos) - len(safe)
+            )
+
+        return safe
+
+    def record_broadcast_attempt(
+        self,
+        tx_hex: str,
+        utxos: List[UTXO],
+        success: bool,
+        txid: Optional[str] = None,
+        error: Optional[str] = None
+    ) -> None:
+        """
+        Record a broadcast attempt for UTXO cooldown tracking.
+
+        Args:
+            tx_hex: The transaction hex that was broadcast
+            utxos: UTXOs used in the transaction
+            success: Whether the broadcast succeeded
+            txid: Transaction ID if successful
+            error: Error message if failed
+        """
+        utxo_keys = [f"{u.txid}:{u.vout}" for u in utxos]
+
+        attempt = BroadcastAttempt(
+            tx_hex=tx_hex,
+            utxo_keys=utxo_keys,
+            timestamp=time_module.time(),
+            success=success,
+            txid=txid,
+            error=error
+        )
+
+        self._broadcast_attempts.append(attempt)
+
+        logger.info(
+            "broadcast_attempt_recorded",
+            success=success,
+            utxo_count=len(utxo_keys),
+            txid=txid[:16] if txid else None,
+            error=error[:50] if error else None
+        )
+
+    async def check_tx_in_mempool(self, txid: str) -> Dict[str, Any]:
+        """
+        Check if a transaction exists in the mempool across multiple nodes.
+
+        Args:
+            txid: Transaction ID to check
+
+        Returns:
+            Dict with:
+            - exists: bool - True if found in any mempool
+            - confirmed: bool - True if already confirmed
+            - nodes_checked: int - Number of nodes queried
+            - found_in: List of endpoint names where found
+        """
+        results = {
+            "exists": False,
+            "confirmed": False,
+            "nodes_checked": 0,
+            "found_in": []
+        }
+
+        endpoints = [
+            ("blockchair", f"https://api.blockchair.com/bitcoin-cash/dashboards/transaction/{txid}"),
+            ("fulcrum", f"https://rest.bch.actorforth.org/v2/transaction/details/{txid}"),
+        ]
+
+        async with aiohttp.ClientSession() as session:
+            for name, url in endpoints:
+                try:
+                    results["nodes_checked"] += 1
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+
+                            # Check if transaction exists
+                            if name == "blockchair":
+                                tx_data = data.get("data", {}).get(txid, {}).get("transaction", {})
+                                if tx_data:
+                                    results["exists"] = True
+                                    results["found_in"].append(name)
+                                    block_id = tx_data.get("block_id")
+                                    if block_id and block_id > 0:
+                                        results["confirmed"] = True
+                            elif name == "fulcrum":
+                                if data and isinstance(data, dict) and data.get("txid"):
+                                    results["exists"] = True
+                                    results["found_in"].append(name)
+                                    if data.get("confirmations", 0) > 0:
+                                        results["confirmed"] = True
+
+                except Exception as e:
+                    logger.debug(f"mempool_check_failed_{name}", error=str(e))
+                    continue
+
+        logger.debug(
+            "tx_mempool_check_complete",
+            txid=txid[:16],
+            exists=results["exists"],
+            confirmed=results["confirmed"],
+            found_in=results["found_in"]
+        )
+
+        return results
+
+    async def verify_broadcast_success(self, txid: str, max_retries: int = 3, delay: float = 2.0) -> bool:
+        """
+        Verify that a broadcast transaction actually reached the mempool.
+
+        Waits and retries to account for propagation delay.
+
+        Args:
+            txid: Transaction ID to verify
+            max_retries: Maximum number of check attempts
+            delay: Seconds to wait between retries
+
+        Returns:
+            True if transaction found in mempool or confirmed
+        """
+        for attempt in range(max_retries):
+            if attempt > 0:
+                await asyncio.sleep(delay)
+
+            result = await self.check_tx_in_mempool(txid)
+
+            if result["exists"]:
+                logger.info(
+                    "broadcast_verified",
+                    txid=txid[:16],
+                    confirmed=result["confirmed"],
+                    found_in=result["found_in"],
+                    attempt=attempt + 1
+                )
+                return True
+
+        logger.warning(
+            "broadcast_verification_failed",
+            txid=txid[:16],
+            attempts=max_retries
+        )
+        return False
+
+    async def get_safe_utxos(self) -> Tuple[List[UTXO], Dict[str, Any]]:
+        """
+        Get UTXOs that are safe to spend (not in mempool conflicts, not on cooldown).
+
+        This is the recommended way to get UTXOs before creating a transaction.
+
+        Returns:
+            Tuple of:
+            - List of safe UTXOs
+            - Status dict with details about any excluded UTXOs
+        """
+        # Get all UTXOs
+        all_utxos = await self.get_utxos()
+
+        if not all_utxos:
+            return [], {"status": "no_utxos", "total": 0, "safe": 0, "excluded": 0}
+
+        # Check mempool status
+        mempool_status = await self.check_utxo_mempool_status()
+
+        # Get cooldown UTXOs
+        cooldown_keys = self.get_utxos_on_cooldown()
+
+        # Start with UTXOs not in mempool conflicts
+        if mempool_status["has_pending"]:
+            safe_utxos = mempool_status["safe_utxos"]
+        else:
+            safe_utxos = all_utxos
+
+        # Filter out cooldown UTXOs
+        safe_utxos = self.filter_safe_utxos(safe_utxos, cooldown_keys)
+
+        status = {
+            "status": "ok" if safe_utxos else "no_safe_utxos",
+            "total": len(all_utxos),
+            "safe": len(safe_utxos),
+            "excluded": len(all_utxos) - len(safe_utxos),
+            "mempool_conflicts": len(mempool_status.get("conflicted_utxos", [])),
+            "on_cooldown": len(cooldown_keys),
+            "pending_txids": mempool_status.get("pending_txids", [])
+        }
+
+        if status["excluded"] > 0:
+            logger.info("utxo_safety_check", **status)
+
+        return safe_utxos, status
+
+    def clear_cooldown(self, utxo_keys: List[str] = None) -> None:
+        """
+        Clear cooldown for specific UTXOs or all UTXOs.
+
+        Use this when you know a conflicting transaction has been resolved.
+
+        Args:
+            utxo_keys: Specific UTXO keys to clear, or None to clear all
+        """
+        if utxo_keys is None:
+            self._broadcast_attempts = []
+            logger.info("cooldown_cleared_all")
+        else:
+            keys_set = set(utxo_keys)
+            for attempt in self._broadcast_attempts:
+                attempt.utxo_keys = [k for k in attempt.utxo_keys if k not in keys_set]
+            logger.info("cooldown_cleared_specific", count=len(utxo_keys))
+
+    # =========================================================================
     # TRANSACTION CREATION
     # =========================================================================
 
@@ -983,14 +1339,45 @@ class QubeWallet:
     async def create_unsigned_transaction_async(
         self,
         outputs: List[TxOutput],
-        fee_per_byte: int = DEFAULT_FEE_PER_BYTE
+        fee_per_byte: int = DEFAULT_FEE_PER_BYTE,
+        use_safe_utxos: bool = True
     ) -> UnsignedTransaction:
         """
         Create an unsigned transaction, fetching UTXOs automatically.
+
+        Args:
+            outputs: List of outputs (address, value)
+            fee_per_byte: Fee rate in sats/byte
+            use_safe_utxos: If True (default), only use UTXOs not involved in
+                           mempool conflicts or on cooldown from failed broadcasts
+
+        Returns:
+            UnsignedTransaction ready for signing
+
+        Raises:
+            ValueError: If no (safe) UTXOs available
         """
-        utxos = await self.get_utxos()
-        if not utxos:
-            raise ValueError("No UTXOs available")
+        if use_safe_utxos:
+            utxos, status = await self.get_safe_utxos()
+            if not utxos:
+                if status.get("mempool_conflicts", 0) > 0:
+                    pending_txs = status.get("pending_txids", [])
+                    raise ValueError(
+                        f"All UTXOs are involved in mempool conflicts. "
+                        f"Pending transactions: {pending_txs[:3]}. "
+                        f"Wait for them to confirm or expire."
+                    )
+                elif status.get("on_cooldown", 0) > 0:
+                    raise ValueError(
+                        f"All UTXOs are on cooldown from recent failed broadcasts. "
+                        f"Wait {self._utxo_cooldown_seconds // 60} minutes or use clear_cooldown()."
+                    )
+                else:
+                    raise ValueError("No UTXOs available")
+        else:
+            utxos = await self.get_utxos()
+            if not utxos:
+                raise ValueError("No UTXOs available")
 
         return self.create_unsigned_transaction(outputs, fee_per_byte, utxos)
 
@@ -1178,13 +1565,20 @@ class QubeWallet:
     # BROADCAST
     # =========================================================================
 
-    async def broadcast(self, tx_hex: str) -> str:
+    async def broadcast(
+        self,
+        tx_hex: str,
+        utxos: Optional[List[UTXO]] = None,
+        verify: bool = True
+    ) -> str:
         """
         Broadcast signed transaction to the network.
         Tries multiple broadcast endpoints to avoid mempool conflicts on single nodes.
 
         Args:
             tx_hex: Signed transaction in hex
+            utxos: Optional list of UTXOs used in this transaction (for tracking)
+            verify: If True, verify the broadcast reached the mempool
 
         Returns:
             Transaction ID (txid)
@@ -1193,6 +1587,7 @@ class QubeWallet:
             Exception: If broadcast fails on all endpoints
         """
         errors = []
+        utxos_for_tracking = utxos or []
 
         async with aiohttp.ClientSession() as session:
             # Try Blockchair first
@@ -1204,6 +1599,12 @@ class QubeWallet:
                         txid = result["data"]["transaction_hash"]
                         logger.info("transaction_broadcast", txid=txid, endpoint="blockchair")
                         self.invalidate_balance_cache()
+                        # Record successful broadcast
+                        if utxos_for_tracking:
+                            self.record_broadcast_attempt(tx_hex, utxos_for_tracking, True, txid)
+                        # Verify if requested
+                        if verify:
+                            await self.verify_broadcast_success(txid, max_retries=2, delay=1.5)
                         return txid
                     else:
                         error = result.get("context", {}).get("error", "Unknown error")
@@ -1223,6 +1624,10 @@ class QubeWallet:
                         txid = result[0]
                         logger.info("transaction_broadcast", txid=txid, endpoint="fulcrum")
                         self.invalidate_balance_cache()
+                        if utxos_for_tracking:
+                            self.record_broadcast_attempt(tx_hex, utxos_for_tracking, True, txid)
+                        if verify:
+                            await self.verify_broadcast_success(txid, max_retries=2, delay=1.5)
                         return txid
                     else:
                         error = str(result)
@@ -1241,6 +1646,10 @@ class QubeWallet:
                         txid = result[0]
                         logger.info("transaction_broadcast", txid=txid, endpoint="bitcoin.com")
                         self.invalidate_balance_cache()
+                        if utxos_for_tracking:
+                            self.record_broadcast_attempt(tx_hex, utxos_for_tracking, True, txid)
+                        if verify:
+                            await self.verify_broadcast_success(txid, max_retries=2, delay=1.5)
                         return txid
                     else:
                         error = str(result)
@@ -1250,8 +1659,10 @@ class QubeWallet:
                 errors.append(f"Bitcoin.com: {e}")
                 logger.debug("broadcast_exception_bitcoincom", error=str(e))
 
-        # All endpoints failed
+        # All endpoints failed - record failed attempt for UTXO cooldown
         all_errors = "; ".join(errors)
+        if utxos_for_tracking:
+            self.record_broadcast_attempt(tx_hex, utxos_for_tracking, False, error=all_errors[:200])
         logger.error("broadcast_failed_all_endpoints", errors=all_errors)
         raise Exception(f"Broadcast failed: {errors[0] if errors else 'Unknown error'}")
 
@@ -1262,7 +1673,8 @@ class QubeWallet:
     async def approve_and_broadcast(
         self,
         proposed_tx: ProposedTransaction,
-        owner_privkey: bytes
+        owner_privkey: bytes,
+        verify: bool = True
     ) -> str:
         """
         Owner approves a Qube-proposed transaction and broadcasts.
@@ -1270,6 +1682,7 @@ class QubeWallet:
         Args:
             proposed_tx: Transaction proposed by Qube
             owner_privkey: Owner's private key
+            verify: If True, verify the broadcast reached the mempool
 
         Returns:
             Transaction ID
@@ -1280,7 +1693,12 @@ class QubeWallet:
             owner_privkey
         )
 
-        return await self.broadcast(tx_hex)
+        # Pass UTXOs for tracking to enable cooldown on failure
+        return await self.broadcast(
+            tx_hex,
+            utxos=proposed_tx.unsigned_tx.utxos,
+            verify=verify
+        )
 
     async def owner_withdraw(
         self,
@@ -1305,7 +1723,7 @@ class QubeWallet:
         unsigned_tx = await self.create_unsigned_transaction_async(outputs)
         tx_hex = self.spend_owner_only(unsigned_tx, owner_privkey)
 
-        return await self.broadcast(tx_hex)
+        return await self.broadcast(tx_hex, utxos=unsigned_tx.utxos)
 
     async def owner_withdraw_all(
         self,
@@ -1345,7 +1763,7 @@ class QubeWallet:
         )
 
         tx_hex = self.spend_owner_only(unsigned_tx, owner_privkey)
-        return await self.broadcast(tx_hex)
+        return await self.broadcast(tx_hex, utxos=unsigned_tx.utxos)
 
     # =========================================================================
     # SERIALIZATION
