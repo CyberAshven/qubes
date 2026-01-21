@@ -281,9 +281,16 @@ async def call_model_directly(qube, prompt: str, temperature: float = 0.7) -> st
         raise AIError(f"Unknown model: {model_name}")
 
     provider = model_info["provider"]
+
+    # Local providers (like Ollama) don't need API keys
+    LOCAL_PROVIDERS = {"ollama"}
     api_key = qube.api_keys.get(provider)
-    if not api_key:
+    if not api_key and provider not in LOCAL_PROVIDERS:
         raise AIError(f"No API key for provider: {provider}")
+
+    # Use placeholder for local providers
+    if provider in LOCAL_PROVIDERS and not api_key:
+        api_key = "local"
 
     model = ModelRegistry.get_model(model_name, api_key)
 

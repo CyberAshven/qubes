@@ -468,7 +468,8 @@ class QubeReasoner:
                         tools=tools,
                         temperature=temperature,
                         model_to_use=model_to_use,
-                        model_info=model_info
+                        model_info=model_info,
+                        unlocked_tools=unlocked_tools
                     )
 
                     # NOW create the ACTION block with the ACTUAL model used
@@ -2749,7 +2750,8 @@ Multiple entities present. Be careful about what you share.
         tools: list,
         temperature: float,
         model_to_use: str,
-        model_info: dict
+        model_info: dict,
+        unlocked_tools: set = None
     ) -> tuple[Any, str, dict]:
         """
         Generate response with automatic retry on failure when in revolver mode.
@@ -2889,9 +2891,10 @@ Multiple entities present. Be careful about what you share.
                 current_model = ModelRegistry.get_model(model, api_key)
                 current_model_info = ModelRegistry.get_model_info(model)
 
-                # Update tools for this provider
+                # Update tools for this provider (maintain skill-based filtering)
                 current_tools = self.tool_registry.get_tools_for_model(
-                    current_model.get_provider_name()
+                    current_model.get_provider_name(),
+                    unlocked_tools=unlocked_tools
                 )
 
                 logger.info(

@@ -273,7 +273,7 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
                   <div
                     key={tx.txid}
                     className="p-3 bg-bg-primary rounded-lg border-l-4 border border-glass-border hover:border-accent-primary/30 transition-colors"
-                    style={{ borderLeftColor: confStyle.borderColor }}
+                    style={{ borderLeftColor: typeStyle.color }}
                   >
                     <div className="flex justify-between items-start">
                       {/* Left: Type and details */}

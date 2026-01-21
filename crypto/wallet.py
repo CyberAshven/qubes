@@ -1181,6 +1181,7 @@ class QubeWallet:
     async def broadcast(self, tx_hex: str) -> str:
         """
         Broadcast signed transaction to the network.
+        Tries multiple broadcast endpoints to avoid mempool conflicts on single nodes.
 
         Args:
             tx_hex: Signed transaction in hex
@@ -1189,23 +1190,70 @@ class QubeWallet:
             Transaction ID (txid)
 
         Raises:
-            Exception: If broadcast fails
+            Exception: If broadcast fails on all endpoints
         """
-        async with aiohttp.ClientSession() as session:
-            url = f"{BLOCKCHAIR_API}/push/transaction"
-            async with session.post(url, data={"data": tx_hex}) as resp:
-                result = await resp.json()
+        errors = []
 
-                if result.get("context", {}).get("code") == 200:
-                    txid = result["data"]["transaction_hash"]
-                    logger.info("transaction_broadcast", txid=txid)
-                    # Invalidate balance cache so next fetch gets updated data
-                    self.invalidate_balance_cache()
-                    return txid
-                else:
-                    error = result.get("context", {}).get("error", "Unknown error")
-                    logger.error("broadcast_failed", error=error)
-                    raise Exception(f"Broadcast failed: {error}")
+        async with aiohttp.ClientSession() as session:
+            # Try Blockchair first
+            try:
+                url = f"{BLOCKCHAIR_API}/push/transaction"
+                async with session.post(url, data={"data": tx_hex}, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                    result = await resp.json()
+                    if result.get("context", {}).get("code") == 200:
+                        txid = result["data"]["transaction_hash"]
+                        logger.info("transaction_broadcast", txid=txid, endpoint="blockchair")
+                        self.invalidate_balance_cache()
+                        return txid
+                    else:
+                        error = result.get("context", {}).get("error", "Unknown error")
+                        errors.append(f"Blockchair: {error}")
+                        logger.debug("broadcast_failed_blockchair", error=error)
+            except Exception as e:
+                errors.append(f"Blockchair: {e}")
+                logger.debug("broadcast_exception_blockchair", error=str(e))
+
+            # Try Fulcrum/ActorForth API as fallback
+            try:
+                url = "https://rest.bch.actorforth.org/v2/rawtransactions/sendRawTransaction"
+                async with session.post(url, json={"hexes": [tx_hex]}, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                    result = await resp.json()
+                    # Fulcrum returns array of txids on success
+                    if isinstance(result, list) and len(result) > 0 and isinstance(result[0], str) and len(result[0]) == 64:
+                        txid = result[0]
+                        logger.info("transaction_broadcast", txid=txid, endpoint="fulcrum")
+                        self.invalidate_balance_cache()
+                        return txid
+                    else:
+                        error = str(result)
+                        errors.append(f"Fulcrum: {error}")
+                        logger.debug("broadcast_failed_fulcrum", error=error)
+            except Exception as e:
+                errors.append(f"Fulcrum: {e}")
+                logger.debug("broadcast_exception_fulcrum", error=str(e))
+
+            # Try Bitcoin.com API as last resort
+            try:
+                url = "https://rest.bitcoin.com/v2/rawtransactions/sendRawTransaction"
+                async with session.post(url, json={"hexes": [tx_hex]}, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                    result = await resp.json()
+                    if isinstance(result, list) and len(result) > 0 and isinstance(result[0], str) and len(result[0]) == 64:
+                        txid = result[0]
+                        logger.info("transaction_broadcast", txid=txid, endpoint="bitcoin.com")
+                        self.invalidate_balance_cache()
+                        return txid
+                    else:
+                        error = str(result)
+                        errors.append(f"Bitcoin.com: {error}")
+                        logger.debug("broadcast_failed_bitcoincom", error=error)
+            except Exception as e:
+                errors.append(f"Bitcoin.com: {e}")
+                logger.debug("broadcast_exception_bitcoincom", error=str(e))
+
+        # All endpoints failed
+        all_errors = "; ".join(errors)
+        logger.error("broadcast_failed_all_endpoints", errors=all_errors)
+        raise Exception(f"Broadcast failed: {errors[0] if errors else 'Unknown error'}")
 
     # =========================================================================
     # HIGH-LEVEL OPERATIONS

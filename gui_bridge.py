@@ -7128,22 +7128,34 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
             # Get pending transactions from chain_state (source of truth)
             pending_txs = qube.chain_state.get_pending_transactions()
 
-            # Get transaction history from chain_state (source of truth)
-            all_transactions = qube.chain_state.get_transaction_history(limit=0)  # Get all
-            total_count = len(all_transactions)
+            # Fetch fresh transaction history from blockchain (merged with local metadata)
+            # This ensures we get current confirmation status and all transactions
+            wallet_manager = qube.wallet_manager
+            blockchain_result = await wallet_manager.get_full_transaction_history(limit=limit, offset=offset)
 
-            # Apply pagination
-            paginated_transactions = all_transactions[offset:offset + limit] if offset else all_transactions[:limit]
-            has_more = offset + limit < total_count
+            if "error" in blockchain_result:
+                # Fallback to stored chain_state if blockchain fetch fails
+                logger.warning(f"Blockchain fetch failed, using stored data: {blockchain_result.get('error')}")
+                all_transactions = qube.chain_state.get_transaction_history(limit=0)
+                total_count = len(all_transactions)
+                paginated_transactions = all_transactions[offset:offset + limit] if offset else all_transactions[:limit]
+                has_more = offset + limit < total_count
+                transactions = []
+                for tx in paginated_transactions:
+                    formatted_tx = dict(tx)
+                    if "timestamp" in formatted_tx and isinstance(formatted_tx["timestamp"], (int, float)):
+                        formatted_tx["timestamp"] = datetime.fromtimestamp(formatted_tx["timestamp"]).isoformat()
+                    transactions.append(formatted_tx)
+            else:
+                # Use fresh blockchain data
+                transactions = blockchain_result.get("transactions", [])
+                total_count = blockchain_result.get("total_count", 0)
+                has_more = blockchain_result.get("has_more", False)
 
-            # Format timestamps in transaction history for frontend
-            transactions = []
-            for tx in paginated_transactions:
-                formatted_tx = dict(tx)
-                # Convert Unix timestamp to ISO format
-                if "timestamp" in formatted_tx and isinstance(formatted_tx["timestamp"], (int, float)):
-                    formatted_tx["timestamp"] = datetime.fromtimestamp(formatted_tx["timestamp"]).isoformat()
-                transactions.append(formatted_tx)
+                # Format timestamps for frontend
+                for tx in transactions:
+                    if "timestamp" in tx and isinstance(tx["timestamp"], (int, float)):
+                        tx["timestamp"] = datetime.fromtimestamp(tx["timestamp"]).isoformat()
 
             return {
                 "success": True,

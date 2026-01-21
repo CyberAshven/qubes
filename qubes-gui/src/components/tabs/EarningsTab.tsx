@@ -94,6 +94,7 @@ export const EarningsTab: React.FC<EarningsTabProps> = ({
   const [wifModalOpen, setWifModalOpen] = useState(false);
   const [pendingApprovalTx, setPendingApprovalTx] = useState<PendingTransaction | null>(null);
   const [manualWif, setManualWif] = useState('');
+  const [approvalError, setApprovalError] = useState<string | null>(null);
 
   // Handle copy for balance card addresses
   const handleCopyAddress = async (address: string | undefined) => {
@@ -109,15 +110,18 @@ export const EarningsTab: React.FC<EarningsTabProps> = ({
 
   // Fetch wallet info when selected qube changes
   useEffect(() => {
-    const fetchWalletInfo = async () => {
+    const fetchWalletInfo = async (isBackgroundRefresh = false) => {
       if (!selectedQube || !selectedQube.wallet_address || !userId || !password) {
         setWalletInfo(null);
         return;
       }
 
-      setLoading(true);
-      setError(null);
-      setWalletInfo(null);  // Clear old data so selectedQube addresses show immediately
+      // Only show loading state for initial loads, not background refreshes
+      if (!isBackgroundRefresh) {
+        setLoading(true);
+        setError(null);
+        setWalletInfo(null);  // Clear old data so selectedQube addresses show immediately
+      }
 
       try {
         const result = await invoke<{
@@ -150,19 +154,42 @@ export const EarningsTab: React.FC<EarningsTabProps> = ({
             qube_pubkey: result.qube_pubkey || '',
             pending_transactions: result.pending_transactions || [],
           });
-        } else {
+        } else if (!isBackgroundRefresh) {
+          // Only show errors for initial loads, not background refreshes
           setError(result.error || 'Failed to fetch wallet info');
         }
       } catch (e) {
         console.error('Failed to fetch wallet info:', e);
-        setError('Failed to fetch wallet info');
+        if (!isBackgroundRefresh) {
+          setError('Failed to fetch wallet info');
+        }
       } finally {
-        setLoading(false);
+        if (!isBackgroundRefresh) {
+          setLoading(false);
+        }
       }
     };
 
-    fetchWalletInfo();
+    // Initial fetch (refetchTrigger starts at 0)
+    if (refetchTrigger === 0) {
+      fetchWalletInfo(false);
+    } else {
+      // Background refresh (silent)
+      fetchWalletInfo(true);
+    }
   }, [selectedQube?.qube_id, userId, password, refetchTrigger]);
+
+  // Auto-refresh pending transactions every 30 seconds (silent)
+  useEffect(() => {
+    if (!selectedQube || !userId || !password) return;
+
+    const intervalId = setInterval(() => {
+      // Silently refetch to check for new pending transactions
+      setRefetchTrigger(prev => prev + 1);
+    }, 30000); // 30 seconds (less aggressive)
+
+    return () => clearInterval(intervalId);
+  }, [selectedQube?.qube_id, userId, password]);
 
   // Handle copy address
   const handleCopy = async () => {
@@ -265,6 +292,7 @@ export const EarningsTab: React.FC<EarningsTabProps> = ({
       // One-click approval using stored key
       console.log('[handleApprove] Using stored key for one-click approval');
       setApproving(pendingTx.tx_id);
+      setApprovalError(null); // Clear previous error
       try {
         console.log('[handleApprove] Calling approve_wallet_tx_stored_key with:', {
           userId,
@@ -284,15 +312,25 @@ export const EarningsTab: React.FC<EarningsTabProps> = ({
         console.log('[handleApprove] Result:', result);
         if (result.success) {
           console.log('[handleApprove] Success! TXID:', result.txid);
+          setApprovalError(null);
           invalidateCache(selectedQube.qube_id);
           setRefetchTrigger((prev) => prev + 1);
         } else {
           console.log('[handleApprove] Failed:', result.error);
-          setSendError(result.error || 'Approval failed');
+          // Extract meaningful error message
+          const errorMsg = result.error || 'Approval failed';
+          const shortError = errorMsg.includes('mempool-conflict')
+            ? 'Mempool conflict - try again later or use different amount'
+            : errorMsg.length > 60 ? errorMsg.slice(0, 60) + '...' : errorMsg;
+          setApprovalError(shortError);
+          // Auto-clear error after 8 seconds
+          setTimeout(() => setApprovalError(null), 8000);
         }
       } catch (e) {
         console.error('[handleApprove] Exception:', e);
-        setSendError(e instanceof Error ? e.message : 'Approval failed');
+        const errorMsg = e instanceof Error ? e.message : 'Approval failed';
+        setApprovalError(errorMsg.length > 60 ? errorMsg.slice(0, 60) + '...' : errorMsg);
+        setTimeout(() => setApprovalError(null), 8000);
       } finally {
         setApproving(null);
       }
@@ -426,6 +464,11 @@ export const EarningsTab: React.FC<EarningsTabProps> = ({
               <div className="text-xs text-accent-warning font-semibold mb-2 flex items-center gap-1">
                 <span>⏳</span> {walletInfo.pending_transactions.length} Pending
               </div>
+              {approvalError && (
+                <div className="text-[10px] text-red-400 bg-red-500/10 px-2 py-1 rounded mb-2 break-words">
+                  {approvalError}
+                </div>
+              )}
               <div className="space-y-2 max-h-32 overflow-y-auto">
                 {walletInfo.pending_transactions.slice(0, 2).map((tx) => (
                   <div key={tx.tx_id} className="text-xs">

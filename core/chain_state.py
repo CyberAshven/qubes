@@ -1531,10 +1531,30 @@ class ChainState:
         self._save()
 
     def add_transaction(self, tx: Dict[str, Any]) -> None:
-        """Add a transaction to history."""
+        """Add a transaction to history.
+
+        Prevents duplicates by checking txid. Normalizes field names for consistency.
+        """
         financial = self.state.setdefault("financial", {})
         transactions = financial.setdefault("transactions", {"history": [], "total_count": 0, "archived_count": 0})
         history = transactions.setdefault("history", [])
+
+        # Check for duplicate txid
+        txid = tx.get("txid")
+        if txid:
+            for existing_tx in history:
+                if existing_tx.get("txid") == txid:
+                    logger.debug("duplicate_transaction_skipped", txid=txid[:16] if txid else None)
+                    return  # Skip duplicate
+
+        # Normalize field names: ensure 'amount' field exists for frontend compatibility
+        # The frontend expects 'amount' in satoshis
+        if "amount" not in tx and "amount_satoshis" in tx:
+            # Convert amount_satoshis to amount (with correct sign for direction)
+            amount = tx["amount_satoshis"]
+            if tx.get("direction") == "sent":
+                amount = -abs(amount)
+            tx["amount"] = amount
 
         history.append(tx)
         transactions["total_count"] = transactions.get("total_count", 0) + 1
@@ -1557,8 +1577,17 @@ class ChainState:
         return self.state.get("financial", {}).get("pending", [])
 
     def add_pending_transaction(self, tx: Dict[str, Any]) -> None:
-        """Add a pending transaction."""
+        """Add a pending transaction. Prevents duplicates by tx_id."""
         pending = self.state.setdefault("financial", {}).setdefault("pending", [])
+
+        # Check for duplicate tx_id
+        tx_id = tx.get("tx_id")
+        if tx_id:
+            for existing_tx in pending:
+                if existing_tx.get("tx_id") == tx_id:
+                    logger.debug("duplicate_pending_tx_skipped", tx_id=tx_id[:16] if tx_id else None)
+                    return  # Skip duplicate
+
         pending.append(tx)
         self._save()
 
