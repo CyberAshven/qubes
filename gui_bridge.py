@@ -1056,7 +1056,8 @@ class GUIBridge:
                     block_type = block.block_type if isinstance(block.block_type, str) else block.block_type.value
                     if block_type == "MESSAGE":
                         content = block.content if isinstance(block.content, dict) else {}
-                        response_text = content.get("response", content.get("message", ""))
+                        # Session blocks use message_body, permanent blocks use response
+                        response_text = content.get("message_body", content.get("response", content.get("message", "")))
                         if response_text:
                             return {
                                 "success": True,
