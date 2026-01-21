@@ -3318,15 +3318,34 @@ Multiple entities present. Be careful about what you share.
                     content = self._decrypt_block_content_if_needed(block)
                     summarized_blocks = content.get("summarized_blocks", [])
                     covered_block_numbers.update(summarized_blocks)
+                    logger.info(
+                        "summary_block_found",
+                        summary_block=block_num,
+                        covers_blocks=summarized_blocks,
+                        total_covered_so_far=len(covered_block_numbers)
+                    )
             except Exception as e:
                 logger.warning("block_load_failed_scanning_summaries", block_num=block_num, error=str(e))
                 continue
+
+        logger.info(
+            "summary_scan_complete",
+            total_summaries=len(summary_blocks),
+            total_covered_blocks=len(covered_block_numbers),
+            covered_block_numbers=sorted(list(covered_block_numbers))[:20]  # Show first 20
+        )
 
         # Step 2: Find recent uncovered blocks (scan backwards from end)
         # We need enough uncovered blocks to potentially fill `limit` slots
         # Scan more than `limit` to account for covered blocks we'll skip
         uncovered_blocks = []
         scan_limit = limit * 3  # Scan more to find enough uncovered blocks
+
+        logger.debug(
+            "scanning_for_uncovered_blocks",
+            recalled_block_numbers=sorted(list(recalled_block_numbers)) if recalled_block_numbers else [],
+            chain_length=chain_length
+        )
 
         for block_num in range(chain_length - 1, -1, -1):
             if len(uncovered_blocks) >= scan_limit:
@@ -3349,6 +3368,23 @@ Multiple entities present. Be careful about what you share.
                 # Include if: not covered by any summary, OR was semantically recalled
                 if is_not_covered or was_recalled:
                     uncovered_blocks.append(block)
+                    logger.debug(
+                        "block_included_in_recent",
+                        block_number=block.block_number,
+                        block_type=block_type,
+                        is_not_covered=is_not_covered,
+                        was_recalled=was_recalled,
+                        reason="uncovered" if is_not_covered else "recalled"
+                    )
+                else:
+                    # Block is covered by summary and not recalled - skip it
+                    logger.debug(
+                        "block_excluded_from_recent",
+                        block_number=block.block_number,
+                        block_type=block_type,
+                        is_covered=not is_not_covered,
+                        was_recalled=was_recalled
+                    )
 
             except Exception as e:
                 logger.warning("block_load_failed_in_context", block_num=block_num, error=str(e))
@@ -3392,15 +3428,39 @@ Multiple entities present. Be careful about what you share.
         if block.encrypted and "nonce" in content and "ciphertext" in content:
             try:
                 decrypted_content = self.qube.decrypt_block_content(content)
+                # Log successful decryption for SUMMARY blocks (to verify summarized_blocks extraction)
+                block_type = block.block_type if isinstance(block.block_type, str) else block.block_type.value
+                if block_type == "SUMMARY":
+                    summarized = decrypted_content.get("summarized_blocks", [])
+                    logger.info(
+                        "summary_block_decrypted",
+                        block_number=block.block_number,
+                        summarized_blocks_count=len(summarized),
+                        summarized_blocks=summarized[:10] if summarized else []  # First 10
+                    )
                 return decrypted_content
             except Exception as e:
                 logger.warning(
                     "failed_to_decrypt_block",
                     block_number=block.block_number,
+                    block_type=block.block_type,
                     error=str(e),
                     qube_id=self.qube.qube_id
                 )
                 return {}
+
+        # Not encrypted - check if SUMMARY block has expected fields
+        block_type = block.block_type if isinstance(block.block_type, str) else block.block_type.value
+        if block_type == "SUMMARY":
+            summarized = content.get("summarized_blocks", [])
+            logger.debug(
+                "summary_block_unencrypted",
+                block_number=block.block_number,
+                summarized_blocks_count=len(summarized),
+                has_nonce="nonce" in content,
+                has_ciphertext="ciphertext" in content,
+                encrypted_flag=block.encrypted
+            )
 
         return content
 
