@@ -1005,7 +1005,10 @@ class GUIBridge:
         """
         Get the most recent MESSAGE or SUMMARY block for context recall.
 
-        If a SUMMARY block is more recent than the last MESSAGE, returns the summary.
+        Priority:
+        1. Check Short-term Memory (session blocks) for MESSAGE blocks first
+        2. If no session MESSAGE blocks, fall back to Long-term Memory
+        3. If a SUMMARY block is more recent than the last MESSAGE, returns the summary.
         Otherwise returns the last Qube response from the MESSAGE block.
 
         Returns:
@@ -1027,6 +1030,36 @@ class GUIBridge:
 
             qube = self.orchestrator.qubes[qube_id]
 
+            # PRIORITY 1: Check Short-term Memory (session blocks) for MESSAGE blocks
+            if qube.current_session and hasattr(qube.current_session, 'session_blocks') and qube.current_session.session_blocks:
+                # Look for the most recent MESSAGE block in session (iterate backwards)
+                for block in reversed(qube.current_session.session_blocks):
+                    block_type = block.block_type if isinstance(block.block_type, str) else block.block_type.value
+                    if block_type == "MESSAGE":
+                        # Found a MESSAGE block in session - use it
+                        content = block.content
+                        if block.encrypted:
+                            try:
+                                content = qube.decrypt_block_content(content)
+                            except Exception as decrypt_err:
+                                logger.warning(f"Failed to decrypt session MESSAGE block: {decrypt_err}")
+                                content = {}
+
+                        if not isinstance(content, dict):
+                            content = {}
+
+                        response_text = content.get("response", content.get("message", ""))
+
+                        return {
+                            "success": True,
+                            "content": response_text,
+                            "block_type": "MESSAGE",
+                            "block_number": block.block_number,
+                            "timestamp": block.timestamp * 1000 if block.timestamp < 1e12 else block.timestamp,
+                            "source": "short_term"  # Indicate this came from session
+                        }
+
+            # PRIORITY 2: Fall back to Long-term Memory (permanent blocks)
             # Get all block numbers, sorted newest first
             all_block_nums = sorted(qube.memory_chain.block_index.keys(), reverse=True)
 
