@@ -210,6 +210,10 @@ async def switch_model(
             saved_preference=save_preference
         )
 
+        # Track model switch in stats (only if model actually changed)
+        if previous_model != model_name:
+            qube.chain_state.increment_model_switch()
+
         result = {
             "success": True,
             "message": f"Successfully switched from {previous_model} to {model_name}.",

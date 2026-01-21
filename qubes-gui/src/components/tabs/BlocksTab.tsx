@@ -1798,9 +1798,9 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                   {/* Overview Grid */}
                   <div className="grid grid-cols-2 gap-3">
                     <div className="p-3 bg-glass-bg/30 rounded-lg">
-                      <span className="text-text-tertiary text-xs">Total Sessions</span>
+                      <span className="text-text-tertiary text-xs">Model Switches</span>
                       <div className="text-2xl font-display text-accent-primary mt-1">
-                        {selectedContextSection.data.total_sessions || 0}
+                        {selectedContextSection.data.total_model_switches || 0}
                       </div>
                     </div>
                     <div className="p-3 bg-glass-bg/30 rounded-lg">
