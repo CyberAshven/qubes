@@ -274,10 +274,10 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
   const [shortTermExpanded, setShortTermExpanded] = useState(false);
   const [longTermExpanded, setLongTermExpanded] = useState(false);
 
-  // Sub-section collapse states (Current Session expanded by default, others collapsed)
-  const [currentSessionExpanded, setCurrentSessionExpanded] = useState(true);
+  // Sub-section collapse states (all collapsed by default)
+  const [currentSessionExpanded, setCurrentSessionExpanded] = useState(false);
   const [recentHistoryExpanded, setRecentHistoryExpanded] = useState(false);
-  const [recalledMemoriesExpanded, setRecalledMemoriesExpanded] = useState(true);
+  const [recalledMemoriesExpanded, setRecalledMemoriesExpanded] = useState(false);
 
   // Sort order state (true = newest first, false = oldest first)
   const [shortTermNewestFirst, setShortTermNewestFirst] = useState(true);
