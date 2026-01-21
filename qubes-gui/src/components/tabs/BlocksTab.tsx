@@ -1796,7 +1796,7 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
               {selectedContextSection.type === 'stats' && selectedContextSection.data && (
                 <div className="space-y-4">
                   {/* Overview Grid */}
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-3 gap-3">
                     <div className="p-3 bg-glass-bg/30 rounded-lg">
                       <span className="text-text-tertiary text-xs">Total Tokens</span>
                       <div className="text-2xl font-display text-accent-primary mt-1">
@@ -1813,15 +1813,6 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                       <span className="text-text-tertiary text-xs">Total Anchors</span>
                       <div className="text-2xl font-display text-accent-primary mt-1">
                         {Number(selectedContextSection.data.total_anchors) || 0}
-                      </div>
-                    </div>
-                    <div className="p-3 bg-glass-bg/30 rounded-lg">
-                      <span className="text-text-tertiary text-xs">Model Switches</span>
-                      <div className="text-2xl font-display text-accent-primary mt-1">
-                        {(() => {
-                          const switches = selectedContextSection.data.model_switches || {};
-                          return (switches.revolver || 0) + (switches.autonomous || 0) + (switches.manual || 0);
-                        })()}
                       </div>
                     </div>
                   </div>
@@ -1841,6 +1832,14 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                       <div className="flex justify-between text-sm">
                         <span className="text-text-secondary">👆 Manual</span>
                         <span className="text-text-primary font-mono">{selectedContextSection.data.model_switches?.manual || 0}</span>
+                      </div>
+                      <div className="flex justify-between text-sm border-t border-glass-border pt-2 mt-2">
+                        <span className="text-text-primary font-medium">📊 Total</span>
+                        <span className="text-text-primary font-mono font-medium">
+                          {(selectedContextSection.data.model_switches?.revolver || 0) +
+                           (selectedContextSection.data.model_switches?.autonomous || 0) +
+                           (selectedContextSection.data.model_switches?.manual || 0)}
+                        </span>
                       </div>
                     </div>
                   </div>
