@@ -181,11 +181,26 @@ Assistant: Done! I've switched to GPT-4o.
         system_found = False
 
         for msg in messages:
-            if msg.get("role") == "system" and not system_found:
+            role = msg.get("role")
+            if role == "system" and not system_found:
                 # Append tool instructions to existing system prompt
                 new_content = msg.get("content", "") + "\n\n" + tool_instructions
                 new_messages.append({"role": "system", "content": new_content})
                 system_found = True
+            elif role == "tool":
+                # Convert tool result to user message for models without native tool support
+                # Venice and other prompt-based tool models only accept user/system/assistant roles
+                tool_name = msg.get("name", "unknown")
+                tool_content = msg.get("content", "")
+                new_messages.append({
+                    "role": "user",
+                    "content": f"[Tool Result for {tool_name}]: {tool_content}"
+                })
+                logger.debug(
+                    "tool_message_converted_to_user",
+                    tool_name=tool_name,
+                    content_length=len(tool_content)
+                )
             else:
                 new_messages.append(msg.copy())
 
