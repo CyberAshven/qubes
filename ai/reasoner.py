@@ -3365,25 +3365,27 @@ Multiple entities present. Be careful about what you share.
                 is_not_covered = block.block_number not in covered_block_numbers
                 was_recalled = block.block_number in recalled_block_numbers
 
-                # Include if: not covered by any summary, OR was semantically recalled
-                if is_not_covered or was_recalled:
+                # ONLY include if not covered by any summary
+                # Recalled blocks that ARE covered should appear in "Recalled Memories" section,
+                # not in "Recent History" - they're already represented by the summary
+                if is_not_covered:
                     uncovered_blocks.append(block)
                     logger.debug(
                         "block_included_in_recent",
                         block_number=block.block_number,
                         block_type=block_type,
-                        is_not_covered=is_not_covered,
-                        was_recalled=was_recalled,
-                        reason="uncovered" if is_not_covered else "recalled"
+                        reason="uncovered"
                     )
                 else:
-                    # Block is covered by summary and not recalled - skip it
+                    # Block is covered by summary - skip it (even if recalled)
+                    # Recalled covered blocks will appear in "Recalled Memories" section instead
                     logger.debug(
                         "block_excluded_from_recent",
                         block_number=block.block_number,
                         block_type=block_type,
-                        is_covered=not is_not_covered,
-                        was_recalled=was_recalled
+                        is_covered=True,
+                        was_recalled=was_recalled,
+                        reason="covered_by_summary"
                     )
 
             except Exception as e:
