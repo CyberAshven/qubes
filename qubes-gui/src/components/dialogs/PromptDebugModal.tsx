@@ -21,6 +21,8 @@ interface SystemPromptPreview {
   provider: string;
   qube_name: string;
   qube_id: string;
+  switched_from?: string;  // Present if this prompt was from a model switch
+  timestamp?: string;
 }
 
 type TabType = 'prompt' | 'raw_chain_state' | 'ai_chain_state' | 'formatted_chain_state';
@@ -531,8 +533,8 @@ export const PromptDebugModal: React.FC<PromptDebugModalProps> = ({
             {/* Real-time System Prompt Preview */}
             {systemPromptPreview ? (
               <>
-                {/* Header info - real-time values */}
-                <div className="grid grid-cols-2 md:grid-cols-3 gap-4 p-4 bg-glass-bg rounded-lg border border-green-500/30">
+                {/* Header info - actual values from last API call */}
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 p-4 bg-glass-bg rounded-lg border border-green-500/30">
                   <div>
                     <div className="text-xs text-text-tertiary">Qube</div>
                     <div className="text-text-primary font-medium">{systemPromptPreview.qube_name}</div>
@@ -540,17 +542,23 @@ export const PromptDebugModal: React.FC<PromptDebugModalProps> = ({
                   <div>
                     <div className="text-xs text-text-tertiary flex items-center gap-1">
                       Model
-                      <span className="text-green-400 text-[10px]">(live)</span>
+                      <span className="text-green-400 text-[10px]">(actual)</span>
                     </div>
                     <div className="text-text-primary font-medium">{systemPromptPreview.model}</div>
                   </div>
                   <div>
                     <div className="text-xs text-text-tertiary flex items-center gap-1">
                       Provider
-                      <span className="text-green-400 text-[10px]">(live)</span>
+                      <span className="text-green-400 text-[10px]">(actual)</span>
                     </div>
                     <div className="text-text-primary font-medium">{systemPromptPreview.provider}</div>
                   </div>
+                  {systemPromptPreview.switched_from && (
+                    <div>
+                      <div className="text-xs text-text-tertiary">Switched From</div>
+                      <div className="text-amber-400 font-medium">{systemPromptPreview.switched_from}</div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Messages (system prompt + conversation) */}
@@ -560,7 +568,7 @@ export const PromptDebugModal: React.FC<PromptDebugModalProps> = ({
                       <h3 className="text-lg font-medium text-text-primary">
                         Messages ({systemPromptPreview.messages?.length || 0})
                       </h3>
-                      <span className="text-green-400 text-xs bg-green-500/10 px-2 py-0.5 rounded">Real-time Preview</span>
+                      <span className="text-green-400 text-xs bg-green-500/10 px-2 py-0.5 rounded">Actual Prompt</span>
                     </div>
                     <div className="flex gap-2">
                       <button
@@ -578,7 +586,7 @@ export const PromptDebugModal: React.FC<PromptDebugModalProps> = ({
                     </div>
                   </div>
                   <div className="text-xs text-green-400 mb-2">
-                    This is what WOULD be sent to the AI if you continued the conversation now
+                    This is the ACTUAL prompt sent to the AI (updates in real-time during processing)
                   </div>
                   <div className="space-y-2">
                     {(systemPromptPreview.messages || []).map((msg, index) => {

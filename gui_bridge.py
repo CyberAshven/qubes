@@ -386,11 +386,51 @@ class GUIBridge:
                     # Default: enabled if a voice is configured
                     tts_enabled = voice_model is not None and voice_model != ""
 
+                # Get current model from chain_state if available (runtime model from revolver/switch)
+                # Fall back to genesis ai_model if no runtime override
+                current_model = qube.get("ai_model", "unknown")
+                current_provider = qube.get("ai_provider", "unknown")
+                genesis_model = current_model  # Save for debug
+
+                # Try to get runtime model from chain_state (handles revolver mode, switch_model, etc.)
+                qube_id = qube.get("qube_id")
+                loaded_qubes_keys = list(self.orchestrator.qubes.keys())
+                is_loaded = qube_id in self.orchestrator.qubes
+
+                if is_loaded:
+                    loaded_qube = self.orchestrator.qubes[qube_id]
+                    if hasattr(loaded_qube, 'chain_state') and loaded_qube.chain_state:
+                        runtime_model = loaded_qube.chain_state.get_current_model()
+                        runtime = loaded_qube.chain_state.state.get("runtime", {})
+                        runtime_model_direct = runtime.get("current_model")
+
+                        logger.debug(
+                            "list_qubes_model_lookup",
+                            qube_id=qube_id,
+                            genesis_model=genesis_model,
+                            runtime_model_from_get_current_model=runtime_model,
+                            runtime_model_direct=runtime_model_direct,
+                            revolver_enabled=loaded_qube.chain_state.state.get("settings", {}).get("revolver_mode_enabled"),
+                            is_loaded=is_loaded
+                        )
+
+                        if runtime_model:
+                            current_model = runtime_model
+                        if runtime.get("current_provider"):
+                            current_provider = runtime["current_provider"]
+                else:
+                    logger.debug(
+                        "list_qubes_qube_not_loaded",
+                        qube_id=qube_id,
+                        loaded_qubes=loaded_qubes_keys,
+                        genesis_model=genesis_model
+                    )
+
                 gui_qube = {
                     "qube_id": qube["qube_id"],
                     "name": qube["name"],
-                    "ai_provider": qube.get("ai_provider", "unknown"),
-                    "ai_model": qube.get("ai_model", "unknown"),
+                    "ai_provider": current_provider,
+                    "ai_model": current_model,
                     "voice_model": voice_model,
                     "tts_enabled": tts_enabled,
                     "creator": qube.get("creator"),
@@ -776,8 +816,10 @@ class GUIBridge:
                     logger.warning(f"Failed to record relationship: {e}")
                     # Don't fail the whole message - just log warning
 
-            # Get current model from chain_state (source of truth for runtime settings)
+            # Get current model and provider from chain_state (source of truth for runtime settings)
             current_model = qube.chain_state.get_current_model() if qube.chain_state else getattr(qube, 'current_ai_model', None) or qube.genesis_block.ai_model
+            runtime = qube.chain_state.state.get("runtime", {}) if qube.chain_state else {}
+            current_provider = runtime.get("current_provider") or qube.genesis_block.ai_provider
 
             return {
                 "success": True,
@@ -786,7 +828,8 @@ class GUIBridge:
                 "message": message,
                 "response": response,
                 "timestamp": datetime.now().isoformat(),
-                "current_model": current_model
+                "current_model": current_model,
+                "current_provider": current_provider
             }
         except Exception as e:
             logger.error(f"Failed to send message to qube {qube_id}: {e}")
@@ -6328,12 +6371,21 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
             # Note: Do NOT start a session just for viewing context preview
             # Session should only start when actually chatting with the Qube
 
+            # Reload chain_state and memory_chain from disk to pick up any changes
+            # (The qube may be cached in orchestrator with stale values)
+            qube.chain_state.reload()
+            qube.memory_chain.reload()
+
             # Get raw chain_state directly from file (unmodified)
             raw_chain_state = {}
             try:
                 raw_chain_state = qube.chain_state.get_sections(None)  # All sections, no modifications
             except Exception as raw_err:
                 logger.warning(f"Failed to get raw chain_state: {raw_err}")
+
+            # Get the ACTUAL last prompt sent to the model (from saved debug data)
+            from ai.reasoner import get_debug_prompt
+            last_actual_prompt = get_debug_prompt(qube_id)
 
             # Build active context (what AI sees after handler enhancements)
             active_context = await self._build_active_context_preview(qube)
@@ -6344,6 +6396,7 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
             # Compute content hash for cache invalidation
             # Hash key fields that would indicate meaningful changes
             import hashlib
+            settings = active_context.get("settings", {})
             hash_data = {
                 "stats_sessions": active_context.get("stats", {}).get("total_sessions", 0) if active_context.get("stats") else 0,
                 "stats_tokens": active_context.get("stats", {}).get("total_tokens", 0) if active_context.get("stats") else 0,
@@ -6355,6 +6408,10 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
                 "stm_semantic": short_term_memory.get("semantic_recalls", {}).get("count", 0),
                 "stm_recent": short_term_memory.get("recent_permanent", {}).get("count", 0),
                 "stm_session": short_term_memory.get("session", {}).get("count", 0),
+                # Include settings fields so cache invalidates when model mode changes
+                "settings_model_mode": settings.get("model_mode", "Manual"),
+                "settings_tts_enabled": settings.get("tts_enabled", False),
+                "settings_current_model": settings.get("current_model", ""),
             }
             content_hash = hashlib.md5(json.dumps(hash_data, sort_keys=True).encode()).hexdigest()[:12]
 
@@ -6363,7 +6420,8 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
                 "raw_chain_state": raw_chain_state,  # Unmodified chain_state.json contents
                 "active_context": active_context,     # What AI sees (with handler enhancements)
                 "short_term_memory": short_term_memory,
-                "content_hash": content_hash
+                "content_hash": content_hash,
+                "last_actual_prompt": last_actual_prompt  # ACTUAL messages sent to the model (includes switch notices, etc.)
             }
 
         except Exception as e:
@@ -6439,8 +6497,10 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
         try:
             from ai.reasoner import QubeReasoner
             reasoner = QubeReasoner(qube)
+            # Get 15 most recent blocks (with SUMMARY replacement logic)
+            # SUMMARY blocks compress ~20 blocks each, so 15 summaries = ~300 blocks of context
             permanent_blocks = reasoner._get_recent_permanent_blocks(
-                limit=10,
+                limit=15,
                 recalled_block_numbers=recalled_block_numbers
             )
 
@@ -6709,19 +6769,17 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
         password: str
     ) -> Dict[str, Any]:
         """
-        Get a real-time preview of the system prompt that would be sent to the AI.
+        Get the ACTUAL system prompt that was/is being sent to the AI.
 
-        This generates the system prompt as it would appear RIGHT NOW, with the
-        current model, provider, and all identity/context information. Unlike
-        the cached debug prompt (which shows what was sent in the last API call),
-        this shows what WOULD be sent if you started a conversation now.
+        This returns the exact messages from the last API call (saved debug prompt),
+        including any runtime modifications like model switch notices.
 
         Args:
             qube_id: Qube ID
             password: User's master password
 
         Returns:
-            Dict with system_prompt, model, provider, qube_name, qube_id
+            Dict with system_prompt, messages, model, provider, qube_name, qube_id
         """
         try:
             self.orchestrator.set_master_key(password)
@@ -6730,7 +6788,35 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
             if not qube:
                 return {"success": False, "error": f"Qube {qube_id} not found"}
 
-            # Use the reasoner to build the system prompt preview
+            # Get the ACTUAL last prompt sent to the model (from saved debug data)
+            from ai.reasoner import get_debug_prompt
+            saved_prompt = get_debug_prompt(qube_id)
+
+            if saved_prompt and saved_prompt.get("messages"):
+                # Return the actual messages that were sent
+                messages = saved_prompt.get("messages", [])
+
+                # Extract system prompt from messages for convenience
+                system_prompt = ""
+                for msg in messages:
+                    if msg.get("role") == "system":
+                        system_prompt = msg.get("content", "")
+                        break
+
+                return {
+                    "success": True,
+                    "system_prompt": system_prompt,
+                    "messages": messages,
+                    "model": saved_prompt.get("model", "unknown"),
+                    "provider": saved_prompt.get("provider", "unknown"),
+                    "qube_name": saved_prompt.get("qube_name", qube.name),
+                    "qube_id": saved_prompt.get("qube_id", qube_id),
+                    "switched_from": saved_prompt.get("switched_from"),  # Include switch info if present
+                    "timestamp": saved_prompt.get("timestamp"),
+                }
+
+            # Fallback: No saved prompt yet, build a fresh preview
+            qube.chain_state.reload()
             from ai.reasoner import QubeReasoner
             reasoner = QubeReasoner(qube)
             preview = await reasoner.build_system_prompt_preview()
@@ -7240,18 +7326,12 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
             if not qube_dir:
                 return {"success": False, "error": f"Qube {qube_id} not found"}
 
-            state = self._load_chain_state(qube_dir)
-            state["model_locked"] = locked
-            state["model_locked_to"] = model_name if locked else None
+            # Use ChainState object directly to properly handle nested settings structure
+            chain_state = self._get_chain_state(qube_id)
+            if not chain_state:
+                return {"success": False, "error": "Failed to access chain state - encryption key not available"}
 
-            # Mutually exclusive: disable other modes when enabling manual mode
-            if locked:
-                state["revolver_mode_enabled"] = False
-                state["autonomous_mode_enabled"] = False
-                state["model_mode"] = "manual"
-
-            if not self._save_chain_state(qube_dir, state):
-                return {"success": False, "error": "Failed to save settings - encryption key not available"}
+            chain_state.set_model_lock(locked, model_name)
 
             logger.info(f"Model lock set for {qube_id}: locked={locked}, model={model_name}")
 
@@ -7288,7 +7368,7 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
                 return {"success": False, "error": f"Qube {qube_id} not found"}
 
             # Use ChainState object directly to properly handle runtime fields
-            chain_state = self._get_chain_state(qube_dir, qube_id)
+            chain_state = self._get_chain_state(qube_id)
             if not chain_state:
                 return {"success": False, "error": "Failed to access chain state - encryption key not available"}
 
@@ -7322,10 +7402,12 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
             if not qube_dir:
                 return {"success": False, "error": f"Qube {qube_id} not found"}
 
-            state = self._load_chain_state(qube_dir)
-            state["revolver_mode_pool"] = models
-            if not self._save_chain_state(qube_dir, state):
-                return {"success": False, "error": "Failed to save settings - encryption key not available"}
+            # Use ChainState object directly to properly handle nested settings structure
+            chain_state = self._get_chain_state(qube_id)
+            if not chain_state:
+                return {"success": False, "error": "Failed to access chain state - encryption key not available"}
+
+            chain_state.set_revolver_mode_pool(models)
 
             logger.info(f"Revolver mode pool set for {qube_id}: {len(models)} models")
 
@@ -7354,8 +7436,9 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
             if not qube_dir:
                 return {"success": False, "error": f"Qube {qube_id} not found"}
 
-            state = self._load_chain_state(qube_dir)
-            pool = state.get("revolver_mode_pool", [])
+            # _load_chain_state returns the settings dict directly
+            settings = self._load_chain_state(qube_dir)
+            pool = settings.get("revolver_mode_pool", [])
 
             return {
                 "success": True,
@@ -7406,10 +7489,12 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
             if not qube_dir:
                 return {"success": False, "error": f"Qube {qube_id} not found"}
 
-            state = self._load_chain_state(qube_dir)
-            state["autonomous_mode_pool"] = models
-            if not self._save_chain_state(qube_dir, state):
-                return {"success": False, "error": "Failed to save settings - encryption key not available"}
+            # Use ChainState object directly to properly handle nested settings structure
+            chain_state = self._get_chain_state(qube_id)
+            if not chain_state:
+                return {"success": False, "error": "Failed to access chain state - encryption key not available"}
+
+            chain_state.set_autonomous_mode_pool(models)
 
             logger.info(f"Autonomous mode pool set for {qube_id}: {len(models)} models")
 
@@ -7438,8 +7523,9 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
             if not qube_dir:
                 return {"success": False, "error": f"Qube {qube_id} not found"}
 
-            state = self._load_chain_state(qube_dir)
-            pool = state.get("autonomous_mode_pool", [])
+            # _load_chain_state returns the settings dict directly
+            settings = self._load_chain_state(qube_dir)
+            pool = settings.get("autonomous_mode_pool", [])
 
             return {
                 "success": True,
@@ -7493,20 +7579,12 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
             if not qube_dir:
                 return {"success": False, "error": f"Qube {qube_id} not found"}
 
-            state = self._load_chain_state(qube_dir)
-            state["autonomous_mode_enabled"] = enabled
-            # Mutually exclusive: disable other modes when enabling autonomous mode
-            if enabled:
-                state["model_locked"] = False
-                state["model_locked_to"] = None
-                state["revolver_mode_enabled"] = False
-                state["model_mode"] = "autonomous"
-            else:
-                # If disabling autonomous and no other mode is active, default to manual
-                if not state.get("revolver_mode_enabled"):
-                    state["model_mode"] = "manual"
-            if not self._save_chain_state(qube_dir, state):
-                return {"success": False, "error": "Failed to save settings - encryption key not available"}
+            # Use ChainState object directly to properly handle nested settings structure
+            chain_state = self._get_chain_state(qube_id)
+            if not chain_state:
+                return {"success": False, "error": "Failed to access chain state - encryption key not available"}
+
+            chain_state.set_autonomous_mode(enabled)
 
             logger.info(f"Autonomous mode {'enabled' if enabled else 'disabled'} for {qube_id}")
 
@@ -7540,7 +7618,9 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
             if not qube_dir:
                 return {"success": False, "error": f"Qube {qube_id} not found"}
 
-            state = self._load_chain_state(qube_dir)
+            # _load_chain_state returns the settings dict directly (via get_all_settings)
+            # So 'settings' here IS the settings dict, not a parent state object
+            settings = self._load_chain_state(qube_dir)
 
             # Also get genesis model from metadata
             metadata_path = qube_dir / "chain" / "qube_metadata.json"
@@ -7550,14 +7630,15 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
                     metadata = json.load(f)
                     genesis_model = metadata.get("genesis_block", {}).get("ai_model")
 
-            # Determine modes: model_locked is the default if none are explicitly set
-            revolver_mode = state.get("revolver_mode_enabled", False)
-            autonomous_mode = state.get("autonomous_mode_enabled", False)
+            # Read directly from settings (which is what _load_chain_state returns)
+            revolver_mode = settings.get("revolver_mode_enabled", False)
+            autonomous_mode = settings.get("autonomous_mode_enabled", False)
             # Default to model_locked if neither revolver nor autonomous mode is on
-            model_locked = state.get("model_locked", not revolver_mode and not autonomous_mode)
+            model_locked_raw = settings.get("model_locked")
+            model_locked = model_locked_raw if model_locked_raw is not None else (not revolver_mode and not autonomous_mode)
 
             # Get model_mode (single source of truth) - derive if not stored
-            model_mode = state.get("model_mode")
+            model_mode = settings.get("model_mode")
             if not model_mode:
                 if autonomous_mode:
                     model_mode = "autonomous"
@@ -7566,18 +7647,23 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
                 else:
                     model_mode = "manual"
 
+            # Get pools and other settings
+            revolver_pool = settings.get("revolver_mode_pool", [])
+            autonomous_pool = settings.get("autonomous_mode_pool", [])
+            locked_to = settings.get("model_locked_to")
+
             return {
                 "success": True,
-                "preferences": state.get("model_preferences", {}),
-                "current_model": state.get("current_model_override") or genesis_model,
-                "current_override": state.get("current_model_override"),
+                "preferences": settings.get("model_preferences", {}),
+                "current_model": settings.get("current_model_override") or genesis_model,
+                "current_override": settings.get("current_model_override"),
                 "genesis_model": genesis_model,
                 "model_locked": model_locked,
-                "locked_to": state.get("model_locked_to"),
+                "locked_to": locked_to,
                 "revolver_mode": revolver_mode,
-                "revolver_mode_pool": state.get("revolver_mode_pool", []),
+                "revolver_mode_pool": revolver_pool,
                 "autonomous_mode": autonomous_mode,
-                "autonomous_mode_pool": state.get("autonomous_mode_pool", []),
+                "autonomous_mode_pool": autonomous_pool,
                 "model_mode": model_mode  # Single source of truth
             }
 

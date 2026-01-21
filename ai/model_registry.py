@@ -36,7 +36,7 @@ class ModelRegistry:
     MODELS: Dict[str, Dict[str, Any]] = {
         # OpenAI - Latest models (2025-2026)
         "gpt-5.2": {"provider": "openai", "class": OpenAIModel, "description": "GPT-5.2, Dec 2025", "temperature_fixed": 1.0, "cost_per_1k_tokens": 0.015},
-        "gpt-5.2-pro": {"provider": "openai", "class": OpenAIModel, "description": "GPT-5.2 Pro", "temperature_fixed": 1.0, "cost_per_1k_tokens": 0.025},
+        # Note: gpt-5.2-pro removed - requires OpenAI Responses API which we don't support
         "gpt-5.2-chat-latest": {"provider": "openai", "class": OpenAIModel, "description": "GPT-5.2 Chat", "cost_per_1k_tokens": 0.010},
         "gpt-5.2-codex": {"provider": "openai", "class": OpenAIModel, "description": "GPT-5.2 Codex", "cost_per_1k_tokens": 0.012},
         "gpt-5.1": {"provider": "openai", "class": OpenAIModel, "description": "GPT-5.1", "temperature_fixed": 1.0, "cost_per_1k_tokens": 0.012},
@@ -439,7 +439,6 @@ class ModelRegistry:
         label_map = {
             # OpenAI
             "gpt-5.2": "GPT-5.2",  # No trailing space
-            "gpt-5.2-pro": "GPT-5.2 Pro",
             "gpt-5.2-chat-latest": "GPT-5.2 Instant",
             "gpt-5.2-codex": "GPT-5.2 Codex",
             "gpt-5.1": "GPT-5.1",

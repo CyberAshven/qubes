@@ -74,11 +74,13 @@ export const QubeSettingsModal: React.FC<QubeSettingsModalProps> = ({
   const { providers, models, isLoaded, fetchModels, formatModelName } = useModels();
   const { invalidateCache, loadChainState } = useChainState();
 
-  // Local state - only one of the three modes can be active
-  // Default to modelLocked if none of the modes is explicitly on
-  const [modelLocked, setModelLocked] = useState(initialModelLocked || (!initialRevolverMode && !initialAutonomousMode));
-  const [revolverMode, setRevolverMode] = useState(initialRevolverMode);
+  // Local state - only one of the three modes can be active (mutually exclusive)
+  // Priority: autonomous > revolver > manual (locked)
+  // IMPORTANT: Exactly one mode must ALWAYS be ON. Manual is the default.
   const [autonomousMode, setAutonomousMode] = useState(initialAutonomousMode);
+  const [revolverMode, setRevolverMode] = useState(!initialAutonomousMode && initialRevolverMode);
+  // Default to Manual if neither autonomous nor revolver is ON
+  const [modelLocked, setModelLocked] = useState(!initialAutonomousMode && !initialRevolverMode);
   // Track selected models for revolver mode (stored as "provider:model" strings)
   const [selectedRevolverModels, setSelectedRevolverModels] = useState<Set<string>>(new Set());
   // Track selected models for autonomous mode (stored as "provider:model" strings)
@@ -88,12 +90,14 @@ export const QubeSettingsModal: React.FC<QubeSettingsModalProps> = ({
   const [saving, setSaving] = useState(false);
   const [loadingProviders, setLoadingProviders] = useState(false);
 
-  // Sync state when props change
+  // Sync state when props change - enforce mutual exclusivity
   useEffect(() => {
-    setRevolverMode(initialRevolverMode);
+    // Priority: autonomous > revolver > manual
+    // IMPORTANT: Exactly one mode must ALWAYS be ON. Manual is the default.
     setAutonomousMode(initialAutonomousMode);
-    // Default to modelLocked if none of the modes is explicitly on
-    setModelLocked(initialModelLocked || (!initialRevolverMode && !initialAutonomousMode));
+    setRevolverMode(!initialAutonomousMode && initialRevolverMode);
+    // Default to Manual if neither autonomous nor revolver is ON
+    setModelLocked(!initialAutonomousMode && !initialRevolverMode);
   }, [initialModelLocked, initialRevolverMode, initialAutonomousMode, isOpen]);
 
   // Load models and configured providers on mount
@@ -347,28 +351,23 @@ export const QubeSettingsModal: React.FC<QubeSettingsModalProps> = ({
     if (!userId) return;
     setSaving(true);
     try {
-      // Save lock state if changed
-      if (modelLocked !== initialModelLocked) {
-        await invoke('set_model_lock', {
-          userId,
-          qubeId,
-          locked: modelLocked,
-          modelName: modelLocked ? currentModel : null,
-          password: masterPassword,
-        });
-      }
+      // Always save all mode states to ensure backend is in sync
+      // This prevents edge cases where conditional saves cause state drift
+      await invoke('set_model_lock', {
+        userId,
+        qubeId,
+        locked: modelLocked,
+        modelName: modelLocked ? currentModel : null,
+        password: masterPassword,
+      });
 
-      // Save revolver state if changed
-      if (revolverMode !== initialRevolverMode) {
-        await invoke('set_revolver_mode', {
-          userId,
-          qubeId,
-          enabled: revolverMode,
-          password: masterPassword,
-        });
-      }
+      await invoke('set_revolver_mode', {
+        userId,
+        qubeId,
+        enabled: revolverMode,
+        password: masterPassword,
+      });
 
-      // Save autonomous mode state
       await invoke('set_autonomous_mode', {
         userId,
         qubeId,

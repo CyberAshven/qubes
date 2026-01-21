@@ -31,6 +31,7 @@ interface ChatResponse {
   response?: string;
   timestamp?: string;
   current_model?: string;
+  current_provider?: string;
   error?: string;
 }
 
@@ -53,6 +54,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
   const [activeToolCalls, setActiveToolCalls] = useState<Array<{
     action_type: string;
     timestamp: number;
+    target_model?: string;  // For revolver_switch actions
   }>>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const recognitionRef = useRef<any>(null);
@@ -554,6 +556,19 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
     manageVisualizerWindow();
   }, [isPlayingAudio, visualizerSettings.output_monitor, visualizerSettings.enabled]);
 
+  // STT name aliases for common misrecognitions
+  // Keys are regex patterns (case-insensitive), values are replacements
+  const applySttAliases = (text: string): string => {
+    const aliases: Record<string, string> = {
+      '\\bAlf\\b': 'Alph',
+    };
+    let result = text;
+    for (const [pattern, replacement] of Object.entries(aliases)) {
+      result = result.replace(new RegExp(pattern, 'gi'), replacement);
+    }
+    return result;
+  };
+
   // Initialize speech recognition
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -570,7 +585,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
           for (let i = event.resultIndex; i < event.results.length; i++) {
             transcript += event.results[i][0].transcript;
           }
-          setInputValue(transcript);
+          // Apply STT aliases to fix common misrecognitions
+          setInputValue(applySttAliases(transcript));
         };
 
         recognition.onerror = (event: any) => {
@@ -833,6 +849,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
               emit('qube-model-changed', {
                 qubeId: selectedQubes[0].qube_id,
                 newModel: textResponse.current_model,
+                newProvider: textResponse.current_provider,
               });
             }
           } else {
@@ -870,6 +887,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
             emit('qube-model-changed', {
               qubeId: selectedQubes[0].qube_id,
               newModel: response.current_model,
+              newProvider: response.current_provider,
             });
           }
         } else {
@@ -1075,14 +1093,16 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
             if (b.content?.status === 'in_progress' || displayedFor < MIN_TOOL_DISPLAY_MS) {
               recentActions.push({
                 action_type: b.content.action_type,
-                timestamp: b.timestamp
+                timestamp: b.timestamp,
+                // Extract target model for revolver_switch actions
+                target_model: b.content?.parameters?.target_model || b.content?.result?.new_model
               });
             }
           });
 
-          // Check for completed switch_model actions to update model display immediately
+          // Check for completed switch_model or revolver_switch actions to update model display immediately
           const completedSwitchModels = currentTurnActions.filter((b: any) =>
-            b.content?.action_type === 'switch_model' &&
+            (b.content?.action_type === 'switch_model' || b.content?.action_type === 'revolver_switch') &&
             b.content?.status === 'completed' &&
             b.content?.result?.success === true &&
             b.content?.result?.new_model &&
@@ -1092,11 +1112,13 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
           completedSwitchModels.forEach((b: any) => {
             processedModelSwitches.current.add(b.timestamp);
             const newModel = b.content.result.new_model;
+            const newProvider = b.content.result.provider;
             setCurrentModel(newModel);
             // Emit event so other components (roster, etc.) can update
             emit('qube-model-changed', {
               qubeId: selectedQubes[0].qube_id,
               newModel: newModel,
+              newProvider: newProvider,
             });
           });
 
@@ -1356,7 +1378,13 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
                 'learn_from_game': 'learning from game',
               };
 
-              const displayText = toolDisplay[tool.action_type] || tool.action_type;
+              // Special handling for revolver_switch - show the model name
+              let displayText: string;
+              if (tool.action_type === 'revolver_switch' && tool.target_model) {
+                displayText = `🎰 switching to ${tool.target_model}`;
+              } else {
+                displayText = toolDisplay[tool.action_type] || tool.action_type;
+              }
 
               return (
                 <div className="flex justify-start">

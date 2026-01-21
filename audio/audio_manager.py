@@ -57,10 +57,18 @@ class AudioManager:
         self.rate_limiter = AudioRateLimiter()
         self.hallucination_filter = HallucinationFilter()
 
+        # STT name aliases for common misrecognitions
+        # Keys are what STT might hear, values are correct spelling
+        # Case-insensitive matching, preserves original case pattern
+        self.stt_aliases = config.get("stt_aliases", {
+            "Alf": "Alph",
+        })
+
         logger.info(
             "audio_manager_initialized",
             tts_providers=list(self.tts_providers.keys()),
-            stt_providers=list(self.stt_providers.keys())
+            stt_providers=list(self.stt_providers.keys()),
+            stt_aliases=len(self.stt_aliases)
         )
 
     def _load_config_from_env(self) -> Dict[str, Any]:
@@ -169,6 +177,59 @@ class AudioManager:
                 logger.info("stt_provider_initialized", provider="whisper_cpp")
             except Exception as e:
                 logger.warning("stt_provider_init_failed", provider="whisper_cpp", error=str(e))
+
+    def _apply_stt_aliases(self, text: str) -> str:
+        """
+        Apply STT name aliases to fix common misrecognitions.
+
+        Performs case-insensitive word boundary matching and preserves
+        the original case pattern when possible.
+
+        Args:
+            text: Transcribed text
+
+        Returns:
+            Text with aliases applied
+        """
+        import re
+
+        if not self.stt_aliases or not text:
+            return text
+
+        result = text
+        for wrong, correct in self.stt_aliases.items():
+            # Case-insensitive word boundary match
+            pattern = rf'\b{re.escape(wrong)}\b'
+            matches = list(re.finditer(pattern, result, re.IGNORECASE))
+
+            # Replace from end to preserve indices
+            for match in reversed(matches):
+                original = match.group()
+                # Preserve case pattern: if original was all caps, make replacement all caps
+                if original.isupper():
+                    replacement = correct.upper()
+                elif original.islower():
+                    replacement = correct.lower()
+                elif original[0].isupper():
+                    replacement = correct.capitalize()
+                else:
+                    replacement = correct
+                result = result[:match.start()] + replacement + result[match.end():]
+
+        if result != text:
+            logger.debug("stt_aliases_applied", original=text, corrected=result)
+
+        return result
+
+    def set_stt_aliases(self, aliases: Dict[str, str]) -> None:
+        """
+        Update STT aliases (e.g., from qube settings).
+
+        Args:
+            aliases: Dict mapping misrecognitions to correct spellings
+        """
+        self.stt_aliases.update(aliases)
+        logger.info("stt_aliases_updated", count=len(self.stt_aliases))
 
     async def speak(
         self,
@@ -411,8 +472,9 @@ class AudioManager:
 
                 # Success
                 audio_path.unlink()  # Clean up
-                logger.info("stt_success", provider=provider_name, text_length=len(result["text"]))
-                return result["text"]
+                text = self._apply_stt_aliases(result["text"])
+                logger.info("stt_success", provider=provider_name, text_length=len(text))
+                return text
 
             except Exception as e:
                 logger.warning(
@@ -455,7 +517,7 @@ class AudioManager:
                     result["text"],
                     result.get("confidence", 1.0)
                 ):
-                    return result["text"]
+                    return self._apply_stt_aliases(result["text"])
 
             except Exception as e:
                 logger.warning(f"STT provider {provider_name} failed: {e}")

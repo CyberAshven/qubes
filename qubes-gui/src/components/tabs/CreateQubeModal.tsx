@@ -97,7 +97,6 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
   const fallbackModels: Record<string, { value: string; label: string }[]> = {
     openai: [
       { value: 'gpt-5.2', label: 'GPT-5.2' },
-      { value: 'gpt-5.2-pro', label: 'GPT-5.2 Pro' },
       { value: 'gpt-5.2-chat-latest', label: 'GPT-5.2 Instant' },
       { value: 'gpt-5.2-codex', label: 'GPT-5.2 Codex' },
       { value: 'gpt-5.1', label: 'GPT-5.1' },

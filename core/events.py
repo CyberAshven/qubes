@@ -409,10 +409,13 @@ class ChainStateEventBus:
             cs.update_session(context_window_used=current_context + total_tokens)
 
         elif event.event_type == Events.API_CALL_MADE:
-            cs.record_api_call(
-                model=payload.get("model"),
-                provider=payload.get("provider")
-            )
+            # Skip updating runtime model for internal calls (e.g., self-evaluation)
+            # to avoid overwriting the user-facing model
+            if not payload.get("is_internal", False):
+                cs.record_api_call(
+                    model=payload.get("model"),
+                    provider=payload.get("provider")
+                )
 
         elif event.event_type == Events.TOOL_CALLED:
             tool_name = payload.get("tool_name")

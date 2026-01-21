@@ -746,39 +746,46 @@ class ChainState:
         try:
             from ai.model_registry import ModelRegistry
 
-            def migrate_pool(pool: list) -> list:
-                """Convert plain model names to provider:model format."""
+            def migrate_and_validate_pool(pool: list) -> list:
+                """Convert plain model names to provider:model format and validate all entries."""
                 if not pool:
                     return pool
-                migrated = []
+                validated = []
                 for entry in pool:
                     if ":" in entry:
-                        # Already in provider:model format
-                        migrated.append(entry)
+                        # Already in provider:model format - validate it exists
+                        parts = entry.split(":", 1)
+                        model_name = parts[1] if len(parts) > 1 else entry
+                        model_info = ModelRegistry.get_model_info(model_name)
+                        if model_info:
+                            validated.append(entry)
+                        # If model not found in registry, drop it (might be deprecated/removed)
                     else:
                         # Plain model name - look up provider and convert
                         model_info = ModelRegistry.get_model_info(entry)
                         if model_info:
-                            migrated.append(f"{model_info['provider']}:{entry}")
+                            validated.append(f"{model_info['provider']}:{entry}")
                         # If model not found, drop it (might be deprecated)
-                return migrated
+                return validated
 
-            # Migrate existing pools to provider:model format
+            # Migrate and validate existing pools
             revolver_pool = settings.get("revolver_mode_pool", [])
             autonomous_pool = settings.get("autonomous_mode_pool", [])
 
-            migrated_revolver = migrate_pool(revolver_pool)
-            migrated_autonomous = migrate_pool(autonomous_pool)
+            validated_revolver = migrate_and_validate_pool(revolver_pool)
+            validated_autonomous = migrate_and_validate_pool(autonomous_pool)
 
-            if migrated_revolver != revolver_pool:
-                settings["revolver_mode_pool"] = migrated_revolver
+            if validated_revolver != revolver_pool:
+                removed_revolver = set(revolver_pool) - set(validated_revolver)
+                settings["revolver_mode_pool"] = validated_revolver
                 changed = True
-                logger.info("migrated_revolver_pool_format", old_count=len(revolver_pool), new_count=len(migrated_revolver))
+                logger.info("cleaned_revolver_pool", old_count=len(revolver_pool), new_count=len(validated_revolver), removed=list(removed_revolver))
 
-            if migrated_autonomous != autonomous_pool:
-                settings["autonomous_mode_pool"] = migrated_autonomous
+            if validated_autonomous != autonomous_pool:
+                removed_autonomous = set(autonomous_pool) - set(validated_autonomous)
+                settings["autonomous_mode_pool"] = validated_autonomous
                 changed = True
-                logger.info("migrated_autonomous_pool_format", old_count=len(autonomous_pool), new_count=len(migrated_autonomous))
+                logger.info("cleaned_autonomous_pool", old_count=len(autonomous_pool), new_count=len(validated_autonomous), removed=list(removed_autonomous))
 
             # Populate empty pools with all available models (in provider:model format)
             if not settings.get("revolver_mode_pool") or not settings.get("autonomous_mode_pool"):
@@ -793,16 +800,20 @@ class ChainState:
         except Exception as e:
             logger.warning("failed_to_process_model_pools", error=str(e))
 
-        # Migrate to unified model_mode field (derives from booleans if missing)
-        if "model_mode" not in settings:
-            if settings.get("autonomous_mode_enabled"):
-                settings["model_mode"] = "autonomous"
-            elif settings.get("revolver_mode_enabled"):
-                settings["model_mode"] = "revolver"
-            else:
-                settings["model_mode"] = "manual"
+        # ALWAYS synchronize model_mode with boolean flags (source of truth)
+        # This fixes inconsistencies where model_mode says "manual" but revolver_mode_enabled is True
+        old_mode = settings.get("model_mode")
+        if settings.get("revolver_mode_enabled"):
+            correct_mode = "revolver"
+        elif settings.get("autonomous_mode_enabled"):
+            correct_mode = "autonomous"
+        else:
+            correct_mode = "manual"
+
+        if old_mode != correct_mode:
+            settings["model_mode"] = correct_mode
             changed = True
-            logger.info("migrated_model_mode", mode=settings["model_mode"])
+            logger.info("synchronized_model_mode", old=old_mode, new=correct_mode)
 
         if changed:
             logger.info("cleaned_up_deprecated_fields", qube_id=self.state.get("qube_id"))
@@ -861,6 +872,13 @@ class ChainState:
                         for section in backend_sections:
                             if section in disk_state:
                                 merged_state[section] = disk_state[section]
+
+                        # Also preserve top-level backend-managed fields
+                        # current_model_override is set by switch_model tool and must persist
+                        backend_top_level_fields = ["current_model_override"]
+                        for field in backend_top_level_fields:
+                            if field in disk_state:
+                                merged_state[field] = disk_state[field]
 
                     # Strip ephemeral runtime fields before saving
                     # These are in-memory only and should not be persisted to disk
@@ -946,6 +964,25 @@ class ChainState:
         if "settings" not in self.state:
             self.state["settings"] = {}
         self.state["settings"].update(updates)
+
+        # Synchronize model_mode with boolean flags to prevent inconsistent state
+        # This ensures model_mode always matches the actual enabled mode
+        settings = self.state["settings"]
+        if "revolver_mode_enabled" in updates or "autonomous_mode_enabled" in updates or "model_locked" in updates:
+            if settings.get("revolver_mode_enabled"):
+                settings["model_mode"] = "revolver"
+                settings["model_locked"] = False
+                settings["autonomous_mode_enabled"] = False
+            elif settings.get("autonomous_mode_enabled"):
+                settings["model_mode"] = "autonomous"
+                settings["model_locked"] = False
+                settings["revolver_mode_enabled"] = False
+            else:
+                settings["model_mode"] = "manual"
+                settings["model_locked"] = True
+                settings["revolver_mode_enabled"] = False
+                settings["autonomous_mode_enabled"] = False
+
         self._save(preserve_gui_fields=not from_gui)
 
     def get_all_settings(self) -> Dict[str, Any]:
@@ -1101,6 +1138,8 @@ class ChainState:
         runtime = self.state.setdefault("runtime", {})
         runtime["active_conversation_id"] = session_id
         runtime["is_online"] = True
+        # Reset revolver response count for new session (first response uses default model)
+        runtime["revolver_response_count"] = 0
 
         # Note: total_sessions removed - sessions are implementation details,
         # not meaningful metrics. Qubes use anchors for persistent state.
@@ -2324,20 +2363,27 @@ class ChainState:
             settings["revolver_mode_enabled"] = False
             settings["autonomous_mode_enabled"] = False
             settings["model_mode"] = "manual"
+            # Clear any stale model override from autonomous mode
+            # Otherwise the override takes precedence over manual lock
+            if "current_model_override" in self.state:
+                del self.state["current_model_override"]
         # Use preserve_gui_fields=False since we're intentionally updating GUI-managed settings
         self._save(preserve_gui_fields=False)
 
     def get_model_mode(self) -> str:
-        """Get the current model mode: 'autonomous', 'revolver', or 'manual'."""
+        """Get the current model mode: 'autonomous', 'revolver', or 'manual'.
+
+        Always derives from boolean flags to ensure consistency.
+        The stored model_mode field is kept for backward compatibility but
+        the booleans are the source of truth.
+        """
         settings = self.state.get("settings", {})
-        # Return stored model_mode if available
-        if "model_mode" in settings:
-            return settings["model_mode"]
-        # Derive from booleans for backward compatibility
-        if settings.get("autonomous_mode_enabled"):
-            return "autonomous"
-        elif settings.get("revolver_mode_enabled"):
+        # Always derive from booleans - they are the source of truth
+        # This prevents stale model_mode values from causing inconsistency
+        if settings.get("revolver_mode_enabled"):
             return "revolver"
+        elif settings.get("autonomous_mode_enabled"):
+            return "autonomous"
         return "manual"
 
     def is_revolver_mode_enabled(self) -> bool:
@@ -2353,6 +2399,9 @@ class ChainState:
             settings["model_locked"] = False
             settings["autonomous_mode_enabled"] = False
             settings["model_mode"] = "revolver"
+            # Clear any stale model override from autonomous mode
+            if "current_model_override" in self.state:
+                del self.state["current_model_override"]
         else:
             # If disabling revolver and no other mode is active, default to manual
             if not settings.get("autonomous_mode_enabled"):
@@ -2401,6 +2450,11 @@ class ChainState:
         if enabled:
             settings["model_locked"] = False
             settings["revolver_mode_enabled"] = False
+            settings["model_mode"] = "autonomous"
+        else:
+            # If disabling autonomous and no other mode is active, default to manual
+            if not settings.get("revolver_mode_enabled"):
+                settings["model_mode"] = "manual"
         # Use preserve_gui_fields=False since we're intentionally updating GUI-managed settings
         self._save(preserve_gui_fields=False)
 
@@ -2472,33 +2526,47 @@ class ChainState:
         self._save(preserve_gui_fields=False)
 
     def get_current_model(self) -> str:
-        """Get the current AI model (override > runtime > settings > default).
+        """Get the current AI model based on active mode.
 
-        Priority order:
-        1. current_model_override - Set by switch_model tool (persistent user/AI choice)
-        2. runtime.current_model - Set by API call tracking (may lag behind override)
-        3. model_locked_to - Set by GUI settings
-        4. Default model
+        Priority depends on mode:
+        - Revolver mode: runtime.current_model (randomly selected each request)
+        - Other modes: current_model_override > runtime > locked > default
         """
-        # Check for explicit model override first (e.g., from switch_model tool)
-        # This takes priority because the API call tracking may reset runtime.current_model
-        # before the response is returned, but the override represents the intended model
+        settings = self.state.get("settings", {})
+        runtime = self.state.get("runtime", {})
+
+        # In Revolver mode, runtime.current_model is the source of truth
+        # (it's set by the revolver rotation, not by manual switches)
+        if settings.get("revolver_mode_enabled"):
+            if runtime.get("current_model"):
+                return runtime["current_model"]
+
+        # Not revolver mode - check for explicit model override (from switch_model tool)
         override = self.state.get("current_model_override")
         if override:
             return override
 
-        runtime = self.state.get("runtime", {})
+        # Fall back to runtime model (may be set by other mechanisms)
         if runtime.get("current_model"):
             return runtime["current_model"]
+
         # Fall back to locked model if set
-        settings = self.state.get("settings", {})
         if settings.get("model_locked_to"):
             return settings["model_locked_to"]
+
         return "claude-sonnet-4-20250514"
 
     def get_current_provider(self) -> str:
-        """Get the current AI provider (derived from override model, or from runtime)."""
-        # If there's a model override, derive provider from that
+        """Get the current AI provider based on active mode."""
+        settings = self.state.get("settings", {})
+        runtime = self.state.get("runtime", {})
+
+        # In Revolver mode, runtime.current_provider is the source of truth
+        if settings.get("revolver_mode_enabled"):
+            if runtime.get("current_provider"):
+                return runtime["current_provider"]
+
+        # Not revolver mode - derive provider from model override
         override = self.state.get("current_model_override")
         if override:
             try:
@@ -2508,7 +2576,9 @@ class ChainState:
                     return model_info["provider"]
             except Exception:
                 pass
-        return self.state.get("runtime", {}).get("current_provider", "anthropic")
+
+        # Fall back to runtime provider
+        return runtime.get("current_provider", "anthropic")
 
     # Backward compatibility aliases
     def is_free_mode_enabled(self) -> bool:
@@ -2579,6 +2649,61 @@ class ChainState:
         """Clear model override."""
         self.state["current_model_override"] = None
         self._save()
+
+    def set_model_preference(
+        self,
+        task_type: str,
+        model: str,
+        reason: Optional[str] = None
+    ) -> None:
+        """
+        Set a model preference for a specific task type.
+
+        Allows the Qube to remember preferred models for different tasks
+        (e.g., "coding" -> "deepseek-coder", "creative" -> "claude-opus").
+
+        Args:
+            task_type: Category of task (e.g., "coding", "creative", "research")
+            model: Model name to prefer for this task type
+            reason: Optional reason for the preference
+        """
+        settings = self.state.setdefault("settings", {})
+        preferences = settings.setdefault("model_preferences", {})
+
+        preferences[task_type] = {
+            "model": model,
+            "reason": reason,
+            "set_at": int(__import__("time").time())
+        }
+
+        self._save()
+
+    def get_model_preference(self, task_type: str) -> Optional[Dict[str, Any]]:
+        """
+        Get model preference for a task type.
+
+        Args:
+            task_type: Category of task
+
+        Returns:
+            Dict with model, reason, set_at or None if no preference
+        """
+        settings = self.state.get("settings", {})
+        preferences = settings.get("model_preferences", {})
+        return preferences.get(task_type)
+
+    def get_all_model_preferences(self) -> Dict[str, Any]:
+        """Get all model preferences."""
+        settings = self.state.get("settings", {})
+        return settings.get("model_preferences", {})
+
+    def clear_model_preference(self, task_type: str) -> None:
+        """Clear preference for a specific task type."""
+        settings = self.state.get("settings", {})
+        preferences = settings.get("model_preferences", {})
+        if task_type in preferences:
+            del preferences[task_type]
+            self._save()
 
     # =========================================================================
     # RUNTIME STATE METHODS

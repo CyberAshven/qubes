@@ -71,21 +71,49 @@ async def switch_model(
             "revolver_mode": True
         }
 
+    # Check if already on this model
+    current_model = getattr(qube, 'current_ai_model', None)
+    if current_model and current_model.lower() == model_name.lower():
+        return {
+            "success": True,
+            "message": f"Already using {model_name}. No switch needed.",
+            "previous_model": current_model,
+            "new_model": model_name,
+            "already_on_model": True
+        }
+
     # Validate model exists in registry
     model_info = ModelRegistry.get_model_info(model_name)
     if not model_info:
-        # Try to find similar models for suggestion
-        # In autonomous mode, only suggest models from the allowed pool
+        # Model not found - try to auto-resolve human-friendly names
+        # e.g., "Claude Opus 4.1" -> "claude-opus-4-1-20250805"
+        resolved_model = None
         if autonomous_mode:
             allowed_pool = qube.chain_state.get_autonomous_mode_pool()
-            suggestions = _find_similar_models_in_pool(model_name, allowed_pool)
-        else:
-            suggestions = _find_similar_models(model_name)
-        return {
-            "success": False,
-            "message": f"Model '{model_name}' not found in registry. {suggestions}",
-            "previous_model": qube.current_ai_model
-        }
+            resolved_model = _try_resolve_model_name(model_name, allowed_pool)
+
+        if resolved_model:
+            # Successfully resolved - use the resolved model
+            logger.info("model_name_auto_resolved", original=model_name, resolved=resolved_model)
+            # Extract just the model name if it's in provider:model format
+            if ":" in resolved_model:
+                model_name = resolved_model.split(":", 1)[1]
+            else:
+                model_name = resolved_model
+            model_info = ModelRegistry.get_model_info(model_name)
+
+        if not model_info:
+            # Still not found - return error with suggestions
+            if autonomous_mode:
+                allowed_pool = qube.chain_state.get_autonomous_mode_pool()
+                suggestions = _find_similar_models_in_pool(model_name, allowed_pool)
+            else:
+                suggestions = _find_similar_models(model_name)
+            return {
+                "success": False,
+                "message": f"Model '{model_name}' not found in registry. {suggestions}",
+                "previous_model": qube.current_ai_model
+            }
 
     # In Autonomous mode, validate model is in the allowed pool
     if autonomous_mode:
@@ -227,11 +255,59 @@ def _find_similar_models(model_name: str) -> str:
     return "Use your model awareness context to see available models."
 
 
+def _normalize_model_name(name: str) -> str:
+    """Normalize model name for fuzzy matching.
+
+    Handles human-friendly names like "Claude Opus 4.1" -> "claudeopus41"
+    """
+    # Remove provider prefix if present
+    if ":" in name:
+        name = name.split(":", 1)[1]
+    # Lowercase, remove spaces/dashes/dots/underscores, remove date suffixes
+    normalized = name.lower()
+    normalized = normalized.replace(" ", "").replace("-", "").replace(".", "").replace("_", "")
+    # Remove common date suffixes like 20250805
+    import re
+    normalized = re.sub(r'\d{8}$', '', normalized)
+    return normalized
+
+
+def _try_resolve_model_name(model_name: str, allowed_pool: list) -> Optional[str]:
+    """Try to auto-resolve a human-friendly model name to a pool entry.
+
+    Args:
+        model_name: Human-friendly name like "Claude Opus 4.1"
+        allowed_pool: List of allowed models in "provider:model" format
+
+    Returns:
+        The matching pool entry (e.g., "anthropic:claude-opus-4-1-20250805") or None
+    """
+    if not allowed_pool:
+        return None
+
+    query_normalized = _normalize_model_name(model_name)
+
+    # First pass: exact normalized match
+    for pool_entry in allowed_pool:
+        entry_normalized = _normalize_model_name(pool_entry)
+        if query_normalized == entry_normalized:
+            return pool_entry
+
+    # Second pass: one contains the other
+    for pool_entry in allowed_pool:
+        entry_normalized = _normalize_model_name(pool_entry)
+        if query_normalized in entry_normalized or entry_normalized in query_normalized:
+            return pool_entry
+
+    return None
+
+
 def _find_similar_models_in_pool(model_name: str, allowed_pool: list) -> str:
     """Find similar model names within the allowed pool (autonomous mode)."""
     if not allowed_pool:
         return "Your autonomous mode pool is empty. Ask your owner to configure it."
 
+    query_normalized = _normalize_model_name(model_name)
     model_lower = model_name.lower()
     suggestions = []
 
@@ -242,11 +318,16 @@ def _find_similar_models_in_pool(model_name: str, allowed_pool: list) -> str:
         else:
             entry_model = pool_entry
 
+        entry_normalized = _normalize_model_name(entry_model)
+
+        # Check normalized match (handles "Claude Opus 4.1" -> "claude-opus-4-1-20250805")
+        if query_normalized in entry_normalized or entry_normalized in query_normalized:
+            suggestions.append(pool_entry)
         # Check if query is substring of model name or vice versa
-        if model_lower in entry_model.lower() or entry_model.lower() in model_lower:
+        elif model_lower in entry_model.lower() or entry_model.lower() in model_lower:
             suggestions.append(pool_entry)
         # Also check for partial matches (e.g., "gpt5" matches "gpt-5.2-pro")
-        elif any(part in entry_model.lower() for part in model_lower.split("-")):
+        elif any(part in entry_model.lower() for part in model_lower.replace(" ", "-").split("-") if len(part) > 1):
             suggestions.append(pool_entry)
 
     if suggestions:

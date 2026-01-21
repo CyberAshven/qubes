@@ -191,12 +191,27 @@ class GoogleModel(AIModelInterface):
             # Record API call start
             MetricsRecorder.record_ai_api_call("google", self.model_name, "started")
 
-            # Make API call using new SDK
-            response = client.models.generate_content(
-                model=self.model_name,
-                contents=contents,
-                config=config
-            )
+            # Make API call using new SDK with timeout
+            # Wrap synchronous call in asyncio with 120 second timeout
+            import asyncio
+
+            def _sync_generate():
+                return client.models.generate_content(
+                    model=self.model_name,
+                    contents=contents,
+                    config=config
+                )
+
+            try:
+                response = await asyncio.wait_for(
+                    asyncio.to_thread(_sync_generate),
+                    timeout=120.0  # 2 minute timeout
+                )
+            except asyncio.TimeoutError:
+                raise ModelAPIError(
+                    f"Google API request timed out after 120 seconds. The model may be overloaded. Try again or use a different model.",
+                    context={"model": self.model_name, "error_type": "timeout"}
+                )
 
             # Record success
             MetricsRecorder.record_ai_api_call("google", self.model_name, "success")

@@ -7,7 +7,6 @@ export function formatModelName(modelId: string): string {
   const modelMap: Record<string, string> = {
     // OpenAI - GPT 5.x series (2025-2026)
     'gpt-5.2': 'GPT-5.2',
-    'gpt-5.2-pro': 'GPT-5.2 Pro',
     'gpt-5.2-chat-latest': 'GPT-5.2 Instant',
     'gpt-5.2-codex': 'GPT-5.2 Codex',
     'gpt-5.1': 'GPT-5.1',

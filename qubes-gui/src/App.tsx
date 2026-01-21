@@ -87,17 +87,17 @@ function App() {
   }, [isAuthenticated]);
 
   // Listen for model changes (from revolver mode, switch_model tool, etc.)
-  // Updates the qube's ai_model so roster and other components show current model
+  // Updates the qube's ai_model and ai_provider so roster and other components show current model
   useEffect(() => {
     const setupModelChangeListener = async () => {
-      const unlisten = await listen<{ qubeId: string; newModel: string }>(
+      const unlisten = await listen<{ qubeId: string; newModel: string; newProvider?: string }>(
         'qube-model-changed',
         (event) => {
-          const { qubeId, newModel } = event.payload;
+          const { qubeId, newModel, newProvider } = event.payload;
           setQubes((prevQubes) =>
             prevQubes.map((qube) =>
               qube.qube_id === qubeId
-                ? { ...qube, ai_model: newModel }
+                ? { ...qube, ai_model: newModel, ...(newProvider && { ai_provider: newProvider }) }
                 : qube
             )
           );

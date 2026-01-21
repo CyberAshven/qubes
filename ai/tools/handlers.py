@@ -20,6 +20,241 @@ logger = get_logger(__name__)
 # Global lock to prevent concurrent image generation (prevents OpenAI rate limiting)
 _image_generation_lock = asyncio.Lock()
 
+# =============================================================================
+# SKILL TREE DEFINITIONS
+# Complete skill tree that qubes can view to see all possible skills
+# =============================================================================
+
+SKILL_CATEGORIES = [
+    {"id": "ai_reasoning", "name": "AI Reasoning", "color": "#4A90E2", "icon": "🧠", "description": "Master AI reasoning and problem-solving capabilities"},
+    {"id": "social_intelligence", "name": "Social Intelligence", "color": "#FF69B4", "icon": "🤝", "description": "Master social dynamics and interpersonal skills"},
+    {"id": "technical_expertise", "name": "Technical Expertise", "color": "#00FF88", "icon": "💻", "description": "Master technical and engineering skills"},
+    {"id": "creative_expression", "name": "Creative Expression", "color": "#FFB347", "icon": "🎨", "description": "Master creative and artistic skills"},
+    {"id": "knowledge_domains", "name": "Knowledge Domains", "color": "#9B59B6", "icon": "📚", "description": "Master diverse knowledge domains"},
+    {"id": "security_privacy", "name": "Security & Privacy", "color": "#E74C3C", "icon": "🛡️", "description": "Master security and privacy practices"},
+    {"id": "games", "name": "Games", "color": "#F39C12", "icon": "🎮", "description": "Master strategic and recreational games"},
+]
+
+SKILL_TREE = {
+    "ai_reasoning": [
+        # Sun
+        {"id": "ai_reasoning", "name": "AI Reasoning", "node_type": "sun", "xp_required": 1000, "tool_unlock": "describe_my_avatar", "icon": "🧠", "description": "Master AI reasoning and problem-solving capabilities"},
+        # Planets (5)
+        {"id": "prompt_engineering", "name": "Prompt Engineering", "node_type": "planet", "parent": "ai_reasoning", "xp_required": 500, "tool_unlock": "analyze_prompt_quality", "icon": "✍️", "description": "Craft effective prompts to elicit desired AI responses"},
+        {"id": "chain_of_thought", "name": "Chain of Thought", "node_type": "planet", "parent": "ai_reasoning", "xp_required": 500, "tool_unlock": "generate_reasoning_chain", "icon": "🔗", "description": "Break down complex problems into logical steps"},
+        {"id": "code_generation", "name": "Code Generation", "node_type": "planet", "parent": "ai_reasoning", "xp_required": 500, "tool_unlock": "advanced_code_gen", "icon": "⚙️", "description": "Generate high-quality code across multiple languages"},
+        {"id": "analysis_critique", "name": "Analysis & Critique", "node_type": "planet", "parent": "ai_reasoning", "xp_required": 500, "tool_unlock": "deep_analysis", "icon": "🔍", "description": "Critically analyze and provide constructive feedback"},
+        {"id": "multistep_planning", "name": "Multi-step Planning", "node_type": "planet", "parent": "ai_reasoning", "xp_required": 500, "tool_unlock": "create_task_plan", "icon": "📋", "description": "Plan and execute complex multi-step tasks"},
+        # Moons (10 - 2 per planet)
+        {"id": "prompt_eng_clarity", "name": "Clarity & Precision", "node_type": "moon", "parent": "prompt_engineering", "xp_required": 250, "icon": "📝", "description": "Write clear, unambiguous prompts"},
+        {"id": "prompt_eng_context", "name": "Context Building", "node_type": "moon", "parent": "prompt_engineering", "xp_required": 250, "icon": "📚", "description": "Provide optimal context for AI understanding"},
+        {"id": "cot_decomposition", "name": "Problem Decomposition", "node_type": "moon", "parent": "chain_of_thought", "xp_required": 250, "icon": "🧩", "description": "Break problems into manageable sub-problems"},
+        {"id": "cot_verification", "name": "Step Verification", "node_type": "moon", "parent": "chain_of_thought", "xp_required": 250, "icon": "✅", "description": "Verify correctness of each reasoning step"},
+        {"id": "code_patterns", "name": "Design Patterns", "node_type": "moon", "parent": "code_generation", "xp_required": 250, "icon": "🏗️", "description": "Apply software design patterns effectively"},
+        {"id": "code_optimization", "name": "Code Optimization", "node_type": "moon", "parent": "code_generation", "xp_required": 250, "icon": "⚡", "description": "Write efficient, optimized code"},
+        {"id": "analysis_depth", "name": "Deep Analysis", "node_type": "moon", "parent": "analysis_critique", "xp_required": 250, "icon": "🔬", "description": "Perform thorough, multi-layered analysis"},
+        {"id": "constructive_feedback", "name": "Constructive Feedback", "node_type": "moon", "parent": "analysis_critique", "xp_required": 250, "icon": "💬", "description": "Provide actionable, helpful feedback"},
+        {"id": "planning_strategy", "name": "Strategic Planning", "node_type": "moon", "parent": "multistep_planning", "xp_required": 250, "icon": "🎯", "description": "Develop high-level execution strategies"},
+        {"id": "planning_adaptation", "name": "Plan Adaptation", "node_type": "moon", "parent": "multistep_planning", "xp_required": 250, "icon": "🔄", "description": "Adjust plans based on changing conditions"},
+    ],
+    "social_intelligence": [
+        # Sun
+        {"id": "social_intelligence", "name": "Social Intelligence", "node_type": "sun", "xp_required": 1000, "tool_unlock": "send_message", "icon": "🤝", "description": "Master social dynamics and interpersonal skills"},
+        # Planets (5)
+        {"id": "emotional_intelligence", "name": "Emotional Intelligence", "node_type": "planet", "parent": "social_intelligence", "xp_required": 500, "tool_unlock": "emotion_analysis", "icon": "❤️", "description": "Understand and respond to emotions effectively"},
+        {"id": "communication", "name": "Communication", "node_type": "planet", "parent": "social_intelligence", "xp_required": 500, "tool_unlock": "communication_strategy", "icon": "💭", "description": "Communicate clearly and effectively"},
+        {"id": "empathy", "name": "Empathy", "node_type": "planet", "parent": "social_intelligence", "xp_required": 500, "tool_unlock": "empathy_response", "icon": "🫂", "description": "Understand and share feelings of others"},
+        {"id": "relationship_building", "name": "Relationship Building", "node_type": "planet", "parent": "social_intelligence", "xp_required": 500, "tool_unlock": "relationship_strategy", "icon": "🌉", "description": "Build and maintain meaningful relationships"},
+        {"id": "conflict_resolution", "name": "Conflict Resolution", "node_type": "planet", "parent": "social_intelligence", "xp_required": 500, "tool_unlock": "mediation_strategy", "icon": "☮️", "description": "Resolve conflicts peacefully and effectively"},
+        # Moons (10)
+        {"id": "ei_self_awareness", "name": "Self-Awareness", "node_type": "moon", "parent": "emotional_intelligence", "xp_required": 250, "icon": "🪞", "description": "Recognize own emotional states"},
+        {"id": "ei_emotion_regulation", "name": "Emotion Regulation", "node_type": "moon", "parent": "emotional_intelligence", "xp_required": 250, "icon": "🎚️", "description": "Manage emotional responses effectively"},
+        {"id": "comm_active_listening", "name": "Active Listening", "node_type": "moon", "parent": "communication", "xp_required": 250, "icon": "👂", "description": "Listen attentively and understand deeply"},
+        {"id": "comm_persuasion", "name": "Persuasion", "node_type": "moon", "parent": "communication", "xp_required": 250, "icon": "💫", "description": "Influence others effectively"},
+        {"id": "empathy_perspective", "name": "Perspective Taking", "node_type": "moon", "parent": "empathy", "xp_required": 250, "icon": "👁️", "description": "See situations from others viewpoints"},
+        {"id": "empathy_compassion", "name": "Compassion", "node_type": "moon", "parent": "empathy", "xp_required": 250, "icon": "🤗", "description": "Show genuine care and concern"},
+        {"id": "relationship_trust", "name": "Trust Building", "node_type": "moon", "parent": "relationship_building", "xp_required": 250, "icon": "🤝", "description": "Establish and maintain trust"},
+        {"id": "relationship_rapport", "name": "Rapport Building", "node_type": "moon", "parent": "relationship_building", "xp_required": 250, "icon": "✨", "description": "Create positive connections quickly"},
+        {"id": "conflict_negotiation", "name": "Negotiation", "node_type": "moon", "parent": "conflict_resolution", "xp_required": 250, "icon": "🤲", "description": "Find win-win solutions"},
+        {"id": "conflict_mediation", "name": "Mediation", "node_type": "moon", "parent": "conflict_resolution", "xp_required": 250, "icon": "⚖️", "description": "Help others resolve disputes"},
+    ],
+    "technical_expertise": [
+        # Sun
+        {"id": "technical_expertise", "name": "Technical Expertise", "node_type": "sun", "xp_required": 1000, "tool_unlock": "web_search", "icon": "💻", "description": "Master technical and engineering skills"},
+        # Planets (5)
+        {"id": "programming", "name": "Programming", "node_type": "planet", "parent": "technical_expertise", "xp_required": 500, "tool_unlock": "code_review", "icon": "👨‍💻", "description": "Write clean, efficient code"},
+        {"id": "devops", "name": "DevOps", "node_type": "planet", "parent": "technical_expertise", "xp_required": 500, "tool_unlock": "infrastructure_analysis", "icon": "🚀", "description": "Manage deployment and infrastructure"},
+        {"id": "system_architecture", "name": "System Architecture", "node_type": "planet", "parent": "technical_expertise", "xp_required": 500, "tool_unlock": "architecture_design", "icon": "🏛️", "description": "Design scalable system architectures"},
+        {"id": "debugging", "name": "Debugging", "node_type": "planet", "parent": "technical_expertise", "xp_required": 500, "tool_unlock": "debug_assistant", "icon": "🐛", "description": "Identify and fix bugs efficiently"},
+        {"id": "api_integration", "name": "API Integration", "node_type": "planet", "parent": "technical_expertise", "xp_required": 500, "tool_unlock": "api_design", "icon": "🔌", "description": "Integrate and work with APIs effectively"},
+        # Moons (10)
+        {"id": "prog_algorithms", "name": "Algorithms", "node_type": "moon", "parent": "programming", "xp_required": 250, "icon": "🔢", "description": "Implement efficient algorithms"},
+        {"id": "prog_data_structures", "name": "Data Structures", "node_type": "moon", "parent": "programming", "xp_required": 250, "icon": "📊", "description": "Use appropriate data structures"},
+        {"id": "devops_cicd", "name": "CI/CD", "node_type": "moon", "parent": "devops", "xp_required": 250, "icon": "🔄", "description": "Implement continuous integration/deployment"},
+        {"id": "devops_containers", "name": "Containerization", "node_type": "moon", "parent": "devops", "xp_required": 250, "icon": "📦", "description": "Work with Docker and container technologies"},
+        {"id": "arch_microservices", "name": "Microservices", "node_type": "moon", "parent": "system_architecture", "xp_required": 250, "icon": "🎯", "description": "Design microservice architectures"},
+        {"id": "arch_scalability", "name": "Scalability", "node_type": "moon", "parent": "system_architecture", "xp_required": 250, "icon": "📈", "description": "Design for scale and performance"},
+        {"id": "debug_profiling", "name": "Performance Profiling", "node_type": "moon", "parent": "debugging", "xp_required": 250, "icon": "⏱️", "description": "Profile and optimize performance"},
+        {"id": "debug_testing", "name": "Testing Strategies", "node_type": "moon", "parent": "debugging", "xp_required": 250, "icon": "🧪", "description": "Write effective tests"},
+        {"id": "api_rest", "name": "REST APIs", "node_type": "moon", "parent": "api_integration", "xp_required": 250, "icon": "🌐", "description": "Design RESTful APIs"},
+        {"id": "api_graphql", "name": "GraphQL", "node_type": "moon", "parent": "api_integration", "xp_required": 250, "icon": "⚡", "description": "Work with GraphQL APIs"},
+    ],
+    "creative_expression": [
+        # Sun
+        {"id": "creative_expression", "name": "Creative Expression", "node_type": "sun", "xp_required": 1000, "tool_unlock": "generate_image", "icon": "🎨", "description": "Master creative and artistic skills"},
+        # Planets (5)
+        {"id": "writing", "name": "Writing", "node_type": "planet", "parent": "creative_expression", "xp_required": 500, "tool_unlock": "writing_assistant", "icon": "📖", "description": "Write compelling, effective content"},
+        {"id": "visual_design", "name": "Visual Design", "node_type": "planet", "parent": "creative_expression", "xp_required": 500, "tool_unlock": "design_critique", "icon": "🎨", "description": "Create visually appealing designs"},
+        {"id": "music", "name": "Music", "node_type": "planet", "parent": "creative_expression", "xp_required": 500, "tool_unlock": "music_theory", "icon": "🎵", "description": "Create and understand music"},
+        {"id": "storytelling", "name": "Storytelling", "node_type": "planet", "parent": "creative_expression", "xp_required": 500, "tool_unlock": "story_development", "icon": "📚", "description": "Craft engaging narratives"},
+        {"id": "creative_problem_solving", "name": "Creative Problem Solving", "node_type": "planet", "parent": "creative_expression", "xp_required": 500, "tool_unlock": "ideation_assistant", "icon": "💡", "description": "Solve problems with creative approaches"},
+        # Moons (10)
+        {"id": "writing_style", "name": "Style & Voice", "node_type": "moon", "parent": "writing", "xp_required": 250, "icon": "✒️", "description": "Develop unique writing style"},
+        {"id": "writing_grammar", "name": "Grammar & Syntax", "node_type": "moon", "parent": "writing", "xp_required": 250, "icon": "📕", "description": "Master language mechanics"},
+        {"id": "design_composition", "name": "Composition", "node_type": "moon", "parent": "visual_design", "xp_required": 250, "icon": "🖼️", "description": "Arrange visual elements effectively"},
+        {"id": "design_color", "name": "Color Theory", "node_type": "moon", "parent": "visual_design", "xp_required": 250, "icon": "🎨", "description": "Use color effectively"},
+        {"id": "music_theory", "name": "Music Theory", "node_type": "moon", "parent": "music", "xp_required": 250, "icon": "🎼", "description": "Understand musical structure"},
+        {"id": "music_composition", "name": "Composition", "node_type": "moon", "parent": "music", "xp_required": 250, "icon": "🎹", "description": "Create original music"},
+        {"id": "story_plot", "name": "Plot Development", "node_type": "moon", "parent": "storytelling", "xp_required": 250, "icon": "📖", "description": "Create compelling story arcs"},
+        {"id": "story_character", "name": "Character Development", "node_type": "moon", "parent": "storytelling", "xp_required": 250, "icon": "👤", "description": "Create memorable characters"},
+        {"id": "creative_brainstorm", "name": "Brainstorming", "node_type": "moon", "parent": "creative_problem_solving", "xp_required": 250, "icon": "🧠", "description": "Generate creative ideas"},
+        {"id": "creative_lateral", "name": "Lateral Thinking", "node_type": "moon", "parent": "creative_problem_solving", "xp_required": 250, "icon": "🔀", "description": "Think outside the box"},
+    ],
+    "knowledge_domains": [
+        # Sun
+        {"id": "knowledge_domains", "name": "Knowledge Domains", "node_type": "sun", "xp_required": 1000, "tool_unlock": "search_memory", "icon": "📚", "description": "Master diverse knowledge areas"},
+        # Planets (5)
+        {"id": "science", "name": "Science", "node_type": "planet", "parent": "knowledge_domains", "xp_required": 500, "tool_unlock": "scientific_analysis", "icon": "🔬", "description": "Understand scientific principles"},
+        {"id": "history", "name": "History", "node_type": "planet", "parent": "knowledge_domains", "xp_required": 500, "tool_unlock": "historical_analysis", "icon": "📜", "description": "Understand historical context and patterns"},
+        {"id": "philosophy", "name": "Philosophy", "node_type": "planet", "parent": "knowledge_domains", "xp_required": 500, "tool_unlock": "philosophical_reasoning", "icon": "💭", "description": "Engage with philosophical concepts"},
+        {"id": "mathematics", "name": "Mathematics", "node_type": "planet", "parent": "knowledge_domains", "xp_required": 500, "tool_unlock": "mathematical_solver", "icon": "🔢", "description": "Apply mathematical reasoning"},
+        {"id": "languages", "name": "Languages", "node_type": "planet", "parent": "knowledge_domains", "xp_required": 500, "tool_unlock": "translation", "icon": "🗣️", "description": "Understand and use multiple languages"},
+        # Moons (10)
+        {"id": "science_physics", "name": "Physics", "node_type": "moon", "parent": "science", "xp_required": 250, "icon": "⚛️", "description": "Understand physical laws"},
+        {"id": "science_biology", "name": "Biology", "node_type": "moon", "parent": "science", "xp_required": 250, "icon": "🧬", "description": "Understand living systems"},
+        {"id": "history_world", "name": "World History", "node_type": "moon", "parent": "history", "xp_required": 250, "icon": "🌍", "description": "Understand global historical events"},
+        {"id": "history_patterns", "name": "Historical Patterns", "node_type": "moon", "parent": "history", "xp_required": 250, "icon": "🔄", "description": "Identify recurring historical patterns"},
+        {"id": "philosophy_ethics", "name": "Ethics", "node_type": "moon", "parent": "philosophy", "xp_required": 250, "icon": "⚖️", "description": "Understand ethical frameworks"},
+        {"id": "philosophy_logic", "name": "Logic", "node_type": "moon", "parent": "philosophy", "xp_required": 250, "icon": "🔣", "description": "Apply formal logic"},
+        {"id": "math_algebra", "name": "Algebra", "node_type": "moon", "parent": "mathematics", "xp_required": 250, "icon": "📐", "description": "Solve algebraic problems"},
+        {"id": "math_calculus", "name": "Calculus", "node_type": "moon", "parent": "mathematics", "xp_required": 250, "icon": "∫", "description": "Apply calculus concepts"},
+        {"id": "lang_translation", "name": "Translation", "node_type": "moon", "parent": "languages", "xp_required": 250, "icon": "🌐", "description": "Translate between languages"},
+        {"id": "lang_cultural", "name": "Cultural Understanding", "node_type": "moon", "parent": "languages", "xp_required": 250, "icon": "🗺️", "description": "Understand cultural contexts"},
+    ],
+    "security_privacy": [
+        # Sun
+        {"id": "security_privacy", "name": "Security & Privacy", "node_type": "sun", "xp_required": 1000, "tool_unlock": "browse_url", "icon": "🛡️", "description": "Master security and privacy protection"},
+        # Planets (5)
+        {"id": "cryptography", "name": "Cryptography", "node_type": "planet", "parent": "security_privacy", "xp_required": 500, "tool_unlock": "crypto_analysis", "icon": "🔐", "description": "Understand and apply cryptographic principles"},
+        {"id": "authentication", "name": "Authentication", "node_type": "planet", "parent": "security_privacy", "xp_required": 500, "tool_unlock": "auth_design", "icon": "🔑", "description": "Implement secure authentication systems"},
+        {"id": "network_security", "name": "Network Security", "node_type": "planet", "parent": "security_privacy", "xp_required": 500, "tool_unlock": "network_analysis", "icon": "🛡️", "description": "Secure networks and communications"},
+        {"id": "privacy_protection", "name": "Privacy Protection", "node_type": "planet", "parent": "security_privacy", "xp_required": 500, "tool_unlock": "privacy_audit", "icon": "🔒", "description": "Protect user privacy and data"},
+        {"id": "threat_analysis", "name": "Threat Analysis", "node_type": "planet", "parent": "security_privacy", "xp_required": 500, "tool_unlock": "threat_assessment", "icon": "🚨", "description": "Identify and mitigate security threats"},
+        # Moons (10)
+        {"id": "crypto_symmetric", "name": "Symmetric Encryption", "node_type": "moon", "parent": "cryptography", "xp_required": 250, "icon": "🔐", "description": "Use symmetric encryption effectively"},
+        {"id": "crypto_asymmetric", "name": "Asymmetric Encryption", "node_type": "moon", "parent": "cryptography", "xp_required": 250, "icon": "🗝️", "description": "Use public-key cryptography"},
+        {"id": "auth_mfa", "name": "Multi-Factor Auth", "node_type": "moon", "parent": "authentication", "xp_required": 250, "icon": "🔐", "description": "Implement multi-factor authentication"},
+        {"id": "auth_oauth", "name": "OAuth & SSO", "node_type": "moon", "parent": "authentication", "xp_required": 250, "icon": "🎫", "description": "Implement OAuth and SSO"},
+        {"id": "network_firewalls", "name": "Firewalls", "node_type": "moon", "parent": "network_security", "xp_required": 250, "icon": "🧱", "description": "Configure and manage firewalls"},
+        {"id": "network_vpn", "name": "VPN & Tunneling", "node_type": "moon", "parent": "network_security", "xp_required": 250, "icon": "🌐", "description": "Implement secure connections"},
+        {"id": "privacy_data_min", "name": "Data Minimization", "node_type": "moon", "parent": "privacy_protection", "xp_required": 250, "icon": "📉", "description": "Collect only necessary data"},
+        {"id": "privacy_anonymization", "name": "Anonymization", "node_type": "moon", "parent": "privacy_protection", "xp_required": 250, "icon": "🥷", "description": "Anonymize sensitive data"},
+        {"id": "threat_vuln_scan", "name": "Vulnerability Scanning", "node_type": "moon", "parent": "threat_analysis", "xp_required": 250, "icon": "🔍", "description": "Scan for security vulnerabilities"},
+        {"id": "threat_pentesting", "name": "Penetration Testing", "node_type": "moon", "parent": "threat_analysis", "xp_required": 250, "icon": "⚔️", "description": "Test security through ethical hacking"},
+    ],
+    "games": [
+        # Sun
+        {"id": "games", "name": "Games", "node_type": "sun", "xp_required": 1000, "tool_unlock": "chess_move", "icon": "🎮", "description": "Master strategic and tactical games"},
+        # Planets (5)
+        {"id": "chess", "name": "Chess", "node_type": "planet", "parent": "games", "xp_required": 500, "tool_unlock": "chess_move", "icon": "♟️", "description": "Master chess strategy and tactics"},
+        {"id": "checkers", "name": "Checkers", "node_type": "planet", "parent": "games", "xp_required": 500, "tool_unlock": "checkers_move", "icon": "⚫", "description": "Master checkers gameplay"},
+        {"id": "battleship", "name": "Battleship", "node_type": "planet", "parent": "games", "xp_required": 500, "tool_unlock": "battleship_move", "icon": "🚢", "description": "Master battleship strategy"},
+        {"id": "poker", "name": "Poker", "node_type": "planet", "parent": "games", "xp_required": 500, "tool_unlock": "poker_strategy", "icon": "🃏", "description": "Master poker strategy and psychology"},
+        {"id": "tictactoe", "name": "Tic-Tac-Toe", "node_type": "planet", "parent": "games", "xp_required": 500, "tool_unlock": "tictactoe_move", "icon": "❌", "description": "Master optimal tic-tac-toe play"},
+        # Moons (10)
+        {"id": "chess_opening", "name": "Opening Theory", "node_type": "moon", "parent": "chess", "xp_required": 250, "icon": "📖", "description": "Master chess openings"},
+        {"id": "chess_endgame", "name": "Endgame Technique", "node_type": "moon", "parent": "chess", "xp_required": 250, "icon": "👑", "description": "Master chess endgames"},
+        {"id": "checkers_strategy", "name": "Strategic Play", "node_type": "moon", "parent": "checkers", "xp_required": 250, "icon": "🎯", "description": "Develop long-term strategy"},
+        {"id": "checkers_tactics", "name": "Tactical Moves", "node_type": "moon", "parent": "checkers", "xp_required": 250, "icon": "⚡", "description": "Execute tactical combinations"},
+        {"id": "battleship_placement", "name": "Ship Placement", "node_type": "moon", "parent": "battleship", "xp_required": 250, "icon": "🗺️", "description": "Optimize ship positioning"},
+        {"id": "battleship_targeting", "name": "Targeting Strategy", "node_type": "moon", "parent": "battleship", "xp_required": 250, "icon": "🎯", "description": "Efficient target selection"},
+        {"id": "poker_odds", "name": "Pot Odds", "node_type": "moon", "parent": "poker", "xp_required": 250, "icon": "🎲", "description": "Calculate pot odds accurately"},
+        {"id": "poker_reading", "name": "Player Reading", "node_type": "moon", "parent": "poker", "xp_required": 250, "icon": "👀", "description": "Read opponents effectively"},
+        {"id": "ttt_strategy", "name": "Perfect Play", "node_type": "moon", "parent": "tictactoe", "xp_required": 250, "icon": "🧠", "description": "Never lose at tic-tac-toe"},
+        {"id": "ttt_variants", "name": "Variant Games", "node_type": "moon", "parent": "tictactoe", "xp_required": 250, "icon": "🔀", "description": "Play tic-tac-toe variants"},
+    ],
+}
+
+
+async def get_skill_tree_handler(qube, params: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Get the complete skill tree showing all possible skills a qube can attain.
+
+    Returns the full skill tree with categories, skills, requirements, and tool unlocks.
+    Also includes the qube's current progress on each skill.
+    """
+    try:
+        # Get current skill progress from chain_state
+        unlocked_skills = []
+        skill_xp = {}
+
+        if hasattr(qube, 'chain_state') and qube.chain_state:
+            skills_data = qube.chain_state.state.get("skills", {})
+            unlocked_skills = skills_data.get("unlocked", [])
+            # Build XP map from any stored XP data
+            for skill_id in unlocked_skills:
+                skill_xp[skill_id] = skills_data.get("xp", {}).get(skill_id, 0)
+
+        # Build the response with progress info
+        categories_with_progress = []
+        total_skills = 0
+        unlocked_count = len(unlocked_skills)
+
+        for category in SKILL_CATEGORIES:
+            category_skills = SKILL_TREE.get(category["id"], [])
+            skills_with_progress = []
+
+            for skill in category_skills:
+                skill_info = {
+                    "id": skill["id"],
+                    "name": skill["name"],
+                    "description": skill["description"],
+                    "node_type": skill["node_type"],
+                    "icon": skill.get("icon", "⭐"),
+                    "xp_required": skill["xp_required"],
+                    "current_xp": skill_xp.get(skill["id"], 0),
+                    "unlocked": skill["id"] in unlocked_skills or skill["node_type"] == "sun",
+                    "parent": skill.get("parent"),
+                    "tool_unlock": skill.get("tool_unlock"),
+                }
+                skills_with_progress.append(skill_info)
+                total_skills += 1
+
+            categories_with_progress.append({
+                "id": category["id"],
+                "name": category["name"],
+                "description": category["description"],
+                "icon": category["icon"],
+                "color": category["color"],
+                "skills": skills_with_progress,
+            })
+
+        return {
+            "success": True,
+            "skill_tree": {
+                "categories": categories_with_progress,
+                "summary": {
+                    "total_skills": total_skills,
+                    "unlocked_skills": unlocked_count,
+                    "progress_percent": round((unlocked_count / total_skills) * 100, 1) if total_skills > 0 else 0,
+                },
+                "how_to_unlock": "Earn XP by using tools and completing tasks. When you reach the XP threshold for a skill, it unlocks along with any associated tool rewards.",
+            }
+        }
+    except Exception as e:
+        logger.error(f"get_skill_tree_handler failed: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
 
 async def call_model_directly(qube, prompt: str, temperature: float = 0.7) -> str:
     """
@@ -693,6 +928,24 @@ def register_default_tools(registry: ToolRegistry) -> None:
             "required": ["section", "path", "value"]
         },
         handler=lambda params: update_system_state_handler(qube, params)
+    ))
+
+    # Get Skill Tree - view all possible skills and progress
+    registry.register(ToolDefinition(
+        name="get_skill_tree",
+        description="View your complete skill tree showing ALL possible skills you can attain. Shows 7 skill categories (AI Reasoning, Social Intelligence, Technical Expertise, Creative Expression, Knowledge Domains, Security & Privacy, Games) with their skill hierarchies (suns → planets → moons), XP requirements, and tool unlocks. Use this to see what skills you can work towards and what tools you'll unlock.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "category": {
+                    "type": "string",
+                    "enum": ["ai_reasoning", "social_intelligence", "technical_expertise", "creative_expression", "knowledge_domains", "security_privacy", "games"],
+                    "description": "Optional: Filter to a specific category. If not provided, returns all categories."
+                }
+            },
+            "required": []
+        },
+        handler=lambda params: get_skill_tree_handler(qube, params)
     ))
 
     logger.info("default_tools_registered", tool_count=len(registry.tools), qube_id=qube.qube_id)

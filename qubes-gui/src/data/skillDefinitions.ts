@@ -4,6 +4,7 @@ import { Skill, SkillCategory } from '../types';
 export const ALWAYS_AVAILABLE_TOOLS = [
   'get_system_state',
   'update_system_state',
+  'get_skill_tree',
   'search_memory',
   'get_recent_memories',
   'get_current_time',
@@ -23,6 +24,7 @@ export const ALWAYS_AVAILABLE_TOOLS = [
 // Tool descriptions for display in the UI
 export const TOOL_DESCRIPTIONS: Record<string, { name: string; description: string; icon: string }> = {
   get_system_state: { name: 'Get System State', description: 'Read the current system state', icon: '📊' },
+  get_skill_tree: { name: 'Get Skill Tree', description: 'View all possible skills and progress', icon: '🌳' },
   update_system_state: { name: 'Update System State', description: 'Modify the system state', icon: '✏️' },
   search_memory: { name: 'Search Memory', description: 'Search through memories', icon: '🔍' },
   get_recent_memories: { name: 'Recent Memories', description: 'Get recent memories', icon: '📝' },

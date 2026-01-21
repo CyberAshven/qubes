@@ -128,6 +128,7 @@ interface VisualizerSettings {
 }
 
 interface SettingsInfo {
+  model_mode?: string;  // "Revolver", "Autonomous", or "Manual" - set by backend handler
   model_locked: boolean;
   model_locked_to?: string;
   revolver_mode_enabled: boolean;
@@ -266,6 +267,14 @@ const formatTokenCount = (tokens: number): string => {
 
 const getModelModeBadge = (settings?: SettingsInfo | null): string => {
   if (!settings) return 'Manual';
+  // Check model_mode string first (set by backend handler, which removes boolean flags)
+  if (settings.model_mode) {
+    const mode = settings.model_mode.toLowerCase();
+    if (mode === 'revolver') return 'Revolver';
+    if (mode === 'autonomous') return 'Autonomous';
+    if (mode === 'manual') return 'Manual';
+  }
+  // Fallback to boolean flags (for backwards compatibility)
   if (settings.revolver_mode_enabled) return 'Revolver';
   if (settings.autonomous_mode_enabled) return 'Autonomous';
   if (settings.model_locked) return 'Manual';
@@ -390,8 +399,8 @@ export const ActiveContextPanel: React.FC<ActiveContextPanelProps> = ({
         onClick={() => setIsExpanded(!isExpanded)}
         className="w-full flex items-center justify-between"
       >
-        <h3 className="text-sm font-display flex items-center gap-2" style={{ color: favoriteColor }}>
-          <span className="text-lg">🧬</span>
+        <h3 className="text-lg font-display flex items-center gap-2" style={{ color: favoriteColor }}>
+          <span className="text-2xl">🧬</span>
           System State
           {estimatedTokens > 0 && (
             <span
@@ -440,7 +449,7 @@ export const ActiveContextPanel: React.FC<ActiveContextPanelProps> = ({
                 {getModelModeBadge(data.settings)}
               </span>
             }
-            sectionData={data.settings}
+            sectionData={data.settings ? { ...data.settings, model_mode: getModelModeBadge(data.settings) } : null}
           />
 
           {/* Relationships */}

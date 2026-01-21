@@ -548,7 +548,26 @@ async def filter_by_metadata(
         participants=participants
     )
 
-    return candidates
+    # Decrypt block content if encrypted
+    # Blocks stored on disk have encrypted content field
+    decrypted_candidates = []
+    for block in candidates:
+        content = block.get("content", {})
+        if isinstance(content, dict) and "ciphertext" in content:
+            try:
+                decrypted_content = qube.decrypt_block_content(content)
+                block = block.copy()  # Don't modify original
+                block["content"] = decrypted_content
+            except Exception as e:
+                logger.warning(
+                    "failed_to_decrypt_block_for_search",
+                    block_number=block.get("block_number"),
+                    error=str(e)
+                )
+                # Keep encrypted content as fallback (search will be less effective)
+        decrypted_candidates.append(block)
+
+    return decrypted_candidates
 
 
 async def semantic_search(

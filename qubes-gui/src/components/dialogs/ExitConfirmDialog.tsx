@@ -10,12 +10,12 @@ interface ExitConfirmDialogProps {
 }
 
 export function ExitConfirmDialog({ userId, password, qubes, onComplete, onCancel }: ExitConfirmDialogProps) {
-  const [processing, setProcessing] = useState(false);
+  const [processingAction, setProcessingAction] = useState<'anchor' | 'discard' | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const handleAnchor = async () => {
     try {
-      setProcessing(true);
+      setProcessingAction('anchor');
       setError(null);
 
       // Anchor sessions for all qubes
@@ -31,13 +31,13 @@ export function ExitConfirmDialog({ userId, password, qubes, onComplete, onCance
     } catch (err) {
       console.error('Failed to anchor sessions:', err);
       setError(String(err));
-      setProcessing(false);
+      setProcessingAction(null);
     }
   };
 
   const handleDiscard = async () => {
     try {
-      setProcessing(true);
+      setProcessingAction('discard');
       setError(null);
 
       // Discard sessions for all qubes
@@ -53,7 +53,7 @@ export function ExitConfirmDialog({ userId, password, qubes, onComplete, onCance
     } catch (err) {
       console.error('Failed to discard sessions:', err);
       setError(String(err));
-      setProcessing(false);
+      setProcessingAction(null);
     }
   };
 
@@ -97,23 +97,23 @@ export function ExitConfirmDialog({ userId, password, qubes, onComplete, onCance
         <div className="flex gap-3">
           <button
             onClick={handleAnchor}
-            disabled={processing}
+            disabled={processingAction !== null}
             className="flex-1 px-4 py-2 bg-accent-success text-bg-primary rounded font-medium hover:bg-accent-success/80 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
-            {processing ? 'Saving...' : 'Anchor'}
+            {processingAction === 'anchor' ? 'Saving...' : 'Anchor'}
           </button>
 
           <button
             onClick={handleDiscard}
-            disabled={processing}
+            disabled={processingAction !== null}
             className="flex-1 px-4 py-2 bg-accent-danger text-bg-primary rounded font-medium hover:bg-accent-danger/80 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
-            {processing ? 'Discarding...' : 'Discard'}
+            {processingAction === 'discard' ? 'Discarding...' : 'Discard'}
           </button>
 
           <button
             onClick={onCancel}
-            disabled={processing}
+            disabled={processingAction !== null}
             className="px-4 py-2 bg-bg-quaternary text-text-secondary rounded font-medium hover:bg-bg-quaternary/80 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
             Cancel

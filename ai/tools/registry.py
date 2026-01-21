@@ -20,6 +20,7 @@ ALWAYS_AVAILABLE_TOOLS: Set[str] = {
     # Unified System State tools (single source of truth)
     "get_system_state",      # Read all state: relationships, skills, owner_info, mood, wallet, etc.
     "update_system_state",   # Write state: owner_info, mood, skills, settings
+    "get_skill_tree",        # View all possible skills and progress
     # Memory operations (search blocks directly)
     "search_memory",
     "get_recent_memories",
@@ -316,6 +317,12 @@ class ToolRegistry:
             qube_id=self.qube.qube_id
         )
 
+        # Get current model for ACTION block tracking
+        current_model = None
+        if hasattr(self.qube, 'chain_state') and self.qube.chain_state:
+            runtime = self.qube.chain_state.get_runtime()
+            current_model = runtime.get("current_model")
+
         # Create in_progress ACTION block BEFORE executing (so frontend can show status)
         in_progress_block = None
         if record_blocks and self.qube.current_session:
@@ -330,7 +337,8 @@ class ToolRegistry:
                 initiated_by="self",
                 status="in_progress",
                 result=None,
-                temporary=True
+                temporary=True,
+                model_used=current_model
             )
             self.qube.current_session.create_block(in_progress_block)
 
@@ -391,7 +399,8 @@ class ToolRegistry:
                         initiated_by="self",
                         status=status,
                         result=result,
-                        temporary=True
+                        temporary=True,
+                        model_used=current_model
                     )
                     self.qube.current_session.create_block(action_block_data)
             else:
@@ -411,7 +420,8 @@ class ToolRegistry:
                     initiated_by="self",
                     status=status,
                     result=result,
-                    temporary=False
+                    temporary=False,
+                    model_used=current_model
                 )
 
                 # Encrypt content for permanent storage

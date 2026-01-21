@@ -306,7 +306,8 @@ def create_action_block(
     result: Optional[Dict[str, Any]] = None,
     status: str = "pending",
     temporary: bool = False,
-    session_id: Optional[str] = None
+    session_id: Optional[str] = None,
+    model_used: Optional[str] = None
 ) -> Block:
     """
     Create ACTION block
@@ -341,7 +342,8 @@ def create_action_block(
         temporary=temporary,
         session_id=session_id,
         previous_hash=previous_hash if not temporary else None,
-        previous_block_number=previous_block_number if temporary else None
+        previous_block_number=previous_block_number if temporary else None,
+        model_used=model_used
     )
 
     # Only compute hash for permanent blocks

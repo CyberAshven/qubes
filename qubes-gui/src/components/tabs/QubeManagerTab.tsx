@@ -1091,7 +1091,6 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
   const fallbackModels: Record<string, { value: string; label: string }[]> = {
     openai: [
       { value: 'gpt-5.2', label: 'GPT-5.2' },
-      { value: 'gpt-5.2-pro', label: 'GPT-5.2 Pro' },
       { value: 'gpt-5.2-chat-latest', label: 'GPT-5.2 Instant' },
       { value: 'gpt-5.2-codex', label: 'GPT-5.2 Codex' },
       { value: 'gpt-5.1', label: 'GPT-5.1' },
@@ -2995,7 +2994,6 @@ const formatModelDisplay = (modelId: string): string => {
   const modelMap: Record<string, string> = {
     // OpenAI - GPT 5.x series
     'gpt-5.2': 'GPT-5.2',
-    'gpt-5.2-pro': 'GPT-5.2 Pro',
     'gpt-5.2-chat-latest': 'GPT-5.2 Instant',
     'gpt-5.2-codex': 'GPT-5.2 Codex',
     'gpt-5.1': 'GPT-5.1',

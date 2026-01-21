@@ -208,7 +208,7 @@ class AIFallbackChain:
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
         **kwargs
-    ) -> ModelResponse:
+    ) -> tuple:
         """
         Generate response with automatic fallback on failure
 
@@ -222,12 +222,13 @@ class AIFallbackChain:
             **kwargs: Additional model-specific parameters
 
         Returns:
-            ModelResponse from first successful model
+            Tuple of (ModelResponse, actual_model_name, actual_provider, fallback_occurred)
 
         Raises:
             AIError: If all models in chain fail
         """
         errors = []
+        last_provider = None
 
         for fallback in self.fallback_chain:
             model_name = fallback.model_name
@@ -265,6 +266,29 @@ class AIFallbackChain:
                 )
                 continue
 
+            # Clean context if provider changed - tool call formats are incompatible across providers
+            current_messages = messages
+            if last_provider is not None and last_provider != provider:
+                logger.debug(
+                    "fallback_cleaning_context_for_provider_switch",
+                    from_provider=last_provider,
+                    to_provider=provider
+                )
+                clean_messages = []
+                for msg in messages:
+                    role = msg.get("role")
+                    if role == "system":
+                        clean_messages.append(msg)
+                    elif role == "user":
+                        clean_messages.append({"role": "user", "content": msg.get("content", "")})
+                    elif role == "assistant" and not msg.get("tool_calls"):
+                        clean_messages.append({"role": "assistant", "content": msg.get("content", "")})
+                    # Skip tool results and assistant messages with tool_calls
+                current_messages = clean_messages
+
+            # Track provider before attempting (so next iteration knows what we tried)
+            last_provider = provider
+
             # Try this model
             try:
                 import sys
@@ -283,7 +307,7 @@ class AIFallbackChain:
 
                 # Generate response
                 response = await model.generate(
-                    messages=messages,
+                    messages=current_messages,
                     tools=tools,
                     temperature=temperature,
                     max_tokens=max_tokens,
@@ -291,7 +315,8 @@ class AIFallbackChain:
                 )
 
                 # Only log INFO if we actually used fallback (not primary)
-                if fallback.priority > 1:
+                fallback_occurred = fallback.priority > 1
+                if fallback_occurred:
                     logger.info(
                         "fallback_model_success",
                         model=model_name,
@@ -301,7 +326,7 @@ class AIFallbackChain:
                 else:
                     logger.debug("primary_model_success", model=model_name)
 
-                return response
+                return response, model_name, provider, fallback_occurred
 
             except Exception as e:
                 import sys

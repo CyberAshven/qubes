@@ -309,10 +309,10 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
 
   const selectedQube = selectedQubes.length === 1 ? selectedQubes[0] : null;
 
-  // Reset expanded states when switching blocks
+  // Reset expanded states when switching blocks (auto-expand Block Content)
   useEffect(() => {
     setCryptoExpanded(false);
-    setContentExpanded(false);
+    setContentExpanded(true); // Auto-expand Block Content when block is selected
     setTokenUsageExpanded(false);
     setRelationshipDeltasExpanded(false);
     setSkillsExpanded(false);
@@ -705,6 +705,7 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
         setSelectedSection(section);
         setSelectedContextSection(null);
         setDecryptedContent(block.content);
+        setContentExpanded(true); // Auto-expand Block Content when block is clicked
         return;
       }
 
@@ -717,6 +718,7 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
       setSelectedContextSection(null);
       // All blocks are already decrypted since we prompted for password on load
       setDecryptedContent(block.content);
+      setContentExpanded(true); // Auto-expand Block Content when block is clicked
     } catch (error) {
       console.error('Error setting selected block:', error);
       alert(`Error displaying block: ${error}`);
@@ -898,8 +900,8 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
               onClick={() => setShortTermExpanded(!shortTermExpanded)}
               className="w-full flex items-center justify-between"
             >
-              <h2 className="text-sm font-display text-amber-400 flex items-center gap-2">
-                <span className="text-lg">🧠</span>
+              <h2 className="text-lg font-display text-amber-400 flex items-center gap-2">
+                <span className="text-2xl">🧠</span>
                 Short-term Memory
                 <span className="text-xs bg-amber-400/20 text-amber-400 px-1.5 py-0.5 rounded">
                   {(() => {
@@ -939,96 +941,28 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
             </button>
 
             {shortTermExpanded && (
-              <>
-            {/* Recalled Memories from Context */}
-            {contextPreview?.short_term_memory?.semantic_recalls?.blocks?.length > 0 && (
-              <div className="mb-3">
-                <div className={`text-xs ${SECTION_COLORS.recalled.text} mb-2 flex items-center gap-2`}>
-                  <span>🔮</span> Recalled Memories
-                  <span className={`${SECTION_COLORS.recalled.bg} ${SECTION_COLORS.recalled.text} px-1.5 py-0.5 rounded`}>
-                    {contextPreview.short_term_memory.semantic_recalls.count}
-                  </span>
-                </div>
-                <div className="space-y-2">
-                  {contextPreview.short_term_memory.semantic_recalls.blocks.map((block: any, idx: number) => (
-                    <GlassCard
-                      key={`recalled-${idx}`}
-                      variant="interactive"
-                      className={`p-3 cursor-pointer border-l-2 ${getBlockTypeBorder(block.block_type)} ${
-                        selectedBlock?.block_number === block.block_number && selectedSection === 'recalled'
-                          ? `ring-2 ${getBlockTypeRing(block.block_type)}`
-                          : ''
-                      }`}
-                      onClick={() => {
-                        // Find the full block from permanentBlocks if available
-                        const fullBlock = permanentBlocks.find(b => b.block_number === block.block_number);
-                        if (fullBlock) handleBlockClick(fullBlock, 'recalled');
-                      }}
-                    >
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="text-sm font-mono text-text-primary">
-                          Block #{block.block_number}
-                        </span>
-                        <div className="flex items-center gap-2">
-                          <span className={`text-xs ${SECTION_COLORS.recalled.text}`}>
-                            {Math.round((block.relevance_score || 0) * 100)}%
-                          </span>
-                          <span className={`text-xs px-2 py-0.5 rounded ${getBlockTypeColor(block.block_type)}`}>
-                            {block.block_type}
-                          </span>
-                        </div>
-                      </div>
-                      <div className="text-xs text-text-tertiary">
-                        {block.timestamp && new Date(block.timestamp > 1e12 ? block.timestamp : block.timestamp * 1000).toLocaleString()}
-                      </div>
-                    </GlassCard>
-                  ))}
-                </div>
+              <div className="mt-4">
+            {/* Anchor/Discard buttons at top of Short-term Memory */}
+            {sessionBlocks.length > 0 && (
+              <div className="flex gap-2 mb-3 mt-6">
+                <GlassButton
+                  variant="primary"
+                  onClick={handleAnchorClick}
+                  className="flex-1 text-sm"
+                >
+                  ⚓ Anchor Session
+                </GlassButton>
+                <GlassButton
+                  variant="danger"
+                  onClick={handleDiscardClick}
+                  className="flex-1 text-sm"
+                >
+                  🗑️ Discard
+                </GlassButton>
               </div>
             )}
 
-            {/* Recent History from Context */}
-            {contextPreview?.short_term_memory?.recent_permanent?.blocks?.length > 0 && (
-              <div className="mb-3">
-                <div className={`text-xs ${SECTION_COLORS.recent.text} mb-2 flex items-center gap-2`}>
-                  <span>📚</span> Recent History
-                  <span className={`${SECTION_COLORS.recent.bg} ${SECTION_COLORS.recent.text} px-1.5 py-0.5 rounded`}>
-                    {contextPreview.short_term_memory.recent_permanent.count}
-                  </span>
-                </div>
-                <div className="space-y-2">
-                  {contextPreview.short_term_memory.recent_permanent.blocks.map((block: any, idx: number) => (
-                    <GlassCard
-                      key={`recent-${idx}`}
-                      variant="interactive"
-                      className={`p-3 cursor-pointer border-l-2 ${getBlockTypeBorder(block.block_type)} ${
-                        selectedBlock?.block_number === block.block_number && selectedSection === 'recent'
-                          ? `ring-2 ${getBlockTypeRing(block.block_type)}`
-                          : ''
-                      }`}
-                      onClick={() => {
-                        const fullBlock = permanentBlocks.find(b => b.block_number === block.block_number);
-                        if (fullBlock) handleBlockClick(fullBlock, 'recent');
-                      }}
-                    >
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="text-sm font-mono text-text-primary">
-                          Block #{block.block_number}
-                        </span>
-                        <span className={`text-xs px-2 py-0.5 rounded ${getBlockTypeColor(block.block_type)}`}>
-                          {block.block_type}
-                        </span>
-                      </div>
-                      <div className="text-xs text-text-tertiary">
-                        {block.timestamp && new Date(block.timestamp > 1e12 ? block.timestamp : block.timestamp * 1000).toLocaleString()}
-                      </div>
-                    </GlassCard>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Session Blocks */}
+            {/* Session Blocks (Current Session) - shown first as most relevant */}
             {sessionBlocks.length > 0 ? (
               <>
                 <div className={`text-xs ${SECTION_COLORS.session.text} mb-2 flex items-center gap-2`}>
@@ -1036,22 +970,6 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                   <span className={`${SECTION_COLORS.session.bg} ${SECTION_COLORS.session.text} px-1.5 py-0.5 rounded`}>
                     {sessionBlocks.length}
                   </span>
-                </div>
-                <div className="flex gap-2 mb-3">
-                  <GlassButton
-                    variant="primary"
-                    onClick={handleAnchorClick}
-                    className="flex-1 text-sm"
-                  >
-                    ⚓ Anchor Session
-                  </GlassButton>
-                  <GlassButton
-                    variant="danger"
-                    onClick={handleDiscardClick}
-                    className="flex-1 text-sm"
-                  >
-                    🗑️ Discard
-                  </GlassButton>
                 </div>
 
                 {/* Multi-select hint */}
@@ -1115,7 +1033,105 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                 No session blocks - start a conversation to create short-term memories
               </div>
             )}
-              </>
+
+            {/* Recent History from Context */}
+            {contextPreview?.short_term_memory?.recent_permanent?.blocks?.length > 0 && (
+              <div className="mb-3 mt-3">
+                <div className={`text-xs ${SECTION_COLORS.recent.text} mb-2 flex items-center gap-2`}>
+                  <span>📚</span> Recent History
+                  <span className={`${SECTION_COLORS.recent.bg} ${SECTION_COLORS.recent.text} px-1.5 py-0.5 rounded`}>
+                    {contextPreview.short_term_memory.recent_permanent.count}
+                  </span>
+                </div>
+                <div className="space-y-2">
+                  {contextPreview.short_term_memory.recent_permanent.blocks.map((block: any, idx: number) => (
+                    <GlassCard
+                      key={`recent-${idx}`}
+                      variant="interactive"
+                      className={`p-3 cursor-pointer border-l-2 ${getBlockTypeBorder(block.block_type)} ${
+                        selectedBlock?.block_number === block.block_number && selectedSection === 'recent'
+                          ? `ring-2 ${getBlockTypeRing(block.block_type)}`
+                          : ''
+                      }`}
+                      onClick={() => {
+                        const fullBlock = permanentBlocks.find(b => b.block_number === block.block_number);
+                        if (fullBlock) handleBlockClick(fullBlock, 'recent');
+                      }}
+                    >
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-sm font-mono text-text-primary">
+                          Block #{block.block_number}
+                        </span>
+                        <span className={`text-xs px-2 py-0.5 rounded ${getBlockTypeColor(block.block_type)}`}>
+                          {block.block_type}
+                        </span>
+                      </div>
+                      <div className="text-xs text-text-tertiary">
+                        {block.timestamp
+                          ? new Date(block.timestamp > 1e12 ? block.timestamp : block.timestamp * 1000).toLocaleString()
+                          : 'No timestamp'}
+                      </div>
+                    </GlassCard>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Recalled Memories from Context */}
+            {contextPreview?.short_term_memory?.semantic_recalls?.blocks?.length > 0 && (
+              <div className="mb-3">
+                <div className={`text-xs ${SECTION_COLORS.recalled.text} mb-2 flex items-center gap-2`}>
+                  <span>🔮</span> Recalled Memories
+                  <span className={`${SECTION_COLORS.recalled.bg} ${SECTION_COLORS.recalled.text} px-1.5 py-0.5 rounded`}>
+                    {contextPreview.short_term_memory.semantic_recalls.count}
+                  </span>
+                </div>
+                <div className="space-y-2">
+                  {contextPreview.short_term_memory.semantic_recalls.blocks.map((block: any, idx: number) => {
+                    // Handle relevance score - cap at 100%, handle values > 1 (already percentages)
+                    const rawScore = block.relevance_score || 0;
+                    const relevancePercent = rawScore > 1 ? Math.min(Math.round(rawScore), 100) : Math.min(Math.round(rawScore * 100), 100);
+
+                    return (
+                      <GlassCard
+                        key={`recalled-${idx}`}
+                        variant="interactive"
+                        className={`p-3 cursor-pointer border-l-2 ${getBlockTypeBorder(block.block_type)} ${
+                          selectedBlock?.block_number === block.block_number && selectedSection === 'recalled'
+                            ? `ring-2 ${getBlockTypeRing(block.block_type)}`
+                            : ''
+                        }`}
+                        onClick={() => {
+                          // Find the full block from permanentBlocks if available
+                          const fullBlock = permanentBlocks.find(b => b.block_number === block.block_number);
+                          if (fullBlock) handleBlockClick(fullBlock, 'recalled');
+                        }}
+                      >
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-sm font-mono text-text-primary">
+                            Block #{block.block_number}
+                          </span>
+                          <div className="flex items-center gap-2">
+                            <span className={`text-xs ${SECTION_COLORS.recalled.text}`}>
+                              {relevancePercent}% match
+                            </span>
+                            <span className={`text-xs px-2 py-0.5 rounded ${getBlockTypeColor(block.block_type)}`}>
+                              {block.block_type}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="text-xs text-text-tertiary">
+                          {block.timestamp
+                            ? new Date(block.timestamp > 1e12 ? block.timestamp : block.timestamp * 1000).toLocaleString()
+                            : 'No timestamp'}
+                        </div>
+                      </GlassCard>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+              </div>
             )}
           </GlassCard>
 
@@ -1125,8 +1141,8 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
               onClick={() => setLongTermExpanded(!longTermExpanded)}
               className="w-full flex items-center justify-between"
             >
-              <h2 className="text-sm font-display text-cyan-400 flex items-center gap-2">
-                <span className="text-lg">💾</span>
+              <h2 className="text-lg font-display text-cyan-400 flex items-center gap-2">
+                <span className="text-2xl">💾</span>
                 Long-term Memory
                 <span className="text-xs bg-cyan-400/20 text-cyan-400 px-1.5 py-0.5 rounded">
                   {permanentBlocks.length} {permanentBlocks.length === 1 ? 'block' : 'blocks'}
@@ -1163,7 +1179,7 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
             </button>
 
             {longTermExpanded && (
-              <>
+              <div className="mt-4">
             {/* Search and Filter */}
             <div className="space-y-2 mb-3">
               <input
@@ -1234,7 +1250,7 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                 </>
               )}
             </div>
-              </>
+              </div>
             )}
           </GlassCard>
         </div>
@@ -1566,9 +1582,13 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                           <div className="flex gap-4 text-sm">
                             <span>
                               <span className="text-text-tertiary">Trust: </span>
-                              <span className={rel.trust_level >= 0.8 ? 'text-emerald-400' : rel.trust_level >= 0.6 ? 'text-accent-primary' : 'text-yellow-400'}>
-                                {Math.round(rel.trust_level * 100)}%
-                              </span>
+                              {(() => {
+                                // Handle trust_level - could be 0-1 (decimal) or 0-100 (percentage)
+                                const rawTrust = rel.trust_level || 0;
+                                const trustPercent = rawTrust > 1 ? Math.min(Math.round(rawTrust), 100) : Math.min(Math.round(rawTrust * 100), 100);
+                                const trustColor = trustPercent >= 80 ? 'text-emerald-400' : trustPercent >= 60 ? 'text-accent-primary' : 'text-yellow-400';
+                                return <span className={trustColor}>{trustPercent}%</span>;
+                              })()}
                             </span>
                             <span>
                               <span className="text-text-tertiary">Interactions: </span>

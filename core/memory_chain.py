@@ -77,6 +77,19 @@ class MemoryChain:
 
         logger.info("memory_chain_initialized", qube_id=qube_id, blocks=len(self.block_index), snapshots=len(self.snapshot_index))
 
+    def reload(self) -> None:
+        """
+        Reload block index from disk.
+
+        Call this when the memory chain may have been modified externally
+        (e.g., after anchoring session blocks) to refresh the in-memory index.
+        """
+        self.block_index.clear()
+        self.snapshot_index.clear()
+        self._load_block_index()
+        self._load_snapshot_index()
+        logger.debug("memory_chain_reloaded", blocks=len(self.block_index), snapshots=len(self.snapshot_index))
+
     def add_block(self, block: Block, skip_signature: bool = False) -> None:
         """
         Add permanent block to chain with validation

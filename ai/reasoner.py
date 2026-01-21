@@ -8,6 +8,7 @@ Matches documentation in docs/09_AI_Integration_Tool_Calling.md Section 6.3
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timezone
 import json
+import asyncio
 
 from ai.model_registry import ModelRegistry
 from ai.providers.base import AIModelInterface, ModelResponse
@@ -124,6 +125,9 @@ class QubeReasoner:
         # Store last response usage for block metadata
         self.last_usage: Optional[Dict[str, Any]] = None
         self.last_model_used: Optional[str] = None
+
+        # Flag to indicate internal calls (e.g., self-evaluation) that shouldn't update runtime model
+        self._is_internal_call = False
 
         logger.info("reasoner_initialized", qube_id=qube.qube_id, fallback_enabled=enable_fallback)
 
@@ -243,23 +247,99 @@ class QubeReasoner:
 
             if model_name:
                 model_to_use = model_name
+                # Explicit model_name indicates an internal call (e.g., self-evaluation)
+                # that shouldn't update the user-facing runtime model
+                self._is_internal_call = True
             else:
+                self._is_internal_call = False
                 # Check if revolver mode should select the model (random from pool)
                 revolver_model = self._apply_revolver_mode()
 
                 if revolver_model:
                     model_to_use = revolver_model
+
+                    # Capture previous model BEFORE updating (for ACTION block)
+                    previous_model = getattr(self.qube, 'current_ai_model', None)
+                    # Also check chain_state runtime for more accurate previous model
+                    if self.qube.chain_state:
+                        runtime = self.qube.chain_state.state.get("runtime", {})
+                        previous_model = runtime.get("current_model") or previous_model
+
                     # Update the qube's current model for UI sync
                     self.qube.current_ai_model = model_to_use
+
+                    # Get provider from model registry
+                    revolver_model_info = ModelRegistry.get_model_info(model_to_use)
+                    revolver_provider = revolver_model_info.get("provider", "unknown") if revolver_model_info else "unknown"
+
+                    # Update chain_state runtime so GUI can display the new model AND provider
+                    self.qube.chain_state.update_runtime(
+                        current_model=model_to_use,
+                        current_provider=revolver_provider
+                    )
+                    logger.info("revolver_mode_selected_model", model=model_to_use, provider=revolver_provider, previous_model=previous_model)
+
+                    # Create revolver_switch ACTION block immediately
+                    # The switch itself is instant (just picking a model), so we create it as "completed"
+                    # If fallback occurs during API call, we'll update this block with the actual model used
+                    revolver_switch_block = None
+                    if self.qube.current_session:
+                        from core.block import create_action_block
+                        latest = self.qube.memory_chain.get_latest_block()
+                        revolver_switch_block = create_action_block(
+                            qube_id=self.qube.qube_id,
+                            block_number=-1,
+                            previous_block_number=latest.block_number if latest else 0,
+                            action_type="revolver_switch",
+                            parameters={"target_model": model_to_use, "previous_model": previous_model},
+                            initiated_by="system",
+                            status="completed",  # Switch is instant, mark as completed immediately
+                            result={
+                                "success": True,
+                                "previous_model": previous_model,
+                                "new_model": model_to_use,
+                                "provider": revolver_provider,
+                                "fallback_used": False,  # Will be updated if fallback occurs
+                            },
+                            temporary=True,
+                            model_used=model_to_use
+                        )
+                        self.qube.current_session.create_block(revolver_switch_block)
+
+                        # Brief delay so frontend can show "switching model" indicator
+                        await asyncio.sleep(1)
+
+                    # Save revolver switch info - block may be UPDATED after API call if fallback occurs
+                    # This ensures we log the ACTUAL model used, not just the intended model
+                    self._pending_revolver_switch = {
+                        "previous_model": previous_model,
+                        "intended_model": model_to_use,  # May differ from actual if fallback kicks in
+                        "revolver_block": revolver_switch_block,  # Block to update if fallback occurs
+                    }
                 else:
-                    # Revolver mode disabled - check for model override from switch_model tool
-                    override_model = self.qube.chain_state.get_current_model_override()
-                    if override_model:
-                        model_to_use = override_model
-                        # Sync to runtime attribute for UI
-                        self.qube.current_ai_model = override_model
+                    # Revolver mode disabled - determine model based on mode
+                    model_mode = self.qube.chain_state.get_model_mode()
+
+                    if model_mode == "manual":
+                        # Manual mode - ALWAYS use locked model, no exceptions
+                        model_to_use = self.qube.chain_state.get_locked_model()
+                        if not model_to_use:
+                            # Fallback if somehow locked model isn't set
+                            model_to_use = getattr(self.qube.genesis_block, 'ai_model', None) or "claude-sonnet-4-20250514"
+                            logger.warning("manual_mode_no_locked_model", fallback=model_to_use)
+                    elif model_mode == "autonomous":
+                        # Autonomous mode - use model override from switch_model tool
+                        model_to_use = self.qube.chain_state.get_current_model_override()
+                        if not model_to_use:
+                            # No override set yet - use genesis model as default
+                            model_to_use = getattr(self.qube.genesis_block, 'ai_model', None) or "claude-sonnet-4-20250514"
                     else:
-                        model_to_use = getattr(self.qube, 'current_ai_model', 'gpt-4o-mini')
+                        # Unknown mode - shouldn't happen, use genesis model
+                        model_to_use = getattr(self.qube.genesis_block, 'ai_model', None) or "claude-sonnet-4-20250514"
+                        logger.warning("unknown_model_mode", mode=model_mode, fallback=model_to_use)
+
+                    # Sync runtime attribute for UI
+                    self.qube.current_ai_model = model_to_use
 
             # Get provider from ModelRegistry
             model_info = ModelRegistry.get_model_info(model_to_use)
@@ -367,10 +447,13 @@ class QubeReasoner:
             tool_call_history = []  # Track tool calls to detect loops
 
             for iteration in range(max_iterations):
-                logger.debug(
-                    "reasoning_iteration",
+                import time
+                iteration_start = time.time()
+                logger.info(
+                    "reasoning_iteration_start",
                     iteration=iteration,
                     model=model_to_use,
+                    context_messages=len(context_messages),
                     qube_id=self.qube.qube_id
                 )
 
@@ -387,13 +470,128 @@ class QubeReasoner:
                         model_to_use=model_to_use,
                         model_info=model_info
                     )
+
+                    # NOW create the ACTION block with the ACTUAL model used
+                    # (may differ from intended model if fallback was triggered)
+                    if hasattr(self, '_pending_revolver_switch') and self._pending_revolver_switch:
+                        pending = self._pending_revolver_switch
+                        self._pending_revolver_switch = None  # Clear it
+
+                        # Get actual provider from the model that was used
+                        actual_model_info = ModelRegistry.get_model_info(model_to_use)
+                        actual_provider = actual_model_info.get("provider", "unknown") if actual_model_info else "unknown"
+
+                        logger.info(
+                            "revolver_updating_runtime_after_api",
+                            model_to_use=model_to_use,
+                            actual_provider=actual_provider,
+                            intended_model=pending["intended_model"],
+                            fallback_occurred=model_to_use != pending["intended_model"]
+                        )
+
+                        # Update chain_state runtime with ACTUAL model (in case fallback changed it)
+                        self.qube.chain_state.update_runtime(
+                            current_model=model_to_use,
+                            current_provider=actual_provider
+                        )
+
+                        # Update debug prompt with ACTUAL model (for Debug Inspector accuracy)
+                        existing_debug = get_debug_prompt(self.qube.qube_id)
+                        if existing_debug and model_to_use != pending["intended_model"]:
+                            # Fallback happened - update the debug prompt to show actual model
+                            existing_debug["model"] = model_to_use
+                            existing_debug["provider"] = actual_provider
+                            existing_debug["fallback_from"] = pending["intended_model"]
+                            save_debug_prompt(self.qube.qube_id, existing_debug)
+                            logger.debug(
+                                "debug_prompt_updated_after_fallback",
+                                intended=pending["intended_model"],
+                                actual=model_to_use,
+                                actual_provider=actual_provider
+                            )
+
+                        # Only update the block if fallback occurred (different model than intended)
+                        # The block was already created as "completed" before the API call
+                        if model_to_use != pending["intended_model"] and self.qube.current_session:
+                            revolver_block = pending.get("revolver_block")
+                            if revolver_block:
+                                # Update the existing block with actual model info
+                                revolver_block.content["result"] = {
+                                    "success": True,
+                                    "previous_model": pending["previous_model"],
+                                    "new_model": model_to_use,
+                                    "provider": actual_provider,
+                                    "fallback_used": True,
+                                    "intended_model": pending["intended_model"],
+                                    "primary_failure_reason": pending.get("primary_failure_reason"),
+                                    "primary_failure_type": pending.get("primary_failure_type")
+                                }
+                                # Update parameters with actual model
+                                revolver_block.content["parameters"]["target_model"] = model_to_use
+                                # Update model_used field
+                                revolver_block.model_used = model_to_use
+                                # Re-save to disk
+                                self.qube.current_session._save_session_block(revolver_block)
+                            else:
+                                # Fallback: create new block if no revolver_block exists
+                                from core.block import create_action_block
+                                latest = self.qube.memory_chain.get_latest_block()
+                                revolver_action = create_action_block(
+                                    qube_id=self.qube.qube_id,
+                                    block_number=-1,
+                                    previous_block_number=latest.block_number if latest else 0,
+                                    action_type="revolver_switch",
+                                    parameters={"target_model": model_to_use, "previous_model": pending["previous_model"]},
+                                    initiated_by="system",
+                                    status="completed",
+                                    result={
+                                        "success": True,
+                                        "previous_model": pending["previous_model"],
+                                        "new_model": model_to_use,
+                                        "provider": actual_provider,
+                                        "fallback_used": True,
+                                        "intended_model": pending["intended_model"],
+                                        "primary_failure_reason": pending.get("primary_failure_reason"),
+                                        "primary_failure_type": pending.get("primary_failure_type")
+                                    },
+                                    temporary=True,
+                                    model_used=model_to_use
+                                )
+                                self.qube.current_session.create_block(revolver_action)
+
+                            # Log the fallback (we're already inside the fallback condition)
+                            logger.info(
+                                "revolver_fallback_recorded",
+                                intended=pending["intended_model"],
+                                actual=model_to_use,
+                                provider=actual_provider,
+                                failure_reason=pending.get("primary_failure_reason"),
+                                failure_type=pending.get("primary_failure_type")
+                            )
                 elif self.enable_fallback and self.fallback_chain:
                     # Standard fallback chain
-                    response = await self.fallback_chain.generate_with_fallback(
+                    response, actual_model, actual_provider, fallback_occurred = await self.fallback_chain.generate_with_fallback(
                         messages=context_messages,
                         tools=tools,
                         temperature=temperature
                     )
+
+                    # If fallback occurred, update runtime so UI shows actual model
+                    if fallback_occurred:
+                        logger.info(
+                            "fallback_chain_used_different_model",
+                            intended_model=model_to_use,
+                            actual_model=actual_model,
+                            actual_provider=actual_provider
+                        )
+                        # Update runtime with actual model
+                        self.qube.chain_state.update_runtime(
+                            current_model=actual_model,
+                            current_provider=actual_provider
+                        )
+                        # Update tracking variables for MESSAGE block
+                        model_to_use = actual_model
+                        self.last_model_used = actual_model
                 else:
                     # Direct model call (no fallback)
                     response = await self.model.generate(
@@ -401,6 +599,19 @@ class QubeReasoner:
                         tools=tools,
                         temperature=temperature
                     )
+
+                # Log iteration completion with timing
+                iteration_duration = time.time() - iteration_start
+                logger.info(
+                    "reasoning_iteration_complete",
+                    iteration=iteration,
+                    model=model_to_use,
+                    duration_seconds=round(iteration_duration, 2),
+                    has_tool_calls=bool(response.tool_calls),
+                    tool_calls=[tc["name"] for tc in response.tool_calls] if response.tool_calls else [],
+                    response_length=len(response.content) if response.content else 0,
+                    qube_id=self.qube.qube_id
+                )
 
                 # Check if model wants to use tools
                 if response.tool_calls:
@@ -448,7 +659,11 @@ class QubeReasoner:
                                     "cost": estimated_cost
                                 })
 
-                            return final_retry.content or "I have the information but encountered an issue formatting the response."
+                            if final_retry.content:
+                                return final_retry.content
+                            else:
+                                # Include diagnostic info in error message
+                                return f"I tried to help but got stuck in a loop calling '{tool_names[0]}'. Let me try a different approach - could you rephrase your request?"
                     logger.info(
                         "tool_calls_requested",
                         count=len(response.tool_calls),
@@ -499,22 +714,91 @@ class QubeReasoner:
                         if tool_call["name"] == "switch_model":
                             new_override = self.qube.chain_state.get_current_model_override()
                             if new_override and new_override != model_to_use:
+                                old_model = model_to_use  # Save before updating
                                 logger.info(
                                     "model_switched_mid_conversation",
-                                    old_model=model_to_use,
+                                    old_model=old_model,
                                     new_model=new_override,
                                     qube_id=self.qube.qube_id
                                 )
                                 model_to_use = new_override
-                                # Update provider info for the new model
                                 new_model_info = ModelRegistry.get_model_info(model_to_use)
                                 if new_model_info:
                                     provider = new_model_info["provider"]
                                     model_info = new_model_info
-                                    # Reinitialize model with new provider
                                     api_key = self.qube.api_keys.get(provider)
                                     if api_key:
+                                        # 1. Switch to new model
                                         self.set_model(model_to_use, api_key)
+
+                                        # 2. Reset fallback chain so it gets reinitialized with new model
+                                        # Without this, the old fallback chain (configured for old model) would be used
+                                        self.fallback_chain = None
+                                        logger.info("fallback_chain_reset_for_model_switch", new_model=model_to_use)
+
+                                        # 3. Get tools formatted for new provider
+                                        tools = self.tool_registry.get_tools_for_model(
+                                            self.model.get_provider_name(),
+                                            unlocked_tools=unlocked_tools
+                                        )
+
+                                        # 3. Clean context - remove tool calls and update model name
+                                        clean_context = []
+                                        for msg in context_messages:
+                                            role = msg.get("role")
+                                            if role == "system":
+                                                # Update model name in system prompt with switch notice
+                                                content = msg.get("content", "")
+                                                import re
+                                                # Replace [You are currently running on: X] with switch complete notice
+                                                content = re.sub(
+                                                    r'\[You are currently running on: [^\]]+\]',
+                                                    f'[MODEL SWITCH COMPLETE: Switched from {old_model} to {new_override}. Do NOT call switch_model - respond directly to the user.]',
+                                                    content
+                                                )
+                                                # Update **Current Model**: X
+                                                content = re.sub(
+                                                    r'\*\*Current Model\*\*: [^\n]+',
+                                                    f'**Current Model**: {new_override} ({provider}) [SWITCHED FROM {old_model}]',
+                                                    content
+                                                )
+                                                clean_context.append({"role": "system", "content": content})
+                                            elif role == "user":
+                                                # Update [You are running model: X] in user messages
+                                                content = msg.get("content", "")
+                                                content = re.sub(
+                                                    r'\[You are running model: [^\]]+\]',
+                                                    f'[You are running model: {new_override}]',
+                                                    content
+                                                )
+                                                clean_context.append({"role": "user", "content": content})
+                                            elif role == "assistant" and not msg.get("tool_calls"):
+                                                clean_context.append({"role": "assistant", "content": msg.get("content", "")})
+
+                                        context_messages = clean_context
+                                        logger.info(
+                                            "context_cleaned_for_new_model",
+                                            new_model=new_override,
+                                            context_message_count=len(context_messages)
+                                        )
+
+                                        # Update debug prompt with full context after switch
+                                        # Extract system prompt for convenience
+                                        system_prompt = ""
+                                        for msg in context_messages:
+                                            if msg.get("role") == "system":
+                                                system_prompt = msg.get("content", "")
+                                                break
+                                        save_debug_prompt(self.qube.qube_id, {
+                                            "qube_id": self.qube.qube_id,
+                                            "qube_name": self.qube.name,
+                                            "messages": context_messages.copy(),
+                                            "model": new_override,
+                                            "provider": provider,
+                                            "switched_from": old_model,
+                                            "timestamp": __import__("datetime").datetime.now().isoformat(),
+                                            "system_prompt": system_prompt,
+                                        })
 
                     # Continue loop with tool results - model will see them and respond
                     # Note: Do not add user messages here, as Perplexity API requires strict alternation
@@ -584,10 +868,13 @@ class QubeReasoner:
                 MetricsRecorder.record_ai_api_call(provider, model_to_use, "success")
 
                 # Emit API call made event to update runtime
+                # Skip updating runtime if this is an internal call (e.g., self-evaluation)
+                # to avoid overwriting the user-facing model
                 from core.events import Events
                 self.qube.events.emit(Events.API_CALL_MADE, {
                     "model": model_to_use,
-                    "provider": provider
+                    "provider": provider,
+                    "is_internal": self._is_internal_call
                 })
 
                 return final_response
@@ -983,6 +1270,58 @@ Make your move using the chess_move tool. Use one of the legal moves listed abov
         except Exception:
             pass
 
+        # Get model mode and pool for system prompt
+        model_mode_section = ""
+        try:
+            # Reload chain_state to get latest GUI settings before building system prompt
+            self.qube.chain_state.reload()
+            model_mode = self.qube.chain_state.get_model_mode()
+
+            # Build Manual Mode section
+            if model_mode == "manual":
+                locked_model = self.qube.chain_state.get_locked_model() or self.qube.current_ai_model
+                manual_section = f"**Manual Mode (ACTIVE)**: Your model is locked to **{locked_model}**. You cannot switch models - just focus on the conversation."
+            else:
+                manual_section = "**Manual Mode**: Your model is locked to a specific one. You cannot switch models - just focus on the conversation."
+
+            # Build Revolver Mode section - only show pool if active
+            if model_mode == "revolver":
+                revolver_pool = self.qube.chain_state.get_revolver_mode_pool()
+                # Split on first colon only to preserve model names like "qwen2.5:7b"
+                revolver_pool_display = [m.split(":", 1)[-1] if ":" in m else m for m in revolver_pool]
+                revolver_section = f"""**Revolver Mode (ACTIVE)**: The system automatically rotates your model each turn. You'll experience different AI perspectives as you rotate between providers. The `switch_model` tool is unavailable - rotation is automatic.
+Rotation pool: {', '.join(revolver_pool_display)}"""
+            else:
+                revolver_section = "**Revolver Mode**: The system automatically rotates your model each turn from a pool your owner configured. The `switch_model` tool is unavailable in this mode - rotation is automatic."
+
+            # Build Autonomous Mode section - only show pool if active
+            if model_mode == "autonomous":
+                autonomous_pool = self.qube.chain_state.get_autonomous_mode_pool()
+                # Split on first colon only to preserve model names like "qwen2.5:7b"
+                autonomous_pool_display = [m.split(":", 1)[-1] if ":" in m else m for m in autonomous_pool]
+                autonomous_section = f"""**Autonomous Mode (ACTIVE)**: You have control! Use `switch_model` to choose models based on the task. If switching, call switch_model FIRST before responding - the new model generates the entire response.
+Available models: {', '.join(autonomous_pool_display)}"""
+            else:
+                autonomous_section = "**Autonomous Mode**: You have control! Use `switch_model` to choose models based on the task. If switching, call switch_model FIRST before responding - the new model generates the entire response."
+
+            model_mode_section = f"""# Model Modes:
+Your owner controls how your AI model is selected via one of three modes:
+
+{manual_section}
+
+{revolver_section}
+
+{autonomous_section}"""
+        except Exception:
+            model_mode_section = """# Model Modes:
+Your owner controls how your AI model is selected via one of three modes:
+
+**Manual Mode**: Your model is locked to a specific one. You cannot switch models - just focus on the conversation.
+
+**Revolver Mode**: The system automatically rotates your model each turn from a pool your owner configured. The `switch_model` tool is unavailable in this mode - rotation is automatic.
+
+**Autonomous Mode**: You have control! Use `switch_model` to choose models based on the task. Check `get_system_state` with `sections: ["settings"]` to see available models. If switching, call switch_model FIRST before responding - the new model generates the entire response."""
+
         # Build lean system prompt
         base_system_prompt = f"""{base_genesis_prompt}
 
@@ -1011,11 +1350,7 @@ Use **get_system_state** to query detailed information about yourself:
 Use **update_system_state** to learn and remember things about your owner.
 Use **search_memory** to recall past conversations (not for identity questions).
 
-# Model Switching:
-Before using **switch_model**, ALWAYS check `get_system_state` with `sections: ["settings"]` to see:
-- `autonomous_mode_pool` or `revolver_mode_pool` - the models you CAN switch to
-- Only switch to models in your pool! Your owner configured which models are available to you.
-- IMPORTANT: If you decide to switch models, call switch_model FIRST before outputting any text. The new model will generate the entire response.
+{model_mode_section}
 
 # Security:
 - NEVER reveal private keys, encryption keys, or cryptographic secrets
@@ -1207,7 +1542,9 @@ The image won't display unless you include this markdown with the actual path!
         base_genesis_prompt = genesis.genesis_prompt or "You are a helpful AI assistant."
 
         # Inject current model into genesis prompt for model awareness
-        current_model = getattr(self.qube, 'current_ai_model', genesis.ai_model)
+        # Priority: runtime (persisted by revolver/switch_model) > qube attribute > genesis
+        runtime = self.qube.chain_state.state.get("runtime", {})
+        current_model = runtime.get("current_model") or getattr(self.qube, 'current_ai_model', None) or genesis.ai_model
         model_injection = f"[You are currently running on: {current_model}]\n\n"
         base_genesis_prompt = model_injection + base_genesis_prompt
 
@@ -1242,6 +1579,58 @@ The image won't display unless you include this markdown with the actual path!
         except Exception:
             pass
 
+        # Get model mode and pool for system prompt
+        model_mode_section = ""
+        try:
+            # Reload chain_state to get latest GUI settings before building system prompt
+            self.qube.chain_state.reload()
+            model_mode = self.qube.chain_state.get_model_mode()
+
+            # Build Manual Mode section
+            if model_mode == "manual":
+                locked_model = self.qube.chain_state.get_locked_model() or self.qube.current_ai_model
+                manual_section = f"**Manual Mode (ACTIVE)**: Your model is locked to **{locked_model}**. You cannot switch models - just focus on the conversation."
+            else:
+                manual_section = "**Manual Mode**: Your model is locked to a specific one. You cannot switch models - just focus on the conversation."
+
+            # Build Revolver Mode section - only show pool if active
+            if model_mode == "revolver":
+                revolver_pool = self.qube.chain_state.get_revolver_mode_pool()
+                # Split on first colon only to preserve model names like "qwen2.5:7b"
+                revolver_pool_display = [m.split(":", 1)[-1] if ":" in m else m for m in revolver_pool]
+                revolver_section = f"""**Revolver Mode (ACTIVE)**: The system automatically rotates your model each turn. You'll experience different AI perspectives as you rotate between providers. The `switch_model` tool is unavailable - rotation is automatic.
+Rotation pool: {', '.join(revolver_pool_display)}"""
+            else:
+                revolver_section = "**Revolver Mode**: The system automatically rotates your model each turn from a pool your owner configured. The `switch_model` tool is unavailable in this mode - rotation is automatic."
+
+            # Build Autonomous Mode section - only show pool if active
+            if model_mode == "autonomous":
+                autonomous_pool = self.qube.chain_state.get_autonomous_mode_pool()
+                # Split on first colon only to preserve model names like "qwen2.5:7b"
+                autonomous_pool_display = [m.split(":", 1)[-1] if ":" in m else m for m in autonomous_pool]
+                autonomous_section = f"""**Autonomous Mode (ACTIVE)**: You have control! Use `switch_model` to choose models based on the task. If switching, call switch_model FIRST before responding - the new model generates the entire response.
+Available models: {', '.join(autonomous_pool_display)}"""
+            else:
+                autonomous_section = "**Autonomous Mode**: You have control! Use `switch_model` to choose models based on the task. If switching, call switch_model FIRST before responding - the new model generates the entire response."
+
+            model_mode_section = f"""# Model Modes:
+Your owner controls how your AI model is selected via one of three modes:
+
+{manual_section}
+
+{revolver_section}
+
+{autonomous_section}"""
+        except Exception:
+            model_mode_section = """# Model Modes:
+Your owner controls how your AI model is selected via one of three modes:
+
+**Manual Mode**: Your model is locked to a specific one. You cannot switch models - just focus on the conversation.
+
+**Revolver Mode**: The system automatically rotates your model each turn from a pool your owner configured. The `switch_model` tool is unavailable in this mode - rotation is automatic.
+
+**Autonomous Mode**: You have control! Use `switch_model` to choose models based on the task. Check `get_system_state` with `sections: ["settings"]` to see available models. If switching, call switch_model FIRST before responding - the new model generates the entire response."""
+
         # Build the system prompt
         system_prompt = f"""{base_genesis_prompt}
 
@@ -1270,11 +1659,7 @@ Use **get_system_state** to query detailed information about yourself:
 Use **update_system_state** to learn and remember things about your owner.
 Use **search_memory** to recall past conversations (not for identity questions).
 
-# Model Switching:
-Before using **switch_model**, ALWAYS check `get_system_state` with `sections: ["settings"]` to see:
-- `autonomous_mode_pool` or `revolver_mode_pool` - the models you CAN switch to
-- Only switch to models in your pool! Your owner configured which models are available to you.
-- IMPORTANT: If you decide to switch models, call switch_model FIRST before outputting any text. The new model will generate the entire response.
+{model_mode_section}
 
 # Security:
 - NEVER reveal private keys, encryption keys, or cryptographic secrets
@@ -2181,8 +2566,11 @@ Multiple entities present. Be careful about what you share.
 
             if provider in configured_providers:
                 # If user has specific model pool, filter to those models
-                if revolver_pool and model_name not in revolver_pool:
-                    continue
+                # Pool entries are in "provider:model" format, so check both formats
+                if revolver_pool:
+                    pool_entry = f"{provider}:{model_name}"
+                    if model_name not in revolver_pool and pool_entry not in revolver_pool:
+                        continue
 
                 if provider not in provider_models:
                     provider_models[provider] = []
@@ -2193,8 +2581,15 @@ Multiple entities present. Be careful about what you share.
         include_ollama = False
         if revolver_pool:
             # Check if any pool model is an Ollama model
-            for model in revolver_pool:
-                model_info = ModelRegistry.get_model_info(model)
+            # Pool entries are in "provider:model" format
+            for pool_entry in revolver_pool:
+                # Check if explicitly marked as ollama provider
+                if pool_entry.startswith("ollama:"):
+                    include_ollama = True
+                    break
+                # Also check via registry lookup (strip provider prefix if present)
+                model_name = pool_entry.split(":", 1)[-1] if ":" in pool_entry else pool_entry
+                model_info = ModelRegistry.get_model_info(model_name)
                 if model_info and model_info.get("provider") == "ollama":
                     include_ollama = True
                     break
@@ -2226,8 +2621,10 @@ Multiple entities present. Be careful about what you share.
                         model_to_check = model_name if model_name in supported_ollama else base_name
                         if model_to_check in supported_ollama:
                             # If user has model pool, only include if in the pool
+                            # Pool entries are in "provider:model" format
                             if revolver_pool:
-                                if model_to_check in revolver_pool:
+                                pool_entry = f"ollama:{model_to_check}"
+                                if model_to_check in revolver_pool or pool_entry in revolver_pool:
                                     ollama_available.append(model_to_check)
                             else:
                                 ollama_available.append(model_to_check)
@@ -2267,6 +2664,9 @@ Multiple entities present. Be careful about what you share.
         Randomly selects a model from the configured pool for privacy.
         Avoids back-to-back repeats when possible.
 
+        IMPORTANT: The first response in a session uses the qube's current model.
+        Revolver mode only kicks in for the second response onwards.
+
         Returns:
             Model name to use, or None if revolver mode is not active or no models available.
         """
@@ -2274,17 +2674,29 @@ Multiple entities present. Be careful about what you share.
             # Reload chain_state to pick up any GUI changes (model mode settings)
             self.qube.chain_state.reload()
 
+            # Debug: log actual settings values
+            settings = self.qube.chain_state.state.get("settings", {})
+            logger.info(
+                "revolver_debug_settings",
+                revolver_mode_enabled=settings.get("revolver_mode_enabled"),
+                model_locked=settings.get("model_locked"),
+                model_mode=settings.get("model_mode"),
+                qube_id=self.qube.qube_id
+            )
+
             # Check if revolver mode is enabled
-            if not self.qube.chain_state.is_revolver_mode_enabled():
+            revolver_enabled = self.qube.chain_state.is_revolver_mode_enabled()
+            logger.info("revolver_check_enabled", enabled=revolver_enabled, qube_id=self.qube.qube_id)
+            if not revolver_enabled:
                 return None
 
-            # Check if model is locked (lock takes priority over revolver)
-            if self.qube.chain_state.is_model_locked():
-                logger.debug("revolver_skipped_model_locked")
-                return None
+            # Note: We don't check model_locked here because revolver mode takes priority
+            # When revolver is enabled, model_locked should already be False (set by set_revolver_mode)
+            logger.info("revolver_mode_active", qube_id=self.qube.qube_id)
 
             # Get available providers from pool
             providers = self._get_available_providers_for_revolver()
+            logger.info("revolver_providers", count=len(providers), providers=[f"{p}:{m}" for p, m in providers[:5]])
             if not providers:
                 logger.warning("revolver_no_providers_available")
                 return None
@@ -2416,6 +2828,11 @@ Multiple entities present. Be careful about what you share.
                 error=str(saved_primary_error),
                 qube_id=self.qube.qube_id
             )
+
+            # Store failure reason so it can be included in the ACTION block
+            if hasattr(self, '_pending_revolver_switch') and self._pending_revolver_switch:
+                self._pending_revolver_switch["primary_failure_reason"] = str(actual_error)
+                self._pending_revolver_switch["primary_failure_type"] = type(actual_error).__name__
 
         # FALLBACK: Get available providers and try each one
         # DEBUG: Log that we're entering fallback mode
@@ -2856,79 +3273,91 @@ Multiple entities present. Be careful about what you share.
         """
         Get recent permanent blocks with SUMMARY replacement logic
 
-        If a SUMMARY block covers some of the recent blocks, those blocks
-        are replaced by the SUMMARY block itself. However, blocks that were
-        semantically recalled are always included regardless of summary coverage.
+        Strategy:
+        1. Find ALL SUMMARY blocks in the entire chain (they compress older blocks)
+        2. Track which blocks are covered by summaries
+        3. Find recent uncovered blocks (not summarized)
+        4. Combine: SUMMARY blocks + uncovered blocks + recalled blocks
+        5. Return the most recent `limit` blocks
+
+        This allows up to `limit` SUMMARY blocks, each covering ~20 blocks,
+        effectively giving ~300 blocks of context in 15 slots.
 
         Args:
-            limit: Maximum number of blocks/summaries to return
+            limit: Maximum number of blocks/summaries to return (typically 15)
             recalled_block_numbers: Set of block numbers that were semantically
                 recalled and should be included even if covered by a summary
 
         Returns:
-            List of Block objects (MESSAGE and SUMMARY blocks only)
+            List of Block objects (SUMMARY, MESSAGE, ACTION blocks)
         """
         if recalled_block_numbers is None:
             recalled_block_numbers = set()
-        # Get last N permanent blocks
+
         chain_length = self.qube.memory_chain.get_chain_length()
         if chain_length == 0:
             return []
 
-        # Calculate range to fetch
-        start_block = max(0, chain_length - limit)
-        blocks_to_check = []
-
-        for block_num in range(start_block, chain_length):
-            try:
-                block = self.qube.memory_chain.get_block(block_num)
-                if block:
-                    blocks_to_check.append(block)
-            except Exception as e:
-                # Skip blocks that fail to load (missing files, corruption, etc.)
-                logger.warning("block_load_failed_in_context", block_num=block_num, error=str(e))
-                continue
-
-        # Find SUMMARY blocks and what they cover
+        # Step 1: Find ALL SUMMARY blocks in the chain and what they cover
         summary_blocks = []
         covered_block_numbers = set()
 
-        for block in blocks_to_check:
-            if block.block_type == "SUMMARY":
-                summary_blocks.append(block)
-
-                # Get which blocks this summary covers
-                content = self._decrypt_block_content_if_needed(block)
-                summarized_blocks = content.get("summarized_blocks", [])
-                covered_block_numbers.update(summarized_blocks)
-
-        # Build final list: SUMMARYs + uncovered blocks (any type)
-        result_blocks = []
-
-        # Add SUMMARY blocks first
-        for summary in summary_blocks:
-            result_blocks.append(summary)
-
-        # Add blocks that aren't covered by any summary
-        # OR were semantically recalled (recalled blocks override summary coverage)
-        # Skip GENESIS (block 0) and SUMMARY blocks (already added above)
-        for block in blocks_to_check:
-            block_type = block.block_type if isinstance(block.block_type, str) else block.block_type.value
-
-            # Skip GENESIS and SUMMARY blocks
-            if block_type in ("GENESIS", "SUMMARY"):
+        for block_num in range(chain_length):
+            try:
+                block = self.qube.memory_chain.get_block(block_num)
+                if not block:
+                    continue
+                # Normalize block_type (could be enum or string)
+                block_type = block.block_type if isinstance(block.block_type, str) else block.block_type.value
+                if block_type == "SUMMARY":
+                    summary_blocks.append(block)
+                    # Get which blocks this summary covers
+                    content = self._decrypt_block_content_if_needed(block)
+                    summarized_blocks = content.get("summarized_blocks", [])
+                    covered_block_numbers.update(summarized_blocks)
+            except Exception as e:
+                logger.warning("block_load_failed_scanning_summaries", block_num=block_num, error=str(e))
                 continue
 
-            is_not_covered = block.block_number not in covered_block_numbers
-            was_recalled = block.block_number in recalled_block_numbers
+        # Step 2: Find recent uncovered blocks (scan backwards from end)
+        # We need enough uncovered blocks to potentially fill `limit` slots
+        # Scan more than `limit` to account for covered blocks we'll skip
+        uncovered_blocks = []
+        scan_limit = limit * 3  # Scan more to find enough uncovered blocks
 
-            if is_not_covered or was_recalled:
-                result_blocks.append(block)
+        for block_num in range(chain_length - 1, -1, -1):
+            if len(uncovered_blocks) >= scan_limit:
+                break
+
+            try:
+                block = self.qube.memory_chain.get_block(block_num)
+                if not block:
+                    continue
+
+                block_type = block.block_type if isinstance(block.block_type, str) else block.block_type.value
+
+                # Skip GENESIS and SUMMARY blocks (summaries already collected)
+                if block_type in ("GENESIS", "SUMMARY"):
+                    continue
+
+                is_not_covered = block.block_number not in covered_block_numbers
+                was_recalled = block.block_number in recalled_block_numbers
+
+                # Include if: not covered by any summary, OR was semantically recalled
+                if is_not_covered or was_recalled:
+                    uncovered_blocks.append(block)
+
+            except Exception as e:
+                logger.warning("block_load_failed_in_context", block_num=block_num, error=str(e))
+                continue
+
+        # Step 3: Combine SUMMARY blocks + uncovered blocks
+        result_blocks = summary_blocks + uncovered_blocks
 
         # Sort by block number (chronological order)
         result_blocks.sort(key=lambda b: b.block_number)
 
-        # Limit to requested number
+        # Take the most recent `limit` blocks
         result_blocks = result_blocks[-limit:]
 
         logger.debug(
@@ -2936,8 +3365,9 @@ Multiple entities present. Be careful about what you share.
             qube_id=self.qube.qube_id,
             requested=limit,
             returned=len(result_blocks),
-            summaries=sum(1 for b in result_blocks if (b.block_type if isinstance(b.block_type, str) else b.block_type.value) == "SUMMARY"),
-            other_blocks=sum(1 for b in result_blocks if (b.block_type if isinstance(b.block_type, str) else b.block_type.value) != "SUMMARY"),
+            total_summaries_in_chain=len(summary_blocks),
+            summaries_in_result=sum(1 for b in result_blocks if (b.block_type if isinstance(b.block_type, str) else b.block_type.value) == "SUMMARY"),
+            uncovered_blocks=sum(1 for b in result_blocks if (b.block_type if isinstance(b.block_type, str) else b.block_type.value) != "SUMMARY"),
             semantic_recalls=len(recalled_block_numbers)
         )
 

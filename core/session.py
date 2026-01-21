@@ -409,37 +409,29 @@ class Session:
                 })
 
                 # Delete the block's file from disk
-                # Search for file matching the timestamp since block numbers may have been reindexed
                 from pathlib import Path
                 session_dir = Path(self.qube.data_dir) / "blocks" / "session"
 
-                # Try exact filename first
+                # Filename format: {block_number}_{block_type}_{timestamp}.json
                 block_type_str = deleted.block_type if isinstance(deleted.block_type, str) else deleted.block_type.value
-                filename = f"{deleted.block_number}_{block_type_str}_{deleted.timestamp}.json"
-                block_file = session_dir / filename
 
-                if block_file.exists():
-                    block_file.unlink()
-                    logger.debug("session_block_file_deleted", file=filename)
-                else:
-                    # File not found with expected name - search by timestamp
-                    # This handles cases where block numbers were reindexed after recovery
-                    found = False
-                    if session_dir.exists():
-                        for f in session_dir.glob(f"*_{block_type_str}_{deleted.timestamp}.json"):
-                            f.unlink()
-                            logger.debug("session_block_file_deleted_by_timestamp", file=f.name)
-                            found = True
-                            break
+                # Search for file by timestamp (block number in filename may vary after reindex)
+                found = False
+                if session_dir.exists():
+                    for f in session_dir.glob(f"*_{block_type_str}_{deleted.timestamp}.json"):
+                        f.unlink()
+                        logger.debug("session_block_file_deleted", file=f.name)
+                        found = True
+                        break
 
-                    if not found:
-                        logger.warning(
-                            "session_block_file_not_found",
-                            expected_filename=filename,
-                            block_number=block_number,
-                            timestamp=deleted.timestamp,
-                            session_dir=str(session_dir)
-                        )
+                if not found:
+                    logger.warning(
+                        "session_block_file_not_found",
+                        block_type=block_type_str,
+                        block_number=block_number,
+                        timestamp=deleted.timestamp,
+                        session_dir=str(session_dir)
+                    )
 
                 logger.info("session_block_deleted", block_number=block_number)
                 return deleted
@@ -971,20 +963,34 @@ class Session:
 
     async def _generate_conversation_summary(self, blocks: List[Block]) -> str:
         """Generate AI-powered text summary of conversation"""
-        # DEBUG logging
+        # DEBUG logging - write to project logs directory
         from pathlib import Path
-        debug_file = Path(self.qube.data_dir).parent.parent.parent / "logs" / "auto_anchor_debug.log"
+        try:
+            # Find the project root (where logs/ directory should be)
+            project_root = Path(__file__).parent.parent  # core/ -> project root
+            logs_dir = project_root / "logs"
+            logs_dir.mkdir(exist_ok=True)
+            debug_file = logs_dir / "auto_anchor_debug.log"
+        except Exception:
+            debug_file = None
+
         def debug_log(msg):
-            with open(debug_file, "a", encoding="utf-8") as f:
-                f.write(f"{datetime.now(timezone.utc).isoformat()} | [_generate_conversation_summary] {msg}\n")
+            if debug_file:
+                try:
+                    with open(debug_file, "a", encoding="utf-8") as f:
+                        f.write(f"{datetime.now(timezone.utc).isoformat()} | [_generate_conversation_summary] {msg}\n")
+                except Exception:
+                    pass  # Silently fail debug logging
+            logger.debug(f"summary_generation: {msg}")
 
         debug_log(f"Started with {len(blocks)} blocks")
         logger.info("generate_summary_start", block_count=len(blocks))
 
         # If qube doesn't have AI initialized, fall back to basic summary
         has_reasoner = hasattr(self.qube, 'reasoner') and self.qube.reasoner is not None
-        debug_log(f"has_reasoner={has_reasoner}")
-        if not has_reasoner:
+        has_model = has_reasoner and hasattr(self.qube.reasoner, 'model') and self.qube.reasoner.model is not None
+        debug_log(f"has_reasoner={has_reasoner}, has_model={has_model}")
+        if not has_reasoner or not has_model:
             logger.warning("no_reasoner_for_summary", qube_has_reasoner=hasattr(self.qube, 'reasoner'))
             message_count = sum(1 for b in blocks if b.block_type == "MESSAGE")
             action_count = sum(1 for b in blocks if b.block_type == "ACTION")
@@ -1105,10 +1111,11 @@ Summary:"""
             logger.info("ai_summary_starting", prompt_length=len(summary_prompt))
 
             # Properly await the async AI call (now that this method is async)
-            debug_log(f"Calling model.generate()...")
+            model_name = getattr(self.qube.reasoner.model, 'model_name', 'unknown')
+            debug_log(f"Calling model.generate() on model={model_name}...")
             response = await self.qube.reasoner.model.generate(
                 messages=[{"role": "user", "content": summary_prompt}],
-                tools=[],
+                tools=None,  # No tools needed for summary generation
                 temperature=0.3
             )
             debug_log(f"model.generate() returned, has_content={response is not None and hasattr(response, 'content')}")
@@ -1370,14 +1377,31 @@ Summary:"""
         - Sort blocks by timestamp (earliest first)
         - Assign block numbers: -1 for earliest, -2 for next, etc.
         - Update previous_block_number references
+        - Rename files to match new block numbers
 
         This approach is stateless and deterministic - no counter to sync.
         """
         if not self.session_blocks:
             return
 
+        from pathlib import Path
+
         # Sort by timestamp (earliest first)
-        self.session_blocks.sort(key=lambda b: (b.timestamp, id(b)))  # id() as tiebreaker for same-second
+        # Use block_type then block_hash as stable tiebreaker for same-second blocks
+        # This ensures deterministic ordering even when blocks are created in the same second
+        self.session_blocks.sort(key=lambda b: (
+            b.timestamp,
+            b.block_type if isinstance(b.block_type, str) else b.block_type.value,
+            b.block_hash or ""
+        ))
+
+        # Track old block numbers before reassignment (for file renaming)
+        # Use (timestamp, block_type) as key since multiple blocks can have same timestamp
+        old_numbers = {}
+        for b in self.session_blocks:
+            block_type_str = b.block_type if isinstance(b.block_type, str) else b.block_type.value
+            key = (b.timestamp, block_type_str)
+            old_numbers[key] = b.block_number
 
         # Assign block numbers: -1 for earliest, -2 for next, etc.
         for i, block in enumerate(self.session_blocks):
@@ -1391,6 +1415,32 @@ Summary:"""
                 block.previous_block_number = latest.block_number if latest else 0
             else:
                 block.previous_block_number = self.session_blocks[i - 1].block_number
+
+        # Rename session block files to match new block numbers
+        session_dir = Path(self.qube.data_dir) / "blocks" / "session"
+        if session_dir.exists():
+            for block in self.session_blocks:
+                block_type_str = block.block_type if isinstance(block.block_type, str) else block.block_type.value
+                key = (block.timestamp, block_type_str)
+                old_num = old_numbers.get(key)
+                new_num = block.block_number
+
+                # Skip if number didn't change or we don't have old number
+                if old_num is None or old_num == new_num:
+                    continue
+
+                new_filename = f"{new_num}_{block_type_str}_{block.timestamp}.json"
+                new_file = session_dir / new_filename
+
+                # Find existing file for this block (by timestamp and type pattern)
+                for old_file in session_dir.glob(f"*_{block_type_str}_{block.timestamp}.json"):
+                    if old_file != new_file:
+                        try:
+                            old_file.rename(new_file)
+                            logger.debug("session_block_file_renamed", old=old_file.name, new=new_filename)
+                        except Exception as e:
+                            logger.warning("session_block_file_rename_failed", old=old_file.name, error=str(e))
+                    break
 
     def _save_session_block(self, block: Block) -> None:
         """
