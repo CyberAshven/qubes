@@ -98,11 +98,13 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
   const [hasMore, setHasMore] = useState(cachedData?.hasMoreTx || false);
   const [totalCount, setTotalCount] = useState(cachedData?.totalTxCount || 0);
   const [expanded, setExpanded] = useState(false);
+  const [visibleCount, setVisibleCount] = useState(5);
 
   // Track if we've already fetched for this qubeId
   const hasFetchedRef = useRef<string | null>(null);
 
   const PAGE_SIZE = 20;
+  const SHOW_INCREMENT = 5;
 
   const fetchTransactions = useCallback(async (offset: number = 0, append: boolean = false, forceRefresh: boolean = false) => {
     if (!userId || !password || !qubeId) return;
@@ -203,7 +205,13 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
     <GlassCard className="p-4 border-l-4 border-l-amber-500">
       {/* Header with toggle */}
       <button
-        onClick={() => setExpanded(!expanded)}
+        onClick={() => {
+          if (expanded) {
+            // Reset visible count when collapsing
+            setVisibleCount(5);
+          }
+          setExpanded(!expanded);
+        }}
         className="w-full flex items-center justify-between text-left"
       >
         <h3 className="text-lg font-semibold text-text-primary flex items-center gap-2">
@@ -224,8 +232,17 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
 
       {expanded && (
         <div className="mt-4 pt-4 border-t border-glass-border">
-          {/* Refresh button */}
-          <div className="flex justify-end mb-3">
+          {/* Refresh and Show All buttons */}
+          <div className="flex justify-end gap-2 mb-3">
+            {transactions.length > visibleCount && (
+              <GlassButton
+                onClick={() => setVisibleCount(transactions.length)}
+                variant="ghost"
+                size="sm"
+              >
+                Show All
+              </GlassButton>
+            )}
             <GlassButton
               onClick={handleRefresh}
               variant="ghost"
@@ -264,7 +281,8 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
           {/* Transaction list */}
           {transactions.length > 0 && (
             <div className="space-y-2">
-              {transactions.map((tx) => {
+              {/* Reverse to show newest first, then limit to visibleCount */}
+              {[...transactions].reverse().slice(0, visibleCount).map((tx) => {
                 const typeStyle = getTxTypeStyle(tx.tx_type);
                 const confStyle = getConfirmationStyle(tx.is_confirmed, tx.confirmations);
                 const isPositive = tx.amount > 0;
@@ -358,15 +376,27 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
                 );
               })}
 
-              {/* Load more button */}
-              {hasMore && (
+              {/* Show more button - shows 5 more at a time */}
+              {visibleCount < transactions.length && (
+                <div className="pt-4 text-center">
+                  <GlassButton
+                    onClick={() => setVisibleCount(prev => Math.min(prev + SHOW_INCREMENT, transactions.length))}
+                    variant="secondary"
+                  >
+                    Show More ({transactions.length - visibleCount} remaining)
+                  </GlassButton>
+                </div>
+              )}
+
+              {/* Load more from server - only show when all local are visible and server has more */}
+              {visibleCount >= transactions.length && hasMore && (
                 <div className="pt-4 text-center">
                   <GlassButton
                     onClick={handleLoadMore}
                     variant="secondary"
                     disabled={loadingMore}
                   >
-                    {loadingMore ? 'Loading...' : 'Load More'}
+                    {loadingMore ? 'Loading...' : 'Load More from Server'}
                   </GlassButton>
                 </div>
               )}
