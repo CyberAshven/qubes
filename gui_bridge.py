@@ -1030,15 +1030,23 @@ class GUIBridge:
 
             qube = self.orchestrator.qubes[qube_id]
 
+            logger.debug(f"recall_last_context called for qube {qube_id}")
+
             # PRIORITY 1: Check Short-term Memory (session blocks) for MESSAGE blocks
-            if qube.current_session and hasattr(qube.current_session, 'session_blocks') and qube.current_session.session_blocks:
+            has_session = qube.current_session is not None
+            has_session_blocks = has_session and hasattr(qube.current_session, 'session_blocks') and qube.current_session.session_blocks
+            logger.debug(f"recall_last: has_session={has_session}, has_session_blocks={has_session_blocks}")
+
+            if has_session_blocks:
                 # Look for the most recent MESSAGE block in session (iterate backwards)
                 for block in reversed(qube.current_session.session_blocks):
                     block_type = block.block_type if isinstance(block.block_type, str) else block.block_type.value
                     if block_type == "MESSAGE":
                         # Found a MESSAGE block in session - use it
                         content = block.content
-                        if block.encrypted:
+
+                        # Session blocks may or may not be encrypted
+                        if getattr(block, 'encrypted', False):
                             try:
                                 content = qube.decrypt_block_content(content)
                             except Exception as decrypt_err:
