@@ -1159,6 +1159,8 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                 )}
               </div>
             )}
+              </div>
+            )}
           </GlassCard>
 
           {/* Long-term Memory (Permanent Blocks) */}
