@@ -1827,25 +1827,23 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                   </div>
 
                   {/* Model Switches Breakdown */}
-                  {selectedContextSection.data.model_switches && (
-                    <div className="p-3 bg-glass-bg/20 rounded-lg">
-                      <div className="text-text-tertiary text-xs uppercase tracking-wider mb-3">Model Switches</div>
-                      <div className="space-y-2">
-                        <div className="flex justify-between text-sm">
-                          <span className="text-text-secondary">🔄 Revolver</span>
-                          <span className="text-text-primary font-mono">{selectedContextSection.data.model_switches.revolver || 0}</span>
-                        </div>
-                        <div className="flex justify-between text-sm">
-                          <span className="text-text-secondary">🤖 Autonomous</span>
-                          <span className="text-text-primary font-mono">{selectedContextSection.data.model_switches.autonomous || 0}</span>
-                        </div>
-                        <div className="flex justify-between text-sm">
-                          <span className="text-text-secondary">👆 Manual</span>
-                          <span className="text-text-primary font-mono">{selectedContextSection.data.model_switches.manual || 0}</span>
-                        </div>
+                  <div className="p-3 bg-glass-bg/20 rounded-lg">
+                    <div className="text-text-tertiary text-xs uppercase tracking-wider mb-3">Model Switches</div>
+                    <div className="space-y-2">
+                      <div className="flex justify-between text-sm">
+                        <span className="text-text-secondary">🔄 Revolver</span>
+                        <span className="text-text-primary font-mono">{selectedContextSection.data.model_switches?.revolver || 0}</span>
+                      </div>
+                      <div className="flex justify-between text-sm">
+                        <span className="text-text-secondary">🤖 Autonomous</span>
+                        <span className="text-text-primary font-mono">{selectedContextSection.data.model_switches?.autonomous || 0}</span>
+                      </div>
+                      <div className="flex justify-between text-sm">
+                        <span className="text-text-secondary">👆 Manual</span>
+                        <span className="text-text-primary font-mono">{selectedContextSection.data.model_switches?.manual || 0}</span>
                       </div>
                     </div>
-                  )}
+                  </div>
 
                   {/* Tokens by Model */}
                   {selectedContextSection.data.tokens_by_model && Object.keys(selectedContextSection.data.tokens_by_model).length > 0 && (
