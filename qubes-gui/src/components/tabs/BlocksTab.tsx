@@ -1455,6 +1455,112 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                 </div>
               )}
 
+              {/* Qube Profile (Self-identity) */}
+              {selectedContextSection.type === 'qube_profile' && (
+                <div className="space-y-3">
+                  {selectedContextSection.data && selectedContextSection.data.total_fields > 0 ? (
+                    (() => {
+                      // Category display info for Qube Profile
+                      const categoryInfo: Record<string, { icon: string; label: string; color: string; bg: string }> = {
+                        preferences: { icon: '⭐', label: 'Preferences', color: 'text-fuchsia-400', bg: 'bg-fuchsia-500/15' },
+                        traits: { icon: '🎭', label: 'Traits', color: 'text-cyan-400', bg: 'bg-cyan-500/15' },
+                        opinions: { icon: '💭', label: 'Opinions', color: 'text-orange-400', bg: 'bg-orange-500/15' },
+                        goals: { icon: '🎯', label: 'Goals', color: 'text-emerald-400', bg: 'bg-emerald-500/15' },
+                        style: { icon: '✨', label: 'Style', color: 'text-rose-400', bg: 'bg-rose-500/15' },
+                        interests: { icon: '💡', label: 'Interests', color: 'text-amber-400', bg: 'bg-amber-500/15' },
+                        custom: { icon: '📁', label: 'Custom', color: 'text-indigo-400', bg: 'bg-indigo-500/15' },
+                      };
+
+                      const allFields = selectedContextSection.data.fields || [];
+
+                      // Group fields by category
+                      const groupByCategory = (fields: any[]) => {
+                        const groups: Record<string, any[]> = {};
+                        fields.forEach((f: any) => {
+                          const cat = f.category || 'custom';
+                          if (!groups[cat]) groups[cat] = [];
+                          groups[cat].push(f);
+                        });
+                        return groups;
+                      };
+
+                      const grouped = groupByCategory(allFields);
+                      const categoryOrder = ['preferences', 'traits', 'opinions', 'goals', 'style', 'interests', 'custom'];
+
+                      return (
+                        <div className="space-y-2">
+                          {categoryOrder
+                            .filter(cat => grouped[cat] && grouped[cat].length > 0)
+                            .map(cat => {
+                              const catInfo = categoryInfo[cat] || categoryInfo.custom;
+                              return (
+                                <div key={cat} className="rounded-lg overflow-hidden border border-glass-border/20">
+                                  <div className={`p-2 ${catInfo.bg}`}>
+                                    <span className={`text-sm font-medium flex items-center gap-2 ${catInfo.color}`}>
+                                      <span>{catInfo.icon}</span>
+                                      <span>{catInfo.label}</span>
+                                      <span className="text-xs opacity-60">({grouped[cat].length})</span>
+                                    </span>
+                                  </div>
+                                  <div className="p-2 space-y-2">
+                                    {grouped[cat].map((field: any, idx: number) => (
+                                      <div key={idx} className="py-2 px-3 bg-glass-bg/30 rounded-lg">
+                                        <div className="text-xs text-text-tertiary capitalize mb-1">
+                                          {field.key.replace(/_/g, ' ')}
+                                        </div>
+                                        <div className="text-sm text-text-primary">
+                                          {field.value}
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                        </div>
+                      );
+                    })()
+                  ) : (
+                    <div className="text-text-tertiary p-4 bg-glass-bg/20 rounded-lg">
+                      <div className="text-4xl mb-3 text-center">🪞</div>
+                      <p className="text-center mb-4">No profile data yet - this is where I store my self-identity!</p>
+                      <div className="text-sm space-y-2">
+                        <p className="text-text-secondary font-medium">Available categories:</p>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div className="flex items-center gap-2 p-2 bg-glass-bg/30 rounded">
+                            <span>⭐</span>
+                            <span className="text-fuchsia-400">Preferences</span>
+                          </div>
+                          <div className="flex items-center gap-2 p-2 bg-glass-bg/30 rounded">
+                            <span>🎭</span>
+                            <span className="text-cyan-400">Traits</span>
+                          </div>
+                          <div className="flex items-center gap-2 p-2 bg-glass-bg/30 rounded">
+                            <span>💭</span>
+                            <span className="text-orange-400">Opinions</span>
+                          </div>
+                          <div className="flex items-center gap-2 p-2 bg-glass-bg/30 rounded">
+                            <span>🎯</span>
+                            <span className="text-emerald-400">Goals</span>
+                          </div>
+                          <div className="flex items-center gap-2 p-2 bg-glass-bg/30 rounded">
+                            <span>✨</span>
+                            <span className="text-rose-400">Style</span>
+                          </div>
+                          <div className="flex items-center gap-2 p-2 bg-glass-bg/30 rounded">
+                            <span>💡</span>
+                            <span className="text-amber-400">Interests</span>
+                          </div>
+                        </div>
+                        <p className="text-xs text-text-tertiary mt-3 text-center">
+                          Ask me about my preferences - I'll save what I discover about myself!
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Genesis Identity (type: 'identity' or legacy 'genesis') */}
               {(selectedContextSection.type === 'genesis' || selectedContextSection.type === 'identity') && selectedContextSection.data && (
                 <div className="space-y-4">
