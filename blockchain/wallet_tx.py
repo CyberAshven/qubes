@@ -48,6 +48,7 @@ class PendingTx:
     memo: Optional[str] = None              # Qube's reason for the transaction
     status: Literal["pending", "approved", "rejected", "expired", "broadcast"] = "pending"
     broadcast_txid: Optional[str] = None    # Set when broadcast succeeds
+    to_qube_name: Optional[str] = None      # Name of recipient Qube (for Q2Q transactions)
 
     def is_expired(self) -> bool:
         return time.time() > self.expires_at
@@ -75,6 +76,7 @@ class TxHistoryEntry:
     timestamp: float                # Unix timestamp
     block_height: Optional[int]     # None if unconfirmed
     memo: Optional[str] = None
+    counterparty_qube_name: Optional[str] = None  # Name of Qube if Q2Q transaction
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -94,6 +96,7 @@ class MergedTxHistoryEntry:
     memo: Optional[str] = None      # From local storage
     is_confirmed: bool = True
     explorer_url: str = ""
+    counterparty_qube_name: Optional[str] = None  # Name of Qube if Q2Q transaction
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -415,7 +418,8 @@ class WalletTransactionManager:
         to_address: str,
         amount_sats: int,
         memo: Optional[str] = None,
-        expiry_hours: int = DEFAULT_EXPIRY_HOURS
+        expiry_hours: int = DEFAULT_EXPIRY_HOURS,
+        to_qube_name: Optional[str] = None
     ) -> PendingTx:
         """
         Qube proposes a transaction. Owner must approve before broadcast.
@@ -425,6 +429,7 @@ class WalletTransactionManager:
             amount_sats: Amount to send in satoshis
             memo: Optional reason for the transaction
             expiry_hours: Hours until this pending tx expires
+            to_qube_name: Name of recipient Qube (for Q2Q transactions)
 
         Returns:
             PendingTx object
@@ -473,7 +478,8 @@ class WalletTransactionManager:
             created_at=now,
             expires_at=now + (expiry_hours * 3600),
             memo=memo,
-            status="pending"
+            status="pending",
+            to_qube_name=to_qube_name
         )
 
         # Store pending transaction
@@ -573,7 +579,8 @@ class WalletTransactionManager:
             counterparty=pending.outputs[0]["address"] if pending.outputs else None,
             timestamp=time.time(),
             block_height=None,
-            memo=pending.memo
+            memo=pending.memo,
+            counterparty_qube_name=pending.to_qube_name
         ))
 
         # Update chain_state balance (optimistic update - subtract sent amount + fee)
@@ -772,7 +779,8 @@ class WalletTransactionManager:
         to_address: str,
         amount_sats: int,
         owner_wif: str,
-        memo: str = ""
+        memo: str = "",
+        to_qube_name: Optional[str] = None
     ) -> str:
         """
         Create, sign, and broadcast a transaction in one step.
@@ -783,6 +791,7 @@ class WalletTransactionManager:
             amount_sats: Amount in satoshis
             owner_wif: Owner's private key in WIF format
             memo: Optional memo for history
+            to_qube_name: Name of recipient Qube (for Q2Q transactions)
 
         Returns:
             Transaction ID (txid)
@@ -835,7 +844,8 @@ class WalletTransactionManager:
             counterparty=to_address,
             timestamp=time.time(),
             block_height=None,
-            memo=memo or "Auto-approved (whitelisted)"
+            memo=memo or "Auto-approved (whitelisted)",
+            counterparty_qube_name=to_qube_name
         ))
 
         # Update chain_state balance (optimistic update - subtract sent amount + fee)
@@ -1030,6 +1040,9 @@ class WalletTransactionManager:
             # Build explorer URL
             explorer_url = f"https://blockchair.com/bitcoin-cash/transaction/{txid}"
 
+            # Get qube name from local entry if available
+            counterparty_qube_name = local_entry.counterparty_qube_name if local_entry else None
+
             merged = MergedTxHistoryEntry(
                 txid=txid,
                 tx_type=tx_type,
@@ -1041,7 +1054,8 @@ class WalletTransactionManager:
                 confirmations=bc_tx["confirmations"],
                 memo=memo,
                 is_confirmed=bc_tx["is_confirmed"],
-                explorer_url=explorer_url
+                explorer_url=explorer_url,
+                counterparty_qube_name=counterparty_qube_name
             )
             merged_transactions.append(merged)
 
@@ -1065,7 +1079,8 @@ class WalletTransactionManager:
                         confirmations=tx_info.get("confirmations", 0),
                         memo=local_entry.memo,
                         is_confirmed=tx_info.get("confirmations", 0) > 0,
-                        explorer_url=explorer_url
+                        explorer_url=explorer_url,
+                        counterparty_qube_name=local_entry.counterparty_qube_name
                     )
                     # Insert at appropriate position based on timestamp
                     inserted = False

@@ -3045,7 +3045,8 @@ async def send_bch_handler(qube, params: Dict[str, Any]) -> Dict[str, Any]:
                             to_address=to_address,
                             amount_sats=amount_sats,
                             owner_wif=owner_wif,
-                            memo=memo or f"Auto-sent by {qube.name}"
+                            memo=memo or f"Auto-sent by {qube.name}",
+                            to_qube_name=to_qube_name if to_qube_name else None
                         )
 
                         bch_amount = amount_sats / 100_000_000
@@ -3106,7 +3107,8 @@ async def send_bch_handler(qube, params: Dict[str, Any]) -> Dict[str, Any]:
             pending_tx = await wallet_manager.propose_send(
                 to_address=to_address,
                 amount_sats=amount_sats,
-                memo=memo or f"Proposed by {qube.name}"
+                memo=memo or f"Proposed by {qube.name}",
+                to_qube_name=to_qube_name if to_qube_name else None
             )
 
             logger.info(

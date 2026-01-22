@@ -318,11 +318,23 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
                           </span>
                         </div>
 
-                        {/* Counterparty address */}
-                        {tx.counterparty && (
-                          <div className="text-xs text-text-tertiary font-mono break-all">
+                        {/* Counterparty - show Qube name if available */}
+                        {(tx.counterparty || tx.counterparty_qube_name) && (
+                          <div className="text-xs text-text-tertiary">
                             {isPositive ? 'From: ' : 'To: '}
-                            {tx.counterparty}
+                            {tx.counterparty_qube_name ? (
+                              <span className="text-accent-primary font-medium">
+                                {tx.counterparty_qube_name}
+                              </span>
+                            ) : (
+                              <span className="font-mono break-all">{tx.counterparty}</span>
+                            )}
+                            {/* Show address on hover or as secondary info if we have qube name */}
+                            {tx.counterparty_qube_name && tx.counterparty && (
+                              <span className="font-mono text-text-disabled ml-1">
+                                ({tx.counterparty.slice(0, 20)}...)
+                              </span>
+                            )}
                           </div>
                         )}
 

@@ -88,7 +88,17 @@ class WalletSecurityConfig:
     def is_whitelisted(self, qube_id: str, address: str) -> bool:
         """Check if address is whitelisted for this qube."""
         whitelist = self.whitelists.get(qube_id, [])
-        return address in whitelist
+        is_in_whitelist = address in whitelist
+        # Debug logging for whitelist check
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(
+            f"WHITELIST CHECK: qube_id={qube_id}, address={address[:30]}..., "
+            f"whitelist_count={len(whitelist)}, found={is_in_whitelist}"
+        )
+        if whitelist:
+            logger.info(f"WHITELIST CONTENTS: {[a[:30] + '...' for a in whitelist]}")
+        return is_in_whitelist
 
 
 class SecureSettingsManager:

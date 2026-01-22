@@ -303,6 +303,7 @@ export interface TransactionHistoryEntry {
   amount: number;  // satoshis
   fee: number;
   counterparty: string | null;
+  counterparty_qube_name: string | null;  // Name of Qube for Q2Q transactions
   timestamp: string;  // ISO format
   block_height: number | null;
   confirmations: number;
