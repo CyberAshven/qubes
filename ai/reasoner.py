@@ -2132,6 +2132,7 @@ The image won't display unless you include this markdown with the actual path!
             clearance_note = "(Complete access - Owner)" if is_owner else "(Based on clearance level)"
             return f"""# What I Know About My Owner {clearance_note}:
 {chr(10).join(owner_info_lines)}
+
 """
 
         except Exception as e:
