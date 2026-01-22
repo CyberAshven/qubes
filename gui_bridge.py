@@ -6970,7 +6970,11 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
             if not wallet_info:
                 return {"success": False, "error": "Qube does not have a wallet configured"}
 
-            # Initialize wallet transaction manager
+            # Reload chain_state to get latest pending transactions from disk
+            # This ensures we have the most up-to-date pending tx list
+            qube.chain_state.reload()
+            qube.wallet_manager._load_pending_transactions()
+
             wallet_manager = qube.wallet_manager
 
             # Get pending tx details before approval
@@ -6989,9 +6993,11 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
                 })
 
                 # Emit transaction sent event (adds to history)
+                # Get destination address from outputs (outputs is a list of {address, value})
+                to_address = pending_tx.outputs[0]["address"] if pending_tx.outputs else "unknown"
                 qube.events.emit(Events.TRANSACTION_SENT, {
                     "txid": txid,
-                    "to_address": pending_tx.to_address,
+                    "to_address": to_address,
                     "amount_satoshis": pending_tx.total_amount,
                     "memo": pending_tx.memo,
                     "auto_approved": False

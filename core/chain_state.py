@@ -875,6 +875,11 @@ class ChainState:
                             for field in self.GUI_MANAGED_FIELDS:
                                 if field in disk_state.get("settings", {}):
                                     merged_state["settings"][field] = disk_state["settings"][field]
+
+                        # NOTE: financial.pending is managed by WalletTransactionManager
+                        # which calls _remove_pending_transaction() to explicitly remove transactions.
+                        # We do NOT preserve disk pending here, as that would undo explicit removals.
+                        # The reload-and-merge logic in _save_pending_transactions() handles race conditions.
                     else:
                         # GUI saving: preserve ALL backend-managed sections from disk
                         # GUI only manages settings, not stats/skills/relationships/runtime/etc.

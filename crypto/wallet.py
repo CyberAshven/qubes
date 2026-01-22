@@ -69,7 +69,9 @@ logger = get_logger(__name__)
 BLOCKCHAIR_API = "https://api.blockchair.com/bitcoin-cash"
 FULCRUM_API = "https://rest.bch.actorforth.org/v2"  # Fulcrum-based API (more real-time)
 DUST_LIMIT = 546  # Minimum output value in satoshis
-DEFAULT_FEE_PER_BYTE = 1  # 1 sat/byte is sufficient for BCH
+# 2 sat/byte ensures P2SH multisig transactions meet minimum relay fee on all nodes
+# (1 sat/byte can fail on some nodes with "min relay fee not met" error)
+DEFAULT_FEE_PER_BYTE = 2
 
 
 # =============================================================================
@@ -1590,31 +1592,7 @@ class QubeWallet:
         utxos_for_tracking = utxos or []
 
         async with aiohttp.ClientSession() as session:
-            # Try Blockchair first
-            try:
-                url = f"{BLOCKCHAIR_API}/push/transaction"
-                async with session.post(url, data={"data": tx_hex}, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                    result = await resp.json()
-                    if result.get("context", {}).get("code") == 200:
-                        txid = result["data"]["transaction_hash"]
-                        logger.info("transaction_broadcast", txid=txid, endpoint="blockchair")
-                        self.invalidate_balance_cache()
-                        # Record successful broadcast
-                        if utxos_for_tracking:
-                            self.record_broadcast_attempt(tx_hex, utxos_for_tracking, True, txid)
-                        # Verify if requested
-                        if verify:
-                            await self.verify_broadcast_success(txid, max_retries=2, delay=1.5)
-                        return txid
-                    else:
-                        error = result.get("context", {}).get("error", "Unknown error")
-                        errors.append(f"Blockchair: {error}")
-                        logger.debug("broadcast_failed_blockchair", error=error)
-            except Exception as e:
-                errors.append(f"Blockchair: {e}")
-                logger.debug("broadcast_exception_blockchair", error=str(e))
-
-            # Try Fulcrum/ActorForth API as fallback
+            # Try Fulcrum/ActorForth API first (more reliable, less mempool conflicts)
             try:
                 url = "https://rest.bch.actorforth.org/v2/rawtransactions/sendRawTransaction"
                 async with session.post(url, json={"hexes": [tx_hex]}, timeout=aiohttp.ClientTimeout(total=15)) as resp:
@@ -1636,6 +1614,28 @@ class QubeWallet:
             except Exception as e:
                 errors.append(f"Fulcrum: {e}")
                 logger.debug("broadcast_exception_fulcrum", error=str(e))
+
+            # Try Blockchair as fallback
+            try:
+                url = f"{BLOCKCHAIR_API}/push/transaction"
+                async with session.post(url, data={"data": tx_hex}, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                    result = await resp.json()
+                    if result.get("context", {}).get("code") == 200:
+                        txid = result["data"]["transaction_hash"]
+                        logger.info("transaction_broadcast", txid=txid, endpoint="blockchair")
+                        self.invalidate_balance_cache()
+                        if utxos_for_tracking:
+                            self.record_broadcast_attempt(tx_hex, utxos_for_tracking, True, txid)
+                        if verify:
+                            await self.verify_broadcast_success(txid, max_retries=2, delay=1.5)
+                        return txid
+                    else:
+                        error = result.get("context", {}).get("error", "Unknown error")
+                        errors.append(f"Blockchair: {error}")
+                        logger.debug("broadcast_failed_blockchair", error=error)
+            except Exception as e:
+                errors.append(f"Blockchair: {e}")
+                logger.debug("broadcast_exception_blockchair", error=str(e))
 
             # Try Bitcoin.com API as last resort
             try:

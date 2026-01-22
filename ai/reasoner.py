@@ -363,8 +363,15 @@ class QubeReasoner:
                     context={"provider": provider, "model": model_to_use}
                 )
 
-            # Initialize fallback chain if enabled
-            if self.enable_fallback and not self.fallback_chain:
+            # Initialize or rebuild fallback chain if enabled
+            # IMPORTANT: Rebuild if primary model changed (e.g., revolver mode switched models)
+            # Otherwise the old fallback chain would use the wrong primary model
+            needs_rebuild = (
+                not self.fallback_chain or
+                self.fallback_chain.primary_model != model_to_use
+            )
+            if self.enable_fallback and needs_rebuild:
+                old_primary = self.fallback_chain.primary_model if self.fallback_chain else None
                 self.fallback_chain = AIFallbackChain(
                     primary_model=model_to_use,
                     api_keys=api_keys,
@@ -373,8 +380,10 @@ class QubeReasoner:
                 logger.info(
                     "fallback_chain_initialized",
                     primary_model=model_to_use,
+                    previous_primary=old_primary,
                     chain_length=len(self.fallback_chain.fallback_chain),
-                    qube_id=self.qube.qube_id
+                    qube_id=self.qube.qube_id,
+                    rebuilt=old_primary is not None
                 )
 
             # Get model instance (will be used if fallback disabled)
@@ -593,6 +602,40 @@ class QubeReasoner:
                             current_model=actual_model,
                             current_provider=actual_provider
                         )
+
+                        # In revolver mode, create a revolver_switch block to record the fallback
+                        # This handles fallbacks that occur on subsequent iterations (after tool use)
+                        # where _pending_revolver_switch was already cleared
+                        if self.qube.chain_state.is_revolver_mode_enabled() and self.qube.current_session:
+                            from core.block import create_action_block
+                            latest = self.qube.memory_chain.get_latest_block()
+                            revolver_fallback_block = create_action_block(
+                                qube_id=self.qube.qube_id,
+                                block_number=-1,
+                                previous_block_number=latest.block_number if latest else 0,
+                                action_type="revolver_switch",
+                                parameters={"target_model": actual_model, "previous_model": model_to_use},
+                                initiated_by="system",
+                                status="completed",
+                                result={
+                                    "success": True,
+                                    "previous_model": model_to_use,
+                                    "new_model": actual_model,
+                                    "provider": actual_provider,
+                                    "fallback_used": True,
+                                    "reason": "Fallback during tool use iteration"
+                                },
+                                temporary=True,
+                                model_used=actual_model
+                            )
+                            self.qube.current_session.create_block(revolver_fallback_block)
+                            logger.info(
+                                "revolver_fallback_block_created",
+                                previous_model=model_to_use,
+                                actual_model=actual_model,
+                                iteration=iteration
+                            )
+
                         # Update tracking variables for MESSAGE block
                         model_to_use = actual_model
                         self.last_model_used = actual_model
@@ -681,20 +724,25 @@ class QubeReasoner:
                     assistant_content = "" if has_switch_model else (response.content or "")
 
                     # Add assistant message with tool calls (only once, not per tool)
+                    # Preserve thought_signature for Google Gemini models (required for tool use continuity)
+                    def convert_tool_call(tc):
+                        converted = {
+                            "id": tc["id"],
+                            "type": "function",
+                            "function": {
+                                "name": tc["name"],
+                                "arguments": json.dumps(tc["parameters"])
+                            }
+                        }
+                        # Preserve thought_signature if present (Gemini requirement)
+                        if "thought_signature" in tc:
+                            converted["thought_signature"] = tc["thought_signature"]
+                        return converted
+
                     context_messages.append({
                         "role": "assistant",
                         "content": assistant_content,
-                        "tool_calls": [
-                            {
-                                "id": tc["id"],
-                                "type": "function",
-                                "function": {
-                                    "name": tc["name"],
-                                    "arguments": json.dumps(tc["parameters"])
-                                }
-                            }
-                            for tc in response.tool_calls
-                        ]
+                        "tool_calls": [convert_tool_call(tc) for tc in response.tool_calls]
                     })
 
                     # Execute each tool and add results

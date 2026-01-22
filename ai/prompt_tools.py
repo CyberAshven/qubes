@@ -63,6 +63,14 @@ class PromptBasedToolHandler:
         re.compile(r'\[TOOL_CALL\]\s*(\{.*?\})\s*\[/TOOL_CALL\]', re.DOTALL | re.IGNORECASE),
     ]
 
+    # Pattern to detect bare JSON tool calls (no tags)
+    # Used as last resort for models that output raw JSON like DeepSeek R1
+    # Matches JSON objects that have both "name" and "arguments" keys
+    BARE_JSON_TOOL_PATTERN = re.compile(
+        r'^\s*(\{"name":\s*"[^"]+",\s*"arguments":\s*\{.*?\}\})\s*$',
+        re.MULTILINE | re.DOTALL
+    )
+
     TOOL_INSTRUCTION_TEMPLATE = """
 ## Available Tools
 
@@ -241,6 +249,10 @@ Assistant: Done! I've switched to GPT-4o.
         if not tool_calls:
             tool_calls = self._parse_with_legacy_patterns(content)
 
+        # Last resort: try bare JSON (for models like DeepSeek R1 that output raw JSON)
+        if not tool_calls:
+            tool_calls = self._parse_bare_json_tool_calls(content)
+
         return tool_calls
 
     def _parse_with_json_decoder(self, content: str) -> List[ParsedToolCall]:
@@ -347,14 +359,77 @@ Assistant: Done! I've switched to GPT-4o.
 
         return tool_calls
 
+    def _parse_bare_json_tool_calls(self, content: str) -> List[ParsedToolCall]:
+        """
+        Parse bare JSON tool calls without tags.
+
+        Last resort for models like DeepSeek R1 that output raw JSON like:
+        {"name": "send_bch", "arguments": {"to_qube_name": "Paradox", "amount_sats": 20000}}
+
+        This is more permissive but only matches JSON with both "name" and "arguments" keys.
+        """
+        tool_calls = []
+
+        # Try to find JSON objects that look like tool calls
+        # First try the regex pattern
+        matches = self.BARE_JSON_TOOL_PATTERN.findall(content)
+
+        # If no matches, try a more aggressive approach: find any JSON object in the content
+        if not matches:
+            # Look for content that's primarily JSON (stripped content starts with { and ends with })
+            stripped = content.strip()
+            if stripped.startswith('{') and stripped.endswith('}'):
+                matches = [stripped]
+
+        for match in matches:
+            try:
+                data = json.loads(match)
+
+                # Must have both "name" and "arguments" to be considered a tool call
+                if isinstance(data, dict) and "name" in data and "arguments" in data:
+                    name = data["name"]
+                    arguments = data.get("arguments", {})
+
+                    tool_calls.append(ParsedToolCall(
+                        name=name,
+                        arguments=arguments if isinstance(arguments, dict) else {},
+                        raw_text=match
+                    ))
+
+                    logger.info(
+                        "tool_call_parsed_bare_json",
+                        tool_name=name,
+                        argument_count=len(arguments) if isinstance(arguments, dict) else 0,
+                        note="Model output bare JSON without tags"
+                    )
+
+            except json.JSONDecodeError as e:
+                logger.debug(
+                    "bare_json_parse_failed",
+                    error=str(e),
+                    raw_text=match[:100] if len(match) > 100 else match
+                )
+                continue
+
+        return tool_calls
+
     def has_tool_call(self, content: str) -> bool:
         """Check if content contains a tool call."""
         # Check for <tool_call> opener followed by JSON
         if self.TOOL_CALL_OPENER.search(content):
             return True
         # Check legacy patterns
-        return bool(self.TOOL_CALL_PATTERN.search(content)) or \
-               any(p.search(content) for p in self.ALT_PATTERNS)
+        if bool(self.TOOL_CALL_PATTERN.search(content)) or \
+               any(p.search(content) for p in self.ALT_PATTERNS):
+            return True
+        # Check for bare JSON tool calls
+        if self.BARE_JSON_TOOL_PATTERN.search(content):
+            return True
+        # Last check: content is pure JSON with name and arguments
+        stripped = content.strip()
+        if stripped.startswith('{"name":') and stripped.endswith('}'):
+            return True
+        return False
 
     def format_tool_result(
         self,

@@ -610,14 +610,39 @@ class WalletTransactionManager:
         if not pending:
             raise ValueError(f"Pending transaction not found: {tx_id}")
 
-        pending.status = "rejected"
-        self._save_pending_transactions()
+        # Remove the transaction entirely (don't just change status)
+        del self._pending_txs[tx_id]
+        self._remove_pending_transaction(tx_id)
 
         logger.info(
             "transaction_rejected",
             qube_id=self.qube_id,
             tx_id=tx_id
         )
+
+    def _remove_pending_transaction(self, tx_id: str) -> None:
+        """
+        Remove a pending transaction from chain_state.
+
+        Uses reload-and-filter to ensure we don't accidentally re-add from stale disk state.
+        """
+        try:
+            # Reload chain_state from disk to get latest
+            self.chain_state.reload()
+
+            # Get pending list from disk and filter out the rejected tx
+            financial = self.chain_state.state.get("financial", {})
+            disk_pending = financial.get("pending", [])
+            filtered_pending = [tx for tx in disk_pending if tx.get("tx_id") != tx_id]
+
+            # Update chain_state with filtered list
+            financial = self.chain_state.state.setdefault("financial", {})
+            financial["pending"] = filtered_pending
+            self.chain_state._save()
+
+            logger.debug(f"Removed pending transaction {tx_id} from chain_state")
+        except Exception as e:
+            logger.error(f"Failed to remove pending transaction: {e}")
 
     # =========================================================================
     # OWNER DIRECT WITHDRAWAL
@@ -885,15 +910,41 @@ class WalletTransactionManager:
         logger.debug(f"Loaded {len(self._pending_txs)} pending transactions from chain_state")
 
     def _save_pending_transactions(self) -> None:
-        """Save pending transactions to chain_state."""
-        try:
-            pending_list = [tx.to_dict() for tx in self._pending_txs.values()]
+        """Save pending transactions to chain_state.
 
+        Uses reload-and-merge strategy to prevent race conditions where
+        another process may have added pending transactions since we loaded.
+        """
+        try:
+            # Reload chain_state from disk to get latest pending transactions
+            # This prevents race conditions where another instance added pending txs
+            self.chain_state.reload()
+
+            # Get pending list from disk
+            financial = self.chain_state.state.get("financial", {})
+            disk_pending = financial.get("pending", [])
+            disk_pending_by_id = {tx.get("tx_id"): tx for tx in disk_pending if tx.get("tx_id")}
+
+            # Merge: start with disk pending, add/update with our in-memory pending
+            merged_pending = dict(disk_pending_by_id)
+            for tx_id, tx in self._pending_txs.items():
+                merged_pending[tx_id] = tx.to_dict()
+
+            # Update chain_state with merged list
             financial = self.chain_state.state.setdefault("financial", {})
-            financial["pending"] = pending_list
+            financial["pending"] = list(merged_pending.values())
             self.chain_state._save()
 
-            logger.debug(f"Saved {len(pending_list)} pending transactions to chain_state")
+            # Also update in-memory to match merged state
+            self._pending_txs = {}
+            for tx_data in merged_pending.values():
+                try:
+                    tx = PendingTx.from_dict(tx_data)
+                    self._pending_txs[tx.tx_id] = tx
+                except Exception:
+                    pass
+
+            logger.debug(f"Saved {len(merged_pending)} pending transactions to chain_state (merged with disk)")
         except Exception as e:
             logger.error(f"Failed to save pending transactions: {e}")
 

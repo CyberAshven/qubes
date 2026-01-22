@@ -114,11 +114,18 @@ class GoogleModel(AIModelInterface):
                         parts = []
                         for tc in msg["tool_calls"]:
                             args_dict = json.loads(tc["function"]["arguments"]) if isinstance(tc["function"]["arguments"], str) else tc["function"]["arguments"]
+                            # Build function call with thought_signature if present
+                            # Newer Gemini models require thought_signature for tool use
+                            func_call_kwargs = {
+                                "name": tc["function"]["name"],
+                                "args": args_dict
+                            }
+                            # Check for thought_signature in the tool call (may be stored at top level or in function)
+                            thought_sig = tc.get("thought_signature") or tc.get("function", {}).get("thought_signature")
+                            if thought_sig:
+                                func_call_kwargs["thought_signature"] = thought_sig
                             parts.append(types.Part(
-                                function_call=types.FunctionCall(
-                                    name=tc["function"]["name"],
-                                    args=args_dict
-                                )
+                                function_call=types.FunctionCall(**func_call_kwargs)
                             ))
                         contents.append(types.Content(role="model", parts=parts))
                     else:
@@ -227,11 +234,16 @@ class GoogleModel(AIModelInterface):
                     tool_calls = []
                     for part in candidate.content.parts:
                         if part.function_call:
-                            tool_calls.append({
+                            tool_call = {
                                 "id": f"call_{hash(part.function_call.name)}",
                                 "name": part.function_call.name,
                                 "parameters": dict(part.function_call.args) if part.function_call.args else {}
-                            })
+                            }
+                            # Extract thought_signature if present (required by newer Gemini models)
+                            # The thought_signature must be passed back with function results
+                            if hasattr(part.function_call, 'thought_signature') and part.function_call.thought_signature:
+                                tool_call["thought_signature"] = part.function_call.thought_signature
+                            tool_calls.append(tool_call)
                     if not tool_calls:
                         tool_calls = None
 
