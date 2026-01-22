@@ -604,6 +604,7 @@ const SummaryBlockContent: React.FC<{ content: any }> = memo(({ content }) => {
   const blockCount = content.block_count || summarizedBlocks.length || 0;
   const sessionId = content.session_id || null;
   const summaryType = content.summary_type || 'unknown';
+  const modelUsed = content.model_used || null;
 
   // Format block range for display
   const getBlockRange = () => {
@@ -640,6 +641,12 @@ const SummaryBlockContent: React.FC<{ content: any }> = memo(({ content }) => {
           <div className="flex items-center justify-between text-xs">
             <span className="text-text-tertiary">Session:</span>
             <span className="text-text-primary font-mono text-[10px]">{sessionId}</span>
+          </div>
+        )}
+        {modelUsed && (
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-text-tertiary">Model:</span>
+            <span className="text-accent-secondary font-medium">{modelUsed}</span>
           </div>
         )}
         {summarizedBlocks.length > 0 && (

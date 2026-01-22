@@ -703,7 +703,8 @@ def create_summary_block(
     participants: Optional[Dict[str, List[str]]] = None,
     actions_taken: Optional[List[Dict[str, Any]]] = None,
     key_insights: Optional[List[str]] = None,
-    next_session_context: Optional[str] = None
+    next_session_context: Optional[str] = None,
+    model_used: Optional[str] = None
 ) -> Block:
     """
     Create SUMMARY block
@@ -740,6 +741,8 @@ def create_summary_block(
         content["key_insights"] = key_insights
     if next_session_context:
         content["next_session_context"] = next_session_context
+    if model_used:
+        content["model_used"] = model_used
 
     block = Block(
         block_type=BlockType.SUMMARY,

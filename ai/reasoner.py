@@ -1925,12 +1925,24 @@ The image won't display unless you include this markdown with the actual path!
             Formatted string with speaker name, relationship type, and trust level
         """
         try:
-            if not self.qube.current_session:
+            # Get speaker info - prefer session entity_id, fallback to user_name (owner)
+            speaker_id = None
+            speaker_name = None
+
+            if self.qube.current_session:
+                speaker_id = self.qube.current_session.entity_id
+                speaker_name = self.qube.current_session.entity_name
+
+            # Fallback to user_name if no session speaker set (assume owner is speaking)
+            if not speaker_id:
+                speaker_id = getattr(self.qube, 'user_name', None)
+                speaker_name = speaker_id
+
+            if not speaker_id:
                 return "# Speaking With: Unknown"
 
-            # Get speaker info from session
-            speaker_id = self.qube.current_session.entity_id
-            speaker_name = self.qube.current_session.entity_name or speaker_id
+            if not speaker_name:
+                speaker_name = speaker_id
 
             # Check if this is the owner
             genesis = self.qube.genesis_block

@@ -970,6 +970,14 @@ class Session:
         summary_text = await self._generate_conversation_summary(converted_blocks)
         debug_log(f"_generate_conversation_summary returned: {len(summary_text) if summary_text else 0} chars")
 
+        # Get the model that was used (or would have been used) for summary generation
+        model_used = None
+        try:
+            if hasattr(self.qube, 'reasoner') and self.qube.reasoner and hasattr(self.qube.reasoner, 'model'):
+                model_used = getattr(self.qube.reasoner.model, 'model_name', None)
+        except Exception:
+            pass
+
         summary_block = create_summary_block(
             qube_id=self.qube.qube_id,
             block_number=self.qube.memory_chain.get_chain_length(),
@@ -991,7 +999,8 @@ class Session:
             actions_taken=self._extract_actions(converted_blocks),
             key_insights=self.metadata["insights"],
             next_session_context=None,
-            archival_references=None
+            archival_references=None,
+            model_used=model_used
         )
 
         return summary_block
