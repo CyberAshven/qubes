@@ -2006,27 +2006,111 @@ The image won't display unless you include this markdown with the actual path!
             genesis = self.qube.genesis_block
             is_owner = speaker_id == genesis.creator if genesis else False
 
-            # Get relationship for non-owners
-            relationship = None
-            if not is_owner:
+            # Get owner info from chain_state (this is where the GUI stores it)
+            owner_info = self.qube.chain_state.get_owner_info()
+            if not owner_info:
+                return ""
+
+            # Collect all fields from owner_info categories
+            all_fields = []
+
+            # Standard fields (name, occupation, etc.)
+            standard = owner_info.get("standard", {})
+            for key, field_data in standard.items():
+                if isinstance(field_data, dict):
+                    all_fields.append({
+                        "key": key,
+                        "value": field_data.get("value", ""),
+                        "sensitivity": field_data.get("sensitivity", "private"),
+                        "category": "standard"
+                    })
+
+            # Physical attributes
+            physical = owner_info.get("physical", {})
+            for key, field_data in physical.items():
+                if isinstance(field_data, dict):
+                    all_fields.append({
+                        "key": key,
+                        "value": field_data.get("value", ""),
+                        "sensitivity": field_data.get("sensitivity", "private"),
+                        "category": "physical"
+                    })
+
+            # Preferences
+            preferences = owner_info.get("preferences", {})
+            for key, field_data in preferences.items():
+                if isinstance(field_data, dict):
+                    all_fields.append({
+                        "key": key,
+                        "value": field_data.get("value", ""),
+                        "sensitivity": field_data.get("sensitivity", "private"),
+                        "category": "preferences"
+                    })
+
+            # People (relationships to other people)
+            people = owner_info.get("people", {})
+            for key, field_data in people.items():
+                if isinstance(field_data, dict):
+                    all_fields.append({
+                        "key": key,
+                        "value": field_data.get("value", ""),
+                        "sensitivity": field_data.get("sensitivity", "private"),
+                        "category": "people"
+                    })
+
+            # Dates (important dates)
+            dates = owner_info.get("dates", {})
+            for key, field_data in dates.items():
+                if isinstance(field_data, dict):
+                    all_fields.append({
+                        "key": key,
+                        "value": field_data.get("value", ""),
+                        "sensitivity": field_data.get("sensitivity", "private"),
+                        "category": "dates"
+                    })
+
+            # Dynamic fields (misc learned facts)
+            dynamic = owner_info.get("dynamic", [])
+            for field_data in dynamic:
+                if isinstance(field_data, dict):
+                    all_fields.append({
+                        "key": field_data.get("key", ""),
+                        "value": field_data.get("value", ""),
+                        "sensitivity": field_data.get("sensitivity", "private"),
+                        "category": "dynamic"
+                    })
+
+            if not all_fields:
+                return ""
+
+            # Filter by clearance if not owner
+            accessible_fields = []
+            if is_owner:
+                # Owner gets everything except secret
+                accessible_fields = [f for f in all_fields if f.get("sensitivity") != "secret" and f.get("value")]
+            else:
+                # Non-owner: filter by clearance level
+                # Get relationship clearance profile
+                clearance_profile = "none"
                 try:
                     relationship = self.qube.relationships.get_relationship(speaker_id)
+                    if relationship:
+                        clearance_profile = getattr(relationship, 'clearance_profile', 'none') or 'none'
                 except Exception:
                     pass
 
-            # Get owner info manager
-            from utils.owner_info_manager import OwnerInfoManager
-            owner_info_manager = OwnerInfoManager(
-                self.qube.data_dir,
-                encryption_key=getattr(self.qube, '_encryption_key', None)
-            )
-
-            # Get accessible fields for this speaker
-            accessible_fields = owner_info_manager.get_fields_for_entity(
-                entity_id=speaker_id,
-                relationship=relationship,
-                is_owner=is_owner
-            )
+                # Map clearance to allowed sensitivities
+                clearance_access = {
+                    "none": [],
+                    "minimal": ["public"],
+                    "limited": ["public"],
+                    "standard": ["public"],
+                    "extended": ["public", "private"],
+                    "full": ["public", "private"],
+                    "complete": ["public", "private"]
+                }
+                allowed = clearance_access.get(clearance_profile.lower(), [])
+                accessible_fields = [f for f in all_fields if f.get("sensitivity") in allowed and f.get("value")]
 
             if not accessible_fields:
                 return ""
@@ -2036,17 +2120,16 @@ The image won't display unless you include this markdown with the actual path!
             for field in accessible_fields[:15]:  # Limit to 15 fields to avoid prompt bloat
                 key = field.get("key", "")
                 value = field.get("value", "")
-                category = field.get("category", "")
 
                 if key and value:
-                    # Format nicely with category grouping
+                    # Format nicely
                     formatted_key = key.replace("_", " ").title()
                     owner_info_lines.append(f"- {formatted_key}: {value}")
 
             if not owner_info_lines:
                 return ""
 
-            clearance_note = "(Complete access - Owner)" if is_owner else f"(Based on clearance level)"
+            clearance_note = "(Complete access - Owner)" if is_owner else "(Based on clearance level)"
             return f"""# What I Know About My Owner {clearance_note}:
 {chr(10).join(owner_info_lines)}
 """
