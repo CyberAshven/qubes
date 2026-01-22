@@ -325,8 +325,8 @@ class UserOrchestrator:
                 individual_enabled=prefs.individual_auto_anchor,
                 individual_threshold=prefs.individual_anchor_threshold
             )
-            qube.auto_anchor_enabled = prefs.individual_auto_anchor
-            qube.auto_anchor_threshold = prefs.individual_anchor_threshold
+            # Note: auto_anchor_enabled/threshold are now dynamic properties
+            # that read from chain_state, so no need to set them here
 
             logger.info(
                 "qube_created_successfully",
@@ -779,8 +779,7 @@ class UserOrchestrator:
             individual_enabled=prefs.individual_auto_anchor,
             individual_threshold=prefs.individual_anchor_threshold
         )
-        qube.auto_anchor_enabled = prefs.individual_auto_anchor
-        qube.auto_anchor_threshold = prefs.individual_anchor_threshold
+        # Note: auto_anchor_enabled/threshold are now dynamic properties
 
         # Clean up pending
         if registration_id in self.pending_minting:
@@ -1013,8 +1012,7 @@ class UserOrchestrator:
                 individual_enabled=prefs.individual_auto_anchor,
                 individual_threshold=prefs.individual_anchor_threshold
             )
-            qube.auto_anchor_enabled = prefs.individual_auto_anchor
-            qube.auto_anchor_threshold = prefs.individual_anchor_threshold
+            # Note: auto_anchor_enabled/threshold are now dynamic properties
             logger.debug("auto_anchor_prefs_applied",
                         enabled=prefs.individual_auto_anchor,
                         threshold=prefs.individual_anchor_threshold)
@@ -2104,15 +2102,12 @@ class UserOrchestrator:
                     group_threshold=group_anchor_threshold
                 )
 
-                # Update in-memory Qube instance (use individual settings for legacy fields)
-                if individual_auto_anchor is not None:
-                    qube.auto_anchor_enabled = individual_auto_anchor
-                if individual_anchor_threshold is not None:
-                    qube.auto_anchor_threshold = individual_anchor_threshold
+                # Note: auto_anchor_enabled/threshold are now dynamic properties on Qube
+                # that read from chain_state, so no need to update them here.
+                # The chain_state was already updated above via set_auto_anchor().
 
-                # If qube has an active session, update session threshold too
-                if qube.current_session and individual_anchor_threshold is not None:
-                    qube.current_session.auto_anchor_threshold = individual_anchor_threshold
+                # Session's get_active_threshold() reads from user preferences,
+                # so it will pick up the new settings automatically.
 
                 logger.debug(
                     "qube_anchor_settings_updated",
