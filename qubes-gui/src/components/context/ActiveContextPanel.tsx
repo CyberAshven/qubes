@@ -435,7 +435,7 @@ export const ActiveContextPanel: React.FC<ActiveContextPanelProps> = ({
 
       {isExpanded && (
         <div className="space-y-0.5 mt-3">
-          {/* Identity (Genesis) */}
+          {/* 1. Identity (Genesis) */}
           <CategoryRow
             type="identity"
             icon="🌟"
@@ -443,7 +443,33 @@ export const ActiveContextPanel: React.FC<ActiveContextPanelProps> = ({
             sectionData={data.genesis_identity}
           />
 
-          {/* Stats */}
+          {/* 2. Qube Profile (Self-identity) */}
+          <CategoryRow
+            type="qube_profile"
+            icon="🪞"
+            title={`${data.genesis_identity?.name || 'Qube'}'s Profile`}
+            badge={
+              <span className="text-xs text-text-tertiary">
+                {data.qube_profile?.total_fields || 0}
+              </span>
+            }
+            sectionData={data.qube_profile}
+          />
+
+          {/* 3. Owner Info */}
+          <CategoryRow
+            type="owner_info"
+            icon="👤"
+            title="Owner Info"
+            badge={
+              <span className="text-xs text-text-tertiary">
+                {data.owner_info?.total_fields || 0}
+              </span>
+            }
+            sectionData={data.owner_info}
+          />
+
+          {/* 4. Stats */}
           <CategoryRow
             type="stats"
             icon="📊"
@@ -458,7 +484,7 @@ export const ActiveContextPanel: React.FC<ActiveContextPanelProps> = ({
             sectionData={data.stats}
           />
 
-          {/* Settings */}
+          {/* 5. Settings */}
           <CategoryRow
             type="settings"
             icon="⚙️"
@@ -471,20 +497,7 @@ export const ActiveContextPanel: React.FC<ActiveContextPanelProps> = ({
             sectionData={data.settings ? { ...data.settings, model_mode: getModelModeBadge(data.settings) } : null}
           />
 
-          {/* Relationships */}
-          <CategoryRow
-            type="relationships"
-            icon="👥"
-            title="Relationships"
-            badge={
-              <span className="text-xs bg-glass-bg/50 px-1.5 py-0.5 rounded">
-                {data.relationships.count}
-              </span>
-            }
-            sectionData={data.relationships}
-          />
-
-          {/* Skills */}
+          {/* 6. Skills */}
           <CategoryRow
             type="skills"
             icon="🎯"
@@ -497,7 +510,20 @@ export const ActiveContextPanel: React.FC<ActiveContextPanelProps> = ({
             sectionData={data.skills}
           />
 
-          {/* Financial (Wallet) */}
+          {/* 7. Relationships */}
+          <CategoryRow
+            type="relationships"
+            icon="👥"
+            title="Relationships"
+            badge={
+              <span className="text-xs bg-glass-bg/50 px-1.5 py-0.5 rounded">
+                {data.relationships.count}
+              </span>
+            }
+            sectionData={data.relationships}
+          />
+
+          {/* 8. Financial (Wallet) */}
           {data.wallet && (
             <CategoryRow
               type="financial"
@@ -512,7 +538,7 @@ export const ActiveContextPanel: React.FC<ActiveContextPanelProps> = ({
             />
           )}
 
-          {/* Mood */}
+          {/* 9. Mood */}
           <CategoryRow
             type="mood"
             icon={getMoodEmoji(data.mood?.current_mood)}
@@ -528,7 +554,7 @@ export const ActiveContextPanel: React.FC<ActiveContextPanelProps> = ({
             disabled={!data.mood}
           />
 
-          {/* Health */}
+          {/* 10. Health */}
           <CategoryRow
             type="health"
             icon="💚"
@@ -544,32 +570,6 @@ export const ActiveContextPanel: React.FC<ActiveContextPanelProps> = ({
             }
             sectionData={data.health}
             disabled={!data.health}
-          />
-
-          {/* Owner Info */}
-          <CategoryRow
-            type="owner_info"
-            icon="👤"
-            title="Owner Info"
-            badge={
-              <span className="text-xs text-text-tertiary">
-                {data.owner_info?.total_fields || 0}
-              </span>
-            }
-            sectionData={data.owner_info}
-          />
-
-          {/* Qube Profile (Self-identity) */}
-          <CategoryRow
-            type="qube_profile"
-            icon="🪞"
-            title={`${data.genesis_identity?.name || 'Qube'}'s Profile`}
-            badge={
-              <span className="text-xs text-text-tertiary">
-                {data.qube_profile?.total_fields || 0}
-              </span>
-            }
-            sectionData={data.qube_profile}
           />
 
           {/* Memory Separator */}
