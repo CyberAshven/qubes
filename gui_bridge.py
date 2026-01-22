@@ -245,17 +245,21 @@ class GUIBridge:
             pdf_base64 = match.group(1)
 
             try:
+                logger.debug(f"Extracting PDF text, base64 length: {len(pdf_base64)}")
+
                 # Extract text from PDF
                 pdf_text = extract_text_from_pdf_base64(pdf_base64)
 
                 if pdf_text:
+                    logger.info(f"PDF text extracted successfully, length: {len(pdf_text)}")
                     # Format extracted text
                     return f"\n\n[PDF Content Extracted]\n{pdf_text}\n[End PDF Content]\n"
                 else:
+                    logger.warning("PDF extraction returned None - file may be corrupted or image-based")
                     return "\n\n[PDF extraction failed - file may be corrupted or image-based]\n"
 
             except Exception as e:
-                logger.error(f"Failed to extract PDF text: {e}")
+                logger.error(f"Failed to extract PDF text: {e}", exc_info=True)
                 return f"\n\n[PDF extraction error: {str(e)}]\n"
 
         # Replace all PDF base64 blocks with extracted text
@@ -820,8 +824,19 @@ class GUIBridge:
             # Process PDF files in message (extract text from base64)
             processed_message = self._process_pdf_in_message(message)
 
+            # Log if PDF was processed and message length
+            if processed_message != message:
+                logger.info(
+                    "pdf_processed_in_message",
+                    original_length=len(message),
+                    processed_length=len(processed_message),
+                    qube_id=qube_id
+                )
+
             # Send message and get response (use actual user_id instead of default "human")
+            logger.debug(f"Sending message to qube {qube_id}, length: {len(processed_message)}")
             response = await qube.process_message(processed_message, sender_id=self.orchestrator.user_id)
+            logger.debug(f"Got response from qube {qube_id}, length: {len(response) if response else 0}")
 
             # Record relationship interaction (conversation with user)
             if response:
