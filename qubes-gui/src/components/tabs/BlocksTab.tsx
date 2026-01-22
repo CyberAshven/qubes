@@ -289,7 +289,7 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
   // Owner info section collapsed states (both default to collapsed)
   const [ownerInfoPrivateExpanded, setOwnerInfoPrivateExpanded] = useState(false);
   const [ownerInfoPublicExpanded, setOwnerInfoPublicExpanded] = useState(false);
-  // Track which categories are expanded (default all collapsed)
+  // Track which qube profile categories are expanded (default all collapsed)
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
 
   const toggleCategory = (category: string) => {
@@ -1493,27 +1493,36 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                             .filter(cat => grouped[cat] && grouped[cat].length > 0)
                             .map(cat => {
                               const catInfo = categoryInfo[cat] || categoryInfo.custom;
+                              const isExpanded = expandedCategories.has(cat);
                               return (
                                 <div key={cat} className="rounded-lg overflow-hidden border border-glass-border/20">
-                                  <div className={`p-2 ${catInfo.bg}`}>
+                                  <button
+                                    onClick={() => toggleCategory(cat)}
+                                    className={`w-full p-2 ${catInfo.bg} flex items-center justify-between hover:opacity-80 transition-opacity`}
+                                  >
                                     <span className={`text-sm font-medium flex items-center gap-2 ${catInfo.color}`}>
                                       <span>{catInfo.icon}</span>
                                       <span>{catInfo.label}</span>
                                       <span className="text-xs opacity-60">({grouped[cat].length})</span>
                                     </span>
-                                  </div>
-                                  <div className="p-2 space-y-2">
-                                    {grouped[cat].map((field: any, idx: number) => (
-                                      <div key={idx} className="py-2 px-3 bg-glass-bg/30 rounded-lg">
-                                        <div className="text-xs text-text-tertiary capitalize mb-1">
-                                          {field.key.replace(/_/g, ' ')}
+                                    <span className="text-xs text-text-tertiary">
+                                      {isExpanded ? '▼' : '▶'}
+                                    </span>
+                                  </button>
+                                  {isExpanded && (
+                                    <div className="p-2 space-y-2">
+                                      {grouped[cat].map((field: any, idx: number) => (
+                                        <div key={idx} className="py-2 px-3 bg-glass-bg/30 rounded-lg">
+                                          <div className="text-xs text-text-tertiary capitalize mb-1">
+                                            {field.key.replace(/_/g, ' ')}
+                                          </div>
+                                          <div className="text-sm text-text-primary">
+                                            {field.value}
+                                          </div>
                                         </div>
-                                        <div className="text-sm text-text-primary">
-                                          {field.value}
-                                        </div>
-                                      </div>
-                                    ))}
-                                  </div>
+                                      ))}
+                                    </div>
+                                  )}
                                 </div>
                               );
                             })}
