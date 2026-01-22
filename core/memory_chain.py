@@ -132,9 +132,14 @@ class MemoryChain:
         # Record metrics
         MetricsRecorder.record_memory_block_created(self.qube_id, block_type_str)
 
-        # Check if anchor needed (skip for genesis block and until we have at least 2 blocks)
-        if block.block_number > 0 and len(self.block_index) >= 2 and self._should_create_anchor():
-            self._create_anchor()
+        # DISABLED: MEMORY_ANCHOR creation
+        # The Merkle root feature added complexity without meaningful benefit:
+        # - Individual block signatures already detect tampering
+        # - Hash chains (previous_hash) already link blocks
+        # - Merkle roots can't help recover lost data
+        # - Caused block number collisions during anchor_to_chain (2026-01-22 incident)
+        # if block.block_number > 0 and len(self.block_index) >= 2 and self._should_create_anchor():
+        #     self._create_anchor()
 
         logger.debug(
             "block_added",
