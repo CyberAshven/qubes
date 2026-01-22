@@ -72,6 +72,23 @@ interface OwnerInfoSummary {
   fields: OwnerInfoField[];
 }
 
+interface QubeProfileField {
+  key: string;
+  value: string;
+  sensitivity: 'public' | 'private' | 'secret';
+  category: string;
+}
+
+interface QubeProfileSummary {
+  total_fields: number;
+  public_fields: number;
+  private_fields: number;
+  secret_fields: number;
+  categories_populated: number;
+  custom_sections: number;
+  fields: QubeProfileField[];
+}
+
 interface WalletTransaction {
   txid: string;
   amount_sats: number;
@@ -191,6 +208,7 @@ interface ActiveContextData {
     categories: Record<string, SkillCategory>;
   };
   owner_info?: OwnerInfoSummary | null;
+  qube_profile?: QubeProfileSummary | null;
   wallet: WalletInfo | null;
   mood?: MoodInfo | null;
   health?: HealthInfo | null;
@@ -223,6 +241,7 @@ export type ContextSectionType =
   | 'mood'
   | 'health'
   | 'owner_info'
+  | 'qube_profile'
   | 'recalled'
   | 'history'
   | 'chain';
@@ -538,6 +557,19 @@ export const ActiveContextPanel: React.FC<ActiveContextPanelProps> = ({
               </span>
             }
             sectionData={data.owner_info}
+          />
+
+          {/* Qube Profile (Self-identity) */}
+          <CategoryRow
+            type="qube_profile"
+            icon="🪞"
+            title={`${data.genesis_identity?.name || 'Qube'}'s Profile`}
+            badge={
+              <span className="text-xs text-text-tertiary">
+                {data.qube_profile?.total_fields || 0}
+              </span>
+            }
+            sectionData={data.qube_profile}
           />
 
           {/* Memory Separator */}

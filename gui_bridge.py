@@ -6446,6 +6446,7 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
                 "relationships_count": active_context.get("relationships", {}).get("count", 0),
                 "skills_xp": active_context.get("skills", {}).get("totals", {}).get("total_xp", 0),
                 "owner_info_count": active_context.get("owner_info", {}).get("total_fields", 0) if active_context.get("owner_info") else 0,
+                "qube_profile_count": active_context.get("qube_profile", {}).get("total_fields", 0) if active_context.get("qube_profile") else 0,
                 "stm_semantic": short_term_memory.get("semantic_recalls", {}).get("count", 0),
                 "stm_recent": short_term_memory.get("recent_permanent", {}).get("count", 0),
                 "stm_session": short_term_memory.get("session", {}).get("count", 0),
@@ -6648,6 +6649,18 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
             total_chars += injectable_count * 75
         except Exception:
             pass  # If owner info fails, just skip the estimate
+
+        # Add estimate for qube profile context (self-identity)
+        # Each field is roughly 50-100 chars (key + value + formatting)
+        try:
+            profile_summary = qube.chain_state.get_qube_profile_summary()
+
+            # Estimate: each injectable field is ~75 chars on average
+            # Only count non-secret fields (public + private)
+            injectable_count = profile_summary.get("public_fields", 0) + profile_summary.get("private_fields", 0)
+            total_chars += injectable_count * 75
+        except Exception:
+            pass  # If qube profile fails, just skip the estimate
 
         estimated_tokens = total_chars // 4
 
