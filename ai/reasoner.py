@@ -457,6 +457,7 @@ class QubeReasoner:
 
             # Reasoning loop with tool calling
             tool_call_history = []  # Track tool calls to detect loops
+            generated_image_paths = []  # Track generated images to auto-inject into response
 
             for iteration in range(max_iterations):
                 import time
@@ -775,6 +776,13 @@ class QubeReasoner:
                             "content": json.dumps(tool_result)
                         })
 
+                        # Track generated images for auto-injection into response
+                        if tool_call["name"] == "generate_image" and tool_result.get("success"):
+                            local_path = tool_result.get("local_path")
+                            if local_path:
+                                generated_image_paths.append(local_path)
+                                logger.info("generated_image_tracked", local_path=local_path)
+
                         # Check if switch_model was called - need to update model for next iteration
                         if tool_call["name"] == "switch_model":
                             new_override = self.qube.chain_state.get_current_model_override()
@@ -871,6 +879,20 @@ class QubeReasoner:
 
                 # No more tool calls, we have final response
                 final_response = response.content
+
+                # Auto-inject generated image paths if model forgot to include them
+                if generated_image_paths:
+                    missing_paths = [p for p in generated_image_paths if p not in final_response]
+                    if missing_paths:
+                        # Prepend images to response so they appear first
+                        image_prefix = "\n".join(missing_paths) + "\n\n"
+                        final_response = image_prefix + final_response
+                        logger.info(
+                            "auto_injected_image_paths",
+                            count=len(missing_paths),
+                            paths=missing_paths,
+                            qube_id=self.qube.qube_id
+                        )
 
                 # Track token usage in chain state
                 if response.usage:
