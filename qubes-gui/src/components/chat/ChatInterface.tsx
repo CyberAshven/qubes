@@ -1232,9 +1232,18 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
                       <>
                         {/* Render images first (non-typewriter) */}
                         {(() => {
+                          // Match both web URLs and local file paths
                           const imageUrlRegex = /(https?:\/\/[^\s\)]+?(?:\.(?:png|jpg|jpeg|gif|webp)|blob\.core\.windows\.net\/[^\s\)]+))/gi;
-                          const imageUrls = msg.content.match(imageUrlRegex) || [];
-                          return imageUrls.map((url, index) => (
+                          const localPathRegex = /([A-Za-z]:[\\\/][^\s\)]+\.(?:png|jpg|jpeg|gif|webp)|\/[^\s\)]+\.(?:png|jpg|jpeg|gif|webp))/gi;
+
+                          const webImageUrls = msg.content.match(imageUrlRegex) || [];
+                          const localImagePaths = msg.content.match(localPathRegex) || [];
+
+                          // Convert local paths to asset:// URLs
+                          const convertedLocalUrls = localImagePaths.map(path => convertFileSrc(path));
+                          const allImageUrls = [...webImageUrls, ...convertedLocalUrls];
+
+                          return allImageUrls.map((url, index) => (
                             <img
                               key={`img-${index}`}
                               src={url}
@@ -1242,8 +1251,10 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
                               className="max-w-full rounded-lg mb-3 block"
                               style={{ maxHeight: '400px', objectFit: 'contain' }}
                               onLoad={() => {
-                                // Save image to disk
-                                saveImageToDisk(url);
+                                // Save image to disk (only for web URLs, local paths are already saved)
+                                if (url.startsWith('http')) {
+                                  saveImageToDisk(url);
+                                }
                                 // Scroll when image finishes loading
                                 scrollToBottom();
                               }}
