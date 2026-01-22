@@ -12,6 +12,7 @@ interface QubeSelectionStore {
   setCurrentTab: (tab: Tab) => void;
   toggleSelection: (id: string, isCtrl: boolean, isShift: boolean) => void;
   clearSelection: () => void;
+  setSelectionForTab: (tab: Tab, qubeId: string) => void;
 
   // Get selected IDs for current tab
   getSelectedQubeIds: () => string[];
@@ -138,6 +139,14 @@ export const useQubeSelection = create<QubeSelectionStore>((set, get) => ({
     set({
       selectionByTab: { ...selectionByTab, [currentTab]: [] },
       activeQubeByTab: { ...activeQubeByTab, [currentTab]: null }
+    });
+  },
+
+  setSelectionForTab: (tab: Tab, qubeId: string) => {
+    const { selectionByTab, activeQubeByTab } = get();
+    set({
+      selectionByTab: { ...selectionByTab, [tab]: [qubeId] },
+      activeQubeByTab: { ...activeQubeByTab, [tab]: qubeId }
     });
   },
 

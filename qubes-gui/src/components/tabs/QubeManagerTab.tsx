@@ -68,7 +68,7 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [searchQuery, setSearchQuery] = useState('');
   const { orderByUser, setQubeOrder, getQubeOrder } = useQubeOrder();
-  const { toggleSelection, setCurrentTab, getSelectedQubeIds, selectionByTab, currentTab } = useQubeSelection();
+  const { toggleSelection, setCurrentTab, getSelectedQubeIds, selectionByTab, currentTab, setSelectionForTab } = useQubeSelection();
 
   // Get selected qube IDs for the current tab
   const selectedQubeIds = selectionByTab[currentTab] || [];
@@ -186,10 +186,9 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
   };
 
   const handleSelectQube = (qube: Qube) => {
-    // Switch to dashboard first
+    // Switch to Chat tab (id='dashboard') and select the qube
     setCurrentTab('dashboard');
-    // Then select the qube (without Ctrl/Shift, so it's a single selection)
-    toggleSelection(qube.qube_id, false, false);
+    setSelectionForTab('dashboard', qube.qube_id);
   };
 
   // DEV ONLY: Handle reset qube confirmation and execution
