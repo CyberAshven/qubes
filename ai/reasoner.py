@@ -1338,6 +1338,9 @@ Make your move using the chess_move tool. Use one of the legal moves listed abov
         # Get current conversation partner info
         speaking_with = self._get_current_speaker_context()
 
+        # Get owner info based on speaker's clearance level
+        owner_info_context = self._get_owner_info_for_speaker()
+
         # Get current mood from chain_state
         mood_line = ""
         try:
@@ -1428,7 +1431,7 @@ Your owner controls how your AI model is selected via one of three modes:
 
 {speaking_with}
 
-# Tools & Data Access:
+{owner_info_context}# Tools & Data Access:
 Use **get_system_state** to query detailed information about yourself:
 - `sections: ["identity"]` - Full identity, NFT data, avatar description
 - `sections: ["financial"]` - BCH balance, wallet address, recent transactions
@@ -1648,6 +1651,9 @@ The image won't display unless you include this markdown with the actual path!
         # Get current conversation partner info
         speaking_with = self._get_current_speaker_context()
 
+        # Get owner info based on speaker's clearance level
+        owner_info_context = self._get_owner_info_for_speaker()
+
         # Get current mood from chain_state
         mood_line = ""
         try:
@@ -1738,7 +1744,7 @@ Your owner controls how your AI model is selected via one of three modes:
 
 {speaking_with}
 
-# Tools & Data Access:
+{owner_info_context}# Tools & Data Access:
 Use **get_system_state** to query detailed information about yourself:
 - `sections: ["identity"]` - Full identity, NFT data, avatar description
 - `sections: ["financial"]` - BCH balance, wallet address, recent transactions
@@ -1975,6 +1981,79 @@ The image won't display unless you include this markdown with the actual path!
         except Exception as e:
             logger.warning("failed_to_get_speaker_context", error=str(e))
             return "# Speaking With: Unknown"
+
+    def _get_owner_info_for_speaker(self) -> str:
+        """
+        Get owner info context based on current speaker's clearance level.
+
+        Returns:
+            Formatted owner info string, or empty string if no info accessible
+        """
+        try:
+            # Get speaker info
+            speaker_id = None
+            if self.qube.current_session:
+                speaker_id = self.qube.current_session.entity_id
+
+            # Fallback to user_name (owner)
+            if not speaker_id:
+                speaker_id = getattr(self.qube, 'user_name', None)
+
+            if not speaker_id:
+                return ""
+
+            # Check if this is the owner
+            genesis = self.qube.genesis_block
+            is_owner = speaker_id == genesis.creator if genesis else False
+
+            # Get relationship for non-owners
+            relationship = None
+            if not is_owner:
+                try:
+                    relationship = self.qube.relationships.get_relationship(speaker_id)
+                except Exception:
+                    pass
+
+            # Get owner info manager
+            from utils.owner_info_manager import OwnerInfoManager
+            owner_info_manager = OwnerInfoManager(
+                self.qube.data_dir,
+                encryption_key=getattr(self.qube, '_encryption_key', None)
+            )
+
+            # Get accessible fields for this speaker
+            accessible_fields = owner_info_manager.get_fields_for_entity(
+                entity_id=speaker_id,
+                relationship=relationship,
+                is_owner=is_owner
+            )
+
+            if not accessible_fields:
+                return ""
+
+            # Format fields for system prompt
+            owner_info_lines = []
+            for field in accessible_fields[:15]:  # Limit to 15 fields to avoid prompt bloat
+                key = field.get("key", "")
+                value = field.get("value", "")
+                category = field.get("category", "")
+
+                if key and value:
+                    # Format nicely with category grouping
+                    formatted_key = key.replace("_", " ").title()
+                    owner_info_lines.append(f"- {formatted_key}: {value}")
+
+            if not owner_info_lines:
+                return ""
+
+            clearance_note = "(Complete access - Owner)" if is_owner else f"(Based on clearance level)"
+            return f"""# What I Know About My Owner {clearance_note}:
+{chr(10).join(owner_info_lines)}
+"""
+
+        except Exception as e:
+            logger.warning("failed_to_get_owner_info_for_speaker", error=str(e))
+            return ""
 
     def _get_recent_context_summary(self) -> str:
         """
