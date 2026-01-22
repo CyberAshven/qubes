@@ -337,8 +337,8 @@ class Qube:
         # =====================================================================
 
         self.current_session: Optional[Session] = None
-        self.auto_anchor_enabled = self.chain_state.is_auto_anchor_enabled()
-        self.auto_anchor_threshold = self.chain_state.get_auto_anchor_threshold()
+        # Note: auto_anchor_enabled and auto_anchor_threshold are now properties
+        # that read dynamically from chain_state (see below)
 
         # =====================================================================
         # RELATIONSHIP MANAGEMENT
@@ -514,6 +514,26 @@ class Qube:
             ChainStateEventBus instance
         """
         return self.chain_state.events
+
+    @property
+    def auto_anchor_enabled(self) -> bool:
+        """
+        Check if auto-anchor is enabled (reads dynamically from chain_state).
+
+        This allows settings changes in the GUI to take effect immediately
+        without needing to reload the Qube.
+        """
+        return self.chain_state.is_auto_anchor_enabled()
+
+    @property
+    def auto_anchor_threshold(self) -> int:
+        """
+        Get auto-anchor threshold (reads dynamically from chain_state).
+
+        This allows settings changes in the GUI to take effect immediately
+        without needing to reload the Qube.
+        """
+        return self.chain_state.get_auto_anchor_threshold()
 
     @classmethod
     def create_new(
