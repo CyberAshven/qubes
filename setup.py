@@ -70,6 +70,11 @@ setup(
         "typer>=0.9.0",
         "rich>=13.7.0",
         "click>=8.1.7",
+
+        # File Processing
+        "pymupdf>=1.24.0",  # PDF text extraction
+        "beautifulsoup4>=4.12.0",  # HTML parsing
+        "httpx>=0.27.0",  # HTTP client for web browsing
     ],
     entry_points={
         "console_scripts": [
