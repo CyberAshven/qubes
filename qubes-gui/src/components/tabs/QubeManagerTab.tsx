@@ -191,7 +191,7 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
     setSelectionForTab('dashboard', qube.qube_id);
   };
 
-  // DEV ONLY: Handle reset qube confirmation and execution
+  // Handle reset qube confirmation and execution
   const handleResetQube = async () => {
     if (!qubeToReset || !userId) return;
 
