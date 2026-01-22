@@ -210,6 +210,20 @@ def create_default_chain_state(genesis_block: Dict[str, Any], qube_id: str = Non
         # Owner info section - empty (learned during conversation)
         "owner_info": {},
 
+        # Qube profile section - empty (self-identity learned during conversation)
+        "qube_profile": {
+            "created_at": datetime.now(timezone.utc).isoformat() + "Z",
+            "last_updated": datetime.now(timezone.utc).isoformat() + "Z",
+            "preferences": {},
+            "traits": {},
+            "opinions": {},
+            "goals": {},
+            "style": {},
+            "interests": {},
+            "dynamic": [],
+            "custom_sections": {},
+        },
+
         # Health section - integrity and system status
         "health": {
             "overall_status": "healthy",
