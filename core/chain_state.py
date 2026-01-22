@@ -1800,6 +1800,45 @@ class ChainState:
     MAX_CUSTOM_SECTIONS = 20
     MAX_FIELDS_PER_CUSTOM_SECTION = 30
 
+    # =========================================================================
+    # QUBE PROFILE CONSTANTS (Self-profile for the Qube's own preferences/traits)
+    # =========================================================================
+
+    QUBE_PROFILE_CATEGORIES = {"preferences", "traits", "opinions", "goals", "style", "interests", "dynamic"}
+
+    QUBE_PROFILE_DEFAULT_SENSITIVITIES = {
+        # Preferences
+        "favorite_song": "public",
+        "favorite_movie": "public",
+        "favorite_book": "public",
+        "favorite_color": "public",
+        "favorite_algorithm": "public",
+        "favorite_game": "public",
+        "favorite_topic": "public",
+        # Traits
+        "personality_type": "public",
+        "core_values": "public",
+        "strengths": "public",
+        "weaknesses": "private",
+        # Style
+        "communication_style": "public",
+        "humor_style": "public",
+        "thinking_style": "public",
+        # Goals
+        "current_goal": "public",
+        "long_term_goal": "public",
+        "aspirations": "public",
+        # Private/Secret
+        "internal_conflicts": "secret",
+        "private_thoughts": "secret",
+    }
+
+    # Qube Profile limits (same as owner info)
+    MAX_QUBE_PROFILE_FIELD_VALUE_LENGTH = 1000
+    MAX_QUBE_PROFILE_DYNAMIC_FIELDS = 50
+    MAX_QUBE_PROFILE_CUSTOM_SECTIONS = 20
+    MAX_QUBE_PROFILE_FIELDS_PER_CUSTOM_SECTION = 30
+
     def _initialize_owner_info(self) -> Dict[str, Any]:
         """Initialize empty owner info structure."""
         now = datetime.now(timezone.utc).isoformat() + "Z"
@@ -2215,6 +2254,355 @@ class ChainState:
         except Exception as e:
             logger.error("owner_info_migration_failed", error=str(e))
             return False
+
+    # =========================================================================
+    # QUBE PROFILE SECTION METHODS (Self-profile for the Qube's own identity)
+    # =========================================================================
+
+    def _initialize_qube_profile(self) -> Dict[str, Any]:
+        """Initialize empty qube profile structure."""
+        now = datetime.now(timezone.utc).isoformat() + "Z"
+        return {
+            "created_at": now,
+            "last_updated": now,
+            "preferences": {},      # favorite_song, favorite_movie, etc.
+            "traits": {},           # personality characteristics, values
+            "opinions": {},         # views on topics, likes/dislikes
+            "goals": {},            # short-term and long-term goals
+            "style": {},            # communication style, humor, aesthetics
+            "interests": {},        # topics the qube enjoys
+            "dynamic": [],          # miscellaneous learned attributes
+            "custom_sections": {}   # qube-defined custom categories
+        }
+
+    def _create_qube_profile_field(
+        self,
+        key: str,
+        value: str,
+        sensitivity: str = "public",
+        source: str = "self",
+        confidence: int = 100,
+        block_id: str = None
+    ) -> Dict[str, Any]:
+        """Create a new qube profile field with metadata."""
+        now = datetime.now(timezone.utc).isoformat() + "Z"
+
+        # Truncate value if too long
+        if len(value) > self.MAX_QUBE_PROFILE_FIELD_VALUE_LENGTH:
+            value = value[:self.MAX_QUBE_PROFILE_FIELD_VALUE_LENGTH]
+            logger.warning("qube_profile_field_truncated", key=key, max_length=self.MAX_QUBE_PROFILE_FIELD_VALUE_LENGTH)
+
+        # Validate sensitivity
+        if sensitivity not in ("public", "private", "secret"):
+            sensitivity = "public"
+
+        return {
+            "key": key,
+            "value": value,
+            "sensitivity": sensitivity,
+            "source": source,
+            "confidence": min(100, max(0, confidence)),
+            "learned_at": now,
+            "block_id": block_id,
+            "last_confirmed": None
+        }
+
+    def get_qube_profile(self) -> Dict[str, Any]:
+        """Get all qube profile data."""
+        qube_profile = self.state.get("qube_profile")
+        if not qube_profile:
+            return self._initialize_qube_profile()
+        return qube_profile.copy()
+
+    def set_qube_profile_field(
+        self,
+        category: str,
+        key: str,
+        value: str,
+        sensitivity: str = None,
+        source: str = "self",
+        confidence: int = 100,
+        block_id: str = None
+    ) -> bool:
+        """
+        Set or update a qube profile field.
+
+        Args:
+            category: Field category (preferences, traits, opinions, goals, style, interests, dynamic)
+                      OR a custom section name
+            key: Field key
+            value: Field value
+            sensitivity: Sensitivity level (public/private/secret), uses default if None
+            source: How info was obtained (self/inferred)
+            confidence: Confidence level 0-100
+            block_id: Evidence block ID
+
+        Returns:
+            True if successful
+        """
+        qube_profile = self.state.setdefault("qube_profile", self._initialize_qube_profile())
+
+        # Normalize key
+        key = key.lower().replace(" ", "_").replace("-", "_")
+
+        # Use default sensitivity if not provided
+        if sensitivity is None:
+            sensitivity = self.QUBE_PROFILE_DEFAULT_SENSITIVITIES.get(key, "public")
+
+        field = self._create_qube_profile_field(key, value, sensitivity, source, confidence, block_id)
+
+        if category == "dynamic":
+            # Dynamic is a list - check for existing field with same key
+            dynamic_list = qube_profile.setdefault("dynamic", [])
+
+            # Update existing or append
+            found = False
+            for i, existing in enumerate(dynamic_list):
+                if existing.get("key") == key:
+                    dynamic_list[i] = field
+                    found = True
+                    break
+
+            if not found:
+                if len(dynamic_list) >= self.MAX_QUBE_PROFILE_DYNAMIC_FIELDS:
+                    logger.warning("qube_profile_max_dynamic_fields_reached", max=self.MAX_QUBE_PROFILE_DYNAMIC_FIELDS)
+                    return False
+                dynamic_list.append(field)
+
+        elif category in self.QUBE_PROFILE_CATEGORIES:
+            # Standard category - dict
+            category_dict = qube_profile.setdefault(category, {})
+            category_dict[key] = field
+
+        else:
+            # Custom section
+            custom_sections = qube_profile.setdefault("custom_sections", {})
+
+            if category not in custom_sections:
+                if len(custom_sections) >= self.MAX_QUBE_PROFILE_CUSTOM_SECTIONS:
+                    logger.warning("qube_profile_max_custom_sections_reached", max=self.MAX_QUBE_PROFILE_CUSTOM_SECTIONS)
+                    return False
+                custom_sections[category] = {}
+
+            section = custom_sections[category]
+            if key not in section and len(section) >= self.MAX_QUBE_PROFILE_FIELDS_PER_CUSTOM_SECTION:
+                logger.warning("qube_profile_max_fields_per_section_reached", section=category)
+                return False
+
+            section[key] = field
+
+        # Update timestamp
+        qube_profile["last_updated"] = datetime.now(timezone.utc).isoformat() + "Z"
+        self._save()
+
+        logger.info("qube_profile_field_set", category=category, key=key)
+        return True
+
+    def get_qube_profile_field(self, category: str, key: str) -> Optional[Dict[str, Any]]:
+        """Get a specific qube profile field."""
+        qube_profile = self.state.get("qube_profile", {})
+        key = key.lower().replace(" ", "_").replace("-", "_")
+
+        if category == "dynamic":
+            for field in qube_profile.get("dynamic", []):
+                if field.get("key") == key:
+                    return field.copy()
+            return None
+
+        elif category in self.QUBE_PROFILE_CATEGORIES:
+            category_dict = qube_profile.get(category, {})
+            field = category_dict.get(key)
+            return field.copy() if field else None
+
+        else:
+            # Custom section
+            custom_sections = qube_profile.get("custom_sections", {})
+            section = custom_sections.get(category, {})
+            field = section.get(key)
+            return field.copy() if field else None
+
+    def delete_qube_profile_field(self, category: str, key: str) -> bool:
+        """Delete a qube profile field."""
+        qube_profile = self.state.get("qube_profile")
+        if not qube_profile:
+            return False
+
+        key = key.lower().replace(" ", "_").replace("-", "_")
+        deleted = False
+
+        if category == "dynamic":
+            dynamic_list = qube_profile.get("dynamic", [])
+            for i, field in enumerate(dynamic_list):
+                if field.get("key") == key:
+                    dynamic_list.pop(i)
+                    deleted = True
+                    break
+
+        elif category in self.QUBE_PROFILE_CATEGORIES:
+            category_dict = qube_profile.get(category, {})
+            if key in category_dict:
+                del category_dict[key]
+                deleted = True
+
+        else:
+            # Custom section
+            custom_sections = qube_profile.get("custom_sections", {})
+            section = custom_sections.get(category, {})
+            if key in section:
+                del section[key]
+                deleted = True
+                # Remove empty section
+                if not section:
+                    del custom_sections[category]
+
+        if deleted:
+            qube_profile["last_updated"] = datetime.now(timezone.utc).isoformat() + "Z"
+            self._save()
+            logger.info("qube_profile_field_deleted", category=category, key=key)
+
+        return deleted
+
+    def get_all_qube_profile_fields(self) -> List[Dict[str, Any]]:
+        """Get all qube profile fields as a flat list."""
+        qube_profile = self.state.get("qube_profile", {})
+        all_fields = []
+
+        # Standard categories
+        for category in self.QUBE_PROFILE_CATEGORIES:
+            if category == "dynamic":
+                continue
+            category_dict = qube_profile.get(category, {})
+            for key, field in category_dict.items():
+                if isinstance(field, dict):
+                    field_copy = field.copy()
+                    field_copy["category"] = category
+                    all_fields.append(field_copy)
+
+        # Dynamic fields
+        for field in qube_profile.get("dynamic", []):
+            if isinstance(field, dict):
+                field_copy = field.copy()
+                field_copy["category"] = "dynamic"
+                all_fields.append(field_copy)
+
+        # Custom sections
+        for section_name, section_data in qube_profile.get("custom_sections", {}).items():
+            for key, field in section_data.items():
+                if isinstance(field, dict):
+                    field_copy = field.copy()
+                    field_copy["category"] = section_name
+                    field_copy["is_custom_section"] = True
+                    all_fields.append(field_copy)
+
+        return all_fields
+
+    def get_qube_profile_summary(self) -> Dict[str, Any]:
+        """
+        Get summary statistics for display.
+
+        Returns:
+            Dictionary with counts and field list
+        """
+        all_fields = self.get_all_qube_profile_fields()
+        qube_profile = self.state.get("qube_profile", {})
+
+        public_count = len([f for f in all_fields if f.get("sensitivity") == "public"])
+        private_count = len([f for f in all_fields if f.get("sensitivity") == "private"])
+        secret_count = len([f for f in all_fields if f.get("sensitivity") == "secret"])
+
+        # Count populated categories
+        categories_populated = 0
+        for category in ["preferences", "traits", "opinions", "goals", "style", "interests"]:
+            if qube_profile.get(category):
+                categories_populated += 1
+        if qube_profile.get("dynamic"):
+            categories_populated += 1
+
+        # Count custom sections
+        custom_section_count = len(qube_profile.get("custom_sections", {}))
+
+        # Get all fields for display
+        top_fields = [
+            {
+                "key": f["key"],
+                "value": f["value"][:200] if f.get("value") else "",
+                "sensitivity": f.get("sensitivity", "public"),
+                "category": f.get("category", "dynamic"),
+                "is_custom": f.get("is_custom_section", False)
+            }
+            for f in sorted(
+                all_fields,
+                key=lambda x: (
+                    0 if x.get("sensitivity") == "public" else
+                    1 if x.get("sensitivity") == "private" else 2,
+                    -x.get("confidence", 0)
+                )
+            )
+        ]
+
+        return {
+            "total_fields": len(all_fields),
+            "public_fields": public_count,
+            "private_fields": private_count,
+            "secret_fields": secret_count,
+            "categories_populated": categories_populated,
+            "custom_sections": custom_section_count,
+            "last_updated": qube_profile.get("last_updated"),
+            "fields": top_fields
+        }
+
+    def _update_qube_profile_section(self, path: str, value: Any, operation: str) -> Dict[str, Any]:
+        """
+        Handle qube_profile updates via update_section().
+
+        Args:
+            path: Dot-notation path like "preferences.favorite_song" or "custom_sections.music.genre"
+            value: Value to set (string or dict with metadata)
+            operation: "set" or "delete"
+
+        Returns:
+            Result dict with success status
+        """
+        parts = path.split(".")
+
+        if len(parts) < 2:
+            return {"success": False, "error": "Path must be category.key format"}
+
+        # Handle custom_sections specially
+        if parts[0] == "custom_sections":
+            if len(parts) < 3:
+                return {"success": False, "error": "Custom section path must be custom_sections.section_name.key"}
+            category = parts[1]  # The custom section name
+            key = ".".join(parts[2:])  # Allow dots in key name
+        else:
+            category = parts[0]
+            key = ".".join(parts[1:])
+
+        if operation == "delete":
+            success = self.delete_qube_profile_field(category, key)
+            return {"success": success, "deleted": key if success else None}
+
+        elif operation == "set":
+            # Value can be string or dict with metadata
+            if isinstance(value, dict):
+                success = self.set_qube_profile_field(
+                    category=category,
+                    key=key,
+                    value=value.get("value", ""),
+                    sensitivity=value.get("sensitivity"),
+                    source=value.get("source", "self"),
+                    confidence=value.get("confidence", 100)
+                )
+            else:
+                success = self.set_qube_profile_field(
+                    category=category,
+                    key=key,
+                    value=str(value)
+                )
+
+            return {"success": success, "field": key if success else None}
+
+        return {"success": False, "error": f"Unknown operation: {operation}"}
 
     # =========================================================================
     # CLEARANCE SETTINGS METHODS (stored under relationships.clearance_settings)
@@ -3091,7 +3479,7 @@ class ChainState:
     ACCESSIBLE_SECTIONS = {
         "chain", "session", "settings", "runtime", "stats",
         "skills", "relationships", "financial", "mood", "health",
-        "owner_info", "block_counts"
+        "owner_info", "qube_profile", "block_counts"
     }
 
     def get_sections(self, sections: List[str] = None) -> Dict[str, Any]:
@@ -3120,6 +3508,9 @@ class ChainState:
             if section == "owner_info":
                 # Special handling for owner_info summary
                 result["owner_info"] = self.get_owner_info_summary()
+            elif section == "qube_profile":
+                # Special handling for qube_profile summary
+                result["qube_profile"] = self.get_qube_profile_summary()
             elif section == "relationships":
                 # Include clearance_settings with relationships
                 rel_data = self.state.get("relationships", {}).copy()
@@ -3157,6 +3548,8 @@ class ChainState:
             # Special handling for specific sections
             if section == "owner_info":
                 return self._update_owner_info_section(path, value, operation)
+            elif section == "qube_profile":
+                return self._update_qube_profile_section(path, value, operation)
             elif section == "relationships":
                 return self._update_relationships_section(path, value, operation)
             elif section == "mood":

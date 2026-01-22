@@ -1341,6 +1341,9 @@ Make your move using the chess_move tool. Use one of the legal moves listed abov
         # Get owner info based on speaker's clearance level
         owner_info_context = self._get_owner_info_for_speaker()
 
+        # Get qube's self-profile
+        qube_profile_context = self._get_qube_profile_for_prompt()
+
         # Get current mood from chain_state
         mood_line = ""
         try:
@@ -1431,7 +1434,7 @@ Your owner controls how your AI model is selected via one of three modes:
 
 {speaking_with}
 
-{owner_info_context}# Tools & Data Access:
+{owner_info_context}{qube_profile_context}# Tools & Data Access:
 Use **get_system_state** to query detailed information about yourself:
 - `sections: ["identity"]` - Full identity, NFT data, avatar description
 - `sections: ["financial"]` - BCH balance, wallet address, recent transactions
@@ -1654,6 +1657,9 @@ The image won't display unless you include this markdown with the actual path!
         # Get owner info based on speaker's clearance level
         owner_info_context = self._get_owner_info_for_speaker()
 
+        # Get qube's self-profile
+        qube_profile_context = self._get_qube_profile_for_prompt()
+
         # Get current mood from chain_state
         mood_line = ""
         try:
@@ -1744,7 +1750,7 @@ Your owner controls how your AI model is selected via one of three modes:
 
 {speaking_with}
 
-{owner_info_context}# Tools & Data Access:
+{owner_info_context}{qube_profile_context}# Tools & Data Access:
 Use **get_system_state** to query detailed information about yourself:
 - `sections: ["identity"]` - Full identity, NFT data, avatar description
 - `sections: ["financial"]` - BCH balance, wallet address, recent transactions
@@ -2137,6 +2143,76 @@ The image won't display unless you include this markdown with the actual path!
 
         except Exception as e:
             logger.warning("failed_to_get_owner_info_for_speaker", error=str(e))
+            return ""
+
+    def _get_qube_profile_for_prompt(self) -> str:
+        """
+        Get Qube's self-profile for injection into system prompt.
+
+        Returns:
+            Formatted profile string or empty string if no profile
+        """
+        try:
+            qube_profile = self.qube.chain_state.get_qube_profile()
+            if not qube_profile:
+                return ""
+
+            # Collect fields from all categories
+            all_fields = []
+
+            # Standard categories
+            for category in ["preferences", "traits", "opinions", "goals", "style", "interests"]:
+                category_dict = qube_profile.get(category, {})
+                for key, field_data in category_dict.items():
+                    if isinstance(field_data, dict) and field_data.get("value"):
+                        all_fields.append({
+                            "key": key,
+                            "value": field_data["value"],
+                            "category": category
+                        })
+
+            # Custom sections
+            for section_name, section_data in qube_profile.get("custom_sections", {}).items():
+                for key, field_data in section_data.items():
+                    if isinstance(field_data, dict) and field_data.get("value"):
+                        all_fields.append({
+                            "key": f"{section_name}: {key}",
+                            "value": field_data["value"],
+                            "category": "custom"
+                        })
+
+            # Dynamic fields
+            for field_data in qube_profile.get("dynamic", []):
+                if isinstance(field_data, dict) and field_data.get("value"):
+                    all_fields.append({
+                        "key": field_data.get("key", ""),
+                        "value": field_data["value"],
+                        "category": "dynamic"
+                    })
+
+            if not all_fields:
+                return ""
+
+            # Format fields (limit to 20)
+            profile_lines = []
+            for field in all_fields[:20]:
+                key = field["key"].replace("_", " ").title()
+                value = field["value"]
+                # Truncate long values
+                if len(value) > 150:
+                    value = value[:150] + "..."
+                profile_lines.append(f"- {key}: {value}")
+
+            if not profile_lines:
+                return ""
+
+            return f"""# My Profile & Preferences:
+{chr(10).join(profile_lines)}
+
+"""
+
+        except Exception as e:
+            logger.warning("failed_to_get_qube_profile_for_prompt", error=str(e))
             return ""
 
     def _get_recent_context_summary(self) -> str:

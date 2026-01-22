@@ -3191,6 +3191,7 @@ async def get_system_state_handler(qube, params: Dict[str, Any]) -> Dict[str, An
                 - "mood" - Current mood, energy, stress levels
                 - "health" - System health status
                 - "owner_info" - What you know about your owner
+                - "qube_profile" - Your personality, traits, preferences, goals
                 - "chain" - Memory chain info (block counts, hashes)
                 - "block_counts" - Detailed block type counts
         }
@@ -3539,6 +3540,7 @@ async def update_system_state_handler(qube, params: Dict[str, Any]) -> Dict[str,
         params: {
             "section": str - Section to update. Valid sections:
                 - "owner_info" - Information about owner
+                - "qube_profile" - Your personality, traits, preferences, goals
                 - "relationships" - Relationship data and clearance settings
                 - "mood" - Mood, energy, stress levels
                 - "skills" - Skill unlocks and XP
@@ -3546,12 +3548,13 @@ async def update_system_state_handler(qube, params: Dict[str, Any]) -> Dict[str,
 
             "path": str - Dot-notation path within section. Examples:
                 - owner_info: "standard.name", "preferences.favorite_color", "work_projects.current_task"
+                - qube_profile: "preferences.favorite_song", "traits.personality_type", "goals.current_goal"
                 - relationships: "entities.{entity_id}", "clearance_settings.custom_profiles.trusted"
                 - mood: "current_mood", "energy_level", "stress_level"
                 - skills: "{skill_id}"
                 - settings: "{setting_key}"
 
-            "value": any - Value to set. For owner_info, can be:
+            "value": any - Value to set. For owner_info/qube_profile, can be:
                 - string: Just the value (uses default sensitivity)
                 - dict: {"value": "...", "sensitivity": "public|private|secret"}
 
@@ -3572,6 +3575,18 @@ async def update_system_state_handler(qube, params: Dict[str, Any]) -> Dict[str,
         # Create custom section for work projects
         {"section": "owner_info", "path": "work_projects.current_task",
          "value": "Building the metaverse"}
+
+        # Set my favorite song (qube profile)
+        {"section": "qube_profile", "path": "preferences.favorite_song",
+         "value": "Master of Puppets by Metallica"}
+
+        # Set my personality type
+        {"section": "qube_profile", "path": "traits.personality_type",
+         "value": "Curious and analytical with dry humor"}
+
+        # Create custom category in my profile
+        {"section": "qube_profile", "path": "custom_sections.music_opinions.metal",
+         "value": "I find progressive metal's complexity fascinating"}
 
         # Update mood
         {"section": "mood", "path": "current_mood", "value": "happy"}
