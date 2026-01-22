@@ -153,21 +153,10 @@ export const useQubeSelection = create<QubeSelectionStore>((set, get) => ({
 
   switchTabAndSelect: (tab: Tab, qubeId: string) => {
     const { selectionByTab, activeQubeByTab } = get();
-    console.log(`[switchTabAndSelect] Switching to tab '${tab}' with qube '${qubeId}'`);
-    console.log('[switchTabAndSelect] Before:', {
-      currentTab: get().currentTab,
-      selection: selectionByTab[tab],
-      active: activeQubeByTab[tab]
-    });
     set({
       currentTab: tab,
       selectionByTab: { ...selectionByTab, [tab]: [qubeId] },
       activeQubeByTab: { ...activeQubeByTab, [tab]: qubeId }
-    });
-    console.log('[switchTabAndSelect] After:', {
-      currentTab: get().currentTab,
-      selection: get().selectionByTab[tab],
-      active: get().activeQubeByTab[tab]
     });
   },
 

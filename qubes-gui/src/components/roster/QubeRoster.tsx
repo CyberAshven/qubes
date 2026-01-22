@@ -19,13 +19,6 @@ export const QubeRoster: React.FC<QubeRosterProps> = ({ qubes }) => {
   const selectedQubeIds = useQubeSelection((state) => state.selectionByTab[state.currentTab] ?? EMPTY_ARRAY);
   const activeQubeId = useQubeSelection((state) => state.activeQubeByTab[state.currentTab]);
 
-  console.log('[QubeRoster] Render:', {
-    currentTab,
-    selectedQubeIds,
-    activeQubeId,
-    qubeIds: qubes.map(q => q.qube_id)
-  });
-
   const handleQubeClick = (qubeId: string, event: React.MouseEvent) => {
     const isCtrl = event.ctrlKey || event.metaKey;
     const isShift = event.shiftKey;

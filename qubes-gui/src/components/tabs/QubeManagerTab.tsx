@@ -2399,21 +2399,21 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
             {/* Actions */}
             <div className="flex gap-2 flex-shrink-0 mt-auto">
               <button
-                onClick={onSelect}
+                onClick={(e) => { e.stopPropagation(); onSelect(); }}
                 className="flex-1 px-4 py-2 bg-accent-primary/10 text-accent-primary rounded-lg hover:bg-accent-primary/20 transition-all text-sm font-medium"
               >
                 Chat
               </button>
               {onReset && (
                 <button
-                  onClick={onReset}
+                  onClick={(e) => { e.stopPropagation(); onReset(); }}
                   className="flex-1 px-4 py-2 bg-accent-warning/10 text-accent-warning rounded-lg hover:bg-accent-warning/20 transition-all text-sm font-medium"
                 >
                   Reset
                 </button>
               )}
               <button
-                onClick={onDelete}
+                onClick={(e) => { e.stopPropagation(); onDelete(); }}
                 className="flex-1 px-4 py-2 bg-accent-danger/10 text-accent-danger rounded-lg hover:bg-accent-danger/20 transition-all text-sm font-medium"
               >
                 Delete
@@ -3272,21 +3272,21 @@ const QubeListItem: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelet
         {/* Actions */}
         <div className="flex-shrink-0 flex gap-2">
           <button
-            onClick={onSelect}
+            onClick={(e) => { e.stopPropagation(); onSelect(); }}
             className="px-4 py-2 bg-accent-primary/10 text-accent-primary rounded-lg hover:bg-accent-primary/20 transition-all text-sm font-medium"
           >
             Chat
           </button>
           {onReset && (
             <button
-              onClick={onReset}
+              onClick={(e) => { e.stopPropagation(); onReset(); }}
               className="px-4 py-2 bg-accent-warning/10 text-accent-warning rounded-lg hover:bg-accent-warning/20 transition-all text-sm font-medium"
             >
               Reset
             </button>
           )}
           <button
-            onClick={onDelete}
+            onClick={(e) => { e.stopPropagation(); onDelete(); }}
             className="px-4 py-2 bg-accent-danger/10 text-accent-danger rounded-lg hover:bg-accent-danger/20 transition-all text-sm font-medium"
           >
             Delete
