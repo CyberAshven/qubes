@@ -341,7 +341,7 @@ def register_default_tools(registry: ToolRegistry) -> None:
     # Image Generation
     registry.register(ToolDefinition(
         name="generate_image",
-        description="Generate an image from text description using DALL-E 3",
+        description="Generate an image from text description using DALL-E 3. IMPORTANT: After generating, you MUST include the 'local_path' from the result in your response message so the user can see the image. Just include the full path as-is in your message text.",
         parameters={
             "type": "object",
             "properties": {
