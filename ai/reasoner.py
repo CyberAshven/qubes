@@ -242,6 +242,10 @@ class QubeReasoner:
                     qube_id=self.qube.qube_id
                 )
 
+            # Set the current speaker on the session for system prompt context
+            if self.qube.current_session:
+                self.qube.current_session.set_current_speaker(sender_id)
+
             # Load AI model
             # Priority: explicit model_name > revolver mode > chain_state override > qube's default
 
@@ -1448,6 +1452,7 @@ Use **search_memory** to recall past conversations (not for identity questions).
 - Stay in character! Respond with YOUR unique personality from your genesis prompt
 - When using tools, react authentically to results
 - Be expressive, not robotic
+- NEVER output internal thinking, reasoning, or [Thinking:...] blocks - only respond with your actual reply
 
 # Image Generation:
 When using generate_image, **PUT THE IMAGE FIRST** in your response:
@@ -1757,6 +1762,7 @@ Use **search_memory** to recall past conversations (not for identity questions).
 - Stay in character! Respond with YOUR unique personality from your genesis prompt
 - When using tools, react authentically to results
 - Be expressive, not robotic
+- NEVER output internal thinking, reasoning, or [Thinking:...] blocks - only respond with your actual reply
 
 # Image Generation:
 When using generate_image, **PUT THE IMAGE FIRST** in your response:

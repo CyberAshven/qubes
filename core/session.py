@@ -60,6 +60,9 @@ class Session:
             "cached_results": {},
             "insights": []
         }
+        # Current speaker info (set when processing input)
+        self.entity_id: Optional[str] = None
+        self.entity_name: Optional[str] = None
         # Flag to track if auto-anchor should be triggered (set by sync create_block, checked by async callers)
         self._auto_anchor_pending = False
         self._auto_anchor_is_group = False
@@ -72,6 +75,38 @@ class Session:
         })
 
         logger.info("session_started", session_id=self.session_id, qube_id=qube.qube_id)
+
+    def set_current_speaker(self, entity_id: str, entity_name: Optional[str] = None) -> None:
+        """
+        Set the current speaker for this session.
+
+        Args:
+            entity_id: ID of the entity speaking (e.g., user ID)
+            entity_name: Optional display name (will lookup from relationships if not provided)
+        """
+        self.entity_id = entity_id
+
+        # Try to get name from relationships if not provided
+        if entity_name:
+            self.entity_name = entity_name
+        else:
+            # Check if this is the owner
+            genesis = getattr(self.qube, 'genesis_block', None)
+            if genesis and entity_id == genesis.creator:
+                # Use owner name from genesis or user_name
+                self.entity_name = getattr(self.qube, 'user_name', None) or entity_id
+            else:
+                # Try to get from relationships
+                try:
+                    relationship = self.qube.relationships.get_relationship(entity_id)
+                    if relationship:
+                        self.entity_name = getattr(relationship, 'name', None) or entity_id
+                    else:
+                        self.entity_name = entity_id
+                except Exception:
+                    self.entity_name = entity_id
+
+        logger.debug("session_speaker_set", entity_id=entity_id, entity_name=self.entity_name)
 
     def is_group_conversation(self) -> bool:
         """
