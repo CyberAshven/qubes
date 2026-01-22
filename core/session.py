@@ -67,6 +67,8 @@ class Session:
         self._auto_anchor_pending = False
         self._auto_anchor_is_group = False
         self._pending_anchor_task: Optional[asyncio.Task] = None
+        # SAFEGUARD: Flag to prevent concurrent/duplicate anchoring
+        self._anchor_in_progress = False
 
         # Emit session started event
         from core.events import Events
@@ -497,9 +499,21 @@ class Session:
         if len(self.session_blocks) == 0:
             return []
 
+        # SAFEGUARD: Prevent concurrent/duplicate anchoring
+        if self._anchor_in_progress:
+            logger.warning(
+                "anchor_already_in_progress",
+                qube_id=self.qube.qube_id,
+                session_blocks=len(self.session_blocks)
+            )
+            return []
+
+        self._anchor_in_progress = True
+
         from utils.file_lock import qube_session_lock
 
-        with qube_session_lock(self.qube.data_dir):
+        try:
+          with qube_session_lock(self.qube.data_dir):
             # Re-check chain length inside lock (another process may have anchored)
             chain_length = self.qube.memory_chain.get_chain_length()
             latest = self.qube.memory_chain.get_latest_block()
@@ -837,6 +851,9 @@ class Session:
             )
 
             return converted_blocks
+        finally:
+            # SAFEGUARD: Always reset flag even if error occurs
+            self._anchor_in_progress = False
 
     def _get_unsummarized_blocks(self) -> List[Block]:
         """
@@ -1673,6 +1690,20 @@ Return ONLY valid JSON with this exact structure:
         # Create permanent blocks directory
         permanent_dir = Path(self.qube.data_dir) / "blocks" / "permanent"
         permanent_dir.mkdir(parents=True, exist_ok=True)
+
+        # SAFEGUARD: Check if a block with this number already exists
+        existing_blocks = list(permanent_dir.glob(f"{block.block_number}_*.json"))
+        if existing_blocks:
+            logger.error(
+                "block_number_collision_detected",
+                block_number=block.block_number,
+                existing_files=[f.name for f in existing_blocks],
+                qube_id=self.qube.qube_id
+            )
+            raise RuntimeError(
+                f"Block {block.block_number} already exists! Files: {[f.name for f in existing_blocks]}. "
+                f"This indicates a duplicate anchor attempt. Aborting to prevent data loss."
+            )
 
         # Format filename: block_number_type_timestamp
         block_type_str = block.block_type if isinstance(block.block_type, str) else block.block_type.value

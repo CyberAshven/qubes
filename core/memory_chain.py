@@ -313,14 +313,29 @@ class MemoryChain:
 
         merkle_root = compute_merkle_root(block_hashes)
 
+        # SAFEGUARD: Determine next available block number
+        next_block_number = len(self.block_index)
+
+        # Check if this block number already exists (collision prevention)
+        existing_files = list(self.permanent_dir.glob(f"{next_block_number}_*.json"))
+        if existing_files:
+            logger.warning(
+                "memory_anchor_collision_avoided",
+                intended_block_number=next_block_number,
+                existing_files=[f.name for f in existing_files],
+                qube_id=self.qube_id
+            )
+            # Skip anchor creation - block number already in use
+            return
+
         latest = self.get_latest_block()
         anchor_block = create_memory_anchor_block(
             qube_id=self.qube_id,
-            block_number=len(self.block_index),
+            block_number=next_block_number,
             previous_hash=latest.block_hash,
             merkle_root=merkle_root,
-            block_range=[0, len(self.block_index) - 1],
-            total_blocks=len(self.block_index),
+            block_range=[0, next_block_number - 1],
+            total_blocks=next_block_number,
             anchor_type="periodic"
         )
 
