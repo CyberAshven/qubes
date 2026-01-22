@@ -163,7 +163,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
         multiple: true, // Allow multiple file selection
         filters: [{
           name: 'Images and Documents',
-          extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'txt', 'md', 'json']
+          extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'txt', 'md', 'json', 'pdf']
         }]
       });
 
@@ -183,8 +183,10 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
         // Determine file type
         const imageExtensions = ['png', 'jpg', 'jpeg', 'gif', 'webp'];
         const textExtensions = ['txt', 'md', 'json'];
+        const pdfExtensions = ['pdf'];
         const isImage = imageExtensions.includes(extension);
         const isTextFile = textExtensions.includes(extension);
+        const isPDF = pdfExtensions.includes(extension);
 
         let fileData;
         if (isImage) {
@@ -204,8 +206,18 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
             type: 'text' as const,
             data: new TextDecoder().decode(fileBytes)
           };
+        } else if (isPDF) {
+          // PDF files - send as base64 for backend processing
+          fileData = {
+            name: fileName,
+            path: filePath,
+            type: 'pdf' as const,
+            data: btoa(
+              new Uint8Array(fileBytes).reduce((data, byte) => data + String.fromCharCode(byte), '')
+            )
+          };
         } else {
-          // PDF and other binary files - convert to base64
+          // Other binary files (not supported)
           fileData = {
             name: fileName,
             path: filePath,
@@ -745,14 +757,16 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
     let fileIndicator = '';
     if (filesToProcess.length > 0) {
       const imageCount = filesToProcess.filter(f => f.type === 'image').length;
+      const pdfCount = filesToProcess.filter(f => f.type === 'pdf').length;
       const textCount = filesToProcess.filter(f => f.type === 'text').length;
+      const totalDocCount = pdfCount + textCount;
 
-      if (imageCount > 0 && textCount > 0) {
-        fileIndicator = `\n[${imageCount} image(s) and ${textCount} file(s) attached]`;
+      if (imageCount > 0 && totalDocCount > 0) {
+        fileIndicator = `\n[${imageCount} image(s) and ${totalDocCount} document(s) attached]`;
       } else if (imageCount > 0) {
         fileIndicator = `\n[${imageCount} image(s) attached]`;
-      } else if (textCount > 0) {
-        fileIndicator = `\n[${textCount} file(s) attached]`;
+      } else if (totalDocCount > 0) {
+        fileIndicator = `\n[${totalDocCount} document(s) attached]`;
       }
     }
 
@@ -774,14 +788,15 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
     try {
       // Process files
       if (filesToProcess.length > 0) {
-        // Separate images and text files
+        // Separate images, text files, PDFs, and other binaries
         const images = filesToProcess.filter(f => f.type === 'image');
         const textFiles = filesToProcess.filter(f => f.type === 'text');
+        const pdfFiles = filesToProcess.filter(f => f.type === 'pdf');
         const binaryFiles = filesToProcess.filter(f => f.type === 'binary');
 
-        // Check for unsupported binary files
+        // Check for unsupported binary files (PDFs are now supported)
         if (binaryFiles.length > 0) {
-          setError(`Sorry, I cannot read PDF or binary files yet. Please copy and paste the text content, or upload a text file (.txt, .md, .json) instead.`);
+          setError(`Sorry, I cannot read binary files. Please upload images (.png, .jpg), documents (.pdf, .txt, .md, .json) instead.`);
           setIsLoading(false);
           return;
         }
@@ -790,6 +805,11 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
         let fullMessage = messageToSend;
         for (const file of textFiles) {
           fullMessage += `\n\n[Attached file: ${file.name}]\n${file.data}`;
+        }
+
+        // Add PDF files to message (backend will handle extraction)
+        for (const file of pdfFiles) {
+          fullMessage += `\n\n[Attached PDF: ${file.name}]\n<pdf_base64>${file.data}</pdf_base64>`;
         }
 
         // Process images (analyze each one separately for now)

@@ -221,6 +221,48 @@ class GUIBridge:
 
         return new_path
 
+    def _process_pdf_in_message(self, message: str) -> str:
+        """
+        Extract text from PDF base64 data embedded in message.
+
+        Looks for <pdf_base64>...</pdf_base64> tags and replaces them
+        with extracted text.
+
+        Args:
+            message: Message potentially containing PDF data
+
+        Returns:
+            Message with PDFs replaced by extracted text
+        """
+        import re
+        from utils.pdf_utils import extract_text_from_pdf_base64
+
+        # Pattern to find PDF base64 data
+        pdf_pattern = r'<pdf_base64>(.*?)</pdf_base64>'
+
+        def extract_and_replace(match):
+            """Extract text from PDF and format for message."""
+            pdf_base64 = match.group(1)
+
+            try:
+                # Extract text from PDF
+                pdf_text = extract_text_from_pdf_base64(pdf_base64)
+
+                if pdf_text:
+                    # Format extracted text
+                    return f"\n\n[PDF Content Extracted]\n{pdf_text}\n[End PDF Content]\n"
+                else:
+                    return "\n\n[PDF extraction failed - file may be corrupted or image-based]\n"
+
+            except Exception as e:
+                logger.error(f"Failed to extract PDF text: {e}")
+                return f"\n\n[PDF extraction error: {str(e)}]\n"
+
+        # Replace all PDF base64 blocks with extracted text
+        processed = re.sub(pdf_pattern, extract_and_replace, message, flags=re.DOTALL)
+
+        return processed
+
     async def authenticate(self, user_id: str, password: str) -> Dict[str, Any]:
         """Authenticate user with username and password"""
         try:
@@ -775,8 +817,11 @@ class GUIBridge:
 
             qube = self.orchestrator.qubes[qube_id]
 
+            # Process PDF files in message (extract text from base64)
+            processed_message = self._process_pdf_in_message(message)
+
             # Send message and get response (use actual user_id instead of default "human")
-            response = await qube.process_message(message, sender_id=self.orchestrator.user_id)
+            response = await qube.process_message(processed_message, sender_id=self.orchestrator.user_id)
 
             # Record relationship interaction (conversation with user)
             if response:

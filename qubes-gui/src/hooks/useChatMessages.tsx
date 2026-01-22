@@ -11,7 +11,7 @@ export interface Message {
 export interface UploadedFile {
   name: string;
   path: string;
-  type: 'image' | 'text' | 'binary';
+  type: 'image' | 'text' | 'pdf' | 'binary';
   data: string;
 }
 
