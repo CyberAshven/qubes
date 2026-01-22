@@ -647,6 +647,19 @@ class QubeReasoner:
                         temperature=temperature
                     )
 
+                # Defensive null check - response should never be None, but handle gracefully
+                if response is None:
+                    logger.error(
+                        "model_returned_none_response",
+                        model=model_to_use,
+                        iteration=iteration,
+                        qube_id=self.qube.qube_id
+                    )
+                    raise AIError(
+                        f"Model {model_to_use} returned None response",
+                        context={"model": model_to_use, "iteration": iteration}
+                    )
+
                 # Log iteration completion with timing
                 iteration_duration = time.time() - iteration_start
                 logger.info(

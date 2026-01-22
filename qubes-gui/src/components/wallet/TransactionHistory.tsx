@@ -105,6 +105,7 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
 
   // Polling for unconfirmed transactions
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const pollingQubeIdRef = useRef<string | null>(null); // Track which qube we're polling for
   const POLL_INTERVAL_MS = 30000; // Check every 30 seconds
 
   const PAGE_SIZE = 20;
@@ -206,14 +207,21 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
 
   // Polling effect for unconfirmed transactions
   useEffect(() => {
+    // Clear existing interval if qubeId changed
+    if (pollingQubeIdRef.current && pollingQubeIdRef.current !== qubeId) {
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current);
+        pollingIntervalRef.current = null;
+      }
+    }
+
     // Only start/stop polling based on expanded state and unconfirmed status
     // Don't react to loading state to avoid resetting the interval during fetches
-    if (expanded && hasUnconfirmed) {
-      // Only set up interval if we don't already have one
+    if (expanded && hasUnconfirmed && qubeId) {
+      // Only set up interval if we don't already have one for this qube
       if (!pollingIntervalRef.current) {
-        console.log('[TransactionHistory] Started polling for unconfirmed transactions');
+        pollingQubeIdRef.current = qubeId;
         pollingIntervalRef.current = setInterval(() => {
-          console.log('[TransactionHistory] Polling for confirmation updates...');
           // Use ref to get current fetch function without adding to deps
           fetchRef.current(0, false, true);
         }, POLL_INTERVAL_MS);
@@ -223,7 +231,7 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
       if (pollingIntervalRef.current) {
         clearInterval(pollingIntervalRef.current);
         pollingIntervalRef.current = null;
-        console.log('[TransactionHistory] Stopped polling - expanded:', expanded, 'hasUnconfirmed:', hasUnconfirmed);
+        pollingQubeIdRef.current = null;
       }
     }
 
@@ -232,9 +240,10 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
       if (pollingIntervalRef.current) {
         clearInterval(pollingIntervalRef.current);
         pollingIntervalRef.current = null;
+        pollingQubeIdRef.current = null;
       }
     };
-  }, [expanded, hasUnconfirmed]);
+  }, [expanded, hasUnconfirmed, qubeId]);
 
   const handleLoadMore = () => {
     fetchTransactions(transactions.length, true, true);
