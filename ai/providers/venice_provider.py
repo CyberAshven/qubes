@@ -16,6 +16,7 @@ API Docs: https://docs.venice.ai/api-reference/api-spec
 
 from typing import List, Dict, Any, Optional, AsyncIterator
 import json
+import re
 
 from ai.providers.base import AIModelInterface, ModelResponse
 from ai.retry_decorators import openai_retry
@@ -222,6 +223,26 @@ class VeniceModel(AIModelInterface):
             # Extract tool calls if present
             tool_calls = None
             content = message.content or ""
+
+            # Strip [Thinking: ...] blocks that some Venice models output
+            # These are internal reasoning that shouldn't be shown to users
+            thinking_pattern = r'\[Thinking:.*?\]'
+            if re.search(thinking_pattern, content, re.DOTALL | re.IGNORECASE):
+                original_content = content
+                content = re.sub(thinking_pattern, '', content, flags=re.DOTALL | re.IGNORECASE).strip()
+                logger.info(
+                    "venice_thinking_stripped",
+                    model=self.model_name,
+                    had_thinking=True,
+                    remaining_content_length=len(content)
+                )
+                # If only thinking was present (no actual response), log warning
+                if not content:
+                    logger.warning(
+                        "venice_only_thinking_no_response",
+                        model=self.model_name,
+                        original_preview=original_content[:200]
+                    )
 
             if message.tool_calls:
                 # Native tool calls from API
