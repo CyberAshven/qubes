@@ -1480,6 +1480,12 @@ class UserOrchestrator:
                 semantic_mapping.unlink()
                 logger.debug("deleted_semantic_mapping")
 
+            # 5b. Delete skills cache (GUI uses this to display skills without encryption key)
+            skills_cache = chain_dir / "skills_cache.json"
+            if skills_cache.exists():
+                skills_cache.unlink()
+                logger.debug("deleted_skills_cache")
+
             # 6. Delete audio cache
             audio_dir = qube_dir / "audio"
             if audio_dir.exists():

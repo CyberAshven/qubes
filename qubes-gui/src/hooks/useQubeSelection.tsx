@@ -51,22 +51,8 @@ export const useQubeSelection = create<QubeSelectionStore>((set, get) => ({
   },
 
   setCurrentTab: (tab: Tab) => {
-    const { currentTab, selectionByTab, activeQubeByTab } = get();
-
-    // If the new tab has no selection, carry over from the current tab
-    const newTabSelection = selectionByTab[tab] || [];
-    const currentTabSelection = selectionByTab[currentTab] || [];
-
-    if (newTabSelection.length === 0 && currentTabSelection.length > 0) {
-      // Carry over selection from current tab to new tab
-      set({
-        currentTab: tab,
-        selectionByTab: { ...selectionByTab, [tab]: currentTabSelection },
-        activeQubeByTab: { ...activeQubeByTab, [tab]: activeQubeByTab[currentTab] }
-      });
-    } else {
-      set({ currentTab: tab });
-    }
+    // Simply switch tabs - each tab maintains its own independent selection
+    set({ currentTab: tab });
   },
 
   getSelectedQubeIds: () => {
@@ -157,6 +143,7 @@ export const useQubeSelection = create<QubeSelectionStore>((set, get) => ({
 
   isMultiSelectAllowed: () => {
     const { currentTab } = get();
-    return currentTab === 'dashboard' || currentTab === 'economy' || currentTab === 'games';
+    // Only Chat tab (id='dashboard', for group chat) and Games tab (for multi-player) allow multi-select
+    return currentTab === 'dashboard' || currentTab === 'games';
   },
 }));
