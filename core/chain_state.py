@@ -3247,7 +3247,7 @@ class ChainState:
 
     # Sections that roll back on session discard (snapshotted at session start)
     # These represent session-accumulated changes that should undo if user discards
-    ROLLBACK_SECTIONS = {"relationships", "owner_info", "skills", "mood"}
+    ROLLBACK_SECTIONS = {"relationships", "owner_info", "qube_profile", "skills", "mood"}
 
     # Runtime fields that roll back on session discard
     ROLLBACK_RUNTIME_FIELDS = {"current_model", "current_provider"}
@@ -3291,6 +3291,7 @@ class ChainState:
             # Sections that roll back
             "relationships": json.loads(json.dumps(self.state.get("relationships", {}))),
             "owner_info": json.loads(json.dumps(self.state.get("owner_info", {}))),
+            "qube_profile": json.loads(json.dumps(self.state.get("qube_profile", {}))),
             "skills": json.loads(json.dumps(self.state.get("skills", {}))),
             "mood": json.loads(json.dumps(self.state.get("mood", {}))),
             # Runtime fields that roll back (model switches)
