@@ -103,6 +103,10 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
   // Track if we've already fetched for this qubeId
   const hasFetchedRef = useRef<string | null>(null);
 
+  // Polling for unconfirmed transactions
+  const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const POLL_INTERVAL_MS = 30000; // Check every 30 seconds
+
   const PAGE_SIZE = 20;
   const SHOW_INCREMENT = 5;
 
@@ -193,6 +197,45 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
     }
   }, [qubeId, cachedData, fetchTransactions]);
 
+  // Check if there are any unconfirmed transactions
+  const hasUnconfirmed = transactions.some(tx => !tx.is_confirmed || tx.confirmations < 6);
+
+  // Stable ref for the fetch function to avoid resetting interval
+  const fetchRef = useRef(fetchTransactions);
+  fetchRef.current = fetchTransactions;
+
+  // Polling effect for unconfirmed transactions
+  useEffect(() => {
+    // Only start/stop polling based on expanded state and unconfirmed status
+    // Don't react to loading state to avoid resetting the interval during fetches
+    if (expanded && hasUnconfirmed) {
+      // Only set up interval if we don't already have one
+      if (!pollingIntervalRef.current) {
+        console.log('[TransactionHistory] Started polling for unconfirmed transactions');
+        pollingIntervalRef.current = setInterval(() => {
+          console.log('[TransactionHistory] Polling for confirmation updates...');
+          // Use ref to get current fetch function without adding to deps
+          fetchRef.current(0, false, true);
+        }, POLL_INTERVAL_MS);
+      }
+    } else {
+      // Stop polling if collapsed or all transactions are confirmed
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current);
+        pollingIntervalRef.current = null;
+        console.log('[TransactionHistory] Stopped polling - expanded:', expanded, 'hasUnconfirmed:', hasUnconfirmed);
+      }
+    }
+
+    // Cleanup on unmount
+    return () => {
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current);
+        pollingIntervalRef.current = null;
+      }
+    };
+  }, [expanded, hasUnconfirmed]);
+
   const handleLoadMore = () => {
     fetchTransactions(transactions.length, true, true);
   };
@@ -233,24 +276,36 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
       {expanded && (
         <div className="mt-4 pt-4 border-t border-glass-border">
           {/* Refresh and Show All buttons */}
-          <div className="flex justify-end gap-2 mb-3">
-            {transactions.length > visibleCount && (
+          <div className="flex justify-between items-center mb-3">
+            {/* Auto-refresh indicator */}
+            <div className="flex items-center gap-2">
+              {hasUnconfirmed && (
+                <span className="text-xs text-text-tertiary flex items-center gap-1">
+                  <span className="inline-block w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
+                  Auto-refreshing
+                </span>
+              )}
+            </div>
+
+            <div className="flex gap-2">
+              {transactions.length > visibleCount && (
+                <GlassButton
+                  onClick={() => setVisibleCount(transactions.length)}
+                  variant="ghost"
+                  size="sm"
+                >
+                  Show All
+                </GlassButton>
+              )}
               <GlassButton
-                onClick={() => setVisibleCount(transactions.length)}
+                onClick={handleRefresh}
                 variant="ghost"
                 size="sm"
+                disabled={loading}
               >
-                Show All
+                {loading ? 'Loading...' : 'Refresh'}
               </GlassButton>
-            )}
-            <GlassButton
-              onClick={handleRefresh}
-              variant="ghost"
-              size="sm"
-              disabled={loading}
-            >
-              {loading ? 'Loading...' : 'Refresh'}
-            </GlassButton>
+            </div>
           </div>
 
           {/* Error state */}

@@ -51,8 +51,22 @@ export const useQubeSelection = create<QubeSelectionStore>((set, get) => ({
   },
 
   setCurrentTab: (tab: Tab) => {
-    set({ currentTab: tab });
-    // Tab switching no longer modifies selection - each tab has its own selection state
+    const { currentTab, selectionByTab, activeQubeByTab } = get();
+
+    // If the new tab has no selection, carry over from the current tab
+    const newTabSelection = selectionByTab[tab] || [];
+    const currentTabSelection = selectionByTab[currentTab] || [];
+
+    if (newTabSelection.length === 0 && currentTabSelection.length > 0) {
+      // Carry over selection from current tab to new tab
+      set({
+        currentTab: tab,
+        selectionByTab: { ...selectionByTab, [tab]: currentTabSelection },
+        activeQubeByTab: { ...activeQubeByTab, [tab]: activeQubeByTab[currentTab] }
+      });
+    } else {
+      set({ currentTab: tab });
+    }
   },
 
   getSelectedQubeIds: () => {
@@ -64,21 +78,31 @@ export const useQubeSelection = create<QubeSelectionStore>((set, get) => ({
     const { currentTab, selectionByTab } = get();
     const selectedQubeIds = selectionByTab[currentTab] || [];
     const isMultiAllowed = get().isMultiSelectAllowed();
+    const isAlreadySelected = selectedQubeIds.includes(id);
 
     if (!isMultiAllowed) {
-      // Single-select mode: always replace
+      // Single-select mode: toggle if already selected, otherwise select
       const { activeQubeByTab } = get();
-      set({
-        selectionByTab: { ...selectionByTab, [currentTab]: [id] },
-        activeQubeByTab: { ...activeQubeByTab, [currentTab]: id }
-      });
+      if (isAlreadySelected) {
+        // Deselect
+        set({
+          selectionByTab: { ...selectionByTab, [currentTab]: [] },
+          activeQubeByTab: { ...activeQubeByTab, [currentTab]: null }
+        });
+      } else {
+        // Select
+        set({
+          selectionByTab: { ...selectionByTab, [currentTab]: [id] },
+          activeQubeByTab: { ...activeQubeByTab, [currentTab]: id }
+        });
+      }
       return;
     }
 
     // Multi-select mode
     if (isCtrl) {
       // Toggle selection
-      if (selectedQubeIds.includes(id)) {
+      if (isAlreadySelected) {
         set({
           selectionByTab: {
             ...selectionByTab,
@@ -96,7 +120,7 @@ export const useQubeSelection = create<QubeSelectionStore>((set, get) => ({
     } else if (isShift && selectedQubeIds.length > 0) {
       // Range selection (would need qube list for proper implementation)
       // For now, just add to selection
-      if (!selectedQubeIds.includes(id)) {
+      if (!isAlreadySelected) {
         set({
           selectionByTab: {
             ...selectionByTab,
@@ -105,12 +129,21 @@ export const useQubeSelection = create<QubeSelectionStore>((set, get) => ({
         });
       }
     } else {
-      // Regular click: single selection
+      // Regular click in multi-select mode: if already selected, deselect; otherwise single-select
       const { activeQubeByTab } = get();
-      set({
-        selectionByTab: { ...selectionByTab, [currentTab]: [id] },
-        activeQubeByTab: { ...activeQubeByTab, [currentTab]: id }
-      });
+      if (isAlreadySelected && selectedQubeIds.length === 1) {
+        // Only item selected, deselect it
+        set({
+          selectionByTab: { ...selectionByTab, [currentTab]: [] },
+          activeQubeByTab: { ...activeQubeByTab, [currentTab]: null }
+        });
+      } else {
+        // Select only this one (replacing any multi-selection)
+        set({
+          selectionByTab: { ...selectionByTab, [currentTab]: [id] },
+          activeQubeByTab: { ...activeQubeByTab, [currentTab]: id }
+        });
+      }
     }
   },
 

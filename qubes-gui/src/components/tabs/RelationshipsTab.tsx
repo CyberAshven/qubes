@@ -605,6 +605,7 @@ export const RelationshipsTab: React.FC<RelationshipsTabProps> = ({ qubes }) => 
 
   // Status order and display config (positive to negative)
   const statusConfig = [
+    { status: 'owner', label: 'Owner', icon: '👑', color: '#ffd700' },
     { status: 'best_friend', label: 'Best Friend', icon: '💖', color: '#ff69b4' },
     { status: 'close_friend', label: 'Close Friends', icon: '💕', color: '#ff1493' },
     { status: 'friend', label: 'Friends', icon: '💚', color: '#00ff88' },

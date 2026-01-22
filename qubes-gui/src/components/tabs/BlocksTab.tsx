@@ -1302,7 +1302,7 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                   {selectedContextSection.data && selectedContextSection.data.total_fields > 0 ? (
                     (() => {
                       // Separate fields by sensitivity
-                      const allFields = selectedContextSection.data.top_fields || [];
+                      const allFields = selectedContextSection.data.fields || selectedContextSection.data.top_fields || [];
                       const privateFields = allFields.filter((f: any) => f.sensitivity === 'private' || f.sensitivity === 'secret');
                       const publicFields = allFields.filter((f: any) => f.sensitivity === 'public');
 
@@ -1316,11 +1316,14 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                         dynamic: { icon: '✨', label: 'Other', color: 'text-indigo-400', bg: 'bg-indigo-500/15' },
                       };
 
-                      // Group fields by category
+                      // Group fields by category (map unknown categories to 'dynamic')
+                      const knownCategories = ['standard', 'physical', 'preferences', 'people', 'dates', 'dynamic'];
                       const groupByCategory = (fields: any[]) => {
                         const groups: Record<string, any[]> = {};
                         fields.forEach((f: any) => {
-                          const cat = f.category || 'dynamic';
+                          // Use dynamic for custom sections or unknown categories
+                          const rawCat = f.category || 'dynamic';
+                          const cat = knownCategories.includes(rawCat) ? rawCat : 'dynamic';
                           if (!groups[cat]) groups[cat] = [];
                           groups[cat].push(f);
                         });
@@ -1343,17 +1346,20 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                       const renderGroupedFields = (fields: any[], isPrivate: boolean) => {
                         const grouped = groupByCategory(fields);
                         const categoryOrder = ['standard', 'physical', 'preferences', 'people', 'dates', 'dynamic'];
+                        // Prefix category keys with section to avoid collision between Private/Public
+                        const sectionPrefix = isPrivate ? 'private-' : 'public-';
 
                         return categoryOrder
                           .filter(cat => grouped[cat] && grouped[cat].length > 0)
                           .map(cat => {
                             const catInfo = categoryInfo[cat] || { icon: '📌', label: cat, color: 'text-text-tertiary', bg: 'bg-glass-bg/20' };
-                            const isExpanded = expandedCategories.has(cat);
+                            const categoryKey = sectionPrefix + cat;
+                            const isExpanded = expandedCategories.has(categoryKey);
 
                             return (
                               <div key={cat} className="mb-2 last:mb-0 rounded-lg overflow-hidden border border-glass-border/20">
                                 <button
-                                  onClick={() => toggleCategory(cat)}
+                                  onClick={() => toggleCategory(categoryKey)}
                                   className={`w-full flex items-center justify-between p-2 ${catInfo.bg} hover:brightness-110 transition-all`}
                                 >
                                   <span className={`text-sm font-medium flex items-center gap-2 ${catInfo.color}`}>
