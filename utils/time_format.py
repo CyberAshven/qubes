@@ -38,8 +38,8 @@ def format_timestamp(
     Returns:
         Formatted timestamp string
         Examples:
-            - "October 5, 2025 2:12am"
-            - "Oct 5, 2025 2:12:30am" (with seconds)
+            - "Thursday, October 5, 2025 2:12am"
+            - "Thursday, Oct 5, 2025 2:12:30am" (with seconds)
             - "Unknown" (if timestamp is None)
     """
     if not timestamp:
@@ -51,9 +51,9 @@ def format_timestamp(
 
         # Build format string
         if short_date:
-            date_format = "%b %d, %Y"  # Oct 5, 2025
+            date_format = "%A, %b %d, %Y"  # Thursday, Oct 5, 2025
         else:
-            date_format = "%B %d, %Y"  # October 5, 2025
+            date_format = "%A, %B %d, %Y"  # Thursday, October 5, 2025
 
         # Windows doesn't support %-I, so we need to manually strip leading zero
         hour = dt.strftime("%I").lstrip('0') or '12'  # Remove leading zero, default to 12 if empty
@@ -76,9 +76,9 @@ def format_timestamp(
         try:
             dt = datetime.fromtimestamp(timestamp)
             if short_date:
-                date_format = "%b %d, %Y"
+                date_format = "%A, %b %d, %Y"
             else:
-                date_format = "%B %d, %Y"
+                date_format = "%A, %B %d, %Y"
 
             hour = dt.strftime("%I").lstrip('0') or '12'
             minute = dt.strftime("%M")
