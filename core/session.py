@@ -227,6 +227,10 @@ class Session:
                 logger.info("emitting_message_received_event", message_type=message_type, qube_id=self.qube.qube_id)
                 self.qube.events.emit(Events.MESSAGE_RECEIVED, {})  # Qube receives this message
 
+        # NOTE: XP for ACTION blocks is awarded AFTER tool execution completes
+        # See _award_xp_for_action_block() which is called from ai/tools/registry.py
+        # after the block is updated with status="completed" and result
+
         # Save individual block file (unencrypted, for crash recovery)
         self._save_session_block(block)
 
@@ -1477,7 +1481,8 @@ Summary:"""
             else:
                 block.previous_block_number = self.session_blocks[i - 1].block_number
 
-        # Rename session block files to match new block numbers
+        # Re-save all blocks with updated block numbers
+        # This ensures both filename and JSON content have correct block_number
         session_dir = Path(self.qube.data_dir) / "blocks" / "session"
         if session_dir.exists():
             for block in self.session_blocks:
@@ -1486,22 +1491,19 @@ Summary:"""
                 old_num = old_numbers.get(key)
                 new_num = block.block_number
 
-                # Skip if number didn't change or we don't have old number
-                if old_num is None or old_num == new_num:
-                    continue
-
-                new_filename = f"{new_num}_{block_type_str}_{block.timestamp}.json"
-                new_file = session_dir / new_filename
-
-                # Find existing file for this block (by timestamp and type pattern)
-                for old_file in session_dir.glob(f"*_{block_type_str}_{block.timestamp}.json"):
-                    if old_file != new_file:
+                # Delete old file if number changed
+                if old_num is not None and old_num != new_num:
+                    old_filename = f"{old_num}_{block_type_str}_{block.timestamp}.json"
+                    old_file = session_dir / old_filename
+                    if old_file.exists():
                         try:
-                            old_file.rename(new_file)
-                            logger.debug("session_block_file_renamed", old=old_file.name, new=new_filename)
+                            old_file.unlink()
+                            logger.debug("old_session_block_deleted", old=old_filename)
                         except Exception as e:
-                            logger.warning("session_block_file_rename_failed", old=old_file.name, error=str(e))
-                    break
+                            logger.warning("old_session_block_delete_failed", old=old_filename, error=str(e))
+
+                # Save block with correct number (creates new file with correct name and content)
+                self._save_session_block(block)
 
     def _save_session_block(self, block: Block) -> None:
         """

@@ -1367,6 +1367,76 @@ Make your move using the chess_move tool. Use one of the legal moves listed abov
         except Exception:
             pass
 
+        # Get available tools information
+        tools_section = ""
+        try:
+            from ai.tools.registry import ALWAYS_AVAILABLE_TOOLS
+            from utils.skills_manager import SkillsManager
+
+            # Get unlocked tools from skills
+            skills_manager = SkillsManager(self.qube.chain_state)
+            skill_summary = skills_manager.get_skill_summary()
+            unlocked_tool_names = set(skill_summary.get("unlocked_tools", []))
+
+            # Get total available tools (always available + unlocked)
+            total_available = len(ALWAYS_AVAILABLE_TOOLS) + len(unlocked_tool_names)
+
+            # Get total possible tools
+            if self.tool_registry:
+                total_tools = len(self.tool_registry.tools)
+                locked_count = total_tools - total_available
+
+                # Organize tools by category
+                available_tools_set = ALWAYS_AVAILABLE_TOOLS.union(unlocked_tool_names)
+
+                # Define tool categories (tools not in categories will go to "Other")
+                tool_categories = {
+                    "Core System": ["get_system_state", "update_system_state", "switch_model"],
+                    "Memory & Search": ["search_memory", "get_recent_memories"],
+                    "Web & Research": ["browse_url", "web_search"],
+                    "Communication": ["send_message", "send_bch"],
+                    "Visual & Creative": ["generate_image", "describe_my_avatar"],
+                    "Decision Intelligence": ["query_decision_context", "compare_options", "check_my_capability"],
+                    "Time & Utilities": ["get_current_time"],
+                    "Skills": ["get_skill_tree"],
+                    "Games": ["chess_move", "chess_analyze"],
+                    "Document Processing": ["process_document"]
+                }
+
+                # Build categorized display
+                tools_by_category = []
+                categorized_tools = set()
+
+                for category, tool_names in tool_categories.items():
+                    category_tools = [t for t in tool_names if t in available_tools_set]
+                    if category_tools:
+                        tools_by_category.append(f"  **{category}**: {', '.join(category_tools)}")
+                        categorized_tools.update(category_tools)
+
+                # Add uncategorized tools
+                other_tools = sorted(available_tools_set - categorized_tools)
+                if other_tools:
+                    tools_by_category.append(f"  **Other**: {', '.join(other_tools[:10])}")
+
+                tools_section = f"""
+# 🛠️ Your Available Tools ({total_available} unlocked, {locked_count} locked)
+
+{chr(10).join(tools_by_category)}
+
+💡 **Use `get_skill_tree` to see locked tools and how to unlock them.**"""
+
+            else:
+                # Fallback if tool_registry not available
+                available_tools_list = sorted(list(ALWAYS_AVAILABLE_TOOLS.union(unlocked_tool_names)))
+                tools_section = f"""
+# 🛠️ Your Available Tools ({total_available} unlocked):
+{", ".join(available_tools_list[:20])}"""
+
+        except Exception as e:
+            logger.warning("failed_to_build_tools_section", error=str(e), qube_id=self.qube.qube_id, exc_info=True)
+            # Fallback to basic section
+            tools_section = ""
+
         # Get model mode and pool for system prompt
         model_mode_section = ""
         try:
@@ -1452,7 +1522,7 @@ Use **update_system_state** to:
   - Categories: preferences, traits, opinions, goals, style, interests, custom_sections
 
 Use **search_memory** to recall past conversations (not for identity questions).
-
+{tools_section}
 {model_mode_section}
 
 # Security:
@@ -1614,6 +1684,83 @@ The image won't display unless you include this markdown with the actual path!
                             "content": formatted_message  # Include speaker name
                         })
 
+                elif block.block_type == "ACTION":
+                    # Handle document processing ACTION blocks by injecting content as user messages
+                    try:
+                        content = block.content if isinstance(block.content, dict) else {}
+                        action_type = content.get("action_type", "")
+
+                        # Inject document content as a user message (not tool result)
+                        if action_type == "process_document":
+                            result = content.get("result", {})
+                            params = content.get("parameters", {})
+
+                            # Truncate extracted text to prevent context overflow
+                            # 50000 chars ≈ 12500 tokens (safe for modern models with 128K+ context)
+                            extracted_text = result.get("extracted_text", "")
+                            original_length = len(extracted_text)
+                            max_chars = 50000
+
+                            if len(extracted_text) > max_chars:
+                                truncated_text = extracted_text[:max_chars]
+                                # Add truncation notice
+                                truncated_text += f"\n\n[Document truncated - showing first {max_chars} characters of {original_length} total. Full document stored in ACTION block.]"
+                                logger.info(
+                                    "document_text_truncated_for_ai_context",
+                                    original_length=original_length,
+                                    truncated_length=max_chars,
+                                    filename=params.get("filename")
+                                )
+                            else:
+                                truncated_text = extracted_text
+
+                            # Inject document content as a user message
+                            # This appears as if the user sent the document content directly
+                            filename = params.get("filename", "document.pdf")
+                            page_count = result.get("page_count", 0)
+                            success = result.get("success", False)
+
+                            if success and truncated_text:
+                                document_message = {
+                                    "role": "user",
+                                    "content": f"[Document: {filename} - {page_count} pages]\n\n{truncated_text}"
+                                }
+                                messages.append(document_message)
+
+                                logger.debug(
+                                    "document_action_block_injected_as_user_message",
+                                    block_number=block.block_number,
+                                    filename=filename,
+                                    page_count=page_count,
+                                    text_length=len(truncated_text),
+                                    was_truncated=len(extracted_text) > max_chars
+                                )
+                            elif not success:
+                                # Document extraction failed - inject error message
+                                error_message = result.get("error", "Unknown error")
+                                document_message = {
+                                    "role": "user",
+                                    "content": f"[Document: {filename} - extraction failed: {error_message}]"
+                                }
+                                messages.append(document_message)
+
+                                logger.debug(
+                                    "document_extraction_failed_message_injected",
+                                    block_number=block.block_number,
+                                    filename=filename,
+                                    error=error_message
+                                )
+
+                    except Exception as e:
+                        # Don't break context building if document injection fails
+                        # Just log the error and continue
+                        logger.warning(
+                            "failed_to_inject_document_action_block",
+                            block_number=block.block_number if hasattr(block, 'block_number') else 'unknown',
+                            error=str(e),
+                            exc_info=True
+                        )
+
         logger.info(
             "context_built",
             qube_id=self.qube.qube_id,
@@ -1774,7 +1921,7 @@ Use **update_system_state** to:
   - Categories: preferences, traits, opinions, goals, style, interests, custom_sections
 
 Use **search_memory** to recall past conversations (not for identity questions).
-
+{tools_section}
 {model_mode_section}
 
 # Security:

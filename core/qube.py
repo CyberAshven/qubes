@@ -1058,7 +1058,8 @@ class Qube:
         self,
         message: str,
         sender_id: str = "human",
-        model: Optional[str] = None
+        model: Optional[str] = None,
+        action_blocks: Optional[list] = None
     ) -> str:
         """
         Process incoming message with AI reasoning
@@ -1067,6 +1068,7 @@ class Qube:
             message: Message content
             sender_id: Who sent the message
             model: Optional model override
+            action_blocks: Optional list of ACTION blocks to add before AI processing
 
         Returns:
             AI response
@@ -1084,6 +1086,35 @@ class Qube:
         if not self.current_session:
             self.start_session()
 
+        # Check for duplicate message in current session (within last 5 minutes)
+        # This prevents re-processing if user refreshes page and re-sends
+        from datetime import datetime, timezone, timedelta
+        current_time = datetime.now(timezone.utc)
+        five_minutes_ago = int((current_time - timedelta(minutes=5)).timestamp())
+
+        for block in reversed(self.current_session.session_blocks):
+            # Only check recent MESSAGE blocks from human
+            if block.block_type != "MESSAGE":
+                continue
+            if block.timestamp < five_minutes_ago:
+                break  # Blocks are sorted by timestamp, no need to check older ones
+
+            content = block.content if isinstance(block.content, dict) else {}
+            if content.get("message_type") == "human_to_qube":
+                existing_message = content.get("message_body", "")
+                # Check if message content matches (ignoring whitespace differences)
+                if existing_message.strip() == message.strip():
+                    from utils.logging import get_logger
+                    logger = get_logger(__name__)
+                    logger.warning(
+                        "duplicate_message_detected",
+                        qube_id=self.qube_id,
+                        time_since_original=current_time.timestamp() - block.timestamp,
+                        message_preview=message[:100]
+                    )
+                    # Return empty response to prevent duplicate processing
+                    return "⚠️ This message was already sent recently. Please wait for the previous response."
+
         # Create incoming MESSAGE block
         self.add_message(
             message_type="human_to_qube",
@@ -1092,6 +1123,20 @@ class Qube:
             conversation_id="default",
             temporary=True
         )
+
+        # Add ACTION blocks AFTER user MESSAGE but BEFORE AI processing
+        # Set timestamp to 1 second after MESSAGE to ensure correct ordering
+        # (when blocks have same timestamp, they sort alphabetically by type)
+        if action_blocks:
+            from datetime import datetime, timezone
+            # Ensure ACTION blocks come after MESSAGE in timestamp order
+            action_timestamp = int(datetime.now(timezone.utc).timestamp()) + 1
+
+            for action_block in action_blocks:
+                # Set timestamp to ensure correct ordering
+                action_block.timestamp = action_timestamp
+                action_timestamp += 1  # Increment for multiple ACTION blocks
+                self.current_session.create_block(action_block)
 
         # Process with AI
         response = await self.reasoner.process_input(

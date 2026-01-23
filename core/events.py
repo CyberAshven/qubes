@@ -61,6 +61,9 @@ class Events(str, Enum):
     SESSION_UPDATED = "session_updated"
     MESSAGE_SENT = "message_sent"          # Qube sends (qube_to_human, qube_to_group, qube_to_qube)
     MESSAGE_RECEIVED = "message_received"  # Qube receives (human_to_qube, human_to_group, qube_to_qube_response)
+    DOCUMENT_PROCESSING_STARTED = "document_processing_started"
+    DOCUMENT_PROCESSING_PROGRESS = "document_processing_progress"
+    DOCUMENT_PROCESSING_COMPLETED = "document_processing_completed"
 
     # =========================================================================
     # CHAIN EVENTS
@@ -367,6 +370,18 @@ class ChainStateEventBus:
             session_update["last_message_at"] = event.timestamp
             cs.update_session(**session_update)
 
+        elif event.event_type == Events.DOCUMENT_PROCESSING_STARTED:
+            # No chain_state changes needed - event is for frontend progress indicator only
+            pass
+
+        elif event.event_type == Events.DOCUMENT_PROCESSING_COMPLETED:
+            # No chain_state changes needed - event is for frontend progress indicator only
+            pass
+
+        elif event.event_type == Events.DOCUMENT_PROCESSING_PROGRESS:
+            # No chain_state changes needed - event is for frontend progress indicator only
+            pass
+
         # =====================================================================
         # CHAIN HANDLERS
         # =====================================================================
@@ -541,5 +556,5 @@ class ChainStateEventBus:
         else:
             logger.warning(
                 "unhandled_event_type",
-                event=event.event_type.value
+                event_type=event.event_type.value
             )

@@ -530,8 +530,9 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
     return cleaned;
   };
 
-  // Helper function to truncate text for TTS (OpenAI has 4096 char limit)
-  const truncateForTTS = (text: string, maxLength: number = 4000): string => {
+  // Helper function to truncate text for TTS
+  // Gemini has higher limits than OpenAI, so we can increase this
+  const truncateForTTS = (text: string, maxLength: number = 20000): string => {
     // First, shorten long hexadecimal strings (BCH addresses, transaction IDs, etc.)
     // Pattern: Any hex string longer than 20 characters
     let processedText = text.replace(/\b([a-fA-F0-9]{20,})\b/g, (match) => {
@@ -553,10 +554,10 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
       return processedText;
     }
 
-    // Truncate at word boundary and add ellipsis
+    // Truncate at word boundary (silent truncation - no suffix)
     const truncated = processedText.substring(0, maxLength);
     const lastSpace = truncated.lastIndexOf(' ');
-    return truncated.substring(0, lastSpace) + '... (response truncated for audio)';
+    return truncated.substring(0, lastSpace);
   };
 
   // Helper function to detect and render images in message content

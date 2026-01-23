@@ -200,3 +200,18 @@ select[size] {
   background: rgba(20, 20, 35, 0.95);
   border-color: rgba(0, 255, 136, 0.2);
 }
+
+/* TTS Progress Animation */
+@keyframes tts-progress {
+  0% {
+    transform: translateX(-100%);
+    opacity: 0.6;
+  }
+  50% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(400%);
+    opacity: 0.6;
+  }
+}

@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { emit, emitTo, listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
-import { readFile } from '@tauri-apps/plugin-fs';
+import { readFile, writeTextFile, BaseDirectory } from '@tauri-apps/plugin-fs';
 import { GlassCard } from '../glass/GlassCard';
 import { GlassButton } from '../glass/GlassButton';
 import { Qube } from '../../types';
@@ -43,6 +43,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
   const currentTab = useQubeSelection(state => state.currentTab);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [processingStage, setProcessingStage] = useState<'document' | 'response' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [lastResponseText, setLastResponseText] = useState<string>('');
   const [pendingResponse, setPendingResponse] = useState<{ qubeName: string; content: string } | null>(null);
@@ -190,13 +191,21 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
 
         let fileData;
         if (isImage) {
+          // Use chunked conversion for better performance
+          const uint8Array = new Uint8Array(fileBytes);
+          const chunkSize = 8192; // Process 8KB at a time
+          let binaryString = '';
+
+          for (let i = 0; i < uint8Array.length; i += chunkSize) {
+            const chunk = uint8Array.slice(i, i + chunkSize);
+            binaryString += String.fromCharCode(...chunk);
+          }
+
           fileData = {
             name: fileName,
             path: filePath,
             type: 'image' as const,
-            data: `data:image/${extension};base64,${btoa(
-              new Uint8Array(fileBytes).reduce((data, byte) => data + String.fromCharCode(byte), '')
-            )}`
+            data: `data:image/${extension};base64,${btoa(binaryString)}`
           };
         } else if (isTextFile) {
           // Text files can be decoded as UTF-8
@@ -208,23 +217,39 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
           };
         } else if (isPDF) {
           // PDF files - send as base64 for backend processing
+          // Use chunked conversion for better performance with large files
+          const uint8Array = new Uint8Array(fileBytes);
+          const chunkSize = 8192; // Process 8KB at a time
+          let binaryString = '';
+
+          for (let i = 0; i < uint8Array.length; i += chunkSize) {
+            const chunk = uint8Array.slice(i, i + chunkSize);
+            binaryString += String.fromCharCode(...chunk);
+          }
+
           fileData = {
             name: fileName,
             path: filePath,
             type: 'pdf' as const,
-            data: btoa(
-              new Uint8Array(fileBytes).reduce((data, byte) => data + String.fromCharCode(byte), '')
-            )
+            data: btoa(binaryString)
           };
         } else {
           // Other binary files (not supported)
+          // Use chunked conversion for better performance
+          const uint8Array = new Uint8Array(fileBytes);
+          const chunkSize = 8192; // Process 8KB at a time
+          let binaryString = '';
+
+          for (let i = 0; i < uint8Array.length; i += chunkSize) {
+            const chunk = uint8Array.slice(i, i + chunkSize);
+            binaryString += String.fromCharCode(...chunk);
+          }
+
           fileData = {
             name: fileName,
             path: filePath,
             type: 'binary' as const,
-            data: btoa(
-              new Uint8Array(fileBytes).reduce((data, byte) => data + String.fromCharCode(byte), '')
-            )
+            data: btoa(binaryString)
           };
         }
 
@@ -264,8 +289,9 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
     return cleaned;
   };
 
-  // Helper function to truncate text for TTS (OpenAI has 4096 char limit)
-  const truncateForTTS = (text: string, maxLength: number = 4000): string => {
+  // Helper function to truncate text for TTS
+  // Gemini has higher limits than OpenAI, so we can increase this
+  const truncateForTTS = (text: string, maxLength: number = 20000): string => {
     // First, shorten long hexadecimal strings (BCH addresses, transaction IDs, etc.)
     // Pattern: Any hex string longer than 20 characters
     let processedText = text.replace(/\b([a-fA-F0-9]{20,})\b/g, (match) => {
@@ -287,10 +313,10 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
       return processedText;
     }
 
-    // Truncate at word boundary and add ellipsis
+    // Truncate at word boundary (silent truncation - no suffix)
     const truncated = processedText.substring(0, maxLength);
     const lastSpace = truncated.lastIndexOf(' ');
-    return truncated.substring(0, lastSpace) + '... (response truncated for audio)';
+    return truncated.substring(0, lastSpace);
   };
 
   // Helper function to detect and render images in message content
@@ -736,6 +762,17 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
     }
   }, [currentTab, selectedQubes.length]);
 
+  /**
+   * Helper function to prepare messages for IPC.
+   * NOTE: Tauri permissions for temp file writing aren't working properly.
+   * For now, send directly and let Windows truncate. This will cause issues with PDFs.
+   * TODO: Fix temp file permissions or implement alternative solution.
+   */
+  const prepareMessageForIPC = async (message: string): Promise<string> => {
+    console.log('[IPC] Sending message directly (length:', message.length, 'chars). WARNING: Will be truncated if >8KB');
+    return message;
+  };
+
   const handleSend = async () => {
     // Guard against double-sending (e.g., double-click, Enter key repeat)
     if (isLoading) return;
@@ -783,21 +820,27 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
     setInputValue('');
     clearUploadedFiles(selectedQubes[0].qube_id);
     setIsLoading(true);
+    setProcessingStage('response'); // Default to response processing
     setError(null);
 
     try {
       // Process files
       if (filesToProcess.length > 0) {
+        console.log('[PDF Debug] Files to process:', filesToProcess.map(f => ({name: f.name, type: f.type})));
+
         // Separate images, text files, PDFs, and other binaries
         const images = filesToProcess.filter(f => f.type === 'image');
         const textFiles = filesToProcess.filter(f => f.type === 'text');
         const pdfFiles = filesToProcess.filter(f => f.type === 'pdf');
         const binaryFiles = filesToProcess.filter(f => f.type === 'binary');
 
+        console.log('[PDF Debug] Filtered - images:', images.length, 'text:', textFiles.length, 'pdfs:', pdfFiles.length, 'binary:', binaryFiles.length);
+
         // Check for unsupported binary files (PDFs are now supported)
         if (binaryFiles.length > 0) {
           setError(`Sorry, I cannot read binary files. Please upload images (.png, .jpg), documents (.pdf, .txt, .md, .json) instead.`);
           setIsLoading(false);
+      setProcessingStage(null);
           return;
         }
 
@@ -809,7 +852,17 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
 
         // Add PDF files to message (backend will handle extraction)
         for (const file of pdfFiles) {
-          fullMessage += `\n\n[Attached PDF: ${file.name}]\n<pdf_base64>${file.data}</pdf_base64>`;
+          console.log('[PDF Debug] Adding PDF to message:', file.name, 'data length:', file.data?.length || 0);
+          fullMessage += `\n\n[Attached PDF: ${file.name}]\n<pdf_base64 filename="${file.name}">${file.data}</pdf_base64>`;
+        }
+
+        console.log('[PDF Debug] fullMessage length after PDFs:', fullMessage.length, 'has pdf tag:', fullMessage.includes('<pdf_base64'));
+
+        // Set processing stage based on whether documents need processing
+        if (pdfFiles.length > 0 || images.length > 0) {
+          setProcessingStage('document');
+        } else {
+          setProcessingStage('response');
         }
 
         // Process images (analyze each one separately for now)
@@ -840,14 +893,24 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
           }
         }
 
-        // If we have text files after images, send them as a follow-up
-        if (textFiles.length > 0) {
+        // If we have text files or PDFs after images, send them as a follow-up
+        if (textFiles.length > 0 || pdfFiles.length > 0) {
+          console.log('[PDF Debug] About to send message, fullMessage length:', fullMessage.length, 'has pdf tag:', fullMessage.includes('<pdf_base64'));
+
+          // Prepare message for IPC (writes to temp file if >100KB)
+          const preparedMessage = await prepareMessageForIPC(fullMessage);
+
+          console.log('[PDF Debug] Prepared message length:', preparedMessage.length, 'has pdf tag:', preparedMessage.includes('<pdf_base64'));
+          console.log('[IPC] Calling send_message with preparedMessage:', preparedMessage.substring(0, 100));
+
           const textResponse = await invoke<ChatResponse>('send_message', {
             userId: userId,
             qubeId: selectedQubes[0].qube_id,
-            message: fullMessage,
+            message: preparedMessage,
             password: password
           });
+
+          console.log('[IPC] send_message returned:', textResponse.success ? 'SUCCESS' : 'FAILED');
 
           if (textResponse.success && textResponse.response) {
             // Combine image responses with text response
@@ -876,7 +939,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
             throw new Error(textResponse.error || 'Failed to get response from qube');
           }
         } else if (allResponses) {
-          // Only images, no text files
+          // Only images, no text files or PDFs
           setPendingResponse({
             qubeName: selectedQubes[0].name,
             content: allResponses,
@@ -885,10 +948,13 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
         }
       } else {
         // No files - send regular message
+        // Prepare message for IPC (writes to temp file if >100KB)
+        const preparedMessage = await prepareMessageForIPC(messageToSend);
+
         const response = await invoke<ChatResponse>('send_message', {
           userId: userId,
           qubeId: selectedQubes[0].qube_id,
-          message: messageToSend,
+          message: preparedMessage,
           password: password
         });
 
@@ -913,12 +979,15 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
         } else {
           setError(response.error || 'Failed to get response from qube');
           setIsLoading(false);
+      setProcessingStage(null);
         }
       }
     } catch (err) {
-      console.error('Failed to process message:', err);
-      setError(String(err));
+      console.error('[ERROR] Failed to process message:', err);
+      console.error('[ERROR] Error type:', typeof err, 'Error object:', err);
+      setError(`Backend failed. Please try again or check the logs for details.`);
       setIsLoading(false);
+      setProcessingStage(null);
     }
   };
 
@@ -1033,6 +1102,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
           // Clear pending response and stop loading
           setPendingResponse(null);
           setIsLoading(false);
+      setProcessingStage(null);
           processingResponseRef.current = null;
         } catch (err) {
           console.error('TTS error:', err);
@@ -1043,6 +1113,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
           addMessage(currentQube.qube_id, qubeResponse);
           setPendingResponse(null);
           setIsLoading(false);
+      setProcessingStage(null);
           processingResponseRef.current = null;
         }
       } else {
@@ -1050,6 +1121,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
         addMessage(currentQube.qube_id, qubeResponse);
         setPendingResponse(null);
         setIsLoading(false);
+      setProcessingStage(null);
         processingResponseRef.current = null;
       }
     };
@@ -1089,10 +1161,24 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
 
           const now = Date.now();
 
+          // Check for process_document ACTION blocks to switch from 'document' to 'response' stage
+          const hasProcessDocumentAction = result.session_blocks.some((b: any) =>
+            b.block_type === 'ACTION' &&
+            b.content?.action_type === 'process_document' &&
+            b.timestamp > lastMessageTimestamp
+          );
+
+          if (hasProcessDocumentAction && processingStage === 'document') {
+            console.log('[Document Processing] Detected process_document ACTION, switching to response processing');
+            setProcessingStage('response');
+          }
+
           // Get all ACTION blocks from current turn (after last message)
+          // Exclude "process_document" - it's an internal action, not a tool call
           const currentTurnActions = result.session_blocks.filter((b: any) =>
             b.block_type === 'ACTION' &&
             b.content?.action_type &&
+            b.content?.action_type !== 'process_document' &&
             b.timestamp > lastMessageTimestamp
           );
 
@@ -1329,30 +1415,45 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
                     />
 
                     {/* Status text */}
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium" style={{
-                        color: selectedQubes[0].favorite_color
+                    <div className="flex flex-col gap-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-medium" style={{
+                          color: selectedQubes[0].favorite_color
+                        }}>
+                          {selectedQubes[0].name}
+                        </span>
+                        <span className="text-xs text-text-secondary">
+                          generating audio...
+                        </span>
+                        <div className="flex gap-1">
+                          <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{
+                            backgroundColor: selectedQubes[0].favorite_color,
+                            animationDuration: '1s'
+                          }}></div>
+                          <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{
+                            backgroundColor: selectedQubes[0].favorite_color,
+                            animationDuration: '1s',
+                            animationDelay: '0.2s'
+                          }}></div>
+                          <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{
+                            backgroundColor: selectedQubes[0].favorite_color,
+                            animationDuration: '1s',
+                            animationDelay: '0.4s'
+                          }}></div>
+                        </div>
+                      </div>
+
+                      {/* Indeterminate progress bar for TTS */}
+                      <div className="w-48 h-1.5 rounded-full overflow-hidden" style={{
+                        backgroundColor: 'var(--bg-secondary)'
                       }}>
-                        {selectedQubes[0].name}
-                      </span>
-                      <span className="text-xs text-text-secondary">
-                        generating audio...
-                      </span>
-                      <div className="flex gap-1">
-                        <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{
-                          backgroundColor: selectedQubes[0].favorite_color,
-                          animationDuration: '1s'
-                        }}></div>
-                        <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{
-                          backgroundColor: selectedQubes[0].favorite_color,
-                          animationDuration: '1s',
-                          animationDelay: '0.2s'
-                        }}></div>
-                        <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{
-                          backgroundColor: selectedQubes[0].favorite_color,
-                          animationDuration: '1s',
-                          animationDelay: '0.4s'
-                        }}></div>
+                        <div
+                          className="h-full w-1/3 animate-pulse"
+                          style={{
+                            backgroundColor: selectedQubes[0].favorite_color,
+                            animation: 'tts-progress 1.5s ease-in-out infinite'
+                          }}
+                        />
                       </div>
                     </div>
                   </div>
@@ -1492,31 +1593,48 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
                     />
 
                     {/* Status text */}
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium" style={{
-                        color: selectedQubes[0].favorite_color
-                      }}>
-                        {selectedQubes[0].name}
-                      </span>
-                      <span className="text-xs text-text-secondary">
-                        processing response...
-                      </span>
-                      <div className="flex gap-1">
-                        <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{
-                          backgroundColor: selectedQubes[0].favorite_color,
-                          animationDuration: '1s'
-                        }}></div>
-                        <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{
-                          backgroundColor: selectedQubes[0].favorite_color,
-                          animationDuration: '1s',
-                          animationDelay: '0.2s'
-                        }}></div>
-                        <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{
-                          backgroundColor: selectedQubes[0].favorite_color,
-                          animationDuration: '1s',
-                          animationDelay: '0.4s'
-                        }}></div>
+                    <div className="flex flex-col gap-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-medium" style={{
+                          color: selectedQubes[0].favorite_color
+                        }}>
+                          {selectedQubes[0].name}
+                        </span>
+                        <span className="text-xs text-text-secondary">
+                          {processingStage === 'document' ? 'processing document...' : 'processing response...'}
+                        </span>
+                        <div className="flex gap-1">
+                          <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{
+                            backgroundColor: selectedQubes[0].favorite_color,
+                            animationDuration: '1s'
+                          }}></div>
+                          <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{
+                            backgroundColor: selectedQubes[0].favorite_color,
+                            animationDuration: '1s',
+                            animationDelay: '0.2s'
+                          }}></div>
+                          <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{
+                            backgroundColor: selectedQubes[0].favorite_color,
+                            animationDuration: '1s',
+                            animationDelay: '0.4s'
+                          }}></div>
+                        </div>
                       </div>
+
+                      {/* Indeterminate progress bar for document processing */}
+                      {processingStage === 'document' && (
+                        <div className="w-48 h-1.5 rounded-full overflow-hidden" style={{
+                          backgroundColor: 'var(--bg-secondary)'
+                        }}>
+                          <div
+                            className="h-full w-1/3"
+                            style={{
+                              backgroundColor: selectedQubes[0].favorite_color,
+                              animation: 'tts-progress 1.5s ease-in-out infinite'
+                            }}
+                          />
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>

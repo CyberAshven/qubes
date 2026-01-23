@@ -221,51 +221,107 @@ class GUIBridge:
 
         return new_path
 
-    def _process_pdf_in_message(self, message: str) -> str:
+    async def _process_documents_to_action_blocks(
+        self,
+        qube_id: str,
+        message: str,
+        qube
+    ) -> tuple[str, list]:
         """
-        Extract text from PDF base64 data embedded in message.
+        Extract PDFs from message, create ACTION blocks, return cleaned message.
 
-        Looks for <pdf_base64>...</pdf_base64> tags and replaces them
-        with extracted text.
+        This replaces _process_pdf_in_message() with a new architecture:
+        - PDFs are processed into ACTION blocks (not injected into message)
+        - Message is cleaned to show human-readable references
+        - ACTION blocks are added to session before sending to AI
+        - AI receives document content as tool results (not in message body)
+
+        Pattern: <pdf_base64 filename="report.pdf">base64data</pdf_base64>
 
         Args:
-            message: Message potentially containing PDF data
+            qube_id: ID of the qube processing the message
+            message: Raw message with embedded PDF tags
+            qube: Qube instance
 
         Returns:
-            Message with PDFs replaced by extracted text
+            Tuple of (cleaned_message, list_of_action_blocks)
         """
         import re
-        from utils.pdf_utils import extract_text_from_pdf_base64
+        from core.document_processor import process_pdf_to_action_block
 
-        # Pattern to find PDF base64 data
-        pdf_pattern = r'<pdf_base64>(.*?)</pdf_base64>'
+        # Pattern to find PDF base64 data with optional filename attribute
+        # Supports both: <pdf_base64>...</pdf_base64> and <pdf_base64 filename="...">...</pdf_base64>
+        pdf_pattern = r'<pdf_base64(?:\s+filename=["\']([^"\']+)["\'])?>([^<]+)</pdf_base64>'
 
-        def extract_and_replace(match):
-            """Extract text from PDF and format for message."""
-            pdf_base64 = match.group(1)
+        action_blocks = []
+
+        # Find all PDF matches
+        matches = list(re.finditer(pdf_pattern, message, flags=re.DOTALL))
+
+        # Process each PDF sequentially (needed for async)
+        replacements = {}  # Store {original_tag: reference_string}
+
+        for match in matches:
+            filename = match.group(1)  # May be None if no filename attribute
+            pdf_base64 = match.group(2).strip()
+            original_tag = match.group(0)
+
+            # Use generic filename if not provided
+            if not filename:
+                filename = f"document_{len(action_blocks) + 1}.pdf"
 
             try:
-                logger.debug(f"Extracting PDF text, base64 length: {len(pdf_base64)}")
+                logger.debug(
+                    "processing_pdf_to_action_block",
+                    filename=filename,
+                    base64_length=len(pdf_base64),
+                    qube_id=qube_id
+                )
 
-                # Extract text from PDF
-                pdf_text = extract_text_from_pdf_base64(pdf_base64)
+                # Create ACTION block with document content (async)
+                action_block, reference_string = await process_pdf_to_action_block(
+                    qube=qube,
+                    pdf_base64=pdf_base64,
+                    filename=filename
+                )
 
-                if pdf_text:
-                    logger.info(f"PDF text extracted successfully, length: {len(pdf_text)}")
-                    # Format extracted text
-                    return f"\n\n[PDF Content Extracted]\n{pdf_text}\n[End PDF Content]\n"
-                else:
-                    logger.warning("PDF extraction returned None - file may be corrupted or image-based")
-                    return "\n\n[PDF extraction failed - file may be corrupted or image-based]\n"
+                # Add to list (will be added to session later)
+                action_blocks.append(action_block)
+
+                logger.info(
+                    "action_block_created_for_document",
+                    filename=filename,
+                    status=action_block.content.get("status") if action_block.content else None,
+                    qube_id=qube_id
+                )
+
+                # Store replacement
+                replacements[original_tag] = reference_string
 
             except Exception as e:
-                logger.error(f"Failed to extract PDF text: {e}", exc_info=True)
-                return f"\n\n[PDF extraction error: {str(e)}]\n"
+                logger.error(
+                    "failed_to_create_document_action_block",
+                    filename=filename,
+                    error=str(e),
+                    exc_info=True
+                )
+                # Store error reference if block creation fails
+                replacements[original_tag] = f"\n\n[Document processing error: {str(e)}]\n"
 
-        # Replace all PDF base64 blocks with extracted text
-        processed = re.sub(pdf_pattern, extract_and_replace, message, flags=re.DOTALL)
+        # Apply all replacements to message
+        cleaned_message = message
+        for original_tag, reference_string in replacements.items():
+            cleaned_message = cleaned_message.replace(original_tag, reference_string)
 
-        return processed
+        logger.info(
+            "documents_processed_to_action_blocks",
+            original_message_length=len(message),
+            cleaned_message_length=len(cleaned_message),
+            action_blocks_created=len(action_blocks),
+            qube_id=qube_id
+        )
+
+        return cleaned_message, action_blocks
 
     async def authenticate(self, user_id: str, password: str) -> Dict[str, Any]:
         """Authenticate user with username and password"""
@@ -821,21 +877,65 @@ class GUIBridge:
 
             qube = self.orchestrator.qubes[qube_id]
 
-            # Process PDF files in message (extract text from base64)
-            processed_message = self._process_pdf_in_message(message)
+            # Process PDFs to ACTION blocks, get cleaned message
+            logger.info(
+                "about_to_process_documents",
+                qube_id=qube_id,
+                message_length=len(message),
+                has_pdf_tag=("<pdf_base64" in message)
+            )
 
-            # Log if PDF was processed and message length
-            if processed_message != message:
-                logger.info(
-                    "pdf_processed_in_message",
-                    original_length=len(message),
-                    processed_length=len(processed_message),
-                    qube_id=qube_id
-                )
+            # Emit event for document processing start
+            has_documents = "<pdf_base64" in message or "<image_base64" in message
+            if has_documents:
+                from core.events import Events
+                qube.events.emit(Events.DOCUMENT_PROCESSING_STARTED, {
+                    "qube_id": qube_id,
+                    "has_pdf": "<pdf_base64" in message,
+                    "has_image": "<image_base64" in message
+                })
+
+            processed_message, doc_action_blocks = await self._process_documents_to_action_blocks(
+                qube_id=qube_id,
+                message=message,
+                qube=qube
+            )
+
+            logger.info(
+                "documents_processed",
+                qube_id=qube_id,
+                action_blocks_created=len(doc_action_blocks),
+                processed_message_length=len(processed_message)
+            )
+
+            # Emit event for document processing completion
+            if has_documents:
+                qube.events.emit(Events.DOCUMENT_PROCESSING_COMPLETED, {
+                    "qube_id": qube_id,
+                    "action_blocks_created": len(doc_action_blocks)
+                })
 
             # Send message and get response (use actual user_id instead of default "human")
-            logger.debug(f"Sending message to qube {qube_id}, length: {len(processed_message)}")
-            response = await qube.process_message(processed_message, sender_id=self.orchestrator.user_id)
+            # Pass ACTION blocks to process_message so they're added AFTER user MESSAGE block
+            # This ensures correct chronological order: user MESSAGE → ACTION → AI MESSAGE
+            logger.info(
+                "about_to_send_to_ai",
+                qube_id=qube_id,
+                message_length=len(processed_message),
+                has_action_blocks=len(doc_action_blocks) > 0
+            )
+
+            response = await qube.process_message(
+                processed_message,
+                sender_id=self.orchestrator.user_id,
+                action_blocks=doc_action_blocks if doc_action_blocks else None
+            )
+
+            logger.info(
+                "ai_response_received",
+                qube_id=qube_id,
+                response_length=len(response) if response else 0
+            )
             logger.debug(f"Got response from qube {qube_id}, length: {len(response) if response else 0}")
 
             # Record relationship interaction (conversation with user)
@@ -5844,7 +5944,7 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
             from utils.skills_manager import SkillsManager
             for participant_id, participant_qube_obj in qube_participants:
                 try:
-                    skills_manager = SkillsManager(participant_qube_obj.data_dir)
+                    skills_manager = SkillsManager(participant_qube_obj.chain_state)
                     xp_result = skills_manager.add_xp(
                         skill_id="chess",
                         xp_amount=game_summary["xp_earned"],
@@ -8141,12 +8241,42 @@ async def main():
             message_arg = sys.argv[4]  # Validated later in message processing
             password = get_secret("password", argv_index=5)
 
-            # Check if message is a file reference
+            # Check if message is a file reference (for large messages that exceed command-line limits)
             if message_arg.startswith("@file:"):
                 # Read message from file
-                file_path = message_arg[6:]  # Remove @file: prefix
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    message = f.read()
+                file_ref = message_arg[6:]  # Remove @file: prefix
+
+                # Handle temp: prefix for temp directory files
+                if file_ref.startswith("temp:"):
+                    import tempfile
+                    filename = file_ref[5:]  # Remove temp: prefix
+                    file_path = os.path.join(tempfile.gettempdir(), filename)
+                    logger.info(f"Resolving temp file: {filename} -> {file_path}")
+                else:
+                    file_path = file_ref
+
+                logger.info(f"Reading message from file: {file_path}")
+
+                # Check file size first
+                import os
+                if os.path.exists(file_path):
+                    file_size = os.path.getsize(file_path)
+                    logger.info(f"Message file size: {file_size} bytes ({file_size / 1024:.2f} KB)")
+
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        message = f.read()
+
+                    logger.info(f"Message read successfully, length: {len(message)} chars")
+
+                    # Clean up temp file
+                    try:
+                        os.remove(file_path)
+                        logger.debug(f"Temp file deleted: {file_path}")
+                    except Exception as e:
+                        logger.warning(f"Failed to delete temp file: {e}")
+                else:
+                    logger.error(f"Temp file not found: {file_path}")
+                    message = ""  # Empty message on error
             else:
                 message = message_arg
 
