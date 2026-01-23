@@ -282,6 +282,37 @@ class ToolRegistry:
                 params = content.get("parameters", {})
                 url = params.get("url", "")
                 skill_id = analyze_research_topic("", url)
+            elif action_type == "process_document":
+                # Document processing always goes to knowledge_domains (research)
+                skill_id = "knowledge_domains"
+
+                # Custom XP calculation based on file size and page count
+                params = content.get("parameters", {})
+                result = content.get("result", {})
+                status = content.get("status", "unknown")
+
+                file_size_bytes = params.get("file_size_bytes", 0)
+                page_count = result.get("page_count", 0)
+                success = result.get("success", False)
+
+                # Calculate XP based on document complexity
+                if status == "completed" and success:
+                    # Use custom formula (1-10 XP)
+                    xp_amount = self._calculate_document_xp(file_size_bytes, page_count)
+
+                    logger.info(
+                        "document_xp_calculated",
+                        file_size_bytes=file_size_bytes,
+                        page_count=page_count,
+                        xp_amount=xp_amount
+                    )
+                elif status == "completed":
+                    # Partial extraction - award minimum XP
+                    xp_amount = 1
+                else:
+                    # Failed - no XP for failed document processing
+                    xp_amount = 0
+                    skill_id = None  # Don't award XP for failures
             elif action_type in TOOL_TO_SKILL_MAPPING:
                 skill_id = TOOL_TO_SKILL_MAPPING[action_type]
 
@@ -291,12 +322,14 @@ class ToolRegistry:
                 result = content.get("result", {})
 
                 # Determine XP amount based on success
-                if status == "completed" and isinstance(result, dict) and result.get("success", False):
-                    xp_amount = 3  # Successful use
-                elif status == "completed":
-                    xp_amount = 2  # Completed but may have issues
-                else:
-                    xp_amount = 1  # Failed or error (still attempted)
+                # (Skip this section if action_type == "process_document" - already calculated above)
+                if action_type != "process_document":
+                    if status == "completed" and isinstance(result, dict) and result.get("success", False):
+                        xp_amount = 3  # Successful use
+                    elif status == "completed":
+                        xp_amount = 2  # Completed but may have issues
+                    else:
+                        xp_amount = 1  # Failed or error (still attempted)
 
                 # Award XP immediately (writes to chain_state.skills)
                 skills_manager = SkillsManager(self.qube.chain_state)
@@ -324,6 +357,49 @@ class ToolRegistry:
                 block_number=block.block_number,
                 error=str(e)
             )
+
+    def _calculate_file_size_xp(self, file_size_bytes: int) -> int:
+        """
+        Calculate XP based on file size (1-10 XP).
+        Simple linear scaling: 1 XP per 500 KB, capped at 10.
+
+        Args:
+            file_size_bytes: File size in bytes
+
+        Returns:
+            XP amount (1-10)
+        """
+        return min(10, max(1, file_size_bytes // 500_000))
+
+    def _calculate_page_count_xp(self, page_count: int) -> int:
+        """
+        Calculate XP based on page count (2-10 XP).
+        Simple scaling: ~0.8 XP per page, capped at 10.
+
+        Args:
+            page_count: Number of pages
+
+        Returns:
+            XP amount (2-10)
+        """
+        return min(10, max(2, int(page_count * 0.8)))
+
+    def _calculate_document_xp(self, file_size_bytes: int, page_count: int) -> int:
+        """
+        Calculate XP for document processing.
+        Awards whichever gives more XP: file size or page count.
+        This rewards both large files and multi-page processing.
+
+        Args:
+            file_size_bytes: File size in bytes
+            page_count: Number of pages
+
+        Returns:
+            XP amount (1-10)
+        """
+        file_size_xp = self._calculate_file_size_xp(file_size_bytes)
+        page_count_xp = self._calculate_page_count_xp(page_count)
+        return max(file_size_xp, page_count_xp)
 
     async def execute_tool(
         self,

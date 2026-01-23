@@ -16,6 +16,28 @@ from utils.logging import get_logger
 logger = get_logger(__name__)
 
 
+def calculate_document_xp(file_size_bytes: int, page_count: int) -> int:
+    """
+    Calculate XP for document processing (1-10 XP).
+    Awards whichever gives more XP: file size or page count.
+
+    Args:
+        file_size_bytes: File size in bytes
+        page_count: Number of pages
+
+    Returns:
+        XP amount (1-10)
+    """
+    # File size XP: 1 XP per 500 KB, capped at 10
+    file_size_xp = min(10, max(1, file_size_bytes // 500_000))
+
+    # Page count XP: ~0.8 XP per page, capped at 10
+    page_count_xp = min(10, max(2, int(page_count * 0.8)))
+
+    # Return whichever gives more XP
+    return max(file_size_xp, page_count_xp)
+
+
 # Tool-to-Skill Mapping
 # Maps each tool (by action_type) to a skill_id (must match skillDefinitions.ts planet IDs)
 # Note: web_search and browse_url use intelligent detection (analyze_research_topic)
@@ -216,6 +238,14 @@ class SkillScanner:
                             url=url,
                             skill=skill_id
                         )
+                    elif action_type == "process_document":
+                        # Document processing always goes to knowledge_domains (research)
+                        skill_id = "knowledge_domains"
+                        logger.debug(
+                            f"[SKILL_SCANNER] process_document → {skill_id}",
+                            tool=action_type,
+                            skill=skill_id
+                        )
                     elif action_type in TOOL_TO_SKILL_MAPPING:
                         # Use hardcoded mapping for other tools
                         skill_id = TOOL_TO_SKILL_MAPPING[action_type]
@@ -232,7 +262,32 @@ class SkillScanner:
                     status = content.get("status", "unknown")
                     result = content.get("result", {})
 
-                    if status == "completed" and isinstance(result, dict) and result.get("success", False):
+                    # Custom XP calculation for process_document
+                    if action_type == "process_document":
+                        if status == "completed" and isinstance(result, dict) and result.get("success", False):
+                            # Use custom formula based on file size and page count
+                            params = content.get("parameters", {})
+                            file_size_bytes = params.get("file_size_bytes", 0)
+                            page_count = result.get("page_count", 0)
+
+                            xp_amount = calculate_document_xp(file_size_bytes, page_count)
+                            evidence = f"Processed document: {page_count} pages, {file_size_bytes / 1024 / 1024:.1f} MB"
+
+                            logger.info(
+                                "document_xp_calculated_during_anchor",
+                                file_size_bytes=file_size_bytes,
+                                page_count=page_count,
+                                xp_amount=xp_amount
+                            )
+                        elif status == "completed":
+                            # Partial extraction - minimum XP
+                            xp_amount = 1
+                            evidence = f"Attempted to process document (partial extraction)"
+                        else:
+                            # Failed - no XP
+                            xp_amount = 0
+                            continue  # Skip failed extractions
+                    elif status == "completed" and isinstance(result, dict) and result.get("success", False):
                         # Successful use: +3 XP
                         xp_amount = 3
                         evidence = f"Successfully used {action_type} tool"
