@@ -24,6 +24,67 @@ from monitoring.metrics import MetricsRecorder
 logger = get_logger(__name__)
 
 
+def chunk_text_for_tts(text: str, max_chars: int = 4000) -> list[str]:
+    """
+    Split text into chunks at sentence boundaries for TTS generation.
+
+    Keeps each chunk under max_chars while respecting sentence boundaries.
+
+    Args:
+        text: Text to split
+        max_chars: Maximum characters per chunk (default: 4000 for OpenAI)
+
+    Returns:
+        List of text chunks
+    """
+    if len(text) <= max_chars:
+        return [text]
+
+    chunks = []
+    current_chunk = ""
+
+    # Split on sentence boundaries (., !, ?, followed by space or newline)
+    import re
+    sentences = re.split(r'([.!?]+[\s\n]+)', text)
+
+    # Recombine punctuation with sentences
+    combined_sentences = []
+    for i in range(0, len(sentences) - 1, 2):
+        combined_sentences.append(sentences[i] + (sentences[i+1] if i+1 < len(sentences) else ''))
+
+    # Handle last sentence if no trailing punctuation
+    if len(sentences) % 2 == 1:
+        combined_sentences.append(sentences[-1])
+
+    for sentence in combined_sentences:
+        # If a single sentence is too long, split it at word boundaries
+        if len(sentence) > max_chars:
+            words = sentence.split()
+            temp_chunk = ""
+            for word in words:
+                if len(temp_chunk) + len(word) + 1 <= max_chars:
+                    temp_chunk += word + " "
+                else:
+                    if temp_chunk:
+                        chunks.append(temp_chunk.strip())
+                    temp_chunk = word + " "
+            if temp_chunk:
+                current_chunk = temp_chunk.strip()
+        # If adding sentence would exceed limit, start new chunk
+        elif len(current_chunk) + len(sentence) > max_chars:
+            if current_chunk:
+                chunks.append(current_chunk)
+            current_chunk = sentence
+        else:
+            current_chunk += sentence
+
+    # Add final chunk
+    if current_chunk:
+        chunks.append(current_chunk)
+
+    return chunks if chunks else [text]
+
+
 class AudioManager:
     """Unified audio manager with TTS/STT and fallback handling"""
 
@@ -318,18 +379,25 @@ class AudioManager:
         self,
         text: str,
         voice_model: str = "alloy",
-        provider: str = "openai"
-    ) -> Path:
+        provider: str = "openai",
+        block_number: Optional[int] = None
+    ) -> tuple[Path, int]:
         """
-        Generate speech audio and save to file in qube's audio directory
+        Generate speech audio and save to file(s) in qube's audio directory.
+
+        For long text (>4000 chars), automatically chunks at sentence boundaries
+        and generates multiple audio files.
 
         Args:
             text: Text to convert to speech
             voice_model: Voice model to use (e.g., "alloy", "echo", "fable")
             provider: TTS provider to use (default: "openai")
+            block_number: Optional session block number for file naming
 
         Returns:
-            Path to generated audio file
+            Tuple of (primary_audio_path, total_chunks)
+            - primary_audio_path: Path to first/primary audio file
+            - total_chunks: Number of chunks generated (1 for single file, >1 for chunked)
 
         Raises:
             AIError: If TTS generation fails
@@ -338,7 +406,8 @@ class AudioManager:
             "generating_speech_file",
             text_length=len(text),
             provider=provider,
-            voice=voice_model
+            voice=voice_model,
+            block_number=block_number
         )
 
         # Determine output directory (qube's audio folder)
@@ -349,23 +418,8 @@ class AudioManager:
 
         audio_dir.mkdir(parents=True, exist_ok=True)
 
-        # Use a simple filename that gets replaced each time
-        # This prevents accumulation of TTS files
         # Use correct extension based on provider (Gemini uses WAV, others use MP3)
         extension = "wav" if provider == "gemini" else "mp3"
-        filename = f"latest_response.{extension}"
-        output_path = audio_dir / filename
-
-        # Delete old files (both .mp3 and .wav) if they exist
-        # This ensures we don't have conflicting formats
-        old_mp3 = audio_dir / "latest_response.mp3"
-        old_wav = audio_dir / "latest_response.wav"
-        if old_mp3.exists():
-            old_mp3.unlink()
-            logger.debug("deleted_old_tts_file", path=str(old_mp3))
-        if old_wav.exists():
-            old_wav.unlink()
-            logger.debug("deleted_old_tts_file", path=str(old_wav))
 
         # Create voice config
         voice_config = VoiceConfig(
@@ -380,27 +434,74 @@ class AudioManager:
                 context={"provider": provider}
             )
 
-        # Generate audio file
+        # Chunk text if needed (OpenAI has 4096 char limit, keep safe at 4000)
+        text_chunks = chunk_text_for_tts(text, max_chars=4000)
+        num_chunks = len(text_chunks)
+
+        logger.info(
+            "tts_chunking",
+            total_chunks=num_chunks,
+            block_number=block_number
+        )
+
+        # Generate audio for each chunk
+        generated_paths = []
+        tts_provider = self.tts_providers[provider]
+
         try:
-            tts_provider = self.tts_providers[provider]
-            await tts_provider.synthesize_file(text, voice_config, output_path)
+            for chunk_index, chunk_text in enumerate(text_chunks):
+                # Generate filename
+                if block_number is not None:
+                    # Session-based naming: audio_block_-5.mp3 or audio_block_-5_chunk_2.mp3
+                    if num_chunks > 1:
+                        filename = f"audio_block_{block_number}_chunk_{chunk_index + 1}.{extension}"
+                    else:
+                        filename = f"audio_block_{block_number}.{extension}"
+                else:
+                    # Legacy naming for backward compatibility
+                    if num_chunks > 1:
+                        filename = f"latest_response_chunk_{chunk_index + 1}.{extension}"
+                    else:
+                        filename = f"latest_response.{extension}"
 
-            # Convert to absolute path for reliable cross-process resolution
-            absolute_output_path = output_path.resolve()
+                output_path = audio_dir / filename
 
+                # Generate audio file for this chunk
+                await tts_provider.synthesize_file(chunk_text, voice_config, output_path)
+
+                # Convert to absolute path
+                absolute_path = output_path.resolve()
+                generated_paths.append(absolute_path)
+
+                logger.info(
+                    "tts_chunk_generated",
+                    chunk_index=chunk_index + 1,
+                    total_chunks=num_chunks,
+                    output_path=str(absolute_path),
+                    file_size=absolute_path.stat().st_size
+                )
+
+            # Log summary
             logger.info(
                 "speech_file_generated",
-                output_path=str(absolute_output_path),
-                file_size=absolute_output_path.stat().st_size
+                total_files=len(generated_paths),
+                total_size=sum(p.stat().st_size for p in generated_paths),
+                block_number=block_number
             )
 
-            return absolute_output_path
+            # Return first/primary file path and total chunk count
+            # Frontend uses chunk count to know how many sequential files to play
+            return (generated_paths[0], num_chunks)
 
         except Exception as e:
             logger.error("speech_file_generation_failed", error=str(e), exc_info=True)
+            # Clean up any partially generated files
+            for path in generated_paths:
+                if path.exists():
+                    path.unlink()
             raise AIError(
                 f"Failed to generate speech file: {str(e)}",
-                context={"text_length": len(text), "provider": provider},
+                context={"text_length": len(text), "provider": provider, "num_chunks": num_chunks},
                 cause=e
             )
 
@@ -554,3 +655,44 @@ class AudioManager:
             Number of files deleted
         """
         return self.cache.clear()
+
+    def clear_session_audio(self) -> int:
+        """
+        Clear all session audio files (audio_block_*.mp3/wav and latest_response*.mp3/wav)
+
+        Called on anchor or discard to clean up temporary TTS files.
+
+        Returns:
+            Number of files deleted
+        """
+        if not self.qube_data_dir:
+            return 0
+
+        audio_dir = self.qube_data_dir / "audio"
+        if not audio_dir.exists():
+            return 0
+
+        deleted_count = 0
+
+        # Patterns to match session audio files
+        patterns = [
+            "audio_block_*.mp3",
+            "audio_block_*.wav",
+            "latest_response*.mp3",
+            "latest_response*.wav"
+        ]
+
+        import glob
+        for pattern in patterns:
+            for file_path in glob.glob(str(audio_dir / pattern)):
+                try:
+                    Path(file_path).unlink()
+                    deleted_count += 1
+                    logger.debug("deleted_session_audio", path=file_path)
+                except Exception as e:
+                    logger.warning("failed_to_delete_audio", path=file_path, error=str(e))
+
+        if deleted_count > 0:
+            logger.info("session_audio_cleared", files_deleted=deleted_count)
+
+        return deleted_count

@@ -1354,16 +1354,30 @@ class GUIBridge:
                 provider = 'openai'
                 voice_name = voice_model
 
+            # Get block number from the most recent session block (for file naming)
+            block_number = None
+            if qube.current_session and qube.current_session.session_blocks:
+                last_block = qube.current_session.session_blocks[-1]
+                block_number = last_block.block_number
+                logger.debug(
+                    "tts_using_block_number",
+                    qube_id=qube_id,
+                    block_number=block_number
+                )
+
             # Generate speech file in qube's audio directory
-            audio_path = await qube.audio_manager.generate_speech_file(
+            # Returns (audio_path, total_chunks) tuple
+            audio_path, total_chunks = await qube.audio_manager.generate_speech_file(
                 text=text,
                 voice_model=voice_name,
-                provider=provider
+                provider=provider,
+                block_number=block_number
             )
 
             return {
                 "success": True,
                 "audio_path": str(audio_path),
+                "total_chunks": total_chunks,
                 "qube_id": qube_id
             }
         except Exception as e:

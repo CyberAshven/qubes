@@ -531,8 +531,8 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
   };
 
   // Helper function to truncate text for TTS
-  // Gemini has higher limits than OpenAI, so we can increase this
-  const truncateForTTS = (text: string, maxLength: number = 20000): string => {
+  // OpenAI TTS has a hard limit of 4096 characters, so keep it safe at 4000
+  const truncateForTTS = (text: string, maxLength: number = 4000): string => {
     // First, shorten long hexadecimal strings (BCH addresses, transaction IDs, etc.)
     // Pattern: Any hex string longer than 20 characters
     let processedText = text.replace(/\b([a-fA-F0-9]{20,})\b/g, (match) => {

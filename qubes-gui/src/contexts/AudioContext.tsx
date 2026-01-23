@@ -23,6 +23,7 @@ export const useAudio = () => {
 interface SpeechResponse {
   success: boolean;
   audio_path?: string;
+  total_chunks?: number;
   qube_id?: string;
   error?: string;
 }
@@ -33,13 +34,43 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [audioElement, setAudioElement] = React.useState<HTMLAudioElement | null>(null);
   const lastPlayedTextRef = useRef<string>('');
 
+  // Multi-chunk playback state
+  const chunkQueueRef = useRef<string[]>([]);
+  const currentChunkIndexRef = useRef<number>(0);
+
   // Initialize audio element if it doesn't exist
   React.useEffect(() => {
     if (!audioRef.current) {
       audioRef.current = new Audio();
+
+      // Handle audio ended - play next chunk if available
       audioRef.current.addEventListener('ended', () => {
-        setIsPlaying(false);
+        const nextChunkIndex = currentChunkIndexRef.current + 1;
+
+        // Check if there are more chunks to play
+        if (nextChunkIndex < chunkQueueRef.current.length) {
+          currentChunkIndexRef.current = nextChunkIndex;
+          const nextChunkPath = chunkQueueRef.current[nextChunkIndex];
+
+          console.log(`Playing chunk ${nextChunkIndex + 1} of ${chunkQueueRef.current.length}`);
+
+          // Load and play next chunk
+          audioRef.current!.src = nextChunkPath;
+          audioRef.current!.play().catch(err => {
+            console.error('Failed to play next chunk:', err);
+            setIsPlaying(false);
+            // Clear chunk queue on error
+            chunkQueueRef.current = [];
+            currentChunkIndexRef.current = 0;
+          });
+        } else {
+          // No more chunks, playback complete
+          setIsPlaying(false);
+          chunkQueueRef.current = [];
+          currentChunkIndexRef.current = 0;
+        }
       });
+
       audioRef.current.addEventListener('pause', () => {
         setIsPlaying(false);
       });
@@ -56,6 +87,9 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         audioRef.current.pause();
         audioRef.current.src = '';
       }
+      // Clear chunk queue on unmount
+      chunkQueueRef.current = [];
+      currentChunkIndexRef.current = 0;
     };
   }, []);
 
@@ -74,10 +108,42 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       });
 
       if (speechResponse.success && speechResponse.audio_path) {
-        // Get audio as base64 data URL from Tauri backend
-        const base64Audio = await invoke<string>('get_audio_base64', {
-          filePath: speechResponse.audio_path
-        });
+        const totalChunks = speechResponse.total_chunks || 1;
+
+        // Build array of all chunk paths
+        const chunkPaths: string[] = [];
+
+        for (let i = 1; i <= totalChunks; i++) {
+          let chunkFilePath = speechResponse.audio_path;
+
+          // For multi-chunk audio, replace or append chunk suffix
+          if (totalChunks > 1) {
+            // Replace _chunk_1 with _chunk_N, or append _chunk_N if not present
+            if (chunkFilePath.includes('_chunk_1')) {
+              chunkFilePath = chunkFilePath.replace('_chunk_1', `_chunk_${i}`);
+            } else {
+              // Shouldn't happen with new backend, but handle legacy case
+              const extension = chunkFilePath.substring(chunkFilePath.lastIndexOf('.'));
+              const basePath = chunkFilePath.substring(0, chunkFilePath.lastIndexOf('.'));
+              chunkFilePath = `${basePath}_chunk_${i}${extension}`;
+            }
+          }
+
+          // Get base64 data for this chunk
+          const base64Audio = await invoke<string>('get_audio_base64', {
+            filePath: chunkFilePath
+          });
+
+          chunkPaths.push(base64Audio);
+        }
+
+        if (totalChunks > 1) {
+          console.log(`Multi-chunk audio: ${totalChunks} chunks`);
+        }
+
+        // Set up chunk queue for sequential playback
+        chunkQueueRef.current = chunkPaths;
+        currentChunkIndexRef.current = 0;
 
         if (audioRef.current) {
           // Reset audio element to clear any stale state (ended, error, etc.)
@@ -86,15 +152,18 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           audioRef.current.removeAttribute('src');
           audioRef.current.load(); // This resets the audio element state
 
-          // Now set the new src
-          audioRef.current.src = base64Audio;
+          // Set the first chunk
+          audioRef.current.src = chunkPaths[0];
 
           audioRef.current.addEventListener('error', (e) => {
             console.error('Audio element error:', e);
             console.error('Audio error details:', audioRef.current?.error);
+            // Clear chunk queue on error
+            chunkQueueRef.current = [];
+            currentChunkIndexRef.current = 0;
           }, { once: true });
 
-          // Start playing audio immediately
+          // Start playing first chunk immediately
           await audioRef.current.play();
 
           // Mark this text as played
@@ -106,6 +175,9 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       }
     } catch (err) {
       console.error('TTS error:', err);
+      // Clear chunk queue on error
+      chunkQueueRef.current = [];
+      currentChunkIndexRef.current = 0;
       throw err;
     }
   }, []);
@@ -176,6 +248,9 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       audioRef.current.currentTime = 0;
       setIsPlaying(false);
     }
+    // Clear chunk queue when manually stopping
+    chunkQueueRef.current = [];
+    currentChunkIndexRef.current = 0;
   }, []);
 
   const value = {

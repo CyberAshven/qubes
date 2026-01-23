@@ -854,6 +854,15 @@ class Session:
                 new_chain_length=final_chain_length
             )
 
+            # Clear session audio files (audio_block_*.mp3/wav, latest_response*.mp3/wav)
+            if self.qube.audio_manager:
+                try:
+                    deleted_count = self.qube.audio_manager.clear_session_audio()
+                    if deleted_count > 0:
+                        logger.info("session_audio_cleaned_up", files_deleted=deleted_count)
+                except Exception as e:
+                    logger.warning("session_audio_cleanup_failed", error=str(e))
+
             return converted_blocks
         finally:
             # SAFEGUARD: Always reset flag even if error occurs
@@ -955,6 +964,15 @@ class Session:
             self.cleanup()
         except Exception as e:
             logger.warning("session_cleanup_failed", error=str(e))
+
+        # Clear session audio files (audio_block_*.mp3/wav, latest_response*.mp3/wav)
+        if self.qube.audio_manager:
+            try:
+                deleted_count = self.qube.audio_manager.clear_session_audio()
+                if deleted_count > 0:
+                    logger.info("session_audio_cleaned_up_on_discard", files_deleted=deleted_count)
+            except Exception as e:
+                logger.warning("session_audio_cleanup_failed", error=str(e))
 
         logger.info("session_discarded", session_id=self.session_id, blocks=block_count)
         return block_count
