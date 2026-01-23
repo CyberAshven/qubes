@@ -561,7 +561,19 @@ class ChainState:
             # Clean up deprecated fields (always run)
             self._cleanup_deprecated_fields()
 
-            logger.debug("chain_state_loaded_from_disk", qube_id=self.state.get("qube_id"))
+            # Debug: Log qube_profile and skills state after load
+            qube_profile = self.state.get("qube_profile", {})
+            skills = self.state.get("skills", {})
+            logger.debug(
+                "chain_state_loaded_from_disk",
+                qube_id=self.state.get("qube_id"),
+                qube_profile_categories_with_data=[
+                    cat for cat in ["preferences", "traits", "opinions", "goals", "style", "interests"]
+                    if qube_profile.get(cat)
+                ],
+                skills_total_xp=skills.get("total_xp", 0),
+                skills_unlocked_count=len(skills.get("skill_xp", {}))
+            )
 
         except Exception as e:
             logger.error("chain_state_load_failed", error=str(e), exc_info=True)
@@ -877,11 +889,30 @@ class ChainState:
                                 disk_state = decrypt_block_data(file_data, self.chain_state_key)
                             else:
                                 disk_state = file_data
-                        except Exception:
+
+                            # CRITICAL DEBUG: Log what's on disk
+                            logger.info(
+                                "_save_disk_state_loaded",
+                                qube_id=disk_state.get("qube_id"),
+                                disk_qube_profile_goals=disk_state.get("qube_profile", {}).get("goals", {}),
+                                disk_skills_xp=disk_state.get("skills", {}).get("total_xp", 0),
+                                preserve_gui_fields=preserve_gui_fields
+                            )
+                        except Exception as e:
+                            logger.error("_save_failed_to_load_disk_state", error=str(e))
                             pass
 
                     # Merge: start with in-memory, preserve appropriate fields from disk
                     merged_state = self.state.copy()
+
+                    # CRITICAL DEBUG: Log in-memory state before merge
+                    logger.info(
+                        "_save_memory_state_before_merge",
+                        qube_id=self.state.get("qube_id"),
+                        memory_qube_profile_goals=self.state.get("qube_profile", {}).get("goals", {}),
+                        memory_skills_xp=self.state.get("skills", {}).get("total_xp", 0),
+                        preserve_gui_fields=preserve_gui_fields
+                    )
 
                     if preserve_gui_fields:
                         # Backend saving: preserve GUI-managed fields in settings from disk
@@ -899,7 +930,7 @@ class ChainState:
                         # GUI only manages settings, not stats/skills/relationships/runtime/etc.
                         # This prevents GUI from overwriting backend data with stale values
                         # IMPORTANT: runtime is included to preserve current_model after reset
-                        backend_sections = ["stats", "skills", "relationships", "mood", "chain", "financial", "health", "owner_info", "block_counts", "session", "runtime"]
+                        backend_sections = ["stats", "skills", "relationships", "mood", "chain", "financial", "health", "owner_info", "qube_profile", "block_counts", "session", "runtime"]
                         for section in backend_sections:
                             if section in disk_state:
                                 merged_state[section] = disk_state[section]
@@ -910,6 +941,15 @@ class ChainState:
                         for field in backend_top_level_fields:
                             if field in disk_state:
                                 merged_state[field] = disk_state[field]
+
+                    # CRITICAL DEBUG: Log state after merge
+                    logger.info(
+                        "_save_after_merge",
+                        qube_id=merged_state.get("qube_id"),
+                        merged_qube_profile_goals=merged_state.get("qube_profile", {}).get("goals", {}),
+                        merged_skills_xp=merged_state.get("skills", {}).get("total_xp", 0),
+                        preserve_gui_fields=preserve_gui_fields
+                    )
 
                     # Strip ephemeral runtime fields before saving
                     # These are in-memory only and should not be persisted to disk
@@ -926,6 +966,17 @@ class ChainState:
 
                     # Update timestamp
                     merged_state["last_updated"] = int(datetime.now(timezone.utc).timestamp())
+
+                    # CRITICAL DEBUG: Log what's about to be written
+                    qube_profile_in_merged = merged_state.get("qube_profile", {})
+                    logger.info(
+                        "_save_writing_to_disk",
+                        qube_id=merged_state.get("qube_id"),
+                        preserve_gui_fields=preserve_gui_fields,
+                        qube_profile_goals=qube_profile_in_merged.get("goals", {}),
+                        qube_profile_has_data=bool(qube_profile_in_merged.get("goals") or qube_profile_in_merged.get("preferences")),
+                        skills_total_xp=merged_state.get("skills", {}).get("total_xp", 0)
+                    )
 
                     # Create backup before writing
                     if self.state_file.exists():
@@ -2407,9 +2458,35 @@ class ChainState:
 
         # Update timestamp
         qube_profile["last_updated"] = datetime.now(timezone.utc).isoformat() + "Z"
+
+        # CRITICAL DEBUG: Log state BEFORE save
+        logger.info(
+            "qube_profile_BEFORE_SAVE",
+            category=category,
+            key=key,
+            value=str(value)[:100],
+            qube_profile_goals=qube_profile.get("goals", {}),
+            qube_id=self.qube_id
+        )
+
         self._save()
 
-        logger.info("qube_profile_field_set", category=category, key=key)
+        # CRITICAL DEBUG: Log state AFTER save
+        logger.info(
+            "qube_profile_AFTER_SAVE",
+            category=category,
+            key=key,
+            qube_profile_goals_after_save=self.state.get("qube_profile", {}).get("goals", {}),
+            qube_id=self.qube_id
+        )
+
+        # Verify the field was actually set
+        verify = qube_profile.get(category if category in self.QUBE_PROFILE_CATEGORIES else "custom_sections")
+        if verify and (key in verify if isinstance(verify, dict) else False):
+            logger.info("qube_profile_field_verified_in_memory", category=category, key=key, field_value=verify.get(key))
+        else:
+            logger.error("qube_profile_field_NOT_FOUND_after_set", category=category, key=key, qube_profile=qube_profile)
+
         return True
 
     def get_qube_profile_field(self, category: str, key: str) -> Optional[Dict[str, Any]]:
@@ -2519,6 +2596,16 @@ class ChainState:
         """
         all_fields = self.get_all_qube_profile_fields()
         qube_profile = self.state.get("qube_profile", {})
+
+        # Debug logging to track what's in qube_profile
+        logger.debug(
+            "get_qube_profile_summary_called",
+            qube_id=self.qube_id,
+            qube_profile_keys=list(qube_profile.keys()) if qube_profile else [],
+            goals_data=qube_profile.get("goals", {}),
+            total_fields_found=len(all_fields),
+            staged_session_active=self._staged_session_active
+        )
 
         public_count = len([f for f in all_fields if f.get("sensitivity") == "public"])
         private_count = len([f for f in all_fields if f.get("sensitivity") == "private"])

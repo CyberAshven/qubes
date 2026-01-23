@@ -44,6 +44,8 @@ ALWAYS_AVAILABLE_TOOLS: Set[str] = {
     "query_decision_context",  # Get decision context for an entity
     "compare_options",         # Compare multiple entities for a decision
     "check_my_capability",     # Assess own capability for a task
+    # Note: Document processing happens automatically in gui_bridge.py
+    # No tool needed - results injected as tool results in reasoner.py
 }
 
 
@@ -237,6 +239,92 @@ class ToolRegistry:
             # Default to OpenAI format
             return [tool.to_openai_format() for tool in tools_to_use]
 
+    def _award_xp_for_action_block(self, block) -> None:
+        """
+        Award XP for completed ACTION block.
+
+        Called after tool execution completes and block is updated with result.
+
+        Args:
+            block: Completed ACTION block with status and result
+        """
+        logger.info(
+            "xp_award_method_called",
+            block_number=block.block_number,
+            block_type=block.block_type
+        )
+        try:
+            from ai.skill_scanner import analyze_research_topic, TOOL_TO_SKILL_MAPPING
+            from utils.skills_manager import SkillsManager
+
+            content = block.content if isinstance(block.content, dict) else {}
+            action_type = content.get("action_type")
+
+            logger.info(
+                "xp_award_parsing_block",
+                action_type=action_type,
+                has_content=content is not None,
+                content_keys=list(content.keys()) if content else []
+            )
+
+            if not action_type:
+                return
+
+            # Determine skill_id based on action_type
+            skill_id = None
+
+            # For research tools, analyze content
+            if action_type == "web_search":
+                params = content.get("parameters", {})
+                query = params.get("query", "")
+                skill_id = analyze_research_topic(query)
+            elif action_type == "browse_url":
+                params = content.get("parameters", {})
+                url = params.get("url", "")
+                skill_id = analyze_research_topic("", url)
+            elif action_type in TOOL_TO_SKILL_MAPPING:
+                skill_id = TOOL_TO_SKILL_MAPPING[action_type]
+
+            # Award XP if we identified a skill
+            if skill_id:
+                status = content.get("status", "unknown")
+                result = content.get("result", {})
+
+                # Determine XP amount based on success
+                if status == "completed" and isinstance(result, dict) and result.get("success", False):
+                    xp_amount = 3  # Successful use
+                elif status == "completed":
+                    xp_amount = 2  # Completed but may have issues
+                else:
+                    xp_amount = 1  # Failed or error (still attempted)
+
+                # Award XP immediately (writes to chain_state.skills)
+                skills_manager = SkillsManager(self.qube.chain_state)
+
+                xp_result = skills_manager.add_xp(
+                    skill_id=skill_id,
+                    xp_amount=xp_amount,
+                    evidence_block_id=f"session_block_{block.block_number}",
+                    evidence_description=f"Used {action_type} tool during session"
+                )
+
+                logger.info(
+                    "session_xp_awarded",
+                    skill_id=skill_id,
+                    xp_amount=xp_amount,
+                    block_number=block.block_number,
+                    action_type=action_type,
+                    status=status,
+                    result_success=result.get("success") if isinstance(result, dict) else None
+                )
+        except Exception as e:
+            logger.warning(
+                "session_xp_award_failed",
+                qube_id=self.qube.qube_id,
+                block_number=block.block_number,
+                error=str(e)
+            )
+
     async def execute_tool(
         self,
         tool_name: str,
@@ -387,6 +475,17 @@ class ToolRegistry:
                     in_progress_block.content["result"] = result
                     # Re-save to disk (overwrites the in_progress file)
                     self.qube.current_session._save_session_block(in_progress_block)
+
+                    # Award XP now that we have complete status and result
+                    logger.info(
+                        "about_to_award_xp",
+                        tool_name=tool_name,
+                        block_number=in_progress_block.block_number,
+                        status=status,
+                        result_type=type(result).__name__
+                    )
+                    self._award_xp_for_action_block(in_progress_block)
+                    logger.info("xp_award_call_completed", tool_name=tool_name)
                 else:
                     # No in_progress block (shouldn't happen, but fallback)
                     latest = self.qube.memory_chain.get_latest_block()
@@ -402,7 +501,10 @@ class ToolRegistry:
                         temporary=True,
                         model_used=current_model
                     )
-                    self.qube.current_session.create_block(action_block_data)
+                    created_block = self.qube.current_session.create_block(action_block_data)
+
+                    # Award XP for this completed block
+                    self._award_xp_for_action_block(created_block)
             else:
                 # Add to permanent chain (rare case - tool called outside session)
                 from pathlib import Path

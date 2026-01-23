@@ -955,6 +955,9 @@ def register_default_tools(registry: ToolRegistry) -> None:
         handler=lambda params: get_skill_tree_handler(qube, params)
     ))
 
+    # Note: process_document is NOT a tool - it happens automatically in gui_bridge.py
+    # Document ACTION blocks are injected as tool results in ai/reasoner.py
+
     logger.info("default_tools_registered", tool_count=len(registry.tools), qube_id=qube.qube_id)
 
 
@@ -3220,6 +3223,9 @@ async def get_system_state_handler(qube, params: Dict[str, Any]) -> Dict[str, An
         if sections and "identity" in sections:
             sections = [s for s in sections if s != "identity"]
 
+        # Force reload from disk to pick up any session changes
+        qube.chain_state.reload()
+
         # Get requested sections from chain_state
         data = qube.chain_state.get_sections(sections if sections else None)
 
@@ -3508,6 +3514,31 @@ async def get_system_state_handler(qube, params: Dict[str, Any]) -> Dict[str, An
                 "earned_skills": [],
                 "last_updated": None
             }
+
+        # Qube Profile: Ensure it exists with proper structure for GUI
+        if "qube_profile" in data or (not sections or "qube_profile" in sections):
+            # Force reload from disk to pick up any session changes
+            qube.chain_state.reload()
+            profile_data = qube.chain_state.get_qube_profile_summary()
+            if profile_data:
+                data["qube_profile"] = profile_data
+                logger.debug(
+                    "qube_profile_included_in_response",
+                    total_fields=profile_data.get("total_fields", 0),
+                    categories=profile_data.get("categories_populated", 0)
+                )
+            else:
+                # Return empty structure if no profile data yet
+                data["qube_profile"] = {
+                    "total_fields": 0,
+                    "public_fields": 0,
+                    "private_fields": 0,
+                    "secret_fields": 0,
+                    "categories_populated": 0,
+                    "custom_sections": 0,
+                    "last_updated": None,
+                    "fields": []
+                }
 
         logger.info(
             "chain_state_retrieved",
