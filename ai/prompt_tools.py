@@ -254,6 +254,15 @@ IMPORTANT RULES:
                     tool_name=tool_name,
                     content_length=len(tool_content)
                 )
+            elif role == "assistant" and msg.get("tool_calls"):
+                # Strip tool_calls field from assistant messages - models without native
+                # tool support don't understand this field and it can cause empty responses
+                clean_msg = {"role": "assistant", "content": msg.get("content", "")}
+                new_messages.append(clean_msg)
+                logger.debug(
+                    "assistant_tool_calls_stripped",
+                    original_tool_count=len(msg.get("tool_calls", []))
+                )
             else:
                 new_messages.append(msg.copy())
 

@@ -103,7 +103,7 @@ class VeniceModel(AIModelInterface):
         "deepseek-v3.2",
         "grok-code-fast-1",         # Code-focused, no native tools
         "llama-3.2-3b",             # Small model, limited tool support
-        "kimi-k2-thinking",         # Uses special <|tool_call_begin|> format, not native
+        "kimi-k2-thinking",         # No native tools, but prompt-based works for tool calls
         "qwen3-4b",                 # Small model, limited tool support
         "google-gemma-3-27b-it",    # Gemma has weak native tool support
         # Legacy aliases
