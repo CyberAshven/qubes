@@ -197,16 +197,11 @@ class VeniceModel(AIModelInterface):
             if character:
                 venice_params["character_slug"] = character
 
-            # Auto-enable strip_thinking for thinking models, or if explicitly requested
-            is_thinking_model = "thinking" in self.model_name.lower()
-            if kwargs.get("strip_thinking", False) or is_thinking_model:
+            # Only strip thinking if explicitly requested
+            # Note: Auto-stripping for thinking models was causing empty responses
+            # because Venice would strip all output if the model only produced thinking
+            if kwargs.get("strip_thinking", False):
                 venice_params["strip_thinking_response"] = True
-                if is_thinking_model:
-                    logger.debug(
-                        "venice_auto_strip_thinking",
-                        model=self.model_name,
-                        reason="Thinking model detected"
-                    )
 
             if venice_params:
                 params["extra_body"] = {"venice_parameters": venice_params}
