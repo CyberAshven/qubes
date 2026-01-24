@@ -173,7 +173,7 @@ class VeniceModel(AIModelInterface):
                 # Use prompt-based tool calling for models without native support
                 prompt_tool_handler = get_prompt_tool_handler()
                 params["messages"] = prompt_tool_handler.inject_tools_into_messages(
-                    messages, tools
+                    messages, tools, model_name=self.model_name
                 )
                 using_prompt_tools = True
                 tool_names = [t.get("function", {}).get("name", "?") for t in tools]
@@ -431,7 +431,7 @@ class VeniceModel(AIModelInterface):
                 # Note: Tool call parsing happens on the complete response
                 prompt_tool_handler = get_prompt_tool_handler()
                 params["messages"] = prompt_tool_handler.inject_tools_into_messages(
-                    messages, tools
+                    messages, tools, model_name=self.model_name
                 )
                 logger.info(
                     "venice_stream_using_prompt_tools",

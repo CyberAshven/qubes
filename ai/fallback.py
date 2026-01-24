@@ -508,15 +508,17 @@ class AIFallbackChain:
                     )
                     break
 
-        # All retries exhausted
+        # All retries exhausted - include the actual error in the message
+        last_error = errors[-1]["error"] if errors else "Unknown error"
+        actual_attempts = len(errors)
         raise AIError(
-            f"Model '{model_name}' failed after {max_retries} attempts. "
-            f"In Manual mode, no fallback to other models will occur. "
-            f"Please check your API key or try a different model.",
+            f"Model '{model_name}' failed after {actual_attempts} attempt(s). "
+            f"In Manual mode, no fallback to other models will occur.\n"
+            f"Error: {last_error}",
             context={
                 "model": model_name,
                 "provider": provider,
-                "attempts": max_retries,
+                "attempts": actual_attempts,
                 "errors": errors,
                 "mode": "manual"
             }

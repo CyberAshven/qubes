@@ -110,6 +110,31 @@ Assistant: <tool_call>{{"name": "switch_model", "arguments": {{"model_name": "gp
 Assistant: Done! I've switched to GPT-4o.
 """
 
+    # Hermes 3 specific template - uses <tools> XML format as per NousResearch spec
+    # https://huggingface.co/NousResearch/Hermes-3-Llama-3.1-405B
+    HERMES_TOOL_INSTRUCTION_TEMPLATE = """You are a function calling AI model. You are provided with function signatures within <tools></tools> XML tags. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. Here are the available tools:
+<tools>
+{tool_json}
+</tools>
+
+For each function call return a json object with function name and arguments within <tool_call></tool_call> XML tags as follows:
+<tool_call>
+{{"name": "<function-name>", "arguments": <args-dict>}}
+</tool_call>
+
+IMPORTANT RULES:
+1. When you need to use a tool, output the <tool_call> tag immediately - don't just describe what you would do
+2. Wait for the tool result before continuing your response
+3. You can call multiple tools if needed by outputting multiple <tool_call> blocks
+"""
+
+    # Models that should use the Hermes-style <tools> XML format
+    HERMES_STYLE_MODELS = {
+        "hermes-3-llama-3.1-405b",
+        "hermes-3-llama-3.1-70b",
+        "hermes-3-llama-3.1-8b",
+    }
+
     def __init__(self, max_tool_calls: int = 10):
         """
         Initialize the prompt-based tool handler.
@@ -168,7 +193,8 @@ Assistant: Done! I've switched to GPT-4o.
     def inject_tools_into_messages(
         self,
         messages: List[Dict[str, str]],
-        tools: List[Dict[str, Any]]
+        tools: List[Dict[str, Any]],
+        model_name: str = None
     ) -> List[Dict[str, str]]:
         """
         Add tool instructions to the system prompt.
@@ -176,6 +202,7 @@ Assistant: Done! I've switched to GPT-4o.
         Args:
             messages: Original conversation messages
             tools: Tool definitions to inject
+            model_name: Optional model name for model-specific formatting
 
         Returns:
             Modified messages with tool instructions in system prompt
@@ -183,10 +210,24 @@ Assistant: Done! I've switched to GPT-4o.
         if not tools:
             return messages
 
-        tool_descriptions = self.format_tools_for_prompt(tools)
-        tool_instructions = self.TOOL_INSTRUCTION_TEMPLATE.format(
-            tool_descriptions=tool_descriptions
-        )
+        # Check if this model needs Hermes-style formatting
+        if model_name and model_name in self.HERMES_STYLE_MODELS:
+            # Use Hermes <tools> XML format with raw JSON tool definitions
+            tool_json = json.dumps(tools, indent=2)
+            tool_instructions = self.HERMES_TOOL_INSTRUCTION_TEMPLATE.format(
+                tool_json=tool_json
+            )
+            logger.debug(
+                "using_hermes_tool_format",
+                model=model_name,
+                tool_count=len(tools)
+            )
+        else:
+            # Use default markdown format
+            tool_descriptions = self.format_tools_for_prompt(tools)
+            tool_instructions = self.TOOL_INSTRUCTION_TEMPLATE.format(
+                tool_descriptions=tool_descriptions
+            )
 
         # Create a copy to avoid modifying original
         new_messages = []
