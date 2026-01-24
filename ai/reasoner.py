@@ -619,7 +619,7 @@ class QubeReasoner:
                         temperature=temperature
                     )
 
-                    # If fallback occurred, update runtime so UI shows actual model
+                    # If fallback occurred, log it but DON'T corrupt runtime in Manual mode
                     if fallback_occurred:
                         logger.info(
                             "fallback_chain_used_different_model",
@@ -627,11 +627,22 @@ class QubeReasoner:
                             actual_model=actual_model,
                             actual_provider=actual_provider
                         )
-                        # Update runtime with actual model
-                        self.qube.chain_state.update_runtime(
-                            current_model=actual_model,
-                            current_provider=actual_provider
-                        )
+                        # In Manual mode, DON'T update runtime - the locked model is source of truth
+                        # Updating runtime would permanently "corrupt" it with the fallback model
+                        # In other modes (revolver, autonomous), update runtime to show actual model used
+                        current_mode = self.qube.chain_state.get_model_mode()
+                        if current_mode != "manual":
+                            self.qube.chain_state.update_runtime(
+                                current_model=actual_model,
+                                current_provider=actual_provider
+                            )
+                        else:
+                            logger.info(
+                                "manual_mode_fallback_not_updating_runtime",
+                                locked_model=model_to_use,
+                                actual_fallback=actual_model,
+                                reason="Manual mode preserves locked model in runtime"
+                            )
 
                         # In revolver mode, create a revolver_switch block to record the fallback
                         # This handles fallbacks that occur on subsequent iterations (after tool use)

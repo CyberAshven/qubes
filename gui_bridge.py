@@ -8004,7 +8004,8 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
         Reset the Qube's model to its genesis (birth) model.
         Works directly with chain_state.json without loading the full qube.
 
-        Clears the model override so the Qube uses its original model.
+        Clears the model override AND resets runtime to genesis model.
+        This fixes corrupted runtime state (e.g., from fallback chain).
 
         Args:
             qube_id: The Qube's ID
@@ -8017,26 +8018,42 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
             if not qube_dir:
                 return {"success": False, "error": f"Qube {qube_id} not found"}
 
+            # Get genesis model and provider from metadata first
+            metadata_path = qube_dir / "chain" / "qube_metadata.json"
+            genesis_model = None
+            genesis_provider = None
+            if metadata_path.exists():
+                with open(metadata_path, "r") as f:
+                    metadata = json.load(f)
+                    genesis_block = metadata.get("genesis_block", {})
+                    genesis_model = genesis_block.get("ai_model")
+                    genesis_provider = genesis_block.get("ai_provider")
+
             state = self._load_chain_state(qube_dir)
 
             # Clear the model override
             state["current_model_override"] = None
 
+            # Also reset runtime to genesis model (fixes corrupted runtime from fallback)
+            if "runtime" not in state:
+                state["runtime"] = {}
+            if genesis_model:
+                state["runtime"]["current_model"] = genesis_model
+            if genesis_provider:
+                state["runtime"]["current_provider"] = genesis_provider
+
+            # Also ensure settings.model_locked_to matches genesis
+            if "settings" in state and genesis_model:
+                state["settings"]["model_locked_to"] = genesis_model
+
             self._save_chain_state(qube_dir, state)
 
-            # Get genesis model from metadata
-            metadata_path = qube_dir / "chain" / "qube_metadata.json"
-            genesis_model = None
-            if metadata_path.exists():
-                with open(metadata_path, "r") as f:
-                    metadata = json.load(f)
-                    genesis_model = metadata.get("genesis_block", {}).get("ai_model")
-
-            logger.info(f"Reset model to genesis for {qube_id}: {genesis_model}")
+            logger.info(f"Reset model to genesis for {qube_id}: {genesis_model} ({genesis_provider})")
 
             return {
                 "success": True,
-                "genesis_model": genesis_model
+                "genesis_model": genesis_model,
+                "genesis_provider": genesis_provider
             }
 
         except Exception as e:
