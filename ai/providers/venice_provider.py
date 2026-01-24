@@ -103,6 +103,7 @@ class VeniceModel(AIModelInterface):
         "deepseek-v3.2",
         "grok-code-fast-1",         # Code-focused, no native tools
         "llama-3.2-3b",             # Small model, limited tool support
+        "kimi-k2-thinking",         # Uses special <|tool_call_begin|> format, not native
         "qwen3-4b",                 # Small model, limited tool support
         "google-gemma-3-27b-it",    # Gemma has weak native tool support
         # Legacy aliases
@@ -285,6 +286,22 @@ class VeniceModel(AIModelInterface):
                         has_tool_keywords=has_tool_keywords,
                         hint="Model may have narrated action instead of calling tool"
                     )
+            else:
+                # Fallback: some models (like Kimi K2) output tool calls as text
+                # even when native tools are expected. Check for text-based tool calls.
+                fallback_handler = get_prompt_tool_handler()
+                if fallback_handler.has_tool_call(content):
+                    parsed_calls = fallback_handler.parse_tool_calls(content)
+                    if parsed_calls:
+                        tool_calls = fallback_handler.convert_to_native_format(parsed_calls)
+                        content = fallback_handler.extract_content_without_tool_calls(content)
+                        logger.info(
+                            "venice_text_tool_calls_fallback",
+                            model=self.model_name,
+                            tool_calls_found=len(tool_calls),
+                            tool_names=[tc["name"] for tc in tool_calls],
+                            hint="Model output tool calls as text instead of native format"
+                        )
 
             # Record cost
             if response.usage:

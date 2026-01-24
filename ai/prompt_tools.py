@@ -44,6 +44,10 @@ class PromptBasedToolHandler:
     # Pattern to find tool_call closing tags
     TOOL_CALL_CLOSER = re.compile(r'</tool_call>', re.IGNORECASE)
 
+    # Kimi K2 special token patterns (uses <|...|> format)
+    KIMI_TOOL_SECTION = re.compile(r'<\|tool_calls_section_begin\|>(.*?)<\|tool_calls_section_end\|>', re.DOTALL | re.IGNORECASE)
+    KIMI_TOOL_CALL = re.compile(r'<\|tool_call_begin\|>\s*functions\.(\w+):\d+\s*<\|tool_call_argument_begin\|>\s*(\{.*?\})\s*<\|tool_call_end\|>', re.DOTALL | re.IGNORECASE)
+
     # Alternative opening patterns
     ALT_OPENERS = [
         re.compile(r'```tool_call\s*\n', re.IGNORECASE),
@@ -242,8 +246,12 @@ Assistant: Done! I've switched to GPT-4o.
         """
         tool_calls = []
 
-        # First, try the robust JSON parsing approach
-        tool_calls = self._parse_with_json_decoder(content)
+        # First, try Kimi K2 special token format (<|tool_call_begin|>...)
+        tool_calls = self._parse_kimi_k2_tool_calls(content)
+
+        # Try the robust JSON parsing approach with <tool_call> tags
+        if not tool_calls:
+            tool_calls = self._parse_with_json_decoder(content)
 
         # If that found nothing, fall back to legacy regex patterns
         if not tool_calls:
@@ -252,6 +260,62 @@ Assistant: Done! I've switched to GPT-4o.
         # Last resort: try bare JSON (for models like DeepSeek R1 that output raw JSON)
         if not tool_calls:
             tool_calls = self._parse_bare_json_tool_calls(content)
+
+        return tool_calls
+
+    def _parse_kimi_k2_tool_calls(self, content: str) -> List[ParsedToolCall]:
+        """
+        Parse Kimi K2's special token format for tool calls.
+
+        Kimi K2 uses a unique format:
+        <|tool_calls_section_begin|>
+        <|tool_call_begin|> functions.browse_url:0 <|tool_call_argument_begin|> {"url": "..."} <|tool_call_end|>
+        <|tool_calls_section_end|>
+
+        Returns:
+            List of parsed tool calls
+        """
+        tool_calls = []
+
+        # Check if this looks like Kimi K2 format
+        if '<|tool_call_begin|>' not in content:
+            return tool_calls
+
+        # Find tool calls within the section (or in the whole content if section tags are missing)
+        section_match = self.KIMI_TOOL_SECTION.search(content)
+        search_content = section_match.group(1) if section_match else content
+
+        # Extract individual tool calls
+        for match in self.KIMI_TOOL_CALL.finditer(search_content):
+            function_name = match.group(1)  # e.g., "browse_url"
+            args_json = match.group(2)      # e.g., '{"url": "..."}'
+
+            try:
+                arguments = json.loads(args_json)
+                tool_calls.append(ParsedToolCall(
+                    name=function_name,
+                    arguments=arguments,
+                    raw_text=match.group(0)
+                ))
+                logger.info(
+                    "kimi_k2_tool_call_parsed",
+                    function=function_name,
+                    arguments=arguments
+                )
+            except json.JSONDecodeError as e:
+                logger.warning(
+                    "kimi_k2_tool_call_json_error",
+                    function=function_name,
+                    args_json=args_json,
+                    error=str(e)
+                )
+
+        if tool_calls:
+            logger.info(
+                "kimi_k2_tool_calls_found",
+                count=len(tool_calls),
+                tool_names=[tc.name for tc in tool_calls]
+            )
 
         return tool_calls
 
@@ -415,6 +479,9 @@ Assistant: Done! I've switched to GPT-4o.
 
     def has_tool_call(self, content: str) -> bool:
         """Check if content contains a tool call."""
+        # Check for Kimi K2 special token format
+        if '<|tool_call_begin|>' in content:
+            return True
         # Check for <tool_call> opener followed by JSON
         if self.TOOL_CALL_OPENER.search(content):
             return True
@@ -510,6 +577,15 @@ Assistant: Done! I've switched to GPT-4o.
         # Also remove any orphaned </tool_call> tags
         for match in self.TOOL_CALL_CLOSER.finditer(content):
             # Check if this closer is already covered by a range
+            is_covered = any(start <= match.start() < end for start, end in ranges_to_remove)
+            if not is_covered:
+                ranges_to_remove.append((match.start(), match.end()))
+
+        # Remove Kimi K2 special token tool calls
+        for match in self.KIMI_TOOL_SECTION.finditer(content):
+            ranges_to_remove.append((match.start(), match.end()))
+        # Also handle case where section tags are missing but tool calls are present
+        for match in self.KIMI_TOOL_CALL.finditer(content):
             is_covered = any(start <= match.start() < end for start, end in ranges_to_remove)
             if not is_covered:
                 ranges_to_remove.append((match.start(), match.end()))
