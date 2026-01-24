@@ -481,7 +481,7 @@ class AIFallbackChain:
                     "error": error_str
                 })
 
-                # Check if this is a retryable error (5xx, timeout, rate limit)
+                # Check if this is a retryable error (5xx, timeout, rate limit, empty response)
                 is_retryable = (
                     "500" in error_str or
                     "502" in error_str or
@@ -489,7 +489,8 @@ class AIFallbackChain:
                     "504" in error_str or
                     "timeout" in error_str.lower() or
                     "rate" in error_str.lower() or
-                    "overloaded" in error_str.lower()
+                    "overloaded" in error_str.lower() or
+                    "empty response" in error_str.lower()  # Kimi K2 intermittently returns empty
                 )
 
                 if attempt < max_retries - 1 and is_retryable:
