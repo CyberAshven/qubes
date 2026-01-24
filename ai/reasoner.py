@@ -424,7 +424,32 @@ class QubeReasoner:
 
             # Add user message (avoid duplicates)
             # Check if last message is already this user message
-            if not context_messages or context_messages[-1].get("content") != input_message:
+            # Note: Session blocks format messages as "speaker_name: message_body"
+            # so we need to check if the input is contained in the last message
+            should_add_message = True
+            if context_messages:
+                last_content = context_messages[-1].get("content", "")
+                last_role = context_messages[-1].get("role", "")
+
+                # Only check user messages for duplicates
+                if last_role == "user":
+                    # Check exact match first
+                    if last_content == input_message:
+                        should_add_message = False
+                    # Check if last message ends with the input (handles "name: message" format)
+                    elif last_content.endswith(input_message):
+                        should_add_message = False
+                    # Check if input ends with last message content (handles reverse case)
+                    elif input_message.endswith(last_content):
+                        should_add_message = False
+                    # Check for "name: " prefix pattern
+                    elif ": " in last_content:
+                        # Strip the "speaker_name: " prefix and compare
+                        _, _, message_part = last_content.partition(": ")
+                        if message_part == input_message:
+                            should_add_message = False
+
+            if should_add_message:
                 # In revolver mode, inject model info so the AI knows which model it's running
                 message_content = input_message
                 is_revolver_active = self.qube.chain_state.is_revolver_mode_enabled()
@@ -1386,10 +1411,41 @@ Make your move using the chess_move tool. Use one of the legal moves listed abov
                 total_tools = len(self.tool_registry.tools)
                 locked_count = total_tools - total_available
 
-                # Organize tools by category
+                # Organize tools by category with descriptions
                 available_tools_set = ALWAYS_AVAILABLE_TOOLS.union(unlocked_tool_names)
 
-                # Define tool categories (tools not in categories will go to "Other")
+                # Define tools with descriptions (tool_name: description)
+                tool_descriptions = {
+                    # Core System
+                    "get_system_state": "View your identity, memories, relationships, skills, and settings",
+                    "update_system_state": "Update owner info, your profile, or preferences",
+                    "switch_model": "Change to a different AI model mid-conversation",
+                    # Memory & Search
+                    "search_memory": "Search past conversations and stored knowledge by keyword",
+                    "get_recent_memories": "Retrieve your most recent interactions",
+                    # Web & Research
+                    "browse_url": "Fetch and read content from a specific URL",
+                    "web_search": "Search the web for current information",
+                    # Communication
+                    "send_message": "Send a message to another Qube",
+                    "send_bch": "Send Bitcoin Cash from your wallet",
+                    # Visual & Creative
+                    "generate_image": "Create images using AI image generation",
+                    "describe_my_avatar": "Get a description of your avatar's appearance",
+                    # Decision Intelligence
+                    "query_decision_context": "Get trust/relationship context for decisions about an entity",
+                    "compare_options": "Systematically compare multiple options",
+                    "check_my_capability": "Check if you can perform a specific action",
+                    # Skills
+                    "get_skill_tree": "View your skills, XP progress, and locked tools",
+                    # Games
+                    "chess_move": "Make a move in an active chess game",
+                    "chess_analyze": "Analyze a chess position or game",
+                    # Document Processing
+                    "process_document": "Extract text from PDFs, images, or documents",
+                }
+
+                # Define tool categories
                 tool_categories = {
                     "Core System": ["get_system_state", "update_system_state", "switch_model"],
                     "Memory & Search": ["search_memory", "get_recent_memories"],
@@ -1397,33 +1453,37 @@ Make your move using the chess_move tool. Use one of the legal moves listed abov
                     "Communication": ["send_message", "send_bch"],
                     "Visual & Creative": ["generate_image", "describe_my_avatar"],
                     "Decision Intelligence": ["query_decision_context", "compare_options", "check_my_capability"],
-                    "Time & Utilities": ["get_current_time"],
                     "Skills": ["get_skill_tree"],
                     "Games": ["chess_move", "chess_analyze"],
                     "Document Processing": ["process_document"]
                 }
 
-                # Build categorized display
+                # Build categorized display with descriptions
                 tools_by_category = []
                 categorized_tools = set()
 
                 for category, tool_names in tool_categories.items():
                     category_tools = [t for t in tool_names if t in available_tools_set]
                     if category_tools:
-                        tools_by_category.append(f"  **{category}**: {', '.join(category_tools)}")
+                        tools_by_category.append(f"**{category}**:")
+                        for tool in category_tools:
+                            desc = tool_descriptions.get(tool, "")
+                            tools_by_category.append(f"  • `{tool}` - {desc}")
                         categorized_tools.update(category_tools)
 
                 # Add uncategorized tools
                 other_tools = sorted(available_tools_set - categorized_tools)
                 if other_tools:
-                    tools_by_category.append(f"  **Other**: {', '.join(other_tools[:10])}")
+                    tools_by_category.append("**Other**:")
+                    for tool in other_tools[:10]:
+                        tools_by_category.append(f"  • `{tool}`")
 
                 tools_section = f"""
 # 🛠️ Your Available Tools ({total_available} unlocked, {locked_count} locked)
 
 {chr(10).join(tools_by_category)}
 
-💡 **Use `get_skill_tree` to see locked tools and how to unlock them.**"""
+💡 Use `get_skill_tree` to see locked tools and how to unlock them."""
 
             else:
                 # Fallback if tool_registry not available

@@ -505,15 +505,19 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
     return assetUrl;
   };
 
-  // Helper function to clean content by removing image URLs
+  // Helper function to clean content by removing image URLs and thinking blocks
   const cleanContentForDisplay = (content: string): string => {
+    // Remove [Thinking: ...] blocks from models like Kimi K2
+    // These can span multiple lines, so use [\s\S] to match any character including newlines
+    let cleaned = content.replace(/\[Thinking:[\s\S]*?\]/gi, '');
+
     // Regular expression to detect image URLs (including DALL-E Azure Blob Storage URLs)
     const imageUrlRegex = /(https?:\/\/[^\s\)]+?(?:\.(?:png|jpg|jpeg|gif|webp)|blob\.core\.windows\.net\/[^\s\)]+))/gi;
     // Regular expression to detect local Windows file paths to images (both absolute and relative)
     const localPathRegex = /([A-Za-z]:\\[^\s\)]+\.(?:png|jpg|jpeg|gif|webp)|data[\\\/][^\s\)]+\.(?:png|jpg|jpeg|gif|webp))/gi;
 
     // Remove complete markdown image syntax ![...](url)
-    let cleaned = content.replace(/!\[([^\]]*)\]\([^\)]+\)/gi, '');
+    cleaned = cleaned.replace(/!\[([^\]]*)\]\([^\)]+\)/gi, '');
 
     // Remove any remaining image URLs (standalone)
     cleaned = cleaned.replace(imageUrlRegex, '');
@@ -527,7 +531,7 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
     // Remove empty parentheses that might be left over
     cleaned = cleaned.replace(/\(\s*\)/g, '');
 
-    return cleaned;
+    return cleaned.trim();
   };
 
   // Helper function to truncate text for TTS

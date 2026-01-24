@@ -199,6 +199,8 @@ class GUIBridge:
 
     def __init__(self, user_id: str = "bit_faced"):
         self.orchestrator = UserOrchestrator(user_id=user_id)
+        # Store background task references to prevent garbage collection
+        self._background_tasks: set = set()
 
     def _get_connections_file(self, qube_id: str) -> Path:
         """
@@ -6406,6 +6408,9 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
             if not p2sh_address:
                 return {"success": False, "error": "Wallet address not found in genesis block"}
 
+            logger.info(f"=== GET_WALLET_INFO for {qube_id} ===")
+            logger.info(f"P2SH address from genesis: {p2sh_address}")
+
             # Get owner pubkey and derive NFT address
             owner_pubkey = wallet_info.get("owner_pubkey")
             nft_address = None
@@ -6413,31 +6418,48 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
                 from crypto.bch_script import pubkey_to_token_address
                 nft_address = pubkey_to_token_address(owner_pubkey, "mainnet")
 
-            # Check if chain_state needs sync (never synced or stale > 5 min)
+            # Get cached data immediately (non-blocking)
             import time
             financial = qube.chain_state.state.get("financial", {})
             wallet_data = financial.get("wallet", {})
             last_sync = wallet_data.get("last_sync")
 
+            # Check if cache is stale
             needs_sync = (
                 last_sync is None or
                 (time.time() - last_sync) > 300  # 5 minutes
             )
 
+            logger.info(f"Cached balance: {wallet_data.get('balance_satoshis', 'NOT SET')} sats")
+            logger.info(f"Last sync: {last_sync}, needs_sync: {needs_sync}")
+
+            # If stale, fetch balance directly (blocking but reliable)
             if needs_sync:
-                # Sync now (blocking) to ensure chain_state is current
+                import requests
                 try:
-                    await asyncio.wait_for(
-                        qube.wallet_manager.sync_balances_to_chain_state(owner_pubkey),
-                        timeout=10.0
-                    )
-                    # Reload data after sync
-                    financial = qube.chain_state.state.get("financial", {})
-                    wallet_data = financial.get("wallet", {})
-                except asyncio.TimeoutError:
-                    logger.warning("Wallet sync timed out, using cached data")
-                except Exception as sync_err:
-                    logger.warning(f"Wallet sync failed: {sync_err}")
+                    logger.info(f"Fetching fresh balance for {qube_id}...")
+                    addr_full = p2sh_address if ":" in p2sh_address else f"bitcoincash:{p2sh_address}"
+                    url = f"https://api.blockchair.com/bitcoin-cash/dashboards/address/{addr_full}"
+                    resp = requests.get(url, timeout=15)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        if "data" in data and addr_full in data["data"]:
+                            addr_data = data["data"][addr_full].get("address", {})
+                            fresh_p2sh_balance = addr_data.get("balance", 0)
+                            logger.info(f"Fresh balance for {qube_id}: {fresh_p2sh_balance} sats")
+
+                            # Update cache
+                            wallet_data["balance_satoshis"] = fresh_p2sh_balance
+                            wallet_data["balance_bch"] = fresh_p2sh_balance / 100_000_000
+                            wallet_data["last_sync"] = time.time()
+                            wallet_data["address"] = p2sh_address
+                            financial["wallet"] = wallet_data
+                            qube.chain_state.state["financial"] = financial
+                            qube.chain_state._save()
+                    elif resp.status_code == 430:
+                        logger.warning(f"Blockchair rate limited for {qube_id}")
+                except Exception as e:
+                    logger.warning(f"Balance fetch failed for {qube_id}: {e}")
 
             nft_data = financial.get("nft_balance", {})
 
@@ -6501,56 +6523,79 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
             if not p2sh_address:
                 return
 
-            # Fetch P2SH balance
-            p2sh_balance = 0
-            try:
-                addr = p2sh_address.split(":")[-1] if ":" in p2sh_address else p2sh_address
-                timeout = aiohttp.ClientTimeout(total=10)
-                async with aiohttp.ClientSession(timeout=timeout) as session:
-                    url = f"https://rest.bch.actorforth.org/v2/address/details/{addr}"
-                    async with session.get(url) as resp:
+            # Fetch both P2SH and NFT balances using Blockchair API
+            # Use None to indicate "not fetched" vs 0 which means "actually empty"
+            p2sh_balance = None
+            nft_balance = None
+
+            # Prepare addresses
+            p2sh_addr_full = p2sh_address if ":" in p2sh_address else f"bitcoincash:{p2sh_address}"
+            q_address = None
+            q_addr_full = None
+            if owner_pubkey:
+                from crypto.bch_script import pubkey_to_p2pkh_address
+                q_address = pubkey_to_p2pkh_address(owner_pubkey, "mainnet", token_aware=False)
+                q_addr_full = q_address if ":" in q_address else f"bitcoincash:{q_address}"
+
+            async def fetch_balance(session, address_full, address_type):
+                """Fetch balance for a single address from Blockchair."""
+                try:
+                    api_url = f"https://api.blockchair.com/bitcoin-cash/dashboards/address/{address_full}"
+                    logger.info(f"Fetching {address_type} balance from Blockchair: {address_full}")
+                    async with session.get(api_url) as resp:
                         if resp.status == 200:
                             data = await resp.json()
-                            balance = data.get("balanceSat") or data.get("balance")
-                            if balance is not None:
-                                p2sh_balance = int(balance)
-            except Exception as e:
-                logger.debug(f"P2SH balance sync failed: {e}")
-
-            # Fetch NFT/BCH balance (q address)
-            nft_balance = 0
-            if owner_pubkey:
-                try:
-                    from crypto.bch_script import pubkey_to_p2pkh_address
-                    q_address = pubkey_to_p2pkh_address(owner_pubkey, "mainnet", token_aware=False)
-
-                    timeout = aiohttp.ClientTimeout(total=10)
-                    async with aiohttp.ClientSession(timeout=timeout) as session:
-                        url = f"https://api.blockchair.com/bitcoin-cash/dashboards/address/{q_address}"
-                        async with session.get(url) as resp:
-                            if resp.status == 200:
-                                data = await resp.json()
-                                if "data" in data and q_address in data["data"]:
-                                    nft_balance = data["data"][q_address]["address"]["balance"]
+                            if "data" in data and address_full in data["data"]:
+                                addr_data = data["data"][address_full].get("address", {})
+                                balance = addr_data.get("balance", 0)
+                                logger.info(f"Blockchair {address_type} balance: {balance} sats for {address_full}")
+                                return balance
+                        elif resp.status == 430:
+                            logger.warning(f"Blockchair rate limited for {address_type}: {address_full}")
+                        else:
+                            logger.warning(f"Blockchair returned status {resp.status} for {address_type}: {address_full}")
                 except Exception as e:
-                    logger.debug(f"NFT balance sync failed: {e}")
+                    logger.error(f"Blockchair API failed for {address_type}: {e}")
+                return None
 
-            # Update chain_state
+            try:
+                timeout = aiohttp.ClientTimeout(total=15)
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    # Fetch both balances concurrently
+                    tasks = [fetch_balance(session, p2sh_addr_full, "P2SH")]
+                    if q_addr_full:
+                        tasks.append(fetch_balance(session, q_addr_full, "NFT"))
+
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+                    # Parse results
+                    if not isinstance(results[0], Exception):
+                        p2sh_balance = results[0]
+                    if len(results) > 1 and not isinstance(results[1], Exception):
+                        nft_balance = results[1]
+
+            except Exception as e:
+                logger.warning(f"Balance sync failed: {e}")
+
+            # Update chain_state only if we got valid data
+            # Don't overwrite cached values with None (API failure)
             import time
             financial = qube.chain_state.state.setdefault("financial", {})
 
-            # P2SH wallet balance
-            wallet_data = financial.setdefault("wallet", {})
-            wallet_data["balance_satoshis"] = p2sh_balance
-            wallet_data["balance_bch"] = p2sh_balance / 100_000_000
-            wallet_data["last_sync"] = time.time()
-            wallet_data["address"] = p2sh_address
+            # P2SH wallet balance - only update if we got a response
+            if p2sh_balance is not None:
+                wallet_data = financial.setdefault("wallet", {})
+                wallet_data["balance_satoshis"] = p2sh_balance
+                wallet_data["balance_bch"] = p2sh_balance / 100_000_000
+                wallet_data["last_sync"] = time.time()
+                wallet_data["address"] = p2sh_address
 
-            # NFT/BCH balance
-            nft_data = financial.setdefault("nft_balance", {})
-            nft_data["balance_satoshis"] = nft_balance
-            nft_data["balance_bch"] = nft_balance / 100_000_000
-            nft_data["last_sync"] = time.time()
+            # NFT/BCH balance - only update if we got a response
+            if nft_balance is not None:
+                nft_data = financial.setdefault("nft_balance", {})
+                nft_data["balance_satoshis"] = nft_balance
+                nft_data["balance_bch"] = nft_balance / 100_000_000
+                nft_data["last_sync"] = time.time()
 
             qube.chain_state._save()
             logger.debug("wallet_balances_synced", p2sh=p2sh_balance, nft=nft_balance)
@@ -8520,6 +8565,24 @@ async def main():
                                 logger.warning("delete_block_failed", file=str(block_file), error=str(e))
                                 break
 
+                # Clear session audio files (audio_block_*.mp3/wav, latest_response*.mp3/wav)
+                audio_dir = qube_path / "audio"
+                if audio_dir.exists():
+                    import glob
+                    audio_patterns = [
+                        "audio_block_*.mp3",
+                        "audio_block_*.wav",
+                        "latest_response*.mp3",
+                        "latest_response*.wav"
+                    ]
+                    for pattern in audio_patterns:
+                        for audio_file in glob.glob(str(audio_dir / pattern)):
+                            try:
+                                Path(audio_file).unlink()
+                                logger.debug("deleted_session_audio", path=audio_file)
+                            except Exception as e:
+                                logger.warning("failed_to_delete_audio", path=audio_file, error=str(e))
+
                 # Update chain_state to clear session info using ChainState class
                 try:
                     encryption_key = user_bridge._get_qube_encryption_key(qube_path)
@@ -9603,12 +9666,14 @@ async def main():
                 prefs_manager = UserPreferencesManager(data_dir)
 
                 # Set Google TTS path (empty string = clear the path)
-                if path.strip() == "" or path.lower() == "none":
+                # Strip surrounding quotes if present (common copy-paste issue)
+                clean_path = path.strip().strip('"').strip("'")
+                if clean_path == "" or clean_path.lower() == "none":
                     prefs_manager.update_google_tts_path(None)
                     print(json.dumps({"success": True, "path": None}))
                 else:
-                    prefs_manager.update_google_tts_path(path)
-                    print(json.dumps({"success": True, "path": path}))
+                    prefs_manager.update_google_tts_path(clean_path)
+                    print(json.dumps({"success": True, "path": clean_path}))
             except Exception as e:
                 logger.error(f"Failed to set Google TTS path: {e}", exc_info=True)
                 print(json.dumps({"success": False, "error": str(e)}), file=sys.stderr)

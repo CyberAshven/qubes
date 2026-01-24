@@ -1044,6 +1044,17 @@ class MultiQubeConversation:
                         qube_id=qube.qube_id,
                         conversation_id=self.conversation_id
                     )
+        else:
+            # Discard all Qubes' sessions (don't save to permanent memory)
+            for qube in self.qubes:
+                if qube.current_session and len(qube.current_session.session_blocks) > 0:
+                    discarded = qube.current_session.discard_session()
+                    logger.info(
+                        "qube_session_discarded",
+                        qube_id=qube.qube_id,
+                        conversation_id=self.conversation_id,
+                        blocks_discarded=discarded
+                    )
 
         # Build summary
         summary = {
@@ -1115,11 +1126,14 @@ class MultiQubeConversation:
             # Check if anyone was mentioned in the last message
             if self.conversation_history:
                 last_msg = self.conversation_history[-1]["message"].lower()
-                for qube in eligible:
-                    if qube.name.lower() in last_msg:
-                        # Someone was addressed - 80% chance they respond
-                        if random.random() < 0.8:
-                            return qube
+
+                # Collect ALL mentioned qubes, not just the first found
+                # This prevents bias toward qubes earlier in the list
+                mentioned = [q for q in eligible if q.name.lower() in last_msg]
+
+                if mentioned and random.random() < 0.8:
+                    # Randomly select from all mentioned qubes (80% chance)
+                    return random.choice(mentioned)
 
             # Calculate turn counts for eligible speakers
             turn_counts = [(q, self.turn_counts.get(q.qube_id, 0)) for q in eligible]

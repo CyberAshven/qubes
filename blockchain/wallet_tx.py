@@ -292,24 +292,37 @@ class WalletTransactionManager:
         import aiohttp
 
         try:
-            # Fetch P2SH balance and UTXO count
+            # Fetch P2SH balance and UTXO count using Blockchair (only API that supports P2SH)
             p2sh_balance = 0
             utxo_count = 0
             try:
-                addr = self.p2sh_address.split(":")[-1] if ":" in self.p2sh_address else self.p2sh_address
-                timeout = aiohttp.ClientTimeout(total=10)
+                # Blockchair requires full CashAddr format with prefix
+                addr_full = self.p2sh_address if ":" in self.p2sh_address else f"bitcoincash:{self.p2sh_address}"
+                logger.info(f"[SYNC] Starting Blockchair fetch for: {addr_full}")
+                timeout = aiohttp.ClientTimeout(total=15)
                 async with aiohttp.ClientSession(timeout=timeout) as session:
-                    url = f"https://rest.bch.actorforth.org/v2/address/details/{addr}"
+                    url = f"https://api.blockchair.com/bitcoin-cash/dashboards/address/{addr_full}"
+                    logger.info(f"[SYNC] Making HTTP request to Blockchair...")
                     async with session.get(url) as resp:
+                        logger.info(f"[SYNC] Blockchair response status: {resp.status}")
                         if resp.status == 200:
                             data = await resp.json()
-                            balance = data.get("balanceSat") or data.get("balance")
-                            if balance is not None:
-                                p2sh_balance = int(balance)
-                            # Get UTXO count from unconfirmedTxApperances or txApperances
-                            utxo_count = data.get("unspentTxCount", 0) or data.get("txApperances", 0)
+                            logger.info(f"[SYNC] Blockchair response received, parsing...")
+                            if "data" in data and addr_full in data["data"]:
+                                addr_data = data["data"][addr_full].get("address", {})
+                                p2sh_balance = addr_data.get("balance", 0)
+                                utxo_count = addr_data.get("unspent_output_count", 0)
+                                logger.info(f"[SYNC] Blockchair P2SH balance: {p2sh_balance} sats, {utxo_count} UTXOs")
+                            else:
+                                logger.warning(f"[SYNC] Blockchair response missing data for {addr_full}")
+                        elif resp.status == 430:
+                            logger.warning(f"[SYNC] Blockchair rate limited for P2SH: {addr_full}")
+                        else:
+                            logger.warning(f"[SYNC] Blockchair unexpected status {resp.status}")
+            except asyncio.TimeoutError:
+                logger.error(f"[SYNC] Blockchair request TIMED OUT for {self.p2sh_address}")
             except Exception as e:
-                logger.debug(f"P2SH balance sync failed: {e}")
+                logger.error(f"[SYNC] P2SH balance sync FAILED: {type(e).__name__}: {e}")
 
             # If we didn't get utxo_count from API, try to fetch UTXOs directly
             if utxo_count == 0 and p2sh_balance > 0:

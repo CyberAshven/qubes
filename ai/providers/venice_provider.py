@@ -236,12 +236,16 @@ class VeniceModel(AIModelInterface):
                     had_thinking=True,
                     remaining_content_length=len(content)
                 )
-                # If only thinking was present (no actual response), log warning
-                if not content:
+                # If only thinking was present (no actual response), raise error to trigger retry
+                if not content and not message.tool_calls:
                     logger.warning(
                         "venice_only_thinking_no_response",
                         model=self.model_name,
                         original_preview=original_content[:200]
+                    )
+                    raise ModelAPIError(
+                        f"Model '{self.model_name}' returned only thinking blocks with no actual response. Retrying...",
+                        context={"model": self.model_name, "error_type": "empty_response"}
                     )
 
             if message.tool_calls:
@@ -297,6 +301,19 @@ class VeniceModel(AIModelInterface):
                 output_tokens=response.usage.completion_tokens if response.usage else None,
                 tool_calls=len(tool_calls) if tool_calls else 0
             )
+
+            # Final check: if no content and no tool calls, raise error to trigger retry
+            # This can happen if the model returns empty/null content
+            if not content and not tool_calls:
+                logger.warning(
+                    "venice_empty_response",
+                    model=self.model_name,
+                    finish_reason=choice.finish_reason
+                )
+                raise ModelAPIError(
+                    f"Model '{self.model_name}' returned empty response. Retrying...",
+                    context={"model": self.model_name, "error_type": "empty_response", "finish_reason": choice.finish_reason}
+                )
 
             return ModelResponse(
                 content=content,

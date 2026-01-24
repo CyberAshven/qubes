@@ -25,7 +25,6 @@ ALWAYS_AVAILABLE_TOOLS: Set[str] = {
     "search_memory",
     "get_recent_memories",
     # Basic information
-    "get_current_time",
     "describe_my_avatar",
     # Communication
     "send_message",

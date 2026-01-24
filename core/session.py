@@ -23,9 +23,12 @@ logger = get_logger(__name__)
 # Sessions with fewer blocks will not generate a SUMMARY
 SUMMARY_THRESHOLD = 5
 
-# Maximum conversation text length for AI summary (characters)
-# Longer conversations will be truncated to avoid token limits
-MAX_SUMMARY_TEXT_LENGTH = 15000  # ~3750 tokens, safe for most models
+# Fallback maximum length if model context window can't be determined
+# Only used when model.get_context_window() is unavailable
+FALLBACK_MAX_SUMMARY_CHARS = 15000  # ~3750 tokens, conservative fallback
+
+# Reserve tokens for output and prompt overhead when calculating dynamic limit
+SUMMARY_RESERVE_TOKENS = 2000  # Room for summary output + prompt instructions
 
 
 class Session:
@@ -1151,13 +1154,26 @@ class Session:
         debug_log(f"Conversation text ready, length={len(conversation_text)}")
         original_length = len(conversation_text)
 
-        # Truncate if conversation is too long for AI processing
+        # Calculate max text length based on model's actual context window
+        # This allows large-context models to process full conversations without truncation
+        max_summary_chars = FALLBACK_MAX_SUMMARY_CHARS  # Conservative default
+        try:
+            if hasattr(self.qube.reasoner.model, 'get_context_window'):
+                context_tokens = self.qube.reasoner.model.get_context_window()
+                # Convert tokens to chars (~4 chars/token), minus reserve for output
+                available_tokens = context_tokens - SUMMARY_RESERVE_TOKENS
+                max_summary_chars = available_tokens * 4  # ~4 chars per token
+                debug_log(f"Model context: {context_tokens} tokens, max chars: {max_summary_chars}")
+        except Exception as e:
+            debug_log(f"Could not get context window, using fallback: {e}")
+
+        # Truncate only if conversation exceeds model's capacity
         truncated = False
-        if len(conversation_text) > MAX_SUMMARY_TEXT_LENGTH:
+        if len(conversation_text) > max_summary_chars:
             # Keep the most recent part of the conversation (end is usually most relevant)
             # But also include a bit from the beginning for context
-            beginning_chars = MAX_SUMMARY_TEXT_LENGTH // 4  # 25% from beginning
-            ending_chars = MAX_SUMMARY_TEXT_LENGTH - beginning_chars - 50  # 75% from end (minus separator)
+            beginning_chars = max_summary_chars // 4  # 25% from beginning
+            ending_chars = max_summary_chars - beginning_chars - 50  # 75% from end (minus separator)
 
             conversation_text = (
                 conversation_text[:beginning_chars] +
@@ -1169,8 +1185,11 @@ class Session:
                 "conversation_truncated_for_summary",
                 original_length=original_length,
                 truncated_length=len(conversation_text),
+                max_allowed=max_summary_chars,
                 block_count=len(blocks)
             )
+        else:
+            debug_log(f"No truncation needed: {original_length} chars < {max_summary_chars} max")
 
         logger.info(
             "conversation_text_ready",
@@ -1180,52 +1199,134 @@ class Session:
         )
 
         # Use AI to generate summary (now properly async)
-        try:
-            # Create prompt for summary
-            truncation_note = " Note: This is a truncated view of a longer conversation." if truncated else ""
-            summary_prompt = f"""Summarize this conversation in a detailed paragraph (3-5 sentences). Include the main topics discussed, key questions asked, important information shared, and any actions taken. Be specific about the content while remaining concise.{truncation_note}
+        # Create prompt for summary
+        truncation_note = " Note: This is a truncated view of a longer conversation." if truncated else ""
+        summary_prompt = f"""Summarize this conversation in a detailed paragraph (3-5 sentences). Include the main topics discussed, key questions asked, important information shared, and any actions taken. Be specific about the content while remaining concise.{truncation_note}
 
 Conversation:
 {conversation_text}
 
 Summary:"""
 
-            debug_log(f"AI summary starting, prompt_length={len(summary_prompt)}")
-            logger.info("ai_summary_starting", prompt_length=len(summary_prompt))
+        debug_log(f"AI summary starting, prompt_length={len(summary_prompt)}")
+        logger.info("ai_summary_starting", prompt_length=len(summary_prompt))
 
-            # Properly await the async AI call (now that this method is async)
-            model_name = getattr(self.qube.reasoner.model, 'model_name', 'unknown')
-            debug_log(f"Calling model.generate() on model={model_name}...")
-            response = await self.qube.reasoner.model.generate(
-                messages=[{"role": "user", "content": summary_prompt}],
-                tools=None,  # No tools needed for summary generation
-                temperature=0.3
-            )
-            debug_log(f"model.generate() returned, has_content={response is not None and hasattr(response, 'content')}")
-            logger.info("ai_summary_response_received", has_content=response is not None and hasattr(response, 'content'))
+        # Helper function to attempt summary with a model
+        async def try_summary_with_model(model, model_desc: str) -> str | None:
+            try:
+                model_name = getattr(model, 'model_name', 'unknown')
+                debug_log(f"Calling model.generate() on {model_desc} ({model_name})...")
+                response = await model.generate(
+                    messages=[{"role": "user", "content": summary_prompt}],
+                    tools=None,
+                    temperature=0.3
+                )
+                debug_log(f"model.generate() returned, has_content={response is not None and hasattr(response, 'content')}")
 
-            summary = response.content.strip() if response and response.content else None
-            logger.info("ai_summary_extracted", summary_length=len(summary) if summary else 0, summary_preview=summary[:100] if summary and len(summary) > 100 else summary)
+                summary = response.content.strip() if response and response.content else None
+                if summary and len(summary) > 10:
+                    debug_log(f"✅ AI summary SUCCESS with {model_desc}, length={len(summary)}")
+                    logger.info("ai_summary_success", model=model_name, summary_length=len(summary))
+                    return summary
+                else:
+                    debug_log(f"⚠️ AI summary too short with {model_desc}, length={len(summary) if summary else 0}")
+                    return None
+            except Exception as e:
+                import traceback
+                tb = traceback.format_exc()
+                debug_log(f"❌ AI summary FAILED with {model_desc}: {type(e).__name__}: {e}")
+                logger.warning("ai_summary_model_failed", model=model_desc, error=str(e))
+                return None
 
-            if summary and len(summary) > 10:
-                debug_log(f"✅ AI summary SUCCESS, length={len(summary)}")
-                logger.info("ai_summary_success", summary_length=len(summary))
-                return summary
+        # Try primary model first
+        summary = await try_summary_with_model(self.qube.reasoner.model, "primary model")
+        if summary:
+            return summary
+
+        # Primary model failed - build list of available fallbacks sorted by context window
+        debug_log("Primary model failed, building fallback list by context window...")
+        logger.info("ai_summary_trying_fallback")
+
+        from ai.model_registry import ModelRegistry
+        from config.settings import get_settings
+        settings = get_settings()
+
+        # Get the primary model name to exclude from fallbacks
+        primary_model_name = getattr(self.qube.reasoner.model, 'model_name', None)
+        primary_provider = None
+        if primary_model_name:
+            primary_info = ModelRegistry.MODELS.get(primary_model_name, {})
+            primary_provider = primary_info.get("provider")
+
+        # Build list of available models with their context windows
+        available_fallbacks = []
+
+        for model_name, info in ModelRegistry.MODELS.items():
+            # Skip the primary model we already tried
+            if model_name == primary_model_name:
+                continue
+
+            # Skip aliases (they point to other models we'll already try)
+            if "alias_for" in info:
+                continue
+
+            provider = info.get("provider")
+
+            # Skip same provider as primary if it failed (likely same auth issue)
+            if provider == primary_provider:
+                continue
+
+            # Check if this model is available
+            if provider == "ollama":
+                api_key = "ollama"
             else:
-                # Fallback if AI summary is too short
-                debug_log(f"⚠️ AI summary too short, length={len(summary) if summary else 0}")
-                logger.warning("ai_summary_too_short", summary_length=len(summary) if summary else 0)
-                return f"Conversation covering {len(conversation_parts)} exchanges."
+                api_key = settings.get_api_key(provider)
+                if not api_key:
+                    continue
 
-        except Exception as e:
-            import traceback
-            tb = traceback.format_exc()
-            debug_log(f"❌ AI summary FAILED: {type(e).__name__}: {e}")
-            debug_log(f"Traceback:\n{tb}")
-            logger.error("ai_summary_failed", error=str(e), error_type=type(e).__name__)
-            logger.error("ai_summary_traceback", traceback=tb)
-            # Fallback to basic summary on error
-            return f"Session with {len(conversation_parts)} exchanges over {len(blocks)} blocks."
+            # Get context window for this model
+            try:
+                model_class = info.get("class")
+                if hasattr(model_class, "CONTEXT_WINDOWS"):
+                    context_window = model_class.CONTEXT_WINDOWS.get(model_name, 8192)
+                else:
+                    context_window = 8192  # Conservative default
+            except Exception:
+                context_window = 8192
+
+            available_fallbacks.append({
+                "model_name": model_name,
+                "provider": provider,
+                "api_key": api_key,
+                "context_window": context_window
+            })
+
+        # Sort by context window (largest first) - best models tried first
+        available_fallbacks.sort(key=lambda x: x["context_window"], reverse=True)
+
+        debug_log(f"Found {len(available_fallbacks)} available fallback models")
+        logger.info("ai_summary_fallbacks_found", count=len(available_fallbacks))
+
+        # Try each fallback in order (largest context window first)
+        for fallback in available_fallbacks:
+            model_name = fallback["model_name"]
+            api_key = fallback["api_key"]
+            context_window = fallback["context_window"]
+
+            try:
+                debug_log(f"Trying fallback: {model_name} (context: {context_window})")
+                fallback_model = ModelRegistry.get_model(model_name, api_key)
+                summary = await try_summary_with_model(fallback_model, model_name)
+                if summary:
+                    return summary
+            except Exception as e:
+                debug_log(f"Fallback {model_name} failed: {e}")
+                continue
+
+        # All models failed - return basic summary
+        debug_log("All summary models failed, using basic fallback")
+        logger.error("ai_summary_all_models_failed")
+        return f"Session with {len(conversation_parts)} exchanges over {len(blocks)} blocks."
 
     def _summarize_action_block(self, content: Dict[str, Any]) -> str:
         """
@@ -1479,11 +1580,12 @@ Summary:"""
         ))
 
         # Track old block numbers before reassignment (for file renaming)
-        # Use (timestamp, block_type) as key since multiple blocks can have same timestamp
+        # Use (timestamp, block_type, block_hash) as key to uniquely identify each block
+        # This must match the sort key to handle multiple blocks with same timestamp/type
         old_numbers = {}
         for b in self.session_blocks:
             block_type_str = b.block_type if isinstance(b.block_type, str) else b.block_type.value
-            key = (b.timestamp, block_type_str)
+            key = (b.timestamp, block_type_str, b.block_hash or "")
             old_numbers[key] = b.block_number
 
         # Assign block numbers: -1 for earliest, -2 for next, etc.
@@ -1505,7 +1607,7 @@ Summary:"""
         if session_dir.exists():
             for block in self.session_blocks:
                 block_type_str = block.block_type if isinstance(block.block_type, str) else block.block_type.value
-                key = (block.timestamp, block_type_str)
+                key = (block.timestamp, block_type_str, block.block_hash or "")
                 old_num = old_numbers.get(key)
                 new_num = block.block_number
 

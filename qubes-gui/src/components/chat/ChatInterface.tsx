@@ -261,15 +261,19 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
     }
   };
 
-  // Helper function to clean content by removing image URLs and paths
+  // Helper function to clean content by removing image URLs, paths, and thinking blocks
   const cleanContentForDisplay = (content: string): string => {
+    // Remove [Thinking: ...] blocks from models like Kimi K2
+    // These can span multiple lines, so use [\s\S] to match any character including newlines
+    let cleaned = content.replace(/\[Thinking:[\s\S]*?\]/gi, '');
+
     // Regular expression to detect image URLs (including DALL-E Azure Blob Storage URLs)
     const imageUrlRegex = /(https?:\/\/[^\s\)]+?(?:\.(?:png|jpg|jpeg|gif|webp)|blob\.core\.windows\.net\/[^\s\)]+))/gi;
     // Regular expression to detect local file paths (Windows and Unix)
     const localPathRegex = /([A-Za-z]:[\\\/][^\s\)]+\.(?:png|jpg|jpeg|gif|webp)|\/[^\s\)]+\.(?:png|jpg|jpeg|gif|webp))/gi;
 
     // Remove complete markdown image syntax ![...](url or path)
-    let cleaned = content.replace(/!\[([^\]]*)\]\([^\)]+\)/gi, '');
+    cleaned = cleaned.replace(/!\[([^\]]*)\]\([^\)]+\)/gi, '');
 
     // Remove any remaining image URLs (standalone)
     cleaned = cleaned.replace(imageUrlRegex, '');

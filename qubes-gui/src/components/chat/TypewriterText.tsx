@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useAudio } from '../../contexts/AudioContext';
 
 interface TypewriterTextProps {
   text: string;
@@ -9,6 +10,7 @@ interface TypewriterTextProps {
 
 export const TypewriterText: React.FC<TypewriterTextProps> = ({ text, audioElement, onComplete, onTextUpdate }) => {
   const [displayedText, setDisplayedText] = useState('');
+  const { totalChunks, currentChunk, isLastChunk } = useAudio();
 
   // Use refs for callbacks to avoid re-running effect when callbacks change
   const onCompleteRef = useRef(onComplete);
@@ -23,9 +25,6 @@ export const TypewriterText: React.FC<TypewriterTextProps> = ({ text, audioEleme
     onTextUpdateRef.current = onTextUpdate;
   }, [onTextUpdate]);
 
-  // Lead time: typewriter runs 1 second ahead of audio for more natural feel
-  const LEAD_TIME_SECONDS = 1.0;
-
   useEffect(() => {
     if (!audioElement) {
       // If no audio, show all text immediately
@@ -37,6 +36,23 @@ export const TypewriterText: React.FC<TypewriterTextProps> = ({ text, audioEleme
     let animationFrame: number;
     let isComponentVisible = true;
 
+    // Track cumulative progress across chunks
+    // Each chunk handles a portion of the text
+    let lastKnownDuration = 0;
+    let charsPerSecondThisChunk = 0;
+
+    // Calculate how many chars this chunk should cover
+    const getChunkTextRange = () => {
+      if (totalChunks <= 1) {
+        return { start: 0, end: text.length };
+      }
+      // Divide text evenly among chunks
+      const charsPerChunk = Math.ceil(text.length / totalChunks);
+      const start = (currentChunk - 1) * charsPerChunk;
+      const end = Math.min(currentChunk * charsPerChunk, text.length);
+      return { start, end };
+    };
+
     const updateText = () => {
       // If component became hidden, force complete immediately
       if (!isComponentVisible) {
@@ -45,46 +61,70 @@ export const TypewriterText: React.FC<TypewriterTextProps> = ({ text, audioEleme
         return;
       }
 
-      if (!audioElement.duration || audioElement.duration === 0) {
+      // Wait for valid duration
+      if (!audioElement.duration || audioElement.duration === 0 || !isFinite(audioElement.duration)) {
         animationFrame = requestAnimationFrame(updateText);
         return;
       }
 
-      // Calculate progress with lead time (typewriter runs 0.5s ahead)
-      const leadTimeProgress = LEAD_TIME_SECONDS / audioElement.duration;
-      const audioProgress = audioElement.currentTime / audioElement.duration;
-      const typewriterProgress = Math.min(1, audioProgress + leadTimeProgress);
+      const { start, end } = getChunkTextRange();
+      const chunkTextLength = end - start;
 
-      // Calculate characters to show based on progress
-      const charsToShow = Math.floor(typewriterProgress * text.length);
-      const newText = text.slice(0, Math.max(1, charsToShow));
+      // Recalculate rate if duration changed
+      if (audioElement.duration !== lastKnownDuration) {
+        lastKnownDuration = audioElement.duration;
+        charsPerSecondThisChunk = chunkTextLength / audioElement.duration;
+      }
 
+      // Calculate characters to show for this chunk
+      // Add a tiny buffer (50ms worth) to stay slightly ahead for smoother feel
+      const bufferChars = Math.ceil(charsPerSecondThisChunk * 0.05);
+      const charsFromTime = Math.floor(audioElement.currentTime * charsPerSecondThisChunk);
+      const charsInThisChunk = Math.min(chunkTextLength, charsFromTime + bufferChars);
+
+      // Total chars to show = previous chunks + current chunk progress
+      const totalCharsToShow = Math.min(text.length, start + charsInThisChunk);
+
+      const newText = text.slice(0, Math.max(1, totalCharsToShow));
       setDisplayedText(newText);
       onTextUpdateRef.current?.(); // Notify parent to scroll
 
       // Continue updating until audio ends
-      // NOTE: We show all text when typewriter reaches 100% (due to lead time),
-      // but we DON'T call onComplete until audio actually ends
       if (!audioElement.ended && !audioElement.paused) {
         // Audio still playing - continue animation
         animationFrame = requestAnimationFrame(updateText);
       } else if (audioElement.ended) {
-        // Audio has ended - show all text and mark complete
-        setDisplayedText(text);
-        onCompleteRef.current?.();
+        if (isLastChunk) {
+          // Last chunk ended - show all text and mark complete
+          setDisplayedText(text);
+          onCompleteRef.current?.();
+        } else {
+          // More chunks coming - show up to end of current chunk and keep animating
+          // The next chunk will start playing automatically
+          setDisplayedText(text.slice(0, end));
+          animationFrame = requestAnimationFrame(updateText);
+        }
       } else {
         // Audio paused - keep updating until it resumes or ends
         animationFrame = requestAnimationFrame(updateText);
       }
     };
 
-    // DON'T bail out on error or ended state!
-    // The audio element might be in a stale state from the previous playback.
-    // We'll wait for the 'play' event which fires when the NEW audio starts.
-    // If the audio truly never plays, the parent will handle timeout/cleanup.
-
     const handlePlay = () => {
+      // Reset rate calculation on new play (new chunk)
+      charsPerSecondThisChunk = 0;
+      lastKnownDuration = 0;
       animationFrame = requestAnimationFrame(updateText);
+    };
+
+    // Handle duration changes (some browsers update duration as audio loads)
+    const handleDurationChange = () => {
+      if (audioElement.duration && isFinite(audioElement.duration)) {
+        const { start, end } = getChunkTextRange();
+        const chunkTextLength = end - start;
+        lastKnownDuration = audioElement.duration;
+        charsPerSecondThisChunk = chunkTextLength / audioElement.duration;
+      }
     };
 
     // Handle visibility changes - force complete when hidden
@@ -99,34 +139,25 @@ export const TypewriterText: React.FC<TypewriterTextProps> = ({ text, audioEleme
       }
     };
 
-    // DON'T listen to 'ended' event!
-    // The audio element is shared across all messages, so the 'ended' event
-    // might fire for the PREVIOUS message's audio, not this one.
-    // Instead, the animation loop (updateText) will detect completion naturally
-    // by checking audioElement.ended or when all text is shown.
-
     audioElement.addEventListener('play', handlePlay);
+    audioElement.addEventListener('durationchange', handleDurationChange);
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
     // Start animation if audio is NOT paused AND has enough data loaded
-    // This prevents starting animation on stale audio state during transitions
-    // readyState >= 2 means we have current data (HAVE_CURRENT_DATA or better)
-    // Note: We don't check currentTime > 0 because the component might mount right as
-    // audio starts, when currentTime is still exactly 0 (race condition)
     if (!audioElement.paused && audioElement.readyState >= 2) {
       // Audio is actually playing with data, start animation immediately
       animationFrame = requestAnimationFrame(updateText);
     }
-    // Otherwise wait for play event
 
     return () => {
       audioElement.removeEventListener('play', handlePlay);
+      audioElement.removeEventListener('durationchange', handleDurationChange);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       if (animationFrame) {
         cancelAnimationFrame(animationFrame);
       }
     };
-  }, [text, audioElement]); // Removed onComplete and onTextUpdate from dependencies - using refs instead
+  }, [text, audioElement, totalChunks, currentChunk, isLastChunk]);
 
   return <span className="whitespace-pre-wrap">{displayedText}</span>;
 };

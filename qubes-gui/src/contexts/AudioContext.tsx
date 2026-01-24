@@ -8,6 +8,10 @@ interface AudioContextType {
   stopAudio: () => void;
   isPlaying: boolean;
   audioElement: HTMLAudioElement | null;
+  // Multi-chunk playback info for TypewriterText sync
+  totalChunks: number;
+  currentChunk: number;
+  isLastChunk: boolean;
 }
 
 const AudioContext = createContext<AudioContextType | undefined>(undefined);
@@ -38,6 +42,11 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const chunkQueueRef = useRef<string[]>([]);
   const currentChunkIndexRef = useRef<number>(0);
 
+  // Expose chunk info for TypewriterText sync
+  const [totalChunks, setTotalChunks] = React.useState(1);
+  const [currentChunk, setCurrentChunk] = React.useState(1);
+  const [isLastChunk, setIsLastChunk] = React.useState(true);
+
   // Initialize audio element if it doesn't exist
   React.useEffect(() => {
     if (!audioRef.current) {
@@ -54,6 +63,10 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
           console.log(`Playing chunk ${nextChunkIndex + 1} of ${chunkQueueRef.current.length}`);
 
+          // Update chunk state for TypewriterText
+          setCurrentChunk(nextChunkIndex + 1);
+          setIsLastChunk(nextChunkIndex + 1 >= chunkQueueRef.current.length);
+
           // Load and play next chunk
           audioRef.current!.src = nextChunkPath;
           audioRef.current!.play().catch(err => {
@@ -62,12 +75,18 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             // Clear chunk queue on error
             chunkQueueRef.current = [];
             currentChunkIndexRef.current = 0;
+            setTotalChunks(1);
+            setCurrentChunk(1);
+            setIsLastChunk(true);
           });
         } else {
           // No more chunks, playback complete
           setIsPlaying(false);
           chunkQueueRef.current = [];
           currentChunkIndexRef.current = 0;
+          setTotalChunks(1);
+          setCurrentChunk(1);
+          setIsLastChunk(true);
         }
       });
 
@@ -108,16 +127,16 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       });
 
       if (speechResponse.success && speechResponse.audio_path) {
-        const totalChunks = speechResponse.total_chunks || 1;
+        const numChunks = speechResponse.total_chunks || 1;
 
         // Build array of all chunk paths
         const chunkPaths: string[] = [];
 
-        for (let i = 1; i <= totalChunks; i++) {
+        for (let i = 1; i <= numChunks; i++) {
           let chunkFilePath = speechResponse.audio_path;
 
           // For multi-chunk audio, replace or append chunk suffix
-          if (totalChunks > 1) {
+          if (numChunks > 1) {
             // Replace _chunk_1 with _chunk_N, or append _chunk_N if not present
             if (chunkFilePath.includes('_chunk_1')) {
               chunkFilePath = chunkFilePath.replace('_chunk_1', `_chunk_${i}`);
@@ -137,13 +156,18 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           chunkPaths.push(base64Audio);
         }
 
-        if (totalChunks > 1) {
-          console.log(`Multi-chunk audio: ${totalChunks} chunks`);
+        if (numChunks > 1) {
+          console.log(`Multi-chunk audio: ${numChunks} chunks`);
         }
 
         // Set up chunk queue for sequential playback
         chunkQueueRef.current = chunkPaths;
         currentChunkIndexRef.current = 0;
+
+        // Update chunk state for TypewriterText sync
+        setTotalChunks(numChunks);
+        setCurrentChunk(1);
+        setIsLastChunk(numChunks <= 1);
 
         if (audioRef.current) {
           // Reset audio element to clear any stale state (ended, error, etc.)
@@ -161,6 +185,9 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             // Clear chunk queue on error
             chunkQueueRef.current = [];
             currentChunkIndexRef.current = 0;
+            setTotalChunks(1);
+            setCurrentChunk(1);
+            setIsLastChunk(true);
           }, { once: true });
 
           // Start playing first chunk immediately
@@ -178,6 +205,9 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       // Clear chunk queue on error
       chunkQueueRef.current = [];
       currentChunkIndexRef.current = 0;
+      setTotalChunks(1);
+      setCurrentChunk(1);
+      setIsLastChunk(true);
       throw err;
     }
   }, []);
@@ -215,6 +245,13 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
 
     try {
+      // Reset chunk state for single-chunk prefetched audio
+      setTotalChunks(1);
+      setCurrentChunk(1);
+      setIsLastChunk(true);
+      chunkQueueRef.current = [];
+      currentChunkIndexRef.current = 0;
+
       if (audioRef.current) {
         // Reset audio element to clear any stale state (ended, error, etc.)
         audioRef.current.pause();
@@ -251,6 +288,9 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     // Clear chunk queue when manually stopping
     chunkQueueRef.current = [];
     currentChunkIndexRef.current = 0;
+    setTotalChunks(1);
+    setCurrentChunk(1);
+    setIsLastChunk(true);
   }, []);
 
   const value = {
@@ -259,7 +299,10 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     playPrefetchedTTS,
     stopAudio,
     isPlaying,
-    audioElement, // Use state value instead of ref
+    audioElement,
+    totalChunks,
+    currentChunk,
+    isLastChunk,
   };
 
   return <AudioContext.Provider value={value}>{children}</AudioContext.Provider>;
