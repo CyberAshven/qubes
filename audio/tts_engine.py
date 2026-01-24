@@ -395,6 +395,33 @@ class GeminiTTS(TTSProvider):
             async for chunk in self.synthesize_stream(text, voice_config):
                 audio_data += chunk
 
+            # Sanity check: validate audio duration vs text length
+            # At 24kHz, 16-bit mono: 48,000 bytes = 1 second
+            # Speech is roughly 150 words/min (~750 chars/min)
+            # Allow 2x margin for slow speech + pauses
+            bytes_per_second = 24000 * 2  # 24kHz * 16-bit (2 bytes)
+            audio_duration_seconds = len(audio_data) / bytes_per_second
+
+            # Estimate max reasonable duration: ~1 second per 12 characters, minimum 10 seconds
+            max_expected_seconds = max(10, len(text) / 12) * 2  # 2x safety margin
+
+            if audio_duration_seconds > max_expected_seconds:
+                logger.warning(
+                    "gemini_tts_audio_too_long",
+                    text_length=len(text),
+                    audio_duration_seconds=round(audio_duration_seconds, 1),
+                    max_expected_seconds=round(max_expected_seconds, 1),
+                    audio_bytes=len(audio_data),
+                    action="truncating"
+                )
+                # Truncate to expected max duration
+                max_bytes = int(max_expected_seconds * bytes_per_second)
+                audio_data = audio_data[:max_bytes]
+                logger.info(
+                    "gemini_tts_audio_truncated",
+                    new_duration_seconds=round(len(audio_data) / bytes_per_second, 1)
+                )
+
             # Gemini returns raw linear16 PCM audio without headers
             # We need to add WAV headers for browser playback
             wav_data = self._create_wav_file(audio_data)
@@ -407,7 +434,8 @@ class GeminiTTS(TTSProvider):
                 path=str(output_path),
                 size_bytes=len(wav_data),
                 format="wav",
-                pcm_size=len(audio_data)
+                pcm_size=len(audio_data),
+                duration_seconds=round(audio_duration_seconds, 1)
             )
 
             return output_path
