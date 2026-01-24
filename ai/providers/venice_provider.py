@@ -343,14 +343,18 @@ class VeniceModel(AIModelInterface):
             # Final check: if no content and no tool calls, raise error to trigger retry
             # This can happen if the model returns empty/null content
             if not content and not tool_calls:
+                # Include raw content info for debugging
+                raw_info = f"raw_content={'(empty)' if not raw_content else repr(raw_content[:200])}, finish_reason={choice.finish_reason}"
                 logger.warning(
                     "venice_empty_response",
                     model=self.model_name,
-                    finish_reason=choice.finish_reason
+                    finish_reason=choice.finish_reason,
+                    raw_content_length=len(raw_content) if raw_content else 0,
+                    raw_content_preview=raw_content[:200] if raw_content else "(empty)"
                 )
                 raise ModelAPIError(
-                    f"Model '{self.model_name}' returned empty response. Retrying...",
-                    context={"model": self.model_name, "error_type": "empty_response", "finish_reason": choice.finish_reason}
+                    f"Model '{self.model_name}' returned empty response ({raw_info})",
+                    context={"model": self.model_name, "error_type": "empty_response", "finish_reason": choice.finish_reason, "raw_content_preview": raw_content[:200] if raw_content else None}
                 )
 
             return ModelResponse(
