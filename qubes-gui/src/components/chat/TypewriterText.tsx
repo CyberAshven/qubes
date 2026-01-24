@@ -80,7 +80,14 @@ export const TypewriterText: React.FC<TypewriterTextProps> = ({ text, audioEleme
       // Add a tiny buffer (50ms worth) to stay slightly ahead for smoother feel
       const bufferChars = Math.ceil(charsPerSecondThisChunk * 0.05);
       const charsFromTime = Math.floor(audioElement.currentTime * charsPerSecondThisChunk);
-      const charsInThisChunk = Math.min(chunkTextLength, charsFromTime + bufferChars);
+      let charsInThisChunk = Math.min(chunkTextLength, charsFromTime + bufferChars);
+
+      // CRITICAL: Never show 100% of this chunk's text until audio actually ends
+      // Browser-reported duration can be inaccurate, causing typewriter to "finish"
+      // before the TTS voice actually stops speaking. Cap at 98% until ended.
+      if (!audioElement.ended && charsInThisChunk >= chunkTextLength) {
+        charsInThisChunk = Math.floor(chunkTextLength * 0.98);
+      }
 
       // Total chars to show = previous chunks + current chunk progress
       const totalCharsToShow = Math.min(text.length, start + charsInThisChunk);
@@ -95,7 +102,7 @@ export const TypewriterText: React.FC<TypewriterTextProps> = ({ text, audioEleme
         animationFrame = requestAnimationFrame(updateText);
       } else if (audioElement.ended) {
         if (isLastChunk) {
-          // Last chunk ended - show all text and mark complete
+          // Last chunk ended - NOW show all text and mark complete
           setDisplayedText(text);
           onCompleteRef.current?.();
         } else {
