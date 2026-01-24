@@ -121,7 +121,7 @@ Your purpose is to assist users with their questions and tasks."""
     print("\n   This will:")
     print(f"   1. Create an immutable NFT with commitment derived from Qube {qube.qube_id}")
     print(f"   2. Send the NFT to: {recipient_address}")
-    print(f"   3. Cost approximately 0.0001 BCH (~$0.06 at $600/BCH)")
+    print(f"   3. Cost approximately 0.01 BCH (~$4.00 at $400/BCH)")
 
     confirm = input("\n   Proceed with minting? (yes/no): ").strip().lower()
     if confirm != "yes":

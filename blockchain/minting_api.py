@@ -164,8 +164,8 @@ class MintingAPIClient:
 
         Returns:
             {
-                "amount_bch": 0.0001,
-                "amount_satoshis": 10000,
+                "amount_bch": 0.01,
+                "amount_satoshis": 1000000,
                 "payment_address": "bitcoincash:qq..."
             }
         """

@@ -380,6 +380,148 @@ class AIFallbackChain:
             }
         )
 
+    async def generate_primary_with_retry(
+        self,
+        messages: List[Dict[str, str]],
+        tools: Optional[List[Dict[str, Any]]] = None,
+        temperature: float = 0.7,
+        max_tokens: Optional[int] = None,
+        max_retries: int = 3,
+        **kwargs
+    ) -> tuple:
+        """
+        Generate response using ONLY the primary model with retries.
+
+        This is for Manual mode where users explicitly choose their model
+        and don't want silent fallback to different models.
+
+        Args:
+            messages: Conversation messages
+            tools: Optional tool definitions
+            temperature: Sampling temperature
+            max_tokens: Maximum tokens to generate
+            max_retries: Number of retry attempts (default 3)
+            **kwargs: Additional model-specific parameters
+
+        Returns:
+            Tuple of (ModelResponse, model_name, provider, False)
+
+        Raises:
+            AIError: If primary model fails after all retries
+        """
+        import asyncio
+
+        model_name = self.primary_model
+        provider_info = ModelRegistry.get_model_info(model_name)
+
+        if not provider_info:
+            raise AIError(
+                f"Unknown model: {model_name}",
+                context={"model": model_name}
+            )
+
+        provider = provider_info["provider"]
+
+        # Check if we have API key (skip if Ollama)
+        if provider != "ollama" and provider not in self.api_keys:
+            raise AIError(
+                f"API key not configured for {provider}",
+                context={"model": model_name, "provider": provider}
+            )
+
+        # Get model instance
+        api_key = self.api_keys.get(provider) if provider != "ollama" else None
+        model = ModelRegistry.get_model(model_name, api_key)
+
+        # Retry with exponential backoff
+        retry_delays = [1, 2, 4]  # Exponential backoff: 1s, 2s, 4s
+        errors = []
+
+        for attempt in range(max_retries):
+            try:
+                logger.debug(
+                    "manual_mode_attempt",
+                    model=model_name,
+                    provider=provider,
+                    attempt=attempt + 1,
+                    max_retries=max_retries
+                )
+
+                response = await model.generate(
+                    messages=messages,
+                    tools=tools,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    **kwargs
+                )
+
+                logger.debug(
+                    "manual_mode_success",
+                    model=model_name,
+                    provider=provider,
+                    attempt=attempt + 1
+                )
+
+                # Return with fallback_occurred=False (we never fall back)
+                return response, model_name, provider, False
+
+            except Exception as e:
+                error_str = str(e)
+                errors.append({
+                    "attempt": attempt + 1,
+                    "error": error_str
+                })
+
+                # Check if this is a retryable error (5xx, timeout, rate limit)
+                is_retryable = (
+                    "500" in error_str or
+                    "502" in error_str or
+                    "503" in error_str or
+                    "504" in error_str or
+                    "timeout" in error_str.lower() or
+                    "rate" in error_str.lower() or
+                    "overloaded" in error_str.lower()
+                )
+
+                if attempt < max_retries - 1 and is_retryable:
+                    delay = retry_delays[min(attempt, len(retry_delays) - 1)]
+                    logger.warning(
+                        "manual_mode_retrying",
+                        model=model_name,
+                        provider=provider,
+                        attempt=attempt + 1,
+                        delay=delay,
+                        error=error_str
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                else:
+                    # Non-retryable error or exhausted retries
+                    logger.error(
+                        "manual_mode_failed",
+                        model=model_name,
+                        provider=provider,
+                        attempt=attempt + 1,
+                        error=error_str,
+                        is_retryable=is_retryable,
+                        exc_info=True
+                    )
+                    break
+
+        # All retries exhausted
+        raise AIError(
+            f"Model '{model_name}' failed after {max_retries} attempts. "
+            f"In Manual mode, no fallback to other models will occur. "
+            f"Please check your API key or try a different model.",
+            context={
+                "model": model_name,
+                "provider": provider,
+                "attempts": max_retries,
+                "errors": errors,
+                "mode": "manual"
+            }
+        )
+
     def get_chain_info(self) -> List[Dict[str, Any]]:
         """
         Get information about fallback chain

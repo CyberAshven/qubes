@@ -264,89 +264,126 @@ class GeminiTTS(TTSProvider):
     async def synthesize_stream(
         self, text: str, voice_config: VoiceConfig
     ) -> AsyncIterator[bytes]:
-        """Stream audio from Gemini TTS API"""
-        try:
-            import aiohttp
-            import json
-            import base64
+        """Stream audio from Gemini TTS API with retry for transient errors"""
+        import aiohttp
+        import asyncio
+        import base64
 
-            logger.debug(
-                "tts_synthesizing",
-                provider="gemini",
-                voice=voice_config.voice_id,
-                length=len(text)
-            )
+        max_retries = 3
+        retry_delays = [1, 2, 4]  # Exponential backoff: 1s, 2s, 4s
 
-            # Record start
-            MetricsRecorder.record_ai_api_call("gemini_tts", "gemini-2.5-flash-preview-tts", "started")
+        logger.debug(
+            "tts_synthesizing",
+            provider="gemini",
+            voice=voice_config.voice_id,
+            length=len(text)
+        )
 
-            # Build request
-            url = f"{self.base_url}/models/gemini-2.5-flash-preview-tts:generateContent"
+        # Build request
+        url = f"{self.base_url}/models/gemini-2.5-flash-preview-tts:generateContent"
 
-            headers = {
-                "Content-Type": "application/json",
-                "x-goog-api-key": self.api_key
-            }
+        headers = {
+            "Content-Type": "application/json",
+            "x-goog-api-key": self.api_key
+        }
 
-            # Voice name (use PrebuiltVoiceConfig)
-            voice_name = voice_config.voice_id if voice_config.voice_id else "Puck"
+        # Voice name (use PrebuiltVoiceConfig)
+        voice_name = voice_config.voice_id if voice_config.voice_id else "Puck"
 
-            payload = {
-                "contents": [{
-                    "parts": [{
-                        "text": text
-                    }]
-                }],
-                "generationConfig": {
-                    "responseModalities": ["AUDIO"],
-                    "speechConfig": {
-                        "voiceConfig": {
-                            "prebuiltVoiceConfig": {
-                                "voiceName": voice_name
-                            }
+        payload = {
+            "contents": [{
+                "parts": [{
+                    "text": text
+                }]
+            }],
+            "generationConfig": {
+                "responseModalities": ["AUDIO"],
+                "speechConfig": {
+                    "voiceConfig": {
+                        "prebuiltVoiceConfig": {
+                            "voiceName": voice_name
                         }
                     }
                 }
             }
+        }
 
-            async with aiohttp.ClientSession() as session:
-                async with session.post(url, headers=headers, json=payload) as response:
-                    if response.status != 200:
-                        error_text = await response.text()
-                        raise Exception(f"Gemini TTS API error {response.status}: {error_text}")
+        last_error = None
 
-                    result = await response.json()
+        for attempt in range(max_retries):
+            try:
+                # Record start
+                MetricsRecorder.record_ai_api_call("gemini_tts", "gemini-2.5-flash-preview-tts", "started")
 
-                    # Extract audio data from response
-                    # Response format: candidates[0].content.parts[0].inlineData.data (base64)
-                    if "candidates" in result and len(result["candidates"]) > 0:
-                        parts = result["candidates"][0].get("content", {}).get("parts", [])
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(url, headers=headers, json=payload) as response:
+                        if response.status != 200:
+                            error_text = await response.text()
 
-                        for part in parts:
-                            if "inlineData" in part:
-                                # Decode base64 audio
-                                audio_b64 = part["inlineData"]["data"]
-                                audio_bytes = base64.b64decode(audio_b64)
+                            # Retry on transient server errors (5xx)
+                            if response.status >= 500 and attempt < max_retries - 1:
+                                logger.warning(
+                                    "gemini_tts_retrying",
+                                    attempt=attempt + 1,
+                                    status=response.status,
+                                    delay=retry_delays[attempt]
+                                )
+                                await asyncio.sleep(retry_delays[attempt])
+                                continue
 
-                                # Yield in chunks
-                                chunk_size = 4096
-                                for i in range(0, len(audio_bytes), chunk_size):
-                                    yield audio_bytes[i:i + chunk_size]
+                            raise Exception(f"Gemini TTS API error {response.status}: {error_text}")
 
-            # Record success
-            MetricsRecorder.record_ai_api_call("gemini_tts", "gemini-2.5-flash-preview-tts", "success")
+                        result = await response.json()
 
-            logger.info(
-                "tts_completed",
-                provider="gemini",
-                voice=voice_name,
-                chars=len(text)
-            )
+                        # Extract audio data from response
+                        # Response format: candidates[0].content.parts[0].inlineData.data (base64)
+                        if "candidates" in result and len(result["candidates"]) > 0:
+                            parts = result["candidates"][0].get("content", {}).get("parts", [])
 
-        except Exception as e:
-            MetricsRecorder.record_ai_api_call("gemini_tts", "gemini-2.5-flash-preview-tts", "error")
-            logger.error("gemini_tts_failed", error=str(e), exc_info=True)
-            raise AIError(f"Gemini TTS failed: {e}", cause=e)
+                            for part in parts:
+                                if "inlineData" in part:
+                                    # Decode base64 audio
+                                    audio_b64 = part["inlineData"]["data"]
+                                    audio_bytes = base64.b64decode(audio_b64)
+
+                                    # Yield in chunks
+                                    chunk_size = 4096
+                                    for i in range(0, len(audio_bytes), chunk_size):
+                                        yield audio_bytes[i:i + chunk_size]
+
+                # Record success
+                MetricsRecorder.record_ai_api_call("gemini_tts", "gemini-2.5-flash-preview-tts", "success")
+
+                logger.info(
+                    "tts_completed",
+                    provider="gemini",
+                    voice=voice_name,
+                    chars=len(text)
+                )
+                return  # Success - exit the retry loop
+
+            except Exception as e:
+                last_error = e
+                # Check if this is a retryable error (connection issues, timeouts)
+                if attempt < max_retries - 1 and not str(e).startswith("Gemini TTS API error 4"):
+                    # Don't retry 4xx errors (client errors), but retry others
+                    logger.warning(
+                        "gemini_tts_retrying",
+                        attempt=attempt + 1,
+                        error=str(e),
+                        delay=retry_delays[attempt]
+                    )
+                    await asyncio.sleep(retry_delays[attempt])
+                    continue
+
+                # Final failure
+                MetricsRecorder.record_ai_api_call("gemini_tts", "gemini-2.5-flash-preview-tts", "error")
+                logger.error("gemini_tts_failed", error=str(e), exc_info=True)
+                raise AIError(f"Gemini TTS failed: {e}", cause=e)
+
+        # Should not reach here, but just in case
+        if last_error:
+            raise AIError(f"Gemini TTS failed after {max_retries} retries: {last_error}", cause=last_error)
 
     async def synthesize_file(
         self, text: str, voice_config: VoiceConfig, output_path: Path

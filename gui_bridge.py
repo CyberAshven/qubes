@@ -1424,8 +1424,17 @@ class GUIBridge:
                     from core.chain_state import ChainState
                     chain_dir = qube_dir / "chain"
                     chain_state = ChainState(data_dir=chain_dir, encryption_key=encryption_key)
-                    chain_state.set_current_model_override(ai_model)
-                    logger.info(f"Updated chain_state current_model_override={ai_model}")
+
+                    # Check current model mode - Manual mode uses locked_model, others use override
+                    model_mode = chain_state.get_model_mode()
+                    if model_mode == "manual":
+                        # In Manual mode, update the locked model (what reasoner actually reads)
+                        chain_state.set_model_lock(True, ai_model)
+                        logger.info(f"Updated chain_state locked_model={ai_model} (Manual mode)")
+                    else:
+                        # In Autonomous/Revolver mode, update the override
+                        chain_state.set_current_model_override(ai_model)
+                        logger.info(f"Updated chain_state current_model_override={ai_model}")
                 else:
                     logger.warning("Cannot update chain_state - no encryption key available")
                 updated_fields.append(f"ai_model={ai_model}")
@@ -1479,21 +1488,19 @@ class GUIBridge:
                 if ai_model is not None:
                     # Update current model (NOT genesis block - that's immutable!)
                     qube.current_ai_model = ai_model
-                    # Also save to chain_state for persistence
-                    qube.chain_state.set_current_model_override(ai_model)
-                    # Update provider on qube object (not genesis block)
-                    if ai_model.startswith("gpt-") or ai_model.startswith("o"):
-                        qube.ai_provider = "openai"
-                    elif ai_model.startswith("claude-"):
-                        qube.ai_provider = "anthropic"
-                    elif ai_model.startswith("gemini-"):
-                        qube.ai_provider = "google"
-                    elif ai_model.startswith("sonar"):
-                        qube.ai_provider = "perplexity"
-                    elif ai_model.startswith("deepseek-") and ":" not in ai_model:
-                        qube.ai_provider = "deepseek"
-                    elif ai_model in ["venice-uncensored", "llama-3.3-70b", "qwen3-235b", "qwen3-4b", "deepseek-r1-llama-70b", "mistral-31-24b"]:
-                        qube.ai_provider = "venice"
+
+                    # Check model mode - Manual mode uses locked_model, others use override
+                    model_mode = qube.chain_state.get_model_mode()
+                    if model_mode == "manual":
+                        qube.chain_state.set_model_lock(True, ai_model)
+                    else:
+                        qube.chain_state.set_current_model_override(ai_model)
+
+                    # Update provider using ModelRegistry (handles all models correctly)
+                    from ai.model_registry import ModelRegistry
+                    model_info = ModelRegistry.get_model_info(ai_model)
+                    if model_info:
+                        qube.ai_provider = model_info["provider"]
                     elif ":" in ai_model:
                         qube.ai_provider = "ollama"
                 if voice_model is not None:
@@ -8029,24 +8036,24 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
                     genesis_model = genesis_block.get("ai_model")
                     genesis_provider = genesis_block.get("ai_provider")
 
-            state = self._load_chain_state(qube_dir)
+            # Use ChainState directly to properly update both settings AND runtime
+            # The deprecated _load_chain_state/_save_chain_state only handle settings section
+            chain_state = self._get_chain_state(qube_id)
+            if not chain_state:
+                return {"success": False, "error": "Could not load chain state (encryption key missing?)"}
 
-            # Clear the model override
-            state["current_model_override"] = None
+            # Clear the model override in settings
+            chain_state.update_settings({
+                "current_model_override": None,
+                "model_locked_to": genesis_model  # Ensure locked model matches genesis
+            })
 
-            # Also reset runtime to genesis model (fixes corrupted runtime from fallback)
-            if "runtime" not in state:
-                state["runtime"] = {}
-            if genesis_model:
-                state["runtime"]["current_model"] = genesis_model
-            if genesis_provider:
-                state["runtime"]["current_provider"] = genesis_provider
-
-            # Also ensure settings.model_locked_to matches genesis
-            if "settings" in state and genesis_model:
-                state["settings"]["model_locked_to"] = genesis_model
-
-            self._save_chain_state(qube_dir, state)
+            # Reset runtime to genesis model (this is the key fix - runtime is a SEPARATE section)
+            if genesis_model or genesis_provider:
+                chain_state.update_runtime(
+                    current_model=genesis_model,
+                    current_provider=genesis_provider
+                )
 
             logger.info(f"Reset model to genesis for {qube_id}: {genesis_model} ({genesis_provider})")
 

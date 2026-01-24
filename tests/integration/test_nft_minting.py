@@ -36,7 +36,7 @@ def main():
     print("=" * 70)
     print()
     print("⚠️  WARNING: This will create a REAL transaction on Bitcoin Cash mainnet!")
-    print("   It will use a small amount of BCH (~0.0001 BCH fee)")
+    print("   It will use a small amount of BCH (~0.01 BCH fee)")
     print()
 
     # Check minting token exists

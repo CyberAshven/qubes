@@ -1181,7 +1181,7 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
 
             <div className="bg-accent-primary/10 border border-accent-primary/30 rounded-lg p-4">
               <p className="text-text-primary text-sm">
-                ⚠️ Creating this Qube requires a small minting fee (0.0001 BCH / ~10,000 sats).
+                ⚠️ Creating this Qube requires a minting fee (0.01 BCH / 1,000,000 sats).
                 You'll be shown payment details on the next step.
               </p>
             </div>

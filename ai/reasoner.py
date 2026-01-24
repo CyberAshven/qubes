@@ -256,6 +256,13 @@ class QubeReasoner:
                 self._is_internal_call = True
             else:
                 self._is_internal_call = False
+
+                # CRITICAL: Reload chain_state from disk to pick up GUI changes
+                # (e.g., model changed via Dashboard after session reset)
+                # Without this, the in-memory chain_state may have stale model settings
+                if self.qube.chain_state:
+                    self.qube.chain_state.reload()
+
                 # Check if revolver mode should select the model (random from pool)
                 revolver_model = self._apply_revolver_mode()
 
@@ -612,74 +619,21 @@ class QubeReasoner:
                                 failure_type=pending.get("primary_failure_type")
                             )
                 elif self.enable_fallback and self.fallback_chain:
-                    # Standard fallback chain
-                    response, actual_model, actual_provider, fallback_occurred = await self.fallback_chain.generate_with_fallback(
+                    # Manual and Autonomous modes: retry the configured model, but NEVER fall back
+                    # Users explicitly chose their model - silent fallback to a different model is unexpected
+                    # Only Revolver mode (handled above) is designed for model variety/fallback
+                    logger.debug(
+                        "using_primary_model_with_retry",
+                        model=model_to_use,
+                        mode=self.qube.chain_state.get_model_mode(),
+                        reason="Fallback disabled - retry same model only"
+                    )
+                    response, actual_model, actual_provider, fallback_occurred = await self.fallback_chain.generate_primary_with_retry(
                         messages=context_messages,
                         tools=tools,
                         temperature=temperature
                     )
-
-                    # If fallback occurred, log it but DON'T corrupt runtime in Manual mode
-                    if fallback_occurred:
-                        logger.info(
-                            "fallback_chain_used_different_model",
-                            intended_model=model_to_use,
-                            actual_model=actual_model,
-                            actual_provider=actual_provider
-                        )
-                        # In Manual mode, DON'T update runtime - the locked model is source of truth
-                        # Updating runtime would permanently "corrupt" it with the fallback model
-                        # In other modes (revolver, autonomous), update runtime to show actual model used
-                        current_mode = self.qube.chain_state.get_model_mode()
-                        if current_mode != "manual":
-                            self.qube.chain_state.update_runtime(
-                                current_model=actual_model,
-                                current_provider=actual_provider
-                            )
-                        else:
-                            logger.info(
-                                "manual_mode_fallback_not_updating_runtime",
-                                locked_model=model_to_use,
-                                actual_fallback=actual_model,
-                                reason="Manual mode preserves locked model in runtime"
-                            )
-
-                        # In revolver mode, create a revolver_switch block to record the fallback
-                        # This handles fallbacks that occur on subsequent iterations (after tool use)
-                        # where _pending_revolver_switch was already cleared
-                        if self.qube.chain_state.is_revolver_mode_enabled() and self.qube.current_session:
-                            from core.block import create_action_block
-                            latest = self.qube.memory_chain.get_latest_block()
-                            revolver_fallback_block = create_action_block(
-                                qube_id=self.qube.qube_id,
-                                block_number=-1,
-                                previous_block_number=latest.block_number if latest else 0,
-                                action_type="revolver_switch",
-                                parameters={"target_model": actual_model, "previous_model": model_to_use},
-                                initiated_by="system",
-                                status="completed",
-                                result={
-                                    "success": True,
-                                    "previous_model": model_to_use,
-                                    "new_model": actual_model,
-                                    "provider": actual_provider,
-                                    "fallback_used": True,
-                                    "reason": "Fallback during tool use iteration"
-                                },
-                                temporary=True,
-                                model_used=actual_model
-                            )
-                            self.qube.current_session.create_block(revolver_fallback_block)
-                            logger.info(
-                                "revolver_fallback_block_created",
-                                previous_model=model_to_use,
-                                actual_model=actual_model,
-                                iteration=iteration
-                            )
-
-                        # Update tracking variables for MESSAGE block
-                        model_to_use = actual_model
-                        self.last_model_used = actual_model
+                    # fallback_occurred is always False when using generate_primary_with_retry
                 else:
                     # Direct model call (no fallback)
                     response = await self.model.generate(
@@ -997,12 +951,40 @@ class QubeReasoner:
                 # Emit API call made event to update runtime
                 # Skip updating runtime if this is an internal call (e.g., self-evaluation)
                 # to avoid overwriting the user-facing model
+                #
+                # IMPORTANT: In Manual mode, emit the INTENDED model (locked model), not the
+                # actual model used (which may be a fallback). This prevents runtime corruption.
+                # In Revolver/Autonomous mode, emit the actual model (model_to_use may have
+                # been updated by fallback at line 681).
                 from core.events import Events
-                self.qube.events.emit(Events.API_CALL_MADE, {
-                    "model": model_to_use,
-                    "provider": provider,
-                    "is_internal": self._is_internal_call
-                })
+                current_mode = self.qube.chain_state.get_model_mode()
+                if current_mode == "manual":
+                    # Use locked model for runtime - this is the "source of truth" in Manual mode
+                    intended_model = self.qube.chain_state.get_locked_model()
+                    if intended_model:
+                        intended_model_info = ModelRegistry.get_model_info(intended_model)
+                        intended_provider = intended_model_info.get("provider", "unknown") if intended_model_info else "unknown"
+                        self.qube.events.emit(Events.API_CALL_MADE, {
+                            "model": intended_model,
+                            "provider": intended_provider,
+                            "is_internal": self._is_internal_call
+                        })
+                    else:
+                        # Fallback: if no locked model, use genesis model
+                        genesis_model = getattr(self.qube.genesis_block, 'ai_model', None)
+                        genesis_provider = getattr(self.qube.genesis_block, 'ai_provider', 'unknown')
+                        self.qube.events.emit(Events.API_CALL_MADE, {
+                            "model": genesis_model or model_to_use,
+                            "provider": genesis_provider or provider,
+                            "is_internal": self._is_internal_call
+                        })
+                else:
+                    # In Revolver/Autonomous, use actual model used
+                    self.qube.events.emit(Events.API_CALL_MADE, {
+                        "model": model_to_use,
+                        "provider": provider,
+                        "is_internal": self._is_internal_call
+                    })
 
                 return final_response
 

@@ -321,6 +321,10 @@ class ChainState:
         # On commit/anchor: clear this snapshot (changes become permanent)
         self._session_snapshot: Optional[Dict[str, Any]] = None
 
+        # Auto-refresh tracking - ensures chain_state is never stale
+        # When disk file is newer than this timestamp, we auto-reload before reads
+        self._last_load_time: float = 0.0
+
         # Load existing state or create new
         if self.state_file.exists():
             self._load()
@@ -574,6 +578,9 @@ class ChainState:
                 skills_total_xp=skills.get("total_xp", 0),
                 skills_unlocked_count=len(skills.get("skill_xp", {}))
             )
+
+            # Update load timestamp for auto-refresh tracking
+            self._last_load_time = time.time()
 
         except Exception as e:
             logger.error("chain_state_load_failed", error=str(e), exc_info=True)
@@ -1027,12 +1034,39 @@ class ChainState:
             self._load()
             logger.debug("chain_state_reloaded", qube_id=self.state.get("qube_id"))
 
+    def _ensure_fresh(self) -> None:
+        """Auto-reload if disk file is newer than our in-memory copy.
+
+        This ensures chain_state is NEVER stale. Every getter method calls this
+        before returning data, so external changes (e.g., GUI updates) are always
+        picked up automatically.
+
+        The check is efficient: only compares file modification time, and only
+        reloads if the disk file was actually modified since our last load.
+        """
+        if not self.state_file.exists():
+            return
+        try:
+            disk_mtime = self.state_file.stat().st_mtime
+            if disk_mtime > self._last_load_time:
+                logger.debug(
+                    "chain_state_auto_refresh",
+                    qube_id=self.qube_id,
+                    disk_mtime=disk_mtime,
+                    last_load=self._last_load_time
+                )
+                self._load()
+        except OSError:
+            # File access error - skip refresh, use cached state
+            pass
+
     # =========================================================================
     # SETTINGS SECTION METHODS (GUI-managed)
     # =========================================================================
 
     def get_setting(self, key: str, default: Any = None) -> Any:
         """Get a setting value."""
+        self._ensure_fresh()
         return self.state.get("settings", {}).get(key, default)
 
     def update_settings(self, updates: Dict[str, Any], from_gui: bool = False) -> None:
@@ -1069,6 +1103,7 @@ class ChainState:
 
     def get_all_settings(self) -> Dict[str, Any]:
         """Get all settings."""
+        self._ensure_fresh()
         return self.state.get("settings", {}).copy()
 
     # =========================================================================
@@ -1133,14 +1168,17 @@ class ChainState:
 
     def get_chain_length(self) -> int:
         """Get current chain length (permanent blocks only)."""
+        self._ensure_fresh()
         return self.state.get("chain", {}).get("length", 1)
 
     def get_last_block_hash(self) -> str:
         """Get last block hash."""
+        self._ensure_fresh()
         return self.state.get("chain", {}).get("latest_block_hash", "0" * 64)
 
     def get_block_counts(self) -> Dict[str, int]:
         """Get block type counts."""
+        self._ensure_fresh()
         return self.state.get("block_counts", {}).copy()
 
     def rebuild_block_counts(self, memory_chain) -> bool:
@@ -1252,6 +1290,7 @@ class ChainState:
 
     def get_session_id(self) -> Optional[str]:
         """Get current session ID."""
+        self._ensure_fresh()
         return self.state.get("session", {}).get("session_id")
 
     def update_session(
@@ -1280,6 +1319,7 @@ class ChainState:
 
     def get_session_block_count(self) -> int:
         """Get current session block count."""
+        self._ensure_fresh()
         return self.state.get("session", {}).get("messages_this_session", 0)
 
     # =========================================================================
@@ -1383,6 +1423,7 @@ class ChainState:
 
     def get_usage_stats(self) -> Dict[str, Any]:
         """Get usage statistics."""
+        self._ensure_fresh()
         stats = self.state.get("stats", {})
         return {
             "total_tokens": stats.get("total_tokens_used", 0),
@@ -1453,6 +1494,7 @@ class ChainState:
         Returns committed stats + pending counts from session blocks.
         This gives real-time visibility while preserving rollback semantics.
         """
+        self._ensure_fresh()
         stats = self.state.get("stats", {}).copy()
         pending = self.get_pending_session_stats()
 
@@ -1474,6 +1516,7 @@ class ChainState:
 
     def get_unlocked_skills(self) -> List[Dict[str, Any]]:
         """Get list of unlocked skills."""
+        self._ensure_fresh()
         return self.state.get("skills", {}).get("unlocked", [])
 
     def unlock_skill(self, skill_id: str, xp: int = 0) -> None:
@@ -1536,6 +1579,7 @@ class ChainState:
 
     def get_skill_progress(self, skill_id: str) -> Optional[Dict[str, Any]]:
         """Get progress for a specific skill."""
+        self._ensure_fresh()
         for skill in self.get_unlocked_skills():
             if skill["id"] == skill_id:
                 return skill
@@ -1547,14 +1591,17 @@ class ChainState:
 
     def get_relationship(self, entity_id: str) -> Optional[Dict[str, Any]]:
         """Get relationship data for an entity."""
+        self._ensure_fresh()
         return self.state.get("relationships", {}).get("entities", {}).get(entity_id)
 
     def get_all_relationships(self) -> Dict[str, Dict[str, Any]]:
         """Get all relationships."""
+        self._ensure_fresh()
         return self.state.get("relationships", {}).get("entities", {}).copy()
 
     def get_relationships(self) -> Dict[str, Dict[str, Any]]:
         """Alias for get_all_relationships - returns all relationships."""
+        self._ensure_fresh()
         return self.get_all_relationships()
 
     def update_relationship(self, entity_id: str, data: Dict[str, Any]) -> None:
@@ -1608,10 +1655,12 @@ class ChainState:
 
     def get_best_friend(self) -> Optional[str]:
         """Get best friend entity ID."""
+        self._ensure_fresh()
         return self.state.get("relationships", {}).get("best_friend")
 
     def get_owner(self) -> Optional[str]:
         """Get owner entity ID."""
+        self._ensure_fresh()
         return self.state.get("relationships", {}).get("owner")
 
     # =========================================================================
@@ -1620,6 +1669,7 @@ class ChainState:
 
     def get_wallet_info(self) -> Dict[str, Any]:
         """Get wallet information."""
+        self._ensure_fresh()
         return self.state.get("financial", {}).get("wallet", {}).copy()
 
     def update_wallet(self, **kwargs) -> None:
@@ -1667,11 +1717,13 @@ class ChainState:
 
     def get_transaction_history(self, limit: int = 50) -> List[Dict[str, Any]]:
         """Get transaction history."""
+        self._ensure_fresh()
         history = self.state.get("financial", {}).get("transactions", {}).get("history", [])
         return history[-limit:] if limit else history
 
     def get_pending_transactions(self) -> List[Dict[str, Any]]:
         """Get pending transactions."""
+        self._ensure_fresh()
         return self.state.get("financial", {}).get("pending", [])
 
     def add_pending_transaction(self, tx: Dict[str, Any]) -> None:
@@ -1754,6 +1806,7 @@ class ChainState:
 
     def get_mood(self) -> Dict[str, Any]:
         """Get current mood state."""
+        self._ensure_fresh()
         return self.state.get("mood", {}).copy()
 
     def adjust_energy(self, delta: int) -> int:
@@ -1819,6 +1872,7 @@ class ChainState:
 
     def get_health(self) -> Dict[str, Any]:
         """Get health information."""
+        self._ensure_fresh()
         return self.state.get("health", {}).copy()
 
     # =========================================================================
@@ -1952,6 +2006,7 @@ class ChainState:
 
     def get_owner_info(self) -> Dict[str, Any]:
         """Get all owner info."""
+        self._ensure_fresh()
         owner_info = self.state.get("owner_info")
         if not owner_info:
             return self._initialize_owner_info()
@@ -2062,6 +2117,7 @@ class ChainState:
         Returns:
             Field dictionary or None if not found
         """
+        self._ensure_fresh()
         owner_info = self.state.get("owner_info", {})
 
         if category == "dynamic":
@@ -2181,6 +2237,7 @@ class ChainState:
         Returns:
             List of field dictionaries with category attached
         """
+        self._ensure_fresh()
         owner_info = self.state.get("owner_info", {})
         fields = []
 
@@ -2374,6 +2431,7 @@ class ChainState:
 
     def get_qube_profile(self) -> Dict[str, Any]:
         """Get all qube profile data."""
+        self._ensure_fresh()
         qube_profile = self.state.get("qube_profile")
         if not qube_profile:
             return self._initialize_qube_profile()
@@ -2491,6 +2549,7 @@ class ChainState:
 
     def get_qube_profile_field(self, category: str, key: str) -> Optional[Dict[str, Any]]:
         """Get a specific qube profile field."""
+        self._ensure_fresh()
         qube_profile = self.state.get("qube_profile", {})
         key = key.lower().replace(" ", "_").replace("-", "_")
 
@@ -2555,6 +2614,7 @@ class ChainState:
 
     def get_all_qube_profile_fields(self) -> List[Dict[str, Any]]:
         """Get all qube profile fields as a flat list."""
+        self._ensure_fresh()
         qube_profile = self.state.get("qube_profile", {})
         all_fields = []
 
@@ -2724,6 +2784,7 @@ class ChainState:
 
     def get_clearance_config(self) -> Dict[str, Any]:
         """Get full clearance configuration from relationships.clearance_settings."""
+        self._ensure_fresh()
         relationships = self.state.get("relationships", {})
         settings = relationships.get("clearance_settings")
         if not settings:
@@ -2732,6 +2793,7 @@ class ChainState:
 
     def get_custom_profile(self, profile_name: str) -> Optional[Dict[str, Any]]:
         """Get a custom profile override by name."""
+        self._ensure_fresh()
         settings = self._get_clearance_settings()
         return settings.get("custom_profiles", {}).get(profile_name)
 
@@ -2763,11 +2825,13 @@ class ChainState:
 
     def get_all_custom_profiles(self) -> Dict[str, Dict[str, Any]]:
         """Get all custom profile overrides."""
+        self._ensure_fresh()
         settings = self._get_clearance_settings()
         return settings.get("custom_profiles", {}).copy()
 
     def get_custom_tag(self, tag_name: str) -> Optional[Dict[str, Any]]:
         """Get a custom tag definition by name."""
+        self._ensure_fresh()
         settings = self._get_clearance_settings()
         return settings.get("custom_tags", {}).get(tag_name)
 
@@ -2799,11 +2863,13 @@ class ChainState:
 
     def get_all_custom_tags(self) -> Dict[str, Dict[str, Any]]:
         """Get all custom tag definitions."""
+        self._ensure_fresh()
         settings = self._get_clearance_settings()
         return settings.get("custom_tags", {}).copy()
 
     def is_clearance_auto_suggest_enabled(self) -> bool:
         """Check if clearance auto-suggest is enabled."""
+        self._ensure_fresh()
         settings = self._get_clearance_settings()
         return settings.get("auto_suggest_enabled", True)
 
@@ -2852,6 +2918,7 @@ class ChainState:
         Args:
             group_chat: If True, check group chat setting; otherwise individual
         """
+        self._ensure_fresh()
         settings = self.state.get("settings", {})
         if group_chat:
             return settings.get("group_auto_anchor_enabled", True)
@@ -2863,6 +2930,7 @@ class ChainState:
         Args:
             group_chat: If True, get group chat threshold; otherwise individual
         """
+        self._ensure_fresh()
         settings = self.state.get("settings", {})
         if group_chat:
             return settings.get("group_auto_anchor_threshold", 20)
@@ -2899,10 +2967,12 @@ class ChainState:
 
     def is_model_locked(self) -> bool:
         """Check if model switching is locked."""
+        self._ensure_fresh()
         return self.state.get("settings", {}).get("model_locked", True)
 
     def get_locked_model(self) -> Optional[str]:
         """Get locked model name."""
+        self._ensure_fresh()
         return self.state.get("settings", {}).get("model_locked_to")
 
     def set_model_lock(self, locked: bool, model_name: str = None) -> None:
@@ -2928,6 +2998,7 @@ class ChainState:
         The stored model_mode field is kept for backward compatibility but
         the booleans are the source of truth.
         """
+        self._ensure_fresh()
         settings = self.state.get("settings", {})
         # Always derive from booleans - they are the source of truth
         # This prevents stale model_mode values from causing inconsistency
@@ -2939,6 +3010,7 @@ class ChainState:
 
     def is_revolver_mode_enabled(self) -> bool:
         """Check if revolver mode is enabled."""
+        self._ensure_fresh()
         return self.state.get("settings", {}).get("revolver_mode_enabled", False)
 
     def set_revolver_mode(self, enabled: bool) -> None:
@@ -2962,6 +3034,7 @@ class ChainState:
 
     def get_revolver_mode_pool(self) -> List[str]:
         """Get revolver mode model pool."""
+        self._ensure_fresh()
         return self.state.get("settings", {}).get("revolver_mode_pool", [])
 
     def set_revolver_mode_pool(self, models: List[str]) -> None:
@@ -2992,6 +3065,7 @@ class ChainState:
 
     def is_autonomous_mode_enabled(self) -> bool:
         """Check if autonomous mode is enabled."""
+        self._ensure_fresh()
         return self.state.get("settings", {}).get("autonomous_mode_enabled", False)
 
     def set_autonomous_mode(self, enabled: bool) -> None:
@@ -3011,6 +3085,7 @@ class ChainState:
 
     def get_autonomous_mode_pool(self) -> List[str]:
         """Get autonomous mode model pool."""
+        self._ensure_fresh()
         return self.state.get("settings", {}).get("autonomous_mode_pool", [])
 
     def set_autonomous_mode_pool(self, models: List[str]) -> None:
@@ -3038,6 +3113,7 @@ class ChainState:
 
     def is_tts_enabled(self) -> bool:
         """Check if TTS is enabled."""
+        self._ensure_fresh()
         return self.state.get("settings", {}).get("tts_enabled", False)
 
     def set_tts_enabled(self, enabled: bool) -> None:
@@ -3048,6 +3124,7 @@ class ChainState:
 
     def get_voice_model(self) -> str:
         """Get the voice model to use for TTS."""
+        self._ensure_fresh()
         return self.state.get("settings", {}).get("voice_model", "openai:alloy")
 
     def set_voice_model(self, voice_model: str) -> None:
@@ -3058,6 +3135,7 @@ class ChainState:
 
     def is_visualizer_enabled(self) -> bool:
         """Check if visualizer is enabled."""
+        self._ensure_fresh()
         return self.state.get("settings", {}).get("visualizer_enabled", False)
 
     def set_visualizer_enabled(self, enabled: bool) -> None:
@@ -3068,6 +3146,7 @@ class ChainState:
 
     def get_visualizer_settings(self) -> Optional[Dict[str, Any]]:
         """Get visualizer settings."""
+        self._ensure_fresh()
         return self.state.get("settings", {}).get("visualizer_settings")
 
     def set_visualizer_settings(self, settings_data: Dict[str, Any]) -> None:
@@ -3083,6 +3162,7 @@ class ChainState:
         - Revolver mode: runtime.current_model (randomly selected each request)
         - Other modes: current_model_override > runtime > locked > default
         """
+        self._ensure_fresh()
         settings = self.state.get("settings", {})
         runtime = self.state.get("runtime", {})
 
@@ -3109,6 +3189,7 @@ class ChainState:
 
     def get_current_provider(self) -> str:
         """Get the current AI provider based on active mode."""
+        self._ensure_fresh()
         settings = self.state.get("settings", {})
         runtime = self.state.get("runtime", {})
 
@@ -3152,6 +3233,7 @@ class ChainState:
 
     def get_avatar_description(self) -> Optional[str]:
         """Get cached avatar description."""
+        self._ensure_fresh()
         return self.state.get("avatar_description")
 
     def clear_avatar_description(self) -> None:
@@ -3194,6 +3276,7 @@ class ChainState:
 
     def get_current_model_override(self) -> Optional[str]:
         """Get current model override."""
+        self._ensure_fresh()
         return self.state.get("current_model_override")
 
     def clear_current_model_override(self) -> None:
@@ -3239,12 +3322,14 @@ class ChainState:
         Returns:
             Dict with model, reason, set_at or None if no preference
         """
+        self._ensure_fresh()
         settings = self.state.get("settings", {})
         preferences = settings.get("model_preferences", {})
         return preferences.get(task_type)
 
     def get_all_model_preferences(self) -> Dict[str, Any]:
         """Get all model preferences."""
+        self._ensure_fresh()
         settings = self.state.get("settings", {})
         return settings.get("model_preferences", {})
 
@@ -3305,6 +3390,7 @@ class ChainState:
 
     def get_runtime(self) -> Dict[str, Any]:
         """Get current runtime state."""
+        self._ensure_fresh()
         return self.state.get("runtime", {}).copy()
 
     def set_online(self, is_online: bool) -> None:
@@ -3315,10 +3401,12 @@ class ChainState:
 
     def get_state(self) -> Dict[str, Any]:
         """Get full state dict (for debugging)."""
+        self._ensure_fresh()
         return self.state.copy()
 
     def get_ipfs_state(self) -> Dict[str, Any]:
         """Get state for IPFS anchoring (excludes ephemeral sections)."""
+        self._ensure_fresh()
         state = self.state.copy()
         for section in self.IPFS_EXCLUDED_SECTIONS:
             state.pop(section, None)
@@ -3598,6 +3686,7 @@ class ChainState:
         Returns:
             Dictionary with requested sections
         """
+        self._ensure_fresh()
         # If no sections specified, return all accessible
         if not sections:
             sections = list(self.ACCESSIBLE_SECTIONS)

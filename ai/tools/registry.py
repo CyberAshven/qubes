@@ -466,6 +466,42 @@ class ToolRegistry:
                     qube_id=self.qube.qube_id
                 )
 
+        # Tool alias mapping for common model hallucinations
+        # Models using prompt-based tool calling sometimes guess at tool names
+        TOOL_ALIASES = {
+            "scan_system": "get_system_state",
+            "check_system": "get_system_state",
+            "system_scan": "get_system_state",
+            "get_state": "get_system_state",
+            "check_state": "get_system_state",
+            "search_web": "web_search",
+            "internet_search": "web_search",
+            "google_search": "web_search",
+            "browse_web": "browse_url",
+            "open_url": "browse_url",
+            "visit_url": "browse_url",
+            "visit_website": "browse_url",
+            "change_model": "switch_model",
+            "set_model": "switch_model",
+            "search_memory": "memory_search",
+            "recall": "memory_search",
+            "remember": "memory_search",
+            "save_memory": "add_memory",
+            "store_memory": "add_memory",
+            "create_memory": "add_memory",
+        }
+
+        # Resolve alias if present
+        if tool_name in TOOL_ALIASES:
+            original_name = tool_name
+            tool_name = TOOL_ALIASES[tool_name]
+            logger.info(
+                "tool_alias_resolved",
+                original=original_name,
+                resolved=tool_name,
+                qube_id=self.qube.qube_id
+            )
+
         tool = self.tools.get(tool_name)
         if not tool:
             raise AIError(
@@ -483,8 +519,14 @@ class ToolRegistry:
         # Get current model for ACTION block tracking
         current_model = None
         if hasattr(self.qube, 'chain_state') and self.qube.chain_state:
-            runtime = self.qube.chain_state.get_runtime()
-            current_model = runtime.get("current_model")
+            # In Manual mode, use locked_model (source of truth for user's choice)
+            # In other modes, use runtime.current_model
+            model_mode = self.qube.chain_state.get_model_mode()
+            if model_mode == "manual":
+                current_model = self.qube.chain_state.get_locked_model()
+            else:
+                runtime = self.qube.chain_state.get_runtime()
+                current_model = runtime.get("current_model")
 
         # Create in_progress ACTION block BEFORE executing (so frontend can show status)
         in_progress_block = None
