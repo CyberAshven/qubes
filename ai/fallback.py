@@ -466,7 +466,16 @@ class AIFallbackChain:
                 return response, model_name, provider, False
 
             except Exception as e:
-                error_str = str(e)
+                # Unwrap tenacity RetryError to get the actual exception
+                actual_error = e
+                try:
+                    from tenacity import RetryError
+                    if isinstance(e, RetryError) and e.last_attempt is not None:
+                        actual_error = e.last_attempt.exception()
+                except ImportError:
+                    pass
+
+                error_str = str(actual_error)
                 errors.append({
                     "attempt": attempt + 1,
                     "error": error_str
