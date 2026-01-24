@@ -240,6 +240,8 @@ IMPORTANT RULES:
             if pending_tool_results:
                 # Combine all tool results into one message to avoid multiple consecutive user messages
                 combined = "\n\n".join(pending_tool_results)
+                # Add explicit instruction to respond - some models (like Kimi K2) need this nudge
+                combined += "\n\nPlease analyze these tool results and provide your response to the user."
                 new_messages.append({
                     "role": "user",
                     "content": combined
