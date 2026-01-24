@@ -232,29 +232,40 @@ IMPORTANT RULES:
         # Create a copy to avoid modifying original
         new_messages = []
         system_found = False
+        pending_tool_results = []  # Batch consecutive tool results
+
+        def flush_tool_results():
+            """Combine pending tool results into a single user message"""
+            nonlocal pending_tool_results
+            if pending_tool_results:
+                # Combine all tool results into one message to avoid multiple consecutive user messages
+                combined = "\n\n".join(pending_tool_results)
+                new_messages.append({
+                    "role": "user",
+                    "content": combined
+                })
+                logger.debug(
+                    "tool_results_batched",
+                    count=len(pending_tool_results)
+                )
+                pending_tool_results = []
 
         for msg in messages:
             role = msg.get("role")
             if role == "system" and not system_found:
+                flush_tool_results()  # Flush any pending results
                 # Append tool instructions to existing system prompt
                 new_content = msg.get("content", "") + "\n\n" + tool_instructions
                 new_messages.append({"role": "system", "content": new_content})
                 system_found = True
             elif role == "tool":
-                # Convert tool result to user message for models without native tool support
-                # Venice and other prompt-based tool models only accept user/system/assistant roles
+                # Collect tool results to batch them into a single user message
+                # Multiple consecutive user messages can confuse some models
                 tool_name = msg.get("name", "unknown")
                 tool_content = msg.get("content", "")
-                new_messages.append({
-                    "role": "user",
-                    "content": f"[Tool Result for {tool_name}]: {tool_content}"
-                })
-                logger.debug(
-                    "tool_message_converted_to_user",
-                    tool_name=tool_name,
-                    content_length=len(tool_content)
-                )
+                pending_tool_results.append(f"[Tool Result for {tool_name}]: {tool_content}")
             elif role == "assistant" and msg.get("tool_calls"):
+                flush_tool_results()  # Flush any pending results before assistant message
                 # Strip tool_calls field from assistant messages - models without native
                 # tool support don't understand this field and it can cause empty responses
                 content = msg.get("content", "")
@@ -272,7 +283,11 @@ IMPORTANT RULES:
                     content_was_empty=not msg.get("content", "").strip()
                 )
             else:
+                flush_tool_results()  # Flush any pending results before other messages
                 new_messages.append(msg.copy())
+
+        # Flush any remaining tool results at the end
+        flush_tool_results()
 
         # If no system message exists, add one
         if not system_found:
