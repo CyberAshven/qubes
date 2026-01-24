@@ -229,6 +229,19 @@ class VeniceModel(AIModelInterface):
             choice = response.choices[0]
             message = choice.message
 
+            # Debug logging to diagnose empty responses
+            raw_content = message.content
+            raw_tool_calls = message.tool_calls
+            logger.info(
+                "venice_raw_response",
+                model=self.model_name,
+                finish_reason=choice.finish_reason,
+                content_length=len(raw_content) if raw_content else 0,
+                content_preview=raw_content[:500] if raw_content else "(empty)",
+                has_tool_calls=bool(raw_tool_calls),
+                tool_call_count=len(raw_tool_calls) if raw_tool_calls else 0
+            )
+
             # Extract tool calls if present
             tool_calls = None
             content = message.content or ""
