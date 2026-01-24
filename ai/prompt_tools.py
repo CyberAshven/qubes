@@ -257,11 +257,19 @@ IMPORTANT RULES:
             elif role == "assistant" and msg.get("tool_calls"):
                 # Strip tool_calls field from assistant messages - models without native
                 # tool support don't understand this field and it can cause empty responses
-                clean_msg = {"role": "assistant", "content": msg.get("content", "")}
+                content = msg.get("content", "")
+                # If content is empty (model only output tool calls), add placeholder
+                # Empty assistant messages can confuse some models
+                if not content.strip():
+                    tool_names = [tc.get("function", {}).get("name") or tc.get("name", "tool")
+                                  for tc in msg.get("tool_calls", [])]
+                    content = f"[Using tools: {', '.join(tool_names)}]"
+                clean_msg = {"role": "assistant", "content": content}
                 new_messages.append(clean_msg)
                 logger.debug(
                     "assistant_tool_calls_stripped",
-                    original_tool_count=len(msg.get("tool_calls", []))
+                    original_tool_count=len(msg.get("tool_calls", [])),
+                    content_was_empty=not msg.get("content", "").strip()
                 )
             else:
                 new_messages.append(msg.copy())
