@@ -241,10 +241,11 @@ IMPORTANT RULES:
             if pending_tool_results and last_assistant_index is not None:
                 # Append tool results to the assistant's message (not as a separate user message)
                 # This keeps the tool execution as part of the assistant's "turn"
-                results_text = "\n\n**Tool execution completed:**\n" + "\n".join(
-                    f"• {result}" for result in pending_tool_results
+                results_text = "\n\n[Tool results received]\n" + "\n".join(
+                    f"- {result}" for result in pending_tool_results
                 )
-                results_text += "\n\nBased on these results, I will now provide my response:"
+                # End with incomplete sentence to force continuation
+                results_text += "\n\nNow, based on what I learned from these tools, here's"
 
                 new_messages[last_assistant_index]["content"] += results_text
                 logger.debug(
