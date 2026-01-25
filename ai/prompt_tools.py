@@ -233,63 +233,66 @@ IMPORTANT RULES:
         new_messages = []
         system_found = False
         pending_tool_results = []  # Batch consecutive tool results
+        last_assistant_index = None  # Track where to append tool results
 
-        def flush_tool_results():
-            """Combine pending tool results into a single user message"""
-            nonlocal pending_tool_results
-            if pending_tool_results:
-                # Combine all tool results into one message to avoid multiple consecutive user messages
-                combined = "\n\n".join(pending_tool_results)
-                # Add explicit instruction to respond - some models (like Kimi K2) need this nudge
-                combined += "\n\nPlease analyze these tool results and provide your response to the user."
-                new_messages.append({
-                    "role": "user",
-                    "content": combined
-                })
+        def flush_tool_results_to_assistant():
+            """Append pending tool results to the last assistant message"""
+            nonlocal pending_tool_results, last_assistant_index
+            if pending_tool_results and last_assistant_index is not None:
+                # Append tool results to the assistant's message (not as a separate user message)
+                # This keeps the tool execution as part of the assistant's "turn"
+                results_text = "\n\n**Tool execution completed:**\n" + "\n".join(
+                    f"• {result}" for result in pending_tool_results
+                )
+                results_text += "\n\nBased on these results, I will now provide my response:"
+
+                new_messages[last_assistant_index]["content"] += results_text
                 logger.debug(
-                    "tool_results_batched",
-                    count=len(pending_tool_results)
+                    "tool_results_appended_to_assistant",
+                    count=len(pending_tool_results),
+                    assistant_index=last_assistant_index
                 )
                 pending_tool_results = []
 
         for msg in messages:
             role = msg.get("role")
             if role == "system" and not system_found:
-                flush_tool_results()  # Flush any pending results
                 # Append tool instructions to existing system prompt
                 new_content = msg.get("content", "") + "\n\n" + tool_instructions
                 new_messages.append({"role": "system", "content": new_content})
                 system_found = True
             elif role == "tool":
-                # Collect tool results to batch them into a single user message
-                # Multiple consecutive user messages can confuse some models
+                # Collect tool results to append to the assistant message
                 tool_name = msg.get("name", "unknown")
                 tool_content = msg.get("content", "")
-                pending_tool_results.append(f"[Tool Result for {tool_name}]: {tool_content}")
+                pending_tool_results.append(f"{tool_name}: {tool_content}")
             elif role == "assistant" and msg.get("tool_calls"):
-                flush_tool_results()  # Flush any pending results before assistant message
-                # Strip tool_calls field from assistant messages - models without native
-                # tool support don't understand this field and it can cause empty responses
+                # First flush any pending results to previous assistant
+                flush_tool_results_to_assistant()
+
+                # Strip tool_calls field - models without native support don't understand it
                 content = msg.get("content", "")
                 # If content is empty (model only output tool calls), add placeholder
-                # Empty assistant messages can confuse some models
                 if not content.strip():
                     tool_names = [tc.get("function", {}).get("name") or tc.get("name", "tool")
                                   for tc in msg.get("tool_calls", [])]
-                    content = f"[Using tools: {', '.join(tool_names)}]"
-                clean_msg = {"role": "assistant", "content": content}
-                new_messages.append(clean_msg)
+                    content = f"I'll use my tools to help with this: {', '.join(tool_names)}"
+
+                new_messages.append({"role": "assistant", "content": content})
+                last_assistant_index = len(new_messages) - 1
                 logger.debug(
                     "assistant_tool_calls_stripped",
                     original_tool_count=len(msg.get("tool_calls", [])),
                     content_was_empty=not msg.get("content", "").strip()
                 )
             else:
-                flush_tool_results()  # Flush any pending results before other messages
+                # Flush pending results before any other message type
+                flush_tool_results_to_assistant()
+                last_assistant_index = None  # Reset - tool results shouldn't go to non-tool-calling assistants
                 new_messages.append(msg.copy())
 
         # Flush any remaining tool results at the end
-        flush_tool_results()
+        flush_tool_results_to_assistant()
 
         # If no system message exists, add one
         if not system_found:
