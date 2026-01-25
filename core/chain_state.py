@@ -3762,11 +3762,15 @@ class ChainState:
             return {"success": False, "message": "Path required for owner_info updates"}
 
         parts = path.split(".")
-        if len(parts) < 2:
-            return {"success": False, "message": "Path must be 'category.key' format"}
 
-        category = parts[0]
-        key = parts[1]
+        # Auto-prefix with "general" category if only a key is provided
+        # This makes it easier for models to use without knowing the exact format
+        if len(parts) == 1:
+            category = "general"
+            key = parts[0]
+        else:
+            category = parts[0]
+            key = parts[1]
 
         if operation == "set":
             # value should be the field value, or a dict with value/sensitivity

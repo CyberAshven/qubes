@@ -920,7 +920,7 @@ def register_default_tools(registry: ToolRegistry) -> None:
                 },
                 "path": {
                     "type": "string",
-                    "description": "Dot-notation path within section. Examples: 'standard.name' for owner_info, 'current_mood' for mood, 'entities.qube_123' for relationships"
+                    "description": "Path within section. For owner_info: use 'category.key' (e.g., 'personal.interests', 'living.location') or just 'key' which defaults to 'general' category. For mood: 'current_mood'. For relationships: 'entities.qube_123'"
                 },
                 "value": {
                     "description": "Value to set. For owner_info, can be string or {value, sensitivity} object"
