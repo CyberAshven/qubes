@@ -493,6 +493,7 @@ class QubeReasoner:
 
             # Reasoning loop with tool calling
             tool_call_history = []  # Track tool calls to detect loops
+            self._tool_call_signatures = set()  # Track exact tool+params combos to detect duplicates
             generated_image_paths = []  # Track generated images to auto-inject into response
 
             for iteration in range(max_iterations):
@@ -670,55 +671,86 @@ class QubeReasoner:
 
                 # Check if model wants to use tools
                 if response.tool_calls:
-                    # Detect infinite loops - if same tool called 3+ times, force stop
+                    # Detect infinite loops - multiple strategies
                     tool_names = [tc["name"] for tc in response.tool_calls]
                     tool_call_history.append(tool_names)
 
+                    # Strategy 1: Check if last 2 calls are the same tool set
+                    loop_detected = False
+                    loop_reason = ""
+
                     if len(tool_call_history) >= 2:
-                        # Check if last 2 calls are the same tool (reduced from 3 to be more aggressive)
                         if tool_call_history[-1] == tool_call_history[-2]:
-                            logger.warning(
-                                "tool_call_loop_detected",
-                                tool=tool_names[0],
-                                iterations=iteration + 1,
-                                qube_id=self.qube.qube_id
-                            )
-                            # Force the model to give a text response by removing tools
-                            logger.info("forcing_text_response_after_tool_loop")
+                            loop_detected = True
+                            loop_reason = "same tool set called twice consecutively"
 
-                            # Don't add any more messages - just force text response on next iteration
-                            final_retry = await self.model.generate(
-                                messages=context_messages,
-                                tools=[],  # No tools - force text response
-                                temperature=temperature
-                            )
+                    # Strategy 2: Check if any single tool has been called too many times (>5)
+                    if not loop_detected:
+                        from collections import Counter
+                        all_tool_calls = [name for names in tool_call_history for name in names]
+                        tool_counts = Counter(all_tool_calls)
+                        for tool, count in tool_counts.items():
+                            if count > 5:
+                                loop_detected = True
+                                loop_reason = f"tool '{tool}' called {count} times total"
+                                break
 
-                            # Track tokens for forced retry
-                            if final_retry.usage:
-                                input_tokens = final_retry.usage.get("input_tokens") or final_retry.usage.get("prompt_tokens", 0)
-                                output_tokens = final_retry.usage.get("output_tokens") or final_retry.usage.get("completion_tokens", 0)
-                                total_tokens = final_retry.usage.get("total_tokens", 0)
-                                cost_per_1k_tokens = model_info.get("cost_per_1k_tokens", 0.0)
-                                estimated_cost = (total_tokens / 1000.0) * cost_per_1k_tokens if cost_per_1k_tokens else 0.0
+                    # Strategy 3: Check for exact duplicate tool call (same tool + same params)
+                    if not loop_detected:
+                        for tc in response.tool_calls:
+                            sig = f"{tc['name']}:{json.dumps(tc.get('parameters', {}), sort_keys=True)}"
+                            if sig in self._tool_call_signatures:
+                                loop_detected = True
+                                loop_reason = f"exact duplicate call to {tc['name']} with same parameters"
+                                break
+                            self._tool_call_signatures.add(sig)
 
-                                # Store usage data for block metadata
-                                self.last_usage = final_retry.usage
-                                self.last_model_used = model_to_use
+                    if loop_detected:
+                        logger.warning(
+                            "tool_call_loop_detected",
+                            reason=loop_reason,
+                            tool=tool_names[0] if tool_names else "unknown",
+                            iterations=iteration + 1,
+                            total_tool_calls=sum(len(names) for names in tool_call_history),
+                            qube_id=self.qube.qube_id
+                        )
+                        # Force the model to give a text response by removing tools
+                        logger.info("forcing_text_response_after_tool_loop", reason=loop_reason)
 
-                                # Emit tokens used event
-                                from core.events import Events
-                                self.qube.events.emit(Events.TOKENS_USED, {
-                                    "model": model_to_use,
-                                    "input_tokens": input_tokens,
-                                    "output_tokens": output_tokens,
-                                    "cost": estimated_cost
-                                })
+                        # Don't add any more messages - just force text response on next iteration
+                        final_retry = await self.model.generate(
+                            messages=context_messages,
+                            tools=[],  # No tools - force text response
+                            temperature=temperature
+                        )
 
-                            if final_retry.content:
-                                return final_retry.content
-                            else:
-                                # Include diagnostic info in error message
-                                return f"I tried to help but got stuck in a loop calling '{tool_names[0]}'. Let me try a different approach - could you rephrase your request?"
+                        # Track tokens for forced retry
+                        if final_retry.usage:
+                            input_tokens = final_retry.usage.get("input_tokens") or final_retry.usage.get("prompt_tokens", 0)
+                            output_tokens = final_retry.usage.get("output_tokens") or final_retry.usage.get("completion_tokens", 0)
+                            total_tokens = final_retry.usage.get("total_tokens", 0)
+                            cost_per_1k_tokens = model_info.get("cost_per_1k_tokens", 0.0)
+                            estimated_cost = (total_tokens / 1000.0) * cost_per_1k_tokens if cost_per_1k_tokens else 0.0
+
+                            # Store usage data for block metadata
+                            self.last_usage = final_retry.usage
+                            self.last_model_used = model_to_use
+
+                            # Emit tokens used event
+                            from core.events import Events
+                            self.qube.events.emit(Events.TOKENS_USED, {
+                                "model": model_to_use,
+                                "input_tokens": input_tokens,
+                                "output_tokens": output_tokens,
+                                "cost": estimated_cost
+                            })
+
+                        if final_retry.content:
+                            return final_retry.content
+                        else:
+                            # Include diagnostic info in error message
+                            return f"I tried to help but got stuck in a loop ({loop_reason}). Let me try a different approach - could you rephrase your request?"
+
                     logger.info(
                         "tool_calls_requested",
                         count=len(response.tool_calls),
