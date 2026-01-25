@@ -2415,6 +2415,7 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
                 'write_file': 'writing file',
                 'run_command': 'running command',
                 'calculate': 'calculating',
+                'describe_my_avatar': 'looking in the mirror',
                 // AI Reasoning Tools
                 'think_step_by_step': 'thinking step by step',
                 'self_critique': 'self-critiquing',

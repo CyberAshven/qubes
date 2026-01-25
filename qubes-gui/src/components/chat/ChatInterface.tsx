@@ -1484,6 +1484,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
                 'get_system_state': 'checking system state',
                 'update_system_state': 'updating system state',
                 'switch_model': 'switching model',
+                'describe_my_avatar': 'looking in the mirror',
                 // AI Reasoning Tools
                 'think_step_by_step': 'thinking step by step',
                 'self_critique': 'self-critiquing',
