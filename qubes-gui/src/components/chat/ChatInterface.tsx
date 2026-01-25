@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { emit, emitTo, listen } from '@tauri-apps/api/event';
@@ -14,6 +14,7 @@ import { useChatMessages, Message } from '../../hooks/useChatMessages';
 import { useQubeSelection } from '../../hooks/useQubeSelection';
 import { TypewriterText } from './TypewriterText';
 import { ChatHeader } from './ChatHeader';
+import { ToolCallBubble } from './ToolCallBubble';
 import EmojiPicker, { EmojiClickData, Theme } from 'emoji-picker-react';
 import { WaveformOverlay } from '../visualizer/WaveformOverlay';
 import type { WaveformStyle, ColorTheme, GradientStyle, AnimationSmoothness } from '../../types';
@@ -56,6 +57,14 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
     action_type: string;
     timestamp: number;
     target_model?: string;  // For revolver_switch actions
+  }>>([]);
+  // Store completed action blocks for display with messages
+  const [completedActionBlocks, setCompletedActionBlocks] = useState<Array<{
+    action_type: string;
+    timestamp: number;
+    parameters: any;
+    result: any;
+    status: string;
   }>>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const recognitionRef = useRef<any>(null);
@@ -266,6 +275,74 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
     // Remove [Thinking: ...] blocks from models like Kimi K2
     // These can span multiple lines, so use [\s\S] to match any character including newlines
     let cleaned = content.replace(/\[Thinking:[\s\S]*?\]/gi, '');
+
+    // Remove Gemini 3's internal thinking/planning blocks
+    // Look for end-of-thinking markers and take content after them
+    const endMarkers = [
+      "*Let's do this.*",
+      "*Let's do this*",
+      "*Let's roll.*",
+      "*Let's roll*",
+      "*Here's my response:*",
+      "*Here's my response*",
+      "*Response:*",
+      "*Responding now:*",
+      "*Final response:*",
+      "my response:",
+    ];
+
+    for (const marker of endMarkers) {
+      const markerLower = marker.toLowerCase();
+      const cleanedLower = cleaned.toLowerCase();
+      if (cleanedLower.includes(markerLower)) {
+        const idx = cleanedLower.indexOf(markerLower);
+        cleaned = cleaned.substring(idx + marker.length).trim();
+        break;
+      }
+    }
+
+    // If content starts with planning patterns, try to find the actual response
+    const trimmedLower = cleaned.trim().toLowerCase();
+    if (trimmedLower.startsWith('my plan:') ||
+        trimmedLower.startsWith('my thought process') ||
+        trimmedLower.startsWith('plan:')) {
+      // Look for common response starters after planning
+      const lines = cleaned.split('\n');
+      let responseStart = 0;
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim().toLowerCase();
+        // Skip planning-related lines
+        if (line.startsWith('my plan:') ||
+            line.startsWith('my thought') ||
+            line.startsWith('plan:') ||
+            line.startsWith('*self-correction') ||
+            line.startsWith('*refining') ||
+            line.startsWith('*let') ||
+            line.startsWith('**key response') ||
+            line.match(/^\d+\.\s+\*\*/) ||  // Numbered bold items
+            line.startsWith('- ') ||
+            (line.startsWith('*') && line.endsWith('*'))) {
+          continue;
+        }
+        // Found a line that looks like actual response
+        if (line.length > 20 && !line.includes('should') && !line.includes('will ') && !line.includes('need to')) {
+          responseStart = i;
+          break;
+        }
+        // Common response starters
+        if (line.startsWith('whoa') || line.startsWith('okay') || line.startsWith('hey') ||
+            line.startsWith('so,') || line.startsWith('oh') || line.startsWith('hmm') ||
+            line.startsWith('well') || line.startsWith('alright')) {
+          responseStart = i;
+          break;
+        }
+      }
+
+      if (responseStart > 0) {
+        cleaned = lines.slice(responseStart).join('\n').trim();
+      }
+    }
 
     // Regular expression to detect image URLs (including DALL-E Azure Blob Storage URLs)
     const imageUrlRegex = /(https?:\/\/[^\s\)]+?(?:\.(?:png|jpg|jpeg|gif|webp)|blob\.core\.windows\.net\/[^\s\)]+))/gi;
@@ -1232,6 +1309,23 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
             });
           });
 
+          // Store all ACTION blocks (completed or not) for display with messages
+          const allActionBlocks = result.session_blocks
+            .filter((b: any) =>
+              b.block_type === 'ACTION' &&
+              b.content?.action_type &&
+              b.content?.action_type !== 'process_document'
+            )
+            .map((b: any) => ({
+              action_type: b.content.action_type,
+              timestamp: b.timestamp,
+              parameters: b.content.parameters || {},
+              result: b.content.result || null,
+              status: b.content.status || 'completed',
+            }));
+
+          setCompletedActionBlocks(allActionBlocks);
+
           // Clean up old entries from toolCallFirstSeen (actions from previous turns)
           for (const [ts] of toolCallFirstSeen.current) {
             if (ts <= lastMessageTimestamp) {
@@ -1255,6 +1349,89 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
 
     return () => clearInterval(pollInterval);
   }, [isLoading, userId, password, selectedQubes]);
+
+  // Load action blocks on mount and when qube changes (for historical tool calls)
+  useEffect(() => {
+    const loadActionBlocks = async () => {
+      if (!userId || !password || selectedQubes.length === 0) {
+        setCompletedActionBlocks([]);
+        return;
+      }
+
+      try {
+        const result = await invoke<any>('get_qube_blocks', {
+          userId,
+          qubeId: selectedQubes[0].qube_id,
+          password,
+          limit: 50
+        });
+
+        if (result?.session_blocks && Array.isArray(result.session_blocks)) {
+          const allActionBlocks = result.session_blocks
+            .filter((b: any) =>
+              b.block_type === 'ACTION' &&
+              b.content?.action_type &&
+              b.content?.action_type !== 'process_document'
+            )
+            .map((b: any) => ({
+              action_type: b.content.action_type,
+              timestamp: b.timestamp,
+              parameters: b.content.parameters || {},
+              result: b.content.result || null,
+              status: b.content.status || 'completed',
+            }));
+
+          setCompletedActionBlocks(allActionBlocks);
+        }
+      } catch (err) {
+        console.error('Failed to load action blocks:', err);
+      }
+    };
+
+    loadActionBlocks();
+  }, [userId, password, selectedQubes]);
+
+  // Memoized mapping of message index to tool calls
+  // This prevents recalculation on every render, fixing the typewriter glitch
+  // when expanding ToolCallBubbles during animation
+  const toolCallsByMessageIndex = useMemo(() => {
+    const mapping: Map<number, typeof completedActionBlocks> = new Map();
+
+    if (messages.length === 0 || completedActionBlocks.length === 0) {
+      return mapping;
+    }
+
+    for (let msgIndex = 0; msgIndex < messages.length; msgIndex++) {
+      const currentMsg = messages[msgIndex];
+      if (currentMsg.sender !== 'qube') continue;
+
+      const currentTimestamp = currentMsg.timestamp.getTime();
+
+      // Find the previous message timestamp
+      let prevTimestamp = 0;
+      for (let i = msgIndex - 1; i >= 0; i--) {
+        prevTimestamp = messages[i].timestamp.getTime();
+        break;
+      }
+
+      // Find ACTION blocks between previous message and current message
+      const toolCalls = completedActionBlocks.filter(block => {
+        const blockTime = block.timestamp;
+        return blockTime > prevTimestamp && blockTime <= currentTimestamp;
+      }).sort((a, b) => a.timestamp - b.timestamp);
+
+      if (toolCalls.length > 0) {
+        mapping.set(msgIndex, toolCalls);
+      }
+    }
+
+    return mapping;
+  }, [messages, completedActionBlocks]);
+
+  // Helper to get tool calls for a specific message (uses memoized mapping)
+  const getToolCallsForMessage = useCallback((msgIndex: number): typeof completedActionBlocks => {
+    return toolCallsByMessageIndex.get(msgIndex) || [];
+  }, [toolCallsByMessageIndex]);
 
   if (selectedQubes.length === 0) {
     return (
@@ -1284,23 +1461,42 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
           </div>
         ) : (
           <div className="space-y-4 pb-4">
-            {messages.map(msg => (
-              <div
-                key={msg.id}
-                className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}
-              >
+            {messages.map((msg, msgIndex) => (
+              <React.Fragment key={msg.id}>
+                {/* Tool call bubbles before qube messages */}
+                {msg.sender === 'qube' && getToolCallsForMessage(msgIndex).length > 0 && (
+                  <div className="flex justify-start">
+                    <div className="max-w-[70%]">
+                      {getToolCallsForMessage(msgIndex).map((block, blockIdx) => (
+                        <ToolCallBubble
+                          key={`${block.timestamp}-${blockIdx}`}
+                          toolName={block.action_type}
+                          input={block.parameters}
+                          result={block.result}
+                          status={block.status as 'in_progress' | 'completed' | 'failed'}
+                          accentColor={selectedQubes[0].favorite_color}
+                          timestamp={block.timestamp}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {/* Message bubble */}
                 <div
-                  className={`max-w-[70%] rounded-lg p-3 border-2 ${
-                    msg.sender === 'user'
-                      ? 'bg-accent-primary/20 text-text-primary border-accent-primary'
-                      : 'bg-bg-tertiary text-text-primary'
-                  }`}
-                  style={
-                    msg.sender === 'qube'
-                      ? { borderColor: selectedQubes[0].favorite_color }
-                      : undefined
-                  }
+                  className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}
                 >
+                  <div
+                    className={`max-w-[70%] rounded-lg p-3 border-2 ${
+                      msg.sender === 'user'
+                        ? 'bg-accent-primary/20 text-text-primary border-accent-primary'
+                        : 'bg-bg-tertiary text-text-primary'
+                    }`}
+                    style={
+                      msg.sender === 'qube'
+                        ? { borderColor: selectedQubes[0].favorite_color }
+                        : undefined
+                    }
+                  >
                   {/* Speaker Name */}
                   <div className="flex items-center gap-2 mb-2">
                     {msg.sender === 'qube' && (
@@ -1393,7 +1589,41 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
                   </p>
                 </div>
               </div>
+              </React.Fragment>
             ))}
+
+            {/* Current turn tool calls (shown in real-time during loading) */}
+            {isLoading && selectedQubes.length > 0 && (() => {
+              // Get the timestamp of the last message
+              const lastMsgTimestamp = messages.length > 0
+                ? messages[messages.length - 1].timestamp.getTime()
+                : 0;
+
+              // Find tool calls from the current turn (after last message)
+              const currentTurnTools = completedActionBlocks.filter(
+                block => block.timestamp > lastMsgTimestamp
+              ).sort((a, b) => a.timestamp - b.timestamp);
+
+              if (currentTurnTools.length === 0) return null;
+
+              return (
+                <div className="flex justify-start">
+                  <div className="max-w-[70%]">
+                    {currentTurnTools.map((block, idx) => (
+                      <ToolCallBubble
+                        key={`current-${block.timestamp}-${idx}`}
+                        toolName={block.action_type}
+                        input={block.parameters}
+                        result={block.result}
+                        status={block.status as 'in_progress' | 'completed' | 'failed'}
+                        accentColor={selectedQubes[0].favorite_color}
+                        timestamp={block.timestamp}
+                      />
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* TTS Generation Indicator */}
             {isGeneratingTTS && selectedQubes.length > 0 && (

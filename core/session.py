@@ -1248,8 +1248,27 @@ Summary:"""
         logger.info("ai_summary_trying_fallback")
 
         from ai.model_registry import ModelRegistry
-        from config.settings import get_settings
-        settings = get_settings()
+        import os
+
+        # Map providers to their API key environment variables
+        PROVIDER_API_KEY_MAP = {
+            "openai": "OPENAI_API_KEY",
+            "anthropic": "ANTHROPIC_API_KEY",
+            "google": "GOOGLE_API_KEY",
+            "perplexity": "PERPLEXITY_API_KEY",
+            "deepseek": "DEEPSEEK_API_KEY",
+            "xai": "XAI_API_KEY",
+            "venice": "VENICE_API_KEY",
+            "moonshot": "MOONSHOT_API_KEY",
+            "ollama": None,  # No API key needed
+        }
+
+        def get_api_key_for_provider(provider: str) -> str:
+            """Get API key for a provider from environment."""
+            env_var = PROVIDER_API_KEY_MAP.get(provider)
+            if env_var is None:  # ollama
+                return "ollama"
+            return os.getenv(env_var, "")
 
         # Get the primary model name to exclude from fallbacks
         primary_model_name = getattr(self.qube.reasoner.model, 'model_name', None)
@@ -1277,12 +1296,9 @@ Summary:"""
                 continue
 
             # Check if this model is available
-            if provider == "ollama":
-                api_key = "ollama"
-            else:
-                api_key = settings.get_api_key(provider)
-                if not api_key:
-                    continue
+            api_key = get_api_key_for_provider(provider)
+            if not api_key:
+                continue
 
             # Get context window for this model
             try:

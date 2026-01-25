@@ -511,6 +511,74 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
     // These can span multiple lines, so use [\s\S] to match any character including newlines
     let cleaned = content.replace(/\[Thinking:[\s\S]*?\]/gi, '');
 
+    // Remove Gemini 3's internal thinking/planning blocks
+    // Look for end-of-thinking markers and take content after them
+    const endMarkers = [
+      "*Let's do this.*",
+      "*Let's do this*",
+      "*Let's roll.*",
+      "*Let's roll*",
+      "*Here's my response:*",
+      "*Here's my response*",
+      "*Response:*",
+      "*Responding now:*",
+      "*Final response:*",
+      "my response:",
+    ];
+
+    for (const marker of endMarkers) {
+      const markerLower = marker.toLowerCase();
+      const cleanedLower = cleaned.toLowerCase();
+      if (cleanedLower.includes(markerLower)) {
+        const idx = cleanedLower.indexOf(markerLower);
+        cleaned = cleaned.substring(idx + marker.length).trim();
+        break;
+      }
+    }
+
+    // If content starts with planning patterns, try to find the actual response
+    const trimmedLower = cleaned.trim().toLowerCase();
+    if (trimmedLower.startsWith('my plan:') ||
+        trimmedLower.startsWith('my thought process') ||
+        trimmedLower.startsWith('plan:')) {
+      // Look for common response starters after planning
+      const lines = cleaned.split('\n');
+      let responseStart = 0;
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim().toLowerCase();
+        // Skip planning-related lines
+        if (line.startsWith('my plan:') ||
+            line.startsWith('my thought') ||
+            line.startsWith('plan:') ||
+            line.startsWith('*self-correction') ||
+            line.startsWith('*refining') ||
+            line.startsWith('*let') ||
+            line.startsWith('**key response') ||
+            line.match(/^\d+\.\s+\*\*/) ||  // Numbered bold items
+            line.startsWith('- ') ||
+            (line.startsWith('*') && line.endsWith('*'))) {
+          continue;
+        }
+        // Found a line that looks like actual response
+        if (line.length > 20 && !line.includes('should') && !line.includes('will ') && !line.includes('need to')) {
+          responseStart = i;
+          break;
+        }
+        // Common response starters
+        if (line.startsWith('whoa') || line.startsWith('okay') || line.startsWith('hey') ||
+            line.startsWith('so,') || line.startsWith('oh') || line.startsWith('hmm') ||
+            line.startsWith('well') || line.startsWith('alright')) {
+          responseStart = i;
+          break;
+        }
+      }
+
+      if (responseStart > 0) {
+        cleaned = lines.slice(responseStart).join('\n').trim();
+      }
+    }
+
     // Regular expression to detect image URLs (including DALL-E Azure Blob Storage URLs)
     const imageUrlRegex = /(https?:\/\/[^\s\)]+?(?:\.(?:png|jpg|jpeg|gif|webp)|blob\.core\.windows\.net\/[^\s\)]+))/gi;
     // Regular expression to detect local Windows file paths to images (both absolute and relative)

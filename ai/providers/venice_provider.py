@@ -121,7 +121,15 @@ class VeniceModel(AIModelInterface):
                 - enable_web_search: "off" | "auto" (default: "off")
                 - character_slug: Optional character persona
         """
-        super().__init__(model_name, api_key, **kwargs)
+        # Map registry names to actual Venice API model names
+        # This allows using unique registry keys while sending correct names to Venice
+        MODEL_NAME_MAP = {
+            "venice/gemini-3-pro": "gemini-3-pro-preview",
+            "venice/gemini-3-flash": "gemini-3-flash-preview",
+        }
+        actual_model_name = MODEL_NAME_MAP.get(model_name, model_name)
+
+        super().__init__(actual_model_name, api_key, **kwargs)
 
         # Venice-specific options
         self.enable_web_search = kwargs.get("enable_web_search", "off")

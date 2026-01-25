@@ -934,20 +934,18 @@ class ChainState:
                         # The reload-and-merge logic in _save_pending_transactions() handles race conditions.
                     else:
                         # GUI saving: preserve ALL backend-managed sections from disk
-                        # GUI only manages settings, not stats/skills/relationships/runtime/etc.
+                        # GUI only manages settings, not stats/skills/relationships/etc.
                         # This prevents GUI from overwriting backend data with stale values
-                        # IMPORTANT: runtime is included to preserve current_model after reset
-                        backend_sections = ["stats", "skills", "relationships", "mood", "chain", "financial", "health", "owner_info", "qube_profile", "block_counts", "session", "runtime"]
+                        # NOTE: runtime is NOT included - it represents current state and should
+                        # reflect in-memory changes (e.g., model changes via set_model_lock)
+                        backend_sections = ["stats", "skills", "relationships", "mood", "chain", "financial", "health", "owner_info", "qube_profile", "block_counts", "session"]
                         for section in backend_sections:
                             if section in disk_state:
                                 merged_state[section] = disk_state[section]
 
-                        # Also preserve top-level backend-managed fields
-                        # current_model_override is set by switch_model tool and must persist
-                        backend_top_level_fields = ["current_model_override"]
-                        for field in backend_top_level_fields:
-                            if field in disk_state:
-                                merged_state[field] = disk_state[field]
+                        # NOTE: current_model_override is NOT preserved from disk here
+                        # It's explicitly set by set_model_lock (to None) and switch_model tool
+                        # Preserving it would undo those explicit changes
 
                     # CRITICAL DEBUG: Log state after merge
                     logger.info(
@@ -2986,8 +2984,21 @@ class ChainState:
             settings["model_mode"] = "manual"
             # Clear any stale model override from autonomous mode
             # Otherwise the override takes precedence over manual lock
-            if "current_model_override" in self.state:
-                del self.state["current_model_override"]
+            # Use None instead of deleting - this prevents _save from restoring old value from disk
+            self.state["current_model_override"] = None
+            # Also update runtime model so get_current_model returns the correct value
+            # (runtime.current_model has higher priority than model_locked_to)
+            if model_name:
+                runtime = self.state.setdefault("runtime", {})
+                runtime["current_model"] = model_name
+                # Derive and set provider
+                try:
+                    from ai.model_registry import ModelRegistry
+                    model_info = ModelRegistry.get_model_info(model_name)
+                    if model_info:
+                        runtime["current_provider"] = model_info["provider"]
+                except Exception:
+                    pass
         # Use preserve_gui_fields=False since we're intentionally updating GUI-managed settings
         self._save(preserve_gui_fields=False)
 

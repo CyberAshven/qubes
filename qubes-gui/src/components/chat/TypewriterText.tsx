@@ -8,7 +8,8 @@ interface TypewriterTextProps {
   onTextUpdate?: () => void;
 }
 
-export const TypewriterText: React.FC<TypewriterTextProps> = ({ text, audioElement, onComplete, onTextUpdate }) => {
+// Memoized to prevent re-renders when parent components update (e.g., ToolCallBubble expansion)
+export const TypewriterText: React.FC<TypewriterTextProps> = React.memo(({ text, audioElement, onComplete, onTextUpdate }) => {
   const [displayedText, setDisplayedText] = useState('');
   const { totalChunks, currentChunk, isLastChunk } = useAudio();
 
@@ -167,4 +168,4 @@ export const TypewriterText: React.FC<TypewriterTextProps> = ({ text, audioEleme
   }, [text, audioElement, totalChunks, currentChunk, isLastChunk]);
 
   return <span className="whitespace-pre-wrap">{displayedText}</span>;
-};
+});

@@ -523,12 +523,50 @@ class GUIBridge:
                         if runtime.get("current_provider"):
                             current_provider = runtime["current_provider"]
                 else:
+                    # Qube not in memory - try to load chain_state directly to get persisted model
                     logger.debug(
                         "list_qubes_qube_not_loaded",
                         qube_id=qube_id,
                         loaded_qubes=loaded_qubes_keys,
                         genesis_model=genesis_model
                     )
+                    try:
+                        from core.chain_state import ChainState
+                        # Find the qube directory by searching for matching qube_id
+                        qubes_dir = self.orchestrator.data_dir / "qubes"
+                        chain_dir = None
+                        for dir_entry in qubes_dir.iterdir():
+                            if dir_entry.is_dir():
+                                metadata_path = dir_entry / "chain" / "qube_metadata.json"
+                                if metadata_path.exists():
+                                    with open(metadata_path, "r") as f:
+                                        meta = json.load(f)
+                                        if meta.get("qube_id") == qube_id:
+                                            chain_dir = dir_entry / "chain"
+                                            break
+
+                        if chain_dir and (chain_dir / "chain_state.json").exists():
+                            # Get encryption key using existing helper
+                            qube_dir = chain_dir.parent  # chain_dir is qube_dir/chain
+                            encryption_key = self._get_qube_encryption_key(qube_dir)
+
+                            if encryption_key:
+                                # Load chain_state to get persisted model
+                                temp_chain_state = ChainState(data_dir=chain_dir, encryption_key=encryption_key)
+                                runtime_model = temp_chain_state.get_current_model()
+                                if runtime_model and runtime_model != "claude-sonnet-4-20250514":  # Not the default
+                                    current_model = runtime_model
+                                    logger.info(
+                                        "list_qubes_loaded_chain_state_model",
+                                        qube_id=qube_id,
+                                        persisted_model=runtime_model
+                                    )
+                    except Exception as e:
+                        logger.warning(
+                            "list_qubes_chain_state_load_failed",
+                            qube_id=qube_id,
+                            error=str(e)
+                        )
 
                 gui_qube = {
                     "qube_id": qube["qube_id"],
