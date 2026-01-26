@@ -2290,15 +2290,20 @@ async fn save_recorded_audio(user_id: String, audio_data: Vec<u8>) -> Result<ser
     let mut cmd = prepare_backend_command()?;
     cmd.arg("save-recorded-audio")
         .arg(&user_id)
-        .stdin(std::process::Stdio::piped());
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
 
     let mut child = cmd.spawn()
         .map_err(|e| format!("Failed to spawn backend: {}", e))?;
 
-    // Write audio data to stdin
-    if let Some(mut stdin) = child.stdin.take() {
+    // Write audio data to stdin and explicitly drop to signal EOF
+    {
+        let mut stdin = child.stdin.take()
+            .ok_or_else(|| "Failed to open stdin".to_string())?;
         stdin.write_all(&audio_data)
             .map_err(|e| format!("Failed to write audio data: {}", e))?;
+        // stdin is dropped here when it goes out of scope, signaling EOF
     }
 
     let output = child.wait_with_output()
