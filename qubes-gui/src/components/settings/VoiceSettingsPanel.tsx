@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { GlassCard, GlassButton, GlassInput } from '../glass';
 import { useAuth } from '../../hooks/useAuth';
 import { LocalTTSSetupPanel } from './LocalTTSSetupPanel';
@@ -231,8 +231,9 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
       });
 
       if (result.success && result.audio_path) {
-        // Play the preview audio
-        const audio = new Audio(`file://${result.audio_path}`);
+        // Play the preview audio (use convertFileSrc for Tauri security)
+        const audioUrl = convertFileSrc(result.audio_path);
+        const audio = new Audio(audioUrl);
         await audio.play();
       } else {
         setError(result.error || 'Failed to generate preview');
