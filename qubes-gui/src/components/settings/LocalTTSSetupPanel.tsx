@@ -52,6 +52,9 @@ export const LocalTTSSetupPanel: React.FC = () => {
   const [uninstalling, setUninstalling] = useState(false);
   const [showUninstallConfirm, setShowUninstallConfirm] = useState(false);
 
+  // Collapsed state - default to collapsed
+  const [isExpanded, setIsExpanded] = useState(false);
+
   // Load status on mount and periodically
   useEffect(() => {
     loadStatus();
@@ -207,33 +210,66 @@ export const LocalTTSSetupPanel: React.FC = () => {
     );
   }
 
+  // Determine compact status text
+  const getStatusSummary = () => {
+    if (!status) return 'Loading...';
+    if (!status.wsl2_installed || !status.ubuntu_installed) return 'Setup Required';
+    if (!status.setup_complete) return 'Ready to Install';
+    if (status.server_ready) return 'Running';
+    if (status.server_running) return 'Starting...';
+    return 'Stopped';
+  };
+
+  const statusColor = () => {
+    if (!status) return 'text-text-tertiary';
+    if (status.server_ready) return 'text-green-400';
+    if (status.server_running) return 'text-yellow-400';
+    if (status.setup_complete) return 'text-text-secondary';
+    return 'text-yellow-400';
+  };
+
   return (
-    <div className="space-y-4">
-      {/* Header with refresh */}
-      <div className="flex items-center justify-between gap-4">
-        <div className="flex-1">
+    <div className="space-y-3">
+      {/* Collapsible Header */}
+      <div
+        className="flex items-center justify-between gap-3 cursor-pointer group"
+        onClick={() => setIsExpanded(!isExpanded)}
+      >
+        <div className="flex items-center gap-2 flex-1 min-w-0">
+          <span className={`text-xs transition-transform ${isExpanded ? 'rotate-90' : ''}`}>▶</span>
           <h3 className="text-sm font-medium text-text-primary">Local TTS (WSL2)</h3>
-          <p className="text-[10px] text-text-tertiary mt-0.5">
-            High-quality Qwen3-TTS running locally via WSL2
-          </p>
+          <span className={`text-[10px] ${statusColor()}`}>
+            • {getStatusSummary()}
+          </span>
         </div>
-        <GlassButton
-          onClick={loadStatus}
-          variant="secondary"
-          size="sm"
-          className="text-[10px] h-7 px-3 whitespace-nowrap shrink-0 flex items-center justify-center"
-        >
-          Refresh
-        </GlassButton>
+        <div className="flex items-center gap-2 shrink-0">
+          {status?.server_ready && (
+            <span className="text-[9px] bg-green-500/20 text-green-400 px-1.5 py-0.5 rounded">
+              Server Running
+            </span>
+          )}
+          <GlassButton
+            onClick={(e) => { e.stopPropagation(); loadStatus(); }}
+            variant="secondary"
+            size="sm"
+            className="text-[10px] h-6 px-2 whitespace-nowrap flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+          >
+            ↻
+          </GlassButton>
+        </div>
       </div>
 
-      {/* Error display */}
+      {/* Error display - always visible */}
       {error && (
-        <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/30 text-xs text-red-400">
+        <div className="p-2 rounded-lg bg-red-500/10 border border-red-500/30 text-xs text-red-400">
           {error}
           <button onClick={() => setError(null)} className="ml-2 underline">Dismiss</button>
         </div>
       )}
+
+      {/* Expanded content */}
+      {isExpanded && (
+        <div className="space-y-3 pl-4 border-l border-white/10">
 
       {/* Setup Progress */}
       {isSettingUp && setupProgress && (
@@ -456,6 +492,8 @@ export const LocalTTSSetupPanel: React.FC = () => {
           <li>Requires ~6GB VRAM and ~10GB disk space</li>
         </ul>
       </div>
+        </div>
+      )}
     </div>
   );
 };

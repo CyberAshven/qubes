@@ -302,41 +302,87 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
 
   const handleRecordCloneAudio = async () => {
     setIsRecording(true);
+    setError(null);
     try {
+      console.log('[Recording] Requesting microphone access...');
+
       // Use browser's MediaRecorder API for reliable recording
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+      console.log('[Recording] Got microphone stream');
+
+      // Try different mime types for compatibility
+      let mimeType = 'audio/webm';
+      if (!MediaRecorder.isTypeSupported(mimeType)) {
+        mimeType = 'audio/ogg';
+        if (!MediaRecorder.isTypeSupported(mimeType)) {
+          mimeType = 'audio/mp4';
+          if (!MediaRecorder.isTypeSupported(mimeType)) {
+            mimeType = ''; // Let browser choose default
+          }
+        }
+      }
+      console.log('[Recording] Using mime type:', mimeType || 'default');
+
+      const mediaRecorder = mimeType
+        ? new MediaRecorder(stream, { mimeType })
+        : new MediaRecorder(stream);
       const chunks: Blob[] = [];
 
       mediaRecorder.ondataavailable = (e) => {
+        console.log('[Recording] Data available:', e.data.size, 'bytes');
         if (e.data.size > 0) {
           chunks.push(e.data);
         }
       };
 
+      mediaRecorder.onerror = (e) => {
+        console.error('[Recording] MediaRecorder error:', e);
+      };
+
       // Start recording
-      mediaRecorder.start();
+      mediaRecorder.start(1000); // Collect data every 1 second
+      console.log('[Recording] Started recording...');
 
       // Stop after 5 seconds
-      await new Promise<void>((resolve) => {
-        setTimeout(() => {
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          console.log('[Recording] Stopping after 5 seconds...');
           mediaRecorder.stop();
           stream.getTracks().forEach(track => track.stop());
         }, 5000);
 
-        mediaRecorder.onstop = () => resolve();
+        mediaRecorder.onstop = () => {
+          clearTimeout(timeout);
+          console.log('[Recording] Stopped, total chunks:', chunks.length);
+          resolve();
+        };
+
+        mediaRecorder.onerror = (e) => {
+          clearTimeout(timeout);
+          reject(new Error('MediaRecorder error: ' + e));
+        };
       });
 
       // Convert to blob and save via Tauri
-      const blob = new Blob(chunks, { type: 'audio/webm' });
+      const actualMimeType = mediaRecorder.mimeType || 'audio/webm';
+      console.log('[Recording] Creating blob with type:', actualMimeType);
+      const blob = new Blob(chunks, { type: actualMimeType });
+      console.log('[Recording] Blob size:', blob.size, 'bytes');
+
+      if (blob.size === 0) {
+        throw new Error('Recording produced no audio data');
+      }
+
       const arrayBuffer = await blob.arrayBuffer();
       const uint8Array = new Uint8Array(arrayBuffer);
+      console.log('[Recording] Sending', uint8Array.length, 'bytes to backend...');
 
       // Save to temp file via backend
       const result = await invoke<{ success: boolean; audio_path?: string; error?: string }>('save_recorded_audio', {
         userId,
         audioData: Array.from(uint8Array),
       });
+      console.log('[Recording] Backend result:', result);
 
       if (result.success && result.audio_path) {
         setCloneAudioPath(result.audio_path);
@@ -346,10 +392,17 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
         setError(result.error || 'Failed to save recorded audio');
       }
     } catch (err) {
-      if (err instanceof Error && err.name === 'NotAllowedError') {
-        setError('Microphone access denied. Please allow microphone access in your browser settings.');
+      console.error('[Recording] Error:', err);
+      if (err instanceof Error) {
+        if (err.name === 'NotAllowedError') {
+          setError('Microphone access denied. Please allow microphone access.');
+        } else if (err.name === 'NotFoundError') {
+          setError('No microphone found. Please connect a microphone.');
+        } else {
+          setError(`Recording failed: ${err.message}`);
+        }
       } else {
-        setError(err instanceof Error ? err.message : 'Failed to record audio');
+        setError('Failed to record audio: ' + String(err));
       }
     } finally {
       setIsRecording(false);
