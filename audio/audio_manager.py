@@ -7,10 +7,11 @@ From docs/27_Audio_TTS_STT_Integration.md Section 5.1
 
 import os
 from pathlib import Path
-from typing import Dict, Optional, Any
+from typing import Dict, Optional, Any, Tuple
 import asyncio
 
 from audio.tts_engine import TTSProvider, OpenAITTS, ElevenLabsTTS, GeminiTTS, GoogleTTS, PiperTTS, VoiceConfig
+from audio.wsl2_tts import WSL2TTSProvider
 from audio.stt_engine import STTProvider, OpenAIWhisper, DeepGramSTT, WhisperCppSTT
 from audio.playback import AudioPlayer
 from audio.recorder import AudioRecorder
@@ -22,6 +23,8 @@ from utils.logging import get_logger
 from monitoring.metrics import MetricsRecorder
 
 logger = get_logger(__name__)
+
+
 
 
 def chunk_text_for_tts(text: str, max_chars: int = 4000) -> list[str]:
@@ -206,6 +209,19 @@ class AudioManager:
             except Exception as e:
                 logger.warning("tts_provider_init_failed", provider="piper", error=str(e))
 
+        # Qwen3-TTS (local GPU) - uses global singleton that persists across calls
+        if self._check_gpu_available():
+            self.tts_providers["qwen3"] = None  # Lazy load marker
+            logger.info("tts_provider_registered", provider="qwen3", status="lazy")
+
+        # WSL2 TTS (Qwen3 via WSL2 server) - preferred for near real-time TTS
+        # Server must be running: wsl -d Ubuntu-22.04 ~/qubes-tts/start_server.sh
+        try:
+            self.tts_providers["wsl2"] = WSL2TTSProvider()
+            logger.info("tts_provider_registered", provider="wsl2")
+        except Exception as e:
+            logger.debug("wsl2_tts_not_available", error=str(e))
+
     def _init_stt_providers(self):
         """Initialize available STT providers"""
         # OpenAI Whisper
@@ -238,6 +254,187 @@ class AudioManager:
                 logger.info("stt_provider_initialized", provider="whisper_cpp")
             except Exception as e:
                 logger.warning("stt_provider_init_failed", provider="whisper_cpp", error=str(e))
+
+    def _check_gpu_available(self) -> bool:
+        """Check if a suitable GPU is available for Qwen3-TTS"""
+        try:
+            import torch
+            if not torch.cuda.is_available():
+                return False
+            # Check if any GPU has enough VRAM (minimum 2.5GB for 0.6B model)
+            for i in range(torch.cuda.device_count()):
+                props = torch.cuda.get_device_properties(i)
+                vram_gb = props.total_memory / (1024**3)
+                if vram_gb >= 2.5:
+                    return True
+            return False
+        except ImportError:
+            # PyTorch not installed
+            return False
+        except Exception as e:
+            logger.debug("gpu_check_failed", error=str(e))
+            return False
+
+    def _get_qwen3_provider(self) -> Optional[TTSProvider]:
+        """Get Qwen3 provider, initializing lazily if needed"""
+        if "qwen3" not in self.tts_providers:
+            return None
+
+        provider = self.tts_providers.get("qwen3")
+        if provider is not None:
+            return provider
+
+        # Lazy initialization
+        try:
+            from audio.qwen_tts import Qwen3TTSProvider
+
+            # Use defaults for Qwen3 preferences (1.7B with flash attention)
+            # These can be overridden per-user via the Settings UI
+            model_variant = "1.7B"
+            use_flash_attention = True
+
+            # Try to load user preferences if we have user context
+            if hasattr(self, 'user_data_dir') and self.user_data_dir:
+                try:
+                    from config.user_preferences import UserPreferencesManager
+                    prefs_manager = UserPreferencesManager(self.user_data_dir)
+                    qwen3_prefs = prefs_manager.get_qwen3_preferences()
+                    model_variant = qwen3_prefs.model_variant
+                    use_flash_attention = qwen3_prefs.use_flash_attention
+                except Exception:
+                    pass  # Use defaults
+
+            provider = Qwen3TTSProvider(
+                model_variant=model_variant,
+                use_flash_attention=use_flash_attention
+            )
+            self.tts_providers["qwen3"] = provider
+            logger.info("tts_provider_initialized", provider="qwen3")
+            return provider
+
+        except Exception as e:
+            logger.warning("tts_provider_init_failed", provider="qwen3", error=str(e))
+            # Remove from providers so we don't keep trying
+            self.tts_providers.pop("qwen3", None)
+            return None
+
+    def start_qwen3_background_load(self, voice_config: Optional[VoiceConfig] = None) -> bool:
+        """
+        Start loading Qwen3 model in the background.
+
+        Called when user sends a message to a TTS-enabled qube, allowing model
+        to load while AI generates its response.
+
+        Args:
+            voice_config: Optional voice config to determine which model variant to load
+
+        Returns:
+            True if background load started, False if already loading or unavailable
+        """
+        if "qwen3" not in self.tts_providers:
+            return False
+
+        # Check if global model is already loaded
+        try:
+            from audio.qwen_tts import Qwen3TTSProvider
+            if Qwen3TTSProvider._global_model is not None:
+                logger.debug("qwen3_model_already_loaded_global")
+                return False  # Already loaded globally
+        except ImportError:
+            return False
+
+        async def _background_load():
+            try:
+                provider = self._get_qwen3_provider()
+                if provider:
+                    # Pre-load the specific model variant needed
+                    voice_mode = voice_config.voice_mode if voice_config else "preset"
+                    await provider.ensure_ready(voice_mode=voice_mode or "preset")
+                logger.info("qwen3_background_load_complete")
+            except Exception as e:
+                logger.warning("qwen3_background_load_failed", error=str(e))
+
+        # Start background task
+        asyncio.create_task(_background_load())
+        logger.info("qwen3_background_load_started")
+        return True
+
+    def check_qwen3_status(self) -> Dict[str, Any]:
+        """
+        Get Qwen3-TTS availability and GPU status.
+
+        Returns:
+            Dict with status info:
+            - available: bool - Whether Qwen3 can be used
+            - gpu_name: str | None - GPU name if available
+            - vram_total_gb: float | None - Total VRAM
+            - vram_available_gb: float | None - Available VRAM
+            - recommended_variant: str | None - "1.7B" or "0.6B" based on VRAM
+            - models_downloaded: list[str] - Downloaded model names
+            - is_loaded: bool - Whether model is currently loaded
+            - fallback_provider: str - Provider to use if Qwen3 unavailable
+        """
+        result = {
+            "available": False,
+            "gpu_name": None,
+            "vram_total_gb": None,
+            "vram_available_gb": None,
+            "recommended_variant": None,
+            "models_downloaded": [],
+            "is_loaded": False,
+            "fallback_provider": self._get_fallback_provider(),
+        }
+
+        try:
+            import torch
+            if not torch.cuda.is_available():
+                return result
+
+            # Get GPU info
+            device = torch.cuda.current_device()
+            props = torch.cuda.get_device_properties(device)
+            result["gpu_name"] = props.name
+            result["vram_total_gb"] = round(props.total_memory / (1024**3), 1)
+
+            # Get available VRAM
+            free_memory = torch.cuda.mem_get_info(device)[0]
+            result["vram_available_gb"] = round(free_memory / (1024**3), 1)
+
+            # Recommend variant based on VRAM
+            if result["vram_total_gb"] >= 5:
+                result["recommended_variant"] = "1.7B"
+            elif result["vram_total_gb"] >= 2.5:
+                result["recommended_variant"] = "0.6B"
+
+            result["available"] = result["recommended_variant"] is not None
+
+            # Check downloaded models
+            models_dir = Path.home() / ".qubes" / "models" / "qwen3-tts"
+            if models_dir.exists():
+                for model_dir in models_dir.iterdir():
+                    if model_dir.is_dir():
+                        result["models_downloaded"].append(model_dir.name)
+
+            # Check if model is loaded (global singleton)
+            try:
+                from audio.qwen_tts import Qwen3TTSProvider
+                result["is_loaded"] = Qwen3TTSProvider._global_model is not None
+            except ImportError:
+                result["is_loaded"] = False
+
+        except ImportError:
+            pass
+        except Exception as e:
+            logger.debug("qwen3_status_check_failed", error=str(e))
+
+        return result
+
+    def _get_fallback_provider(self) -> str:
+        """Get the best available fallback TTS provider"""
+        for provider in ["gemini", "openai", "piper"]:
+            if provider in self.tts_providers and self.tts_providers[provider] is not None:
+                return provider
+        return "piper"
 
     def _apply_stt_aliases(self, text: str) -> str:
         """
@@ -342,7 +539,17 @@ class AudioManager:
                 continue
 
             try:
-                provider = self.tts_providers[provider_name]
+                # Handle lazy-loaded Qwen3 provider
+                if provider_name == "qwen3":
+                    provider = self._get_qwen3_provider()
+                    if provider is None:
+                        logger.debug("qwen3_lazy_init_failed")
+                        continue
+                    # Ensure model is ready for this voice config
+                    await provider.ensure_ready(voice_mode=voice_config.voice_mode or "preset")
+                else:
+                    provider = self.tts_providers[provider_name]
+
                 audio_stream = provider.synthesize_stream(text, voice_config)
 
                 # Play audio
@@ -427,14 +634,67 @@ class AudioManager:
             voice_id=voice_model
         )
 
-        # Check if provider is available
+        # Check if provider is available (handle lazy-loaded Qwen3)
         if provider not in self.tts_providers:
             raise AIError(
                 f"TTS provider '{provider}' not available. Available: {list(self.tts_providers.keys())}",
                 context={"provider": provider}
             )
 
+        # For Qwen3/WSL2, prefer WSL2 server (much faster - model stays loaded with torch.compile)
+        if provider in ("qwen3", "wsl2"):
+            # Try WSL2 provider which auto-starts the server if needed
+            if "wsl2" in self.tts_providers:
+                wsl2_provider = self.tts_providers["wsl2"]
+                logger.info("trying_wsl2_tts", voice=voice_model)
+
+                # Check/start WSL2 server
+                availability = await wsl2_provider.check_availability(try_auto_start=True)
+
+                if availability["available"]:
+                    if availability.get("auto_started"):
+                        logger.info("wsl2_tts_auto_started")
+
+                    # Generate single output file path (WSL2 outputs WAV)
+                    if block_number is not None:
+                        filename = f"audio_block_{block_number}.wav"
+                    else:
+                        filename = "latest_response.wav"
+                    output_path = audio_dir / filename
+
+                    try:
+                        await wsl2_provider.synthesize_file(text, voice_config, output_path)
+                        logger.info("wsl2_tts_success", audio_path=str(output_path))
+                        return output_path.resolve(), 1
+                    except Exception as e:
+                        logger.warning("wsl2_tts_failed", error=str(e))
+                        # Fall through to direct Qwen3 or other fallback
+                else:
+                    logger.debug("wsl2_tts_not_available", error=availability.get("error"))
+
+            # Fall back to direct Qwen3 loading (slower, but works without WSL2)
+            if provider == "qwen3":
+                logger.info("trying_qwen3_direct", voice=voice_model)
+                qwen3_provider = self._get_qwen3_provider()
+                if qwen3_provider is None:
+                    raise AIError(
+                        "Qwen3-TTS failed to initialize. Check GPU availability.",
+                        context={"provider": provider}
+                    )
+                # Ensure model is ready for this voice config
+                await qwen3_provider.ensure_ready(voice_mode=voice_config.voice_mode or "preset")
+                tts_provider = qwen3_provider
+            else:
+                # WSL2 was requested but not available, raise error
+                raise AIError(
+                    "WSL2 TTS server is not available. Start it with: wsl -d Ubuntu-22.04 ~/qubes-tts/start_server.sh",
+                    context={"provider": provider}
+                )
+        else:
+            tts_provider = self.tts_providers[provider]
+
         # Chunk text if needed (OpenAI has 4096 char limit, keep safe at 4000)
+        # Qwen3 can handle longer text, but chunking still improves streaming latency
         text_chunks = chunk_text_for_tts(text, max_chars=4000)
         num_chunks = len(text_chunks)
 
@@ -446,7 +706,6 @@ class AudioManager:
 
         # Generate audio for each chunk
         generated_paths = []
-        tts_provider = self.tts_providers[provider]
 
         try:
             for chunk_index, chunk_text in enumerate(text_chunks):

@@ -44,6 +44,8 @@ class GoogleModel(AIModelInterface):
 
     # Gemini 3 models require thoughtSignature for native tool calling, but the SDK
     # doesn't fully support it yet. Use prompt-based tools instead for reliability.
+    # Gemini 3 models use prompt-based tools because native tool calling requires
+    # thoughtSignature which the SDK doesn't fully support yet
     PROMPT_BASED_TOOL_MODELS = {
         "gemini-3-pro-preview",
         "gemini-3-flash-preview",

@@ -121,6 +121,7 @@ def create_default_chain_state(genesis_block: Dict[str, Any], qube_id: str = Non
             "group_auto_anchor_threshold": 20,
             "tts_enabled": tts_enabled,
             "voice_model": voice_model,
+            "voice_library_ref": None,  # Reference to voice library entry (e.g., "designed:wise_mentor")
             "visualizer_enabled": False,
             "visualizer_settings": None,
         },
@@ -272,6 +273,7 @@ class ChainState:
         "group_auto_anchor_threshold",
         "tts_enabled",
         "voice_model",
+        "voice_library_ref",
         "visualizer_enabled",
         "visualizer_settings",
     }
@@ -418,6 +420,7 @@ class ChainState:
                 "group_auto_anchor_threshold": 20,
                 "tts_enabled": False,
                 "voice_model": "openai:alloy",
+                "voice_library_ref": None,
                 "visualizer_enabled": False,
                 "visualizer_settings": None,
             },
@@ -665,6 +668,7 @@ class ChainState:
                 "group_auto_anchor_threshold": old.get("group_auto_anchor_threshold", 20),
                 "tts_enabled": old.get("tts_enabled", False),
                 "voice_model": old.get("voice_model", "openai:alloy"),
+                "voice_library_ref": old.get("voice_library_ref"),
                 "visualizer_enabled": old.get("visualizer_enabled", False),
                 "visualizer_settings": old.get("visualizer_settings"),
             },
@@ -3142,6 +3146,39 @@ class ChainState:
         """Set the voice model for TTS."""
         settings = self.state.setdefault("settings", {})
         settings["voice_model"] = voice_model
+        self._save(preserve_gui_fields=False)
+
+    def get_voice_library_ref(self) -> Optional[str]:
+        """
+        Get the voice library reference for this qube.
+
+        Returns:
+            Reference string like "designed:wise_mentor" or "cloned:my_voice",
+            or None if not using voice library.
+        """
+        self._ensure_fresh()
+        return self.state.get("settings", {}).get("voice_library_ref")
+
+    def set_voice_library_ref(self, ref: Optional[str]) -> None:
+        """
+        Set the voice library reference.
+
+        Args:
+            ref: Reference to voice library entry (e.g., "designed:wise_mentor")
+                 or None to clear.
+
+        Also updates voice_model for compatibility with existing code.
+        """
+        settings = self.state.setdefault("settings", {})
+        settings["voice_library_ref"] = ref
+
+        # Also update voice_model for compatibility
+        if ref:
+            # voice_library_ref is "designed:wise_mentor" or "cloned:my_voice"
+            # voice_model should be "qwen3:wise_mentor" or "qwen3:my_voice"
+            voice_id = ref.split(":", 1)[1] if ":" in ref else ref
+            settings["voice_model"] = f"qwen3:{voice_id}"
+
         self._save(preserve_gui_fields=False)
 
     def is_visualizer_enabled(self) -> bool:

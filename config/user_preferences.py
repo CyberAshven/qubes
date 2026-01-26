@@ -9,9 +9,11 @@ stored in plain JSON for easy access and modification.
 """
 
 import json
+import re
+from datetime import datetime
 from pathlib import Path
-from typing import Optional, Dict, Any
-from dataclasses import dataclass, asdict
+from typing import Optional, Dict, Any, List
+from dataclasses import dataclass, asdict, field
 
 
 @dataclass
@@ -33,6 +35,58 @@ class AudioPreferences:
 
     # Google Cloud TTS credentials path (optional)
     google_tts_credentials_path: Optional[str] = None
+
+
+@dataclass
+class VoiceLibraryEntry:
+    """A saved voice in the user's library."""
+
+    name: str                              # User-given name (e.g., "Wise Mentor")
+    voice_type: str                        # "designed" or "cloned"
+    created_at: str                        # ISO timestamp
+    language: str = "en"                   # Language code (en, zh, ja, ko, de, fr, ru, pt, es, it)
+
+    # For designed voices
+    design_prompt: Optional[str] = None    # Natural language description
+
+    # For cloned voices
+    clone_audio_path: Optional[str] = None  # Path to audio file
+    clone_audio_text: Optional[str] = None  # Transcript of audio
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'VoiceLibraryEntry':
+        """Create from dictionary."""
+        return cls(**data)
+
+
+@dataclass
+class Qwen3Preferences:
+    """Qwen3-TTS specific preferences."""
+
+    model_variant: str = "1.7B"            # "1.7B" or "0.6B"
+    use_flash_attention: bool = True       # Use FlashAttention2 for memory efficiency
+
+    # Voice library: Dict[voice_id, VoiceLibraryEntry as dict]
+    # voice_id is a slugified version of name (e.g., "wise_mentor")
+    voice_library: Dict[str, Dict] = field(default_factory=dict)
+
+    # Supported languages for reference
+    SUPPORTED_LANGUAGES: List[str] = field(default_factory=lambda: [
+        "en",  # English
+        "zh",  # Chinese
+        "ja",  # Japanese
+        "ko",  # Korean
+        "de",  # German
+        "fr",  # French
+        "ru",  # Russian
+        "pt",  # Portuguese
+        "es",  # Spanish
+        "it",  # Italian
+    ])
 
 
 @dataclass
@@ -106,6 +160,7 @@ class UserPreferences:
     memory: MemoryConfig
     decision: DecisionConfig
     onboarding: OnboardingPreferences
+    qwen3: Qwen3Preferences
 
     def __init__(self):
         self.blocks = BlockPreferences()
@@ -113,15 +168,23 @@ class UserPreferences:
         self.memory = MemoryConfig()
         self.decision = DecisionConfig()
         self.onboarding = OnboardingPreferences()
+        self.qwen3 = Qwen3Preferences()
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert preferences to dictionary."""
+        # Handle Qwen3Preferences specially to exclude SUPPORTED_LANGUAGES (it's a constant)
+        qwen3_dict = {
+            'model_variant': self.qwen3.model_variant,
+            'use_flash_attention': self.qwen3.use_flash_attention,
+            'voice_library': self.qwen3.voice_library,
+        }
         return {
             'blocks': asdict(self.blocks),
             'audio': asdict(self.audio),
             'memory': asdict(self.memory),
             'decision': asdict(self.decision),
-            'onboarding': asdict(self.onboarding)
+            'onboarding': asdict(self.onboarding),
+            'qwen3': qwen3_dict,
         }
 
     @classmethod
@@ -143,6 +206,14 @@ class UserPreferences:
 
         if 'onboarding' in data:
             prefs.onboarding = OnboardingPreferences(**data['onboarding'])
+
+        if 'qwen3' in data:
+            qwen3_data = data['qwen3']
+            prefs.qwen3 = Qwen3Preferences(
+                model_variant=qwen3_data.get('model_variant', '1.7B'),
+                use_flash_attention=qwen3_data.get('use_flash_attention', True),
+                voice_library=qwen3_data.get('voice_library', {}),
+            )
 
         return prefs
 
@@ -404,3 +475,207 @@ class UserPreferencesManager:
         prefs.onboarding.show_tutorials = show
         self.save_preferences(prefs)
         return prefs
+
+    # =========================================================================
+    # QWEN3-TTS VOICE LIBRARY MANAGEMENT
+    # =========================================================================
+
+    def _slugify(self, name: str) -> str:
+        """Convert a voice name to a URL-safe slug (voice_id)."""
+        # Lowercase, replace spaces with underscores, remove non-alphanumeric
+        slug = name.lower().strip()
+        slug = re.sub(r'\s+', '_', slug)
+        slug = re.sub(r'[^a-z0-9_]', '', slug)
+        return slug or 'unnamed'
+
+    def get_voice_library(self) -> Dict[str, VoiceLibraryEntry]:
+        """
+        Get all voices in the user's library.
+
+        Returns:
+            Dict mapping voice_id to VoiceLibraryEntry
+        """
+        prefs = self.load_preferences()
+        library = {}
+        for voice_id, voice_data in prefs.qwen3.voice_library.items():
+            try:
+                library[voice_id] = VoiceLibraryEntry.from_dict(voice_data)
+            except (TypeError, KeyError):
+                # Skip malformed entries
+                pass
+        return library
+
+    def get_voice_by_id(self, voice_id: str) -> Optional[VoiceLibraryEntry]:
+        """
+        Get a specific voice by its ID.
+
+        Args:
+            voice_id: The voice identifier (slug)
+
+        Returns:
+            VoiceLibraryEntry or None if not found
+        """
+        prefs = self.load_preferences()
+        voice_data = prefs.qwen3.voice_library.get(voice_id)
+        if voice_data:
+            try:
+                return VoiceLibraryEntry.from_dict(voice_data)
+            except (TypeError, KeyError):
+                pass
+        return None
+
+    def add_voice_to_library(
+        self,
+        name: str,
+        voice_type: str,
+        language: str = "en",
+        design_prompt: Optional[str] = None,
+        clone_audio_path: Optional[str] = None,
+        clone_audio_text: Optional[str] = None,
+    ) -> str:
+        """
+        Add a new voice to the library.
+
+        Args:
+            name: User-given name for the voice
+            voice_type: "designed" or "cloned"
+            language: Language code (default: "en")
+            design_prompt: For designed voices, the natural language description
+            clone_audio_path: For cloned voices, path to the audio file
+            clone_audio_text: For cloned voices, transcript of the audio
+
+        Returns:
+            voice_id: The generated voice identifier
+
+        Raises:
+            ValueError: If voice_type is invalid or required fields are missing
+        """
+        if voice_type not in ("designed", "cloned"):
+            raise ValueError(f"Invalid voice_type: {voice_type}. Must be 'designed' or 'cloned'")
+
+        if voice_type == "designed" and not design_prompt:
+            raise ValueError("design_prompt is required for designed voices")
+
+        if voice_type == "cloned" and (not clone_audio_path or not clone_audio_text):
+            raise ValueError("clone_audio_path and clone_audio_text are required for cloned voices")
+
+        # Generate voice_id from name
+        voice_id = self._slugify(name)
+
+        # Ensure uniqueness by appending number if needed
+        prefs = self.load_preferences()
+        base_id = voice_id
+        counter = 1
+        while voice_id in prefs.qwen3.voice_library:
+            voice_id = f"{base_id}_{counter}"
+            counter += 1
+
+        # Create the entry
+        entry = VoiceLibraryEntry(
+            name=name,
+            voice_type=voice_type,
+            created_at=datetime.utcnow().isoformat(),
+            language=language,
+            design_prompt=design_prompt,
+            clone_audio_path=clone_audio_path,
+            clone_audio_text=clone_audio_text,
+        )
+
+        # Save to preferences
+        prefs.qwen3.voice_library[voice_id] = entry.to_dict()
+        self.save_preferences(prefs)
+
+        return voice_id
+
+    def update_voice_in_library(self, voice_id: str, **updates) -> bool:
+        """
+        Update an existing voice in the library.
+
+        Args:
+            voice_id: The voice identifier
+            **updates: Fields to update (name, language, design_prompt, clone_audio_text)
+
+        Returns:
+            True if updated, False if voice not found
+        """
+        prefs = self.load_preferences()
+
+        if voice_id not in prefs.qwen3.voice_library:
+            return False
+
+        voice_data = prefs.qwen3.voice_library[voice_id]
+
+        # Update allowed fields
+        allowed_fields = {'name', 'language', 'design_prompt', 'clone_audio_text', 'clone_audio_path'}
+        for key, value in updates.items():
+            if key in allowed_fields:
+                voice_data[key] = value
+
+        prefs.qwen3.voice_library[voice_id] = voice_data
+        self.save_preferences(prefs)
+        return True
+
+    def delete_voice_from_library(self, voice_id: str) -> bool:
+        """
+        Delete a voice from the library.
+
+        Args:
+            voice_id: The voice identifier
+
+        Returns:
+            True if deleted, False if voice not found
+        """
+        prefs = self.load_preferences()
+
+        if voice_id not in prefs.qwen3.voice_library:
+            return False
+
+        del prefs.qwen3.voice_library[voice_id]
+        self.save_preferences(prefs)
+        return True
+
+    def get_qwen3_preferences(self) -> Qwen3Preferences:
+        """Get Qwen3-TTS preferences."""
+        return self.load_preferences().qwen3
+
+    def update_qwen3_preferences(
+        self,
+        model_variant: Optional[str] = None,
+        use_flash_attention: Optional[bool] = None,
+    ) -> UserPreferences:
+        """
+        Update Qwen3-TTS preferences.
+
+        Args:
+            model_variant: "1.7B" or "0.6B"
+            use_flash_attention: Whether to use FlashAttention2
+
+        Returns:
+            Updated UserPreferences object
+        """
+        prefs = self.load_preferences()
+
+        if model_variant is not None:
+            if model_variant not in ("1.7B", "0.6B"):
+                raise ValueError(f"Invalid model_variant: {model_variant}. Must be '1.7B' or '0.6B'")
+            prefs.qwen3.model_variant = model_variant
+
+        if use_flash_attention is not None:
+            prefs.qwen3.use_flash_attention = use_flash_attention
+
+        self.save_preferences(prefs)
+        return prefs
+
+    def get_voice_clones_dir(self) -> Path:
+        """
+        Get the directory for storing voice clone audio files.
+
+        Returns:
+            Path to ~/.qubes/voice_clones/{user_id}/
+        """
+        # user_data_dir is typically data/users/{user_id}/
+        # We want ~/.qubes/voice_clones/{user_id}/
+        user_id = self.user_data_dir.name
+        clones_dir = Path.home() / ".qubes" / "voice_clones" / user_id
+        clones_dir.mkdir(parents=True, exist_ok=True)
+        return clones_dir

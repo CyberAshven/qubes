@@ -205,6 +205,85 @@ class AudioRecorder:
             logger.error("vad_recording_failed", error=str(e), exc_info=True)
             raise
 
+    async def record_fixed_duration(
+        self,
+        output_path: Path,
+        duration_seconds: float
+    ) -> Path:
+        """
+        Record audio for a fixed duration.
+
+        Used for voice cloning where a specific length sample is needed.
+
+        Args:
+            output_path: Path to save recorded audio
+            duration_seconds: Recording duration in seconds
+
+        Returns:
+            Path to saved audio file
+        """
+        try:
+            import pyaudio
+
+            self._init_pyaudio()
+
+            logger.info(
+                "recording_started",
+                mode="fixed_duration",
+                duration=duration_seconds
+            )
+
+            stream = self.audio.open(
+                format=pyaudio.paInt16,
+                channels=self.channels,
+                rate=self.sample_rate,
+                input=True,
+                frames_per_buffer=self.chunk_size,
+            )
+
+            frames = []
+            total_chunks = int(duration_seconds * self.sample_rate / self.chunk_size)
+
+            print(f"🎤 Recording for {duration_seconds} seconds...")
+
+            for chunk_num in range(total_chunks):
+                data = await asyncio.get_event_loop().run_in_executor(
+                    None, stream.read, self.chunk_size
+                )
+                frames.append(data)
+
+                # Show progress every second
+                elapsed = (chunk_num + 1) * self.chunk_size / self.sample_rate
+                if chunk_num % int(self.sample_rate / self.chunk_size) == 0:
+                    remaining = duration_seconds - elapsed
+                    if remaining > 0:
+                        print(f"🎤 {remaining:.0f}s remaining...")
+
+            stream.stop_stream()
+            stream.close()
+
+            print("🎤 Recording complete!")
+
+            # Save to WAV file
+            with wave.open(str(output_path), "wb") as wf:
+                wf.setnchannels(self.channels)
+                wf.setsampwidth(self.audio.get_sample_size(pyaudio.paInt16))
+                wf.setframerate(self.sample_rate)
+                wf.writeframes(b"".join(frames))
+
+            logger.info(
+                "recording_saved",
+                path=str(output_path),
+                frames=len(frames),
+                duration=duration_seconds
+            )
+
+            return output_path
+
+        except Exception as e:
+            logger.error("fixed_duration_recording_failed", error=str(e), exc_info=True)
+            raise
+
     async def record_stream(self) -> AsyncIterator[bytes]:
         """
         Record audio as a stream (for real-time STT)

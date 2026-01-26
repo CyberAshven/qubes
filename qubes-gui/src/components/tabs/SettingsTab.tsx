@@ -4,6 +4,8 @@ import { GlassCard, GlassButton, GlassInput } from '../glass';
 import { useAuth } from '../../hooks/useAuth';
 import { useChainState } from '../../contexts/ChainStateContext';
 import { useUpdater } from '../../hooks/useUpdater';
+import { useQubeSelection } from '../../hooks/useQubeSelection';
+import { VoiceSettingsPanel } from '../settings/VoiceSettingsPanel';
 
 interface APIKeyStatus {
   provider: string;
@@ -84,6 +86,10 @@ export const SettingsTab: React.FC = () => {
     installUpdate,
     dismissUpdate,
   } = useUpdater(true); // Check for updates on mount
+
+  // Get selected qube from roster for per-qube settings
+  const { selectionByTab } = useQubeSelection();
+  const selectedQubeIdForSettings = selectionByTab.settings?.[0] || null;
 
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({
     openai: '',
@@ -191,6 +197,7 @@ export const SettingsTab: React.FC = () => {
     blockRecall: true,
     relationshipDifficulty: true,
     trustPersonality: true,
+    voiceSettings: true,
     decisionIntelligence: true,
     security: true,
     softwareUpdates: true,
@@ -1295,6 +1302,34 @@ export const SettingsTab: React.FC = () => {
                   )}
                 </div>
               )}
+                </>
+              )}
+            </GlassCard>
+
+            {/* Voice Settings */}
+            <GlassCard className="p-4 mt-4">
+              <button
+                onClick={() => togglePanel('voiceSettings')}
+                className="w-full flex items-center justify-between text-left"
+              >
+                <h2 className="text-lg font-display text-text-primary">
+                  🎤 Voice Settings
+                </h2>
+                <span className={`text-text-tertiary transition-transform ${collapsedPanels.voiceSettings ? '' : 'rotate-180'}`}>
+                  ▼
+                </span>
+              </button>
+
+              {!collapsedPanels.voiceSettings && (
+                <>
+                  <p className="text-[10px] text-text-tertiary mb-3 mt-2">
+                    Configure text-to-speech voice for each Qube. Select a Qube from the roster to configure its voice.
+                  </p>
+
+                  <VoiceSettingsPanel
+                    selectedQubeId={selectedQubeIdForSettings}
+                    selectedQubeName={availableQubes.find(q => q.qube_id === selectedQubeIdForSettings)?.name}
+                  />
                 </>
               )}
             </GlassCard>

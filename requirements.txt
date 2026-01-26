@@ -123,6 +123,16 @@ webrtcvad>=2.0.10           # WebRTC VAD for smart recording
 # whisper.cpp (140MB) - STT binary, installed separately
 # See docs/27_Audio_TTS_STT_Integration.md Section 15 for installation
 
+# Qwen3-TTS (High-quality local TTS with voice cloning/design)
+qwen-tts>=0.0.5             # Qwen3-TTS model API
+torch>=2.2.0                # PyTorch for Qwen3-TTS (bundled with CUDA)
+torchaudio>=2.2.0           # Audio processing for PyTorch
+soundfile>=0.12.0           # Audio file I/O for WAV generation
+transformers>=4.40.0        # HuggingFace Transformers for model loading
+huggingface_hub>=0.23.0     # Model downloading from HuggingFace
+# flash-attn>=2.5.0         # Optional: FlashAttention2 for 20% VRAM reduction (requires CUDA)
+# Models downloaded on-demand to ~/.qubes/models/qwen3-tts/
+
 # ============================================================================
 # CLI & UI (Phase 8)
 # ============================================================================

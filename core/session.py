@@ -1587,21 +1587,34 @@ Summary:"""
         from pathlib import Path
 
         # Sort by timestamp (earliest first)
-        # Use block_type then block_hash as stable tiebreaker for same-second blocks
+        # Use block_type then a content-based hash as stable tiebreaker for same-second blocks
+        # Session blocks don't have block_hash computed, so we compute a quick content hash
         # This ensures deterministic ordering even when blocks are created in the same second
-        self.session_blocks.sort(key=lambda b: (
-            b.timestamp,
-            b.block_type if isinstance(b.block_type, str) else b.block_type.value,
-            b.block_hash or ""
-        ))
+        import hashlib
+
+        def get_sort_key(b):
+            block_type_str = b.block_type if isinstance(b.block_type, str) else b.block_type.value
+            # Use existing block_hash if available, otherwise compute from content
+            if b.block_hash:
+                content_id = b.block_hash
+            else:
+                # Quick hash from content for stable sorting
+                # Use try/except since content might contain non-JSON-serializable objects
+                try:
+                    content_str = json.dumps(b.content, sort_keys=True, default=str) if b.content else ""
+                except (TypeError, ValueError):
+                    # Fallback to repr if JSON fails
+                    content_str = repr(b.content) if b.content else ""
+                content_id = hashlib.sha256(content_str.encode()).hexdigest()[:16]
+            return (b.timestamp, block_type_str, content_id)
+
+        self.session_blocks.sort(key=get_sort_key)
 
         # Track old block numbers before reassignment (for file renaming)
-        # Use (timestamp, block_type, block_hash) as key to uniquely identify each block
-        # This must match the sort key to handle multiple blocks with same timestamp/type
+        # Use the same sort key to uniquely identify each block
         old_numbers = {}
         for b in self.session_blocks:
-            block_type_str = b.block_type if isinstance(b.block_type, str) else b.block_type.value
-            key = (b.timestamp, block_type_str, b.block_hash or "")
+            key = get_sort_key(b)
             old_numbers[key] = b.block_number
 
         # Assign block numbers: -1 for earliest, -2 for next, etc.
@@ -1622,9 +1635,9 @@ Summary:"""
         session_dir = Path(self.qube.data_dir) / "blocks" / "session"
         if session_dir.exists():
             for block in self.session_blocks:
-                block_type_str = block.block_type if isinstance(block.block_type, str) else block.block_type.value
-                key = (block.timestamp, block_type_str, block.block_hash or "")
+                key = get_sort_key(block)
                 old_num = old_numbers.get(key)
+                block_type_str = block.block_type if isinstance(block.block_type, str) else block.block_type.value
                 new_num = block.block_number
 
                 # Delete old file if number changed

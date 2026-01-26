@@ -27,13 +27,25 @@ class VoiceConfig:
         voice_id: str = "alloy",
         speed: float = 1.0,
         pitch: float | None = None,
-        stability: float | None = None
+        stability: float | None = None,
+        # Qwen3-TTS fields
+        voice_mode: str | None = None,           # "designed", "cloned", or "preset"
+        voice_design_prompt: str | None = None,  # Natural language voice description
+        clone_audio_path: str | None = None,     # Path to reference audio for cloning
+        clone_audio_text: str | None = None,     # Transcript of reference audio
+        language: str | None = None,             # Language code (en, zh, ja, ko, de, fr, ru, pt, es, it)
     ):
         self.provider = provider
         self.voice_id = voice_id
         self.speed = max(0.5, min(2.0, speed))  # Clamp to [0.5, 2.0]
         self.pitch = pitch  # ElevenLabs only
         self.stability = stability  # ElevenLabs only
+        # Qwen3-TTS fields
+        self.voice_mode = voice_mode
+        self.voice_design_prompt = voice_design_prompt
+        self.clone_audio_path = clone_audio_path
+        self.clone_audio_text = clone_audio_text
+        self.language = language or "en"
 
 
 class TTSProvider(ABC):

@@ -55,12 +55,18 @@ const getVoiceGender = (voiceId: string): string => {
     'studio-o', 'chirp-hd-f'
   ];
 
+  // Qwen3-TTS voices
+  const qwen3Male = ['dylan', 'eric', 'ryan', 'aiden', 'uncle_fu'];
+  const qwen3Female = ['vivian', 'serena', 'ono_anna', 'sohee'];
+
   if (geminiMale.includes(voiceName)) return ' (male)';
   if (geminiFemale.includes(voiceName)) return ' (female)';
   if (openaiMale.includes(voiceName)) return ' (male)';
   if (openaiFemale.includes(voiceName)) return ' (female)';
   if (googleMale.includes(voiceName)) return ' (male)';
   if (googleFemale.includes(voiceName)) return ' (female)';
+  if (qwen3Male.includes(voiceName)) return ' (male)';
+  if (qwen3Female.includes(voiceName)) return ' (female)';
 
   return ''; // Unknown or no gender info
 };
@@ -293,6 +299,7 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
   // Update voice when voice provider changes
   useEffect(() => {
     const defaultVoices: Record<string, string> = {
+      'qwen3': 'qwen3:Vivian',
       'google': 'google:en-US-Neural2-A',
       'gemini': 'gemini:puck',
       'openai': 'openai:alloy',
@@ -795,6 +802,7 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
                 onChange={(e) => setVoiceProvider(e.target.value)}
                 className="w-full px-4 py-2 bg-glass-bg backdrop-blur-glass border border-glass-border rounded-lg text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-primary/50"
               >
+                <option value="qwen3">Qwen3-TTS Local (9 voices)</option>
                 <option value="google">Google Cloud TTS (380+ voices)</option>
                 <option value="gemini">Gemini TTS (30 voices)</option>
                 <option value="openai">OpenAI TTS (6 voices)</option>
@@ -821,6 +829,29 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
                 </button>
                 {voiceDropdownOpen && (
                   <div className="absolute z-50 w-full mt-1 bg-[#2a3441] border border-glass-border rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                    {voiceProvider === 'qwen3' && (
+                      <>
+                        {[
+                          { id: 'Vivian', label: 'Vivian' },
+                          { id: 'Serena', label: 'Serena' },
+                          { id: 'Dylan', label: 'Dylan' },
+                          { id: 'Eric', label: 'Eric' },
+                          { id: 'Ryan', label: 'Ryan' },
+                          { id: 'Aiden', label: 'Aiden' },
+                          { id: 'Ono_Anna', label: 'Ono Anna' },
+                          { id: 'Sohee', label: 'Sohee' },
+                          { id: 'Uncle_Fu', label: 'Uncle Fu' },
+                        ].map(voice => (
+                          <div
+                            key={voice.id}
+                            onClick={() => { setFormData({ ...formData, voiceModel: `qwen3:${voice.id}` }); setVoiceDropdownOpen(false); }}
+                            className={`px-4 py-2 cursor-pointer hover:bg-accent-primary/20 ${formData.voiceModel === `qwen3:${voice.id}` ? 'bg-accent-primary/30' : ''}`}
+                          >
+                            {voice.label}{getVoiceGender(`qwen3:${voice.id}`)}
+                          </div>
+                        ))}
+                      </>
+                    )}
                     {voiceProvider === 'gemini' && (
                       <>
                         {['achernar', 'achird', 'algenib', 'algieba', 'alnilam', 'aoede', 'autonoe', 'callirrhoe', 'charon', 'despina', 'enceladus', 'erinome', 'fenrir', 'gacrux', 'iapetus', 'kore', 'laomedeia', 'leda', 'orus', 'puck', 'pulcherrima', 'rasalgethi', 'sadachbia', 'sadaltager', 'schedar', 'sulafat', 'umbriel', 'vindemiatrix', 'zephyr', 'zubenelgenubi'].map(voice => (
@@ -913,6 +944,7 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
                 )}
               </div>
               <p className="text-xs text-text-tertiary mt-1">
+                {voiceProvider === 'qwen3' && 'Qwen3-TTS runs locally on your GPU - FREE and private! Requires downloaded models.'}
                 {voiceProvider === 'google' && 'Google Cloud TTS requires service account credentials. 1M free chars/month for Neural2/WaveNet!'}
                 {voiceProvider === 'gemini' && 'Gemini voices use your Google API key - FREE during preview!'}
                 {voiceProvider === 'openai' && 'OpenAI voices use your OpenAI API key.'}

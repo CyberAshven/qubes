@@ -241,11 +241,9 @@ IMPORTANT RULES:
             if pending_tool_results and last_assistant_index is not None:
                 # Append tool results to the assistant's message (not as a separate user message)
                 # This keeps the tool execution as part of the assistant's "turn"
-                results_text = "\n\n[Tool results received]\n" + "\n".join(
+                results_text = "\n\n[Tool results]\n" + "\n".join(
                     f"- {result}" for result in pending_tool_results
                 )
-                # End with incomplete sentence to force continuation
-                results_text += "\n\nNow, based on what I learned from these tools, here's"
 
                 new_messages[last_assistant_index]["content"] += results_text
                 logger.debug(
@@ -273,6 +271,7 @@ IMPORTANT RULES:
 
                 # Strip tool_calls field - models without native support don't understand it
                 content = msg.get("content", "")
+
                 # If content is empty (model only output tool calls), add placeholder
                 if not content.strip():
                     tool_names = [tc.get("function", {}).get("name") or tc.get("name", "tool")
@@ -282,9 +281,10 @@ IMPORTANT RULES:
                 new_messages.append({"role": "assistant", "content": content})
                 last_assistant_index = len(new_messages) - 1
                 logger.debug(
-                    "assistant_tool_calls_stripped",
+                    "assistant_tool_calls_converted",
                     original_tool_count=len(msg.get("tool_calls", [])),
-                    content_was_empty=not msg.get("content", "").strip()
+                    content_was_empty=not msg.get("content", "").strip(),
+                    tool_names=[tc.get("function", {}).get("name") or tc.get("name") for tc in msg.get("tool_calls", [])]
                 )
             else:
                 # Flush pending results before any other message type
@@ -294,6 +294,17 @@ IMPORTANT RULES:
 
         # Flush any remaining tool results at the end
         flush_tool_results_to_assistant()
+
+        # If the last message is an assistant message with tool results,
+        # add a user message to prompt the model to respond
+        if new_messages and last_assistant_index is not None:
+            last_msg = new_messages[-1]
+            if last_msg.get("role") == "assistant" and "[Tool results]" in last_msg.get("content", ""):
+                new_messages.append({
+                    "role": "user",
+                    "content": "Please respond based on the tool results above."
+                })
+                logger.debug("added_continuation_prompt_after_tool_results")
 
         # If no system message exists, add one
         if not system_found:

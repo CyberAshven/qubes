@@ -673,37 +673,37 @@ class QubeReasoner:
                 if response.tool_calls:
                     # Detect infinite loops - multiple strategies
                     tool_names = [tc["name"] for tc in response.tool_calls]
+                    # Track full signatures (name + params) for accurate loop detection
+                    tool_signatures = [
+                        f"{tc['name']}:{json.dumps(tc.get('parameters', {}), sort_keys=True)}"
+                        for tc in response.tool_calls
+                    ]
                     tool_call_history.append(tool_names)
 
-                    # Strategy 1: Check if last 2 calls are the same tool set
                     loop_detected = False
                     loop_reason = ""
 
-                    if len(tool_call_history) >= 2:
-                        if tool_call_history[-1] == tool_call_history[-2]:
+                    # Strategy 1: Check for exact duplicate tool call (same tool + same params)
+                    # This catches immediate loops where the same call is made twice
+                    for sig in tool_signatures:
+                        if sig in self._tool_call_signatures:
                             loop_detected = True
-                            loop_reason = "same tool set called twice consecutively"
+                            tool_name = sig.split(":")[0]
+                            loop_reason = f"exact duplicate call to {tool_name} with same parameters"
+                            break
+                        self._tool_call_signatures.add(sig)
 
-                    # Strategy 2: Check if any single tool has been called too many times (>5)
+                    # Strategy 2: Check if any single tool has been called too many times (>8)
+                    # Allow more calls since tools like update_system_state may need multiple calls
                     if not loop_detected:
                         from collections import Counter
                         all_tool_calls = [name for names in tool_call_history for name in names]
                         tool_counts = Counter(all_tool_calls)
                         for tool, count in tool_counts.items():
-                            if count > 5:
+                            if count > 8:
                                 loop_detected = True
                                 loop_reason = f"tool '{tool}' called {count} times total"
                                 break
-
-                    # Strategy 3: Check for exact duplicate tool call (same tool + same params)
-                    if not loop_detected:
-                        for tc in response.tool_calls:
-                            sig = f"{tc['name']}:{json.dumps(tc.get('parameters', {}), sort_keys=True)}"
-                            if sig in self._tool_call_signatures:
-                                loop_detected = True
-                                loop_reason = f"exact duplicate call to {tc['name']} with same parameters"
-                                break
-                            self._tool_call_signatures.add(sig)
 
                     if loop_detected:
                         logger.warning(

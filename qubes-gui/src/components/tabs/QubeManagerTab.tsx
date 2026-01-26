@@ -1770,12 +1770,18 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
       'studio-o', 'chirp-hd-f'
     ];
 
+    // Qwen3-TTS voices
+    const qwen3Male = ['dylan', 'eric', 'ryan', 'aiden', 'uncle_fu'];
+    const qwen3Female = ['vivian', 'serena', 'ono_anna', 'sohee'];
+
     if (geminiMale.includes(voiceName)) return ' (male)';
     if (geminiFemale.includes(voiceName)) return ' (female)';
     if (openaiMale.includes(voiceName)) return ' (male)';
     if (openaiFemale.includes(voiceName)) return ' (female)';
     if (googleMale.includes(voiceName)) return ' (male)';
     if (googleFemale.includes(voiceName)) return ' (female)';
+    if (qwen3Male.includes(voiceName)) return ' (male)';
+    if (qwen3Female.includes(voiceName)) return ' (female)';
 
     return '';
   };
@@ -1865,9 +1871,21 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
     elevenlabs: [
       { label: 'Default', value: 'elevenlabs:default' },
     ],
+    qwen3: [
+      { label: `Vivian${getVoiceGender('qwen3:Vivian')}`, value: 'qwen3:Vivian' },
+      { label: `Serena${getVoiceGender('qwen3:Serena')}`, value: 'qwen3:Serena' },
+      { label: `Dylan${getVoiceGender('qwen3:Dylan')}`, value: 'qwen3:Dylan' },
+      { label: `Eric${getVoiceGender('qwen3:Eric')}`, value: 'qwen3:Eric' },
+      { label: `Ryan${getVoiceGender('qwen3:Ryan')}`, value: 'qwen3:Ryan' },
+      { label: `Aiden${getVoiceGender('qwen3:Aiden')}`, value: 'qwen3:Aiden' },
+      { label: `Ono Anna${getVoiceGender('qwen3:Ono_Anna')}`, value: 'qwen3:Ono_Anna' },
+      { label: `Sohee${getVoiceGender('qwen3:Sohee')}`, value: 'qwen3:Sohee' },
+      { label: `Uncle Fu${getVoiceGender('qwen3:Uncle_Fu')}`, value: 'qwen3:Uncle_Fu' },
+    ],
   };
 
   const voiceProviderOptions = [
+    { label: 'Qwen3-TTS Local (9 voices)', value: 'qwen3' },
     { label: 'Google Cloud TTS (380+ voices)', value: 'google' },
     { label: 'Gemini TTS (30 voices)', value: 'gemini' },
     { label: 'OpenAI TTS (6 voices)', value: 'openai' },
@@ -1875,6 +1893,7 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
   ];
 
   const defaultVoices: Record<string, string> = {
+    qwen3: 'qwen3:Vivian',
     google: 'google:en-US-Neural2-A',
     gemini: 'gemini:puck',
     openai: 'openai:alloy',

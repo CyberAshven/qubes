@@ -52,6 +52,9 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
   const [currentModel, setCurrentModel] = useState<string | null>(null); // Local model state for header updates
   const [isRecording, setIsRecording] = useState(false);
   const [isGeneratingTTS, setIsGeneratingTTS] = useState(false);
+  const [ttsProgress, setTtsProgress] = useState<{ stage: string; progress: number; message: string }>({
+    stage: 'idle', progress: 0, message: ''
+  });
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [activeToolCalls, setActiveToolCalls] = useState<Array<{
     action_type: string;
@@ -1126,6 +1129,16 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
     }
   };
 
+  // Simple TTS progress - just show "Generating audio..." while generating
+  // No polling needed - the indeterminate animation handles the UX
+  useEffect(() => {
+    if (isGeneratingTTS) {
+      setTtsProgress({ stage: 'generating', progress: 0, message: 'Generating audio...' });
+    } else {
+      setTtsProgress({ stage: 'idle', progress: 0, message: '' });
+    }
+  }, [isGeneratingTTS]);
+
   // Auto-generate and play TTS when qube responds, then show the message
   useEffect(() => {
     const generateAndPlayTTS = async () => {
@@ -1155,8 +1168,9 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
       // Check if TTS is enabled for this qube
       if (currentQube.tts_enabled) {
         try {
-          // Show TTS generation indicator
+          // Show TTS generation indicator and reset progress
           setIsGeneratingTTS(true);
+          setTtsProgress({ stage: 'idle', progress: 0, message: 'Starting...' });
 
           // Truncate text for TTS if needed (OpenAI limit: 4096 chars)
           const ttsText = truncateForTTS(lastResponseText);
@@ -1166,6 +1180,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
 
           // Hide TTS generation indicator - audio is now playing
           setIsGeneratingTTS(false);
+          setTtsProgress({ stage: 'idle', progress: 0, message: '' });
 
           // Mark this message as pending typewriter activation
           pendingTypewriterRef.current = messageId;
@@ -1189,6 +1204,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
           console.error('TTS error:', err);
           setError(`TTS error: ${String(err)}`);
           setIsGeneratingTTS(false);
+          setTtsProgress({ stage: 'idle', progress: 0, message: '' });
 
           // Even if TTS fails, show the message immediately (no typewriter)
           addMessage(currentQube.qube_id, qubeResponse);
@@ -1657,7 +1673,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
                           {selectedQubes[0].name}
                         </span>
                         <span className="text-xs text-text-secondary">
-                          generating audio...
+                          Generating audio...
                         </span>
                         <div className="flex gap-1">
                           <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{
@@ -1677,12 +1693,12 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
                         </div>
                       </div>
 
-                      {/* Indeterminate progress bar for TTS */}
+                      {/* Progress bar for TTS - always indeterminate animation */}
                       <div className="w-48 h-1.5 rounded-full overflow-hidden" style={{
                         backgroundColor: 'var(--bg-secondary)'
                       }}>
                         <div
-                          className="h-full w-1/3 animate-pulse"
+                          className="h-full w-1/3"
                           style={{
                             backgroundColor: selectedQubes[0].favorite_color,
                             animation: 'tts-progress 1.5s ease-in-out infinite'
