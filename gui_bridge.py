@@ -1712,29 +1712,54 @@ class GUIBridge:
             Dict with audio_path to preview file
         """
         try:
-            from audio.qwen_tts import Qwen3TTSProvider
             from config.user_preferences import UserPreferencesManager
             import tempfile
 
-            # Get Qwen3 preferences
             data_dir = get_user_data_dir(user_id)
             prefs_manager = UserPreferencesManager(data_dir)
-            qwen3_prefs = prefs_manager.get_qwen3_preferences()
 
-            # Initialize provider
-            provider = Qwen3TTSProvider(
-                model_variant=qwen3_prefs.model_variant,
-                use_flash_attention=qwen3_prefs.use_flash_attention
-            )
+            # Normalize voice_type (frontend sends 'design'/'clone', backend expects 'designed'/'cloned')
+            if voice_type == "design":
+                voice_type = "designed"
+            elif voice_type == "clone":
+                voice_type = "cloned"
 
-            # Generate preview (returns audio bytes)
-            audio_bytes = await provider.generate_preview(
-                speaker=preset_voice if voice_type == "preset" else None,
-                design_prompt=design_prompt if voice_type == "designed" else None,
-                clone_audio_path=Path(clone_audio_path) if clone_audio_path and voice_type == "cloned" else None,
-                clone_audio_text=clone_audio_text if voice_type == "cloned" else None,
-                language=language,
-            )
+            # Check if WSL2 TTS server is available and use it instead of local Qwen3
+            try:
+                from audio.wsl2_tts import WSL2TTSProvider
+                wsl2_provider = WSL2TTSProvider(auto_start=False)
+                availability = await wsl2_provider.check_availability(try_auto_start=False)
+
+                if availability.get("available"):
+                    # Use WSL2 TTS server
+                    logger.info("Using WSL2 TTS server for preview")
+                    audio_bytes = await wsl2_provider.generate_preview(
+                        speaker=preset_voice if voice_type == "preset" else None,
+                        design_prompt=design_prompt if voice_type == "designed" else None,
+                        clone_audio_path=Path(clone_audio_path) if clone_audio_path and voice_type == "cloned" else None,
+                        clone_audio_text=clone_audio_text if voice_type == "cloned" else None,
+                        language=language,
+                    )
+                else:
+                    raise Exception("WSL2 TTS not available, falling back to local")
+            except Exception as e:
+                logger.debug(f"WSL2 TTS not available, using local Qwen3: {e}")
+                # Fall back to local Qwen3TTSProvider
+                from audio.qwen_tts import Qwen3TTSProvider
+                qwen3_prefs = prefs_manager.get_qwen3_preferences()
+
+                provider = Qwen3TTSProvider(
+                    model_variant=qwen3_prefs.model_variant,
+                    use_flash_attention=qwen3_prefs.use_flash_attention
+                )
+
+                audio_bytes = await provider.generate_preview(
+                    speaker=preset_voice if voice_type == "preset" else None,
+                    design_prompt=design_prompt if voice_type == "designed" else None,
+                    clone_audio_path=Path(clone_audio_path) if clone_audio_path and voice_type == "cloned" else None,
+                    clone_audio_text=clone_audio_text if voice_type == "cloned" else None,
+                    language=language,
+                )
 
             # Write to temp file
             temp_dir = Path(tempfile.gettempdir())

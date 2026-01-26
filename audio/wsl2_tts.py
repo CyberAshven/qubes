@@ -289,7 +289,14 @@ class WSL2TTSProvider(TTSProvider):
         language = self.LANGUAGE_MAP.get(voice_config.language or "en", "English")
         instruct = voice_config.voice_design_prompt or ""
 
-        logger.debug("wsl2_tts_generating", text_length=len(text), speaker=speaker)
+        # Determine mode based on voice_mode or presence of design prompt
+        voice_mode = getattr(voice_config, 'voice_mode', None) or "preset"
+        if voice_mode == "designed" or (instruct and voice_mode != "preset"):
+            mode = "design"
+        else:
+            mode = "preset"
+
+        logger.debug("wsl2_tts_generating", text_length=len(text), speaker=speaker, mode=mode)
 
         try:
             client = await self._get_client()
@@ -298,6 +305,7 @@ class WSL2TTSProvider(TTSProvider):
                 f"{self.server_url}/generate",
                 json={
                     "text": text,
+                    "mode": mode,
                     "speaker": speaker,
                     "language": language,
                     "instruct": instruct,
@@ -318,6 +326,73 @@ class WSL2TTSProvider(TTSProvider):
         except Exception as e:
             logger.error("wsl2_tts_error", error=str(e))
             raise AIError(f"WSL2 TTS generation failed: {e}", cause=e)
+
+    async def generate_preview(
+        self,
+        speaker: Optional[str] = None,
+        design_prompt: Optional[str] = None,
+        clone_audio_path: Optional[Path] = None,
+        clone_audio_text: Optional[str] = None,
+        language: str = "en",
+    ) -> bytes:
+        """
+        Generate a preview audio for voice settings.
+
+        Args:
+            speaker: Preset speaker name (for preset mode)
+            design_prompt: Voice description (for design mode)
+            clone_audio_path: Reference audio path (for clone mode - not yet supported)
+            clone_audio_text: Reference audio transcript (for clone mode - not yet supported)
+            language: Language code
+
+        Returns:
+            WAV audio bytes
+        """
+        preview_text = "Hello! This is a preview of how I will sound when speaking to you."
+
+        # Determine mode based on which parameters are provided
+        if design_prompt:
+            mode = "design"
+            instruct = design_prompt
+            speaker_name = "Vivian"  # Not used in design mode
+        else:
+            mode = "preset"
+            speaker_name = speaker or "Vivian"
+            instruct = ""
+
+        language_name = self.LANGUAGE_MAP.get(language, "English")
+
+        logger.info("wsl2_tts_preview", mode=mode, speaker=speaker_name if mode == "preset" else None)
+
+        # Ensure server is running
+        if not await self._ensure_server_running():
+            raise AIError("WSL2 TTS server is not available and could not be started")
+
+        try:
+            client = await self._get_client()
+
+            response = await client.post(
+                f"{self.server_url}/generate",
+                json={
+                    "text": preview_text,
+                    "mode": mode,
+                    "speaker": speaker_name,
+                    "language": language_name,
+                    "instruct": instruct,
+                },
+            )
+
+            if response.status_code != 200:
+                error = response.json().get("error", "Unknown error")
+                raise AIError(f"WSL2 TTS preview failed: {error}")
+
+            return response.content
+
+        except AIError:
+            raise
+        except Exception as e:
+            logger.error("wsl2_tts_preview_error", error=str(e))
+            raise AIError(f"WSL2 TTS preview failed: {e}", cause=e)
 
     async def close(self):
         """Close the HTTP client."""
