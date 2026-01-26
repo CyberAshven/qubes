@@ -271,6 +271,19 @@ export const LocalTTSSetupPanel: React.FC = () => {
       {isExpanded && (
         <div className="space-y-3 pl-4 border-l border-white/10">
 
+          {/* GPU Info Banner */}
+          {status?.gpu_detected && (
+            <div className="p-2 rounded-lg bg-green-500/10 border border-green-500/30 text-xs">
+              <div className="flex items-center gap-2">
+                <span className="text-green-400">✓</span>
+                <span className="text-text-primary font-medium">GPU Ready</span>
+              </div>
+              <p className="text-text-secondary mt-1">
+                {status.gpu_name} {status.cuda_version && `• CUDA ${status.cuda_version}`}
+              </p>
+            </div>
+          )}
+
       {/* Setup Progress */}
       {isSettingUp && setupProgress && (
         <GlassCard className="p-4 space-y-3">

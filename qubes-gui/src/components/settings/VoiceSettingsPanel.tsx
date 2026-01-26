@@ -534,33 +534,6 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
 
   return (
     <div className="space-y-4">
-      {/* GPU Status Banner */}
-      {qwen3Status && (
-        <div className={`p-3 rounded-lg text-xs ${qwen3Status.available ? 'bg-green-500/10 border border-green-500/30' : 'bg-yellow-500/10 border border-yellow-500/30'}`}>
-          {qwen3Status.available ? (
-            <>
-              <div className="flex items-center gap-2">
-                <span className="text-green-400">✓</span>
-                <span className="text-text-primary font-medium">Qwen3-TTS Available</span>
-              </div>
-              <p className="text-text-secondary mt-1">
-                {qwen3Status.gpu_name} • {qwen3Status.vram_total_gb}GB VRAM • Recommended: {qwen3Status.recommended_variant}
-              </p>
-            </>
-          ) : (
-            <>
-              <div className="flex items-center gap-2">
-                <span className="text-yellow-400">⚠</span>
-                <span className="text-text-primary font-medium">Qwen3-TTS Not Available</span>
-              </div>
-              <p className="text-text-secondary mt-1">
-                GPU not detected or insufficient VRAM. Using {qwen3Status.fallback_provider} as fallback.
-              </p>
-            </>
-          )}
-        </div>
-      )}
-
       {/* Error Display */}
       {error && (
         <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/30 text-xs text-red-400">
@@ -773,21 +746,35 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
             </GlassCard>
           )}
 
-          {/* Model Manager */}
+          {/* Download Voice Models */}
           {qwen3Status?.available && (
-            <div>
-              <button
+            <GlassCard className="p-3 space-y-3">
+              <div
+                className="flex items-center justify-between cursor-pointer"
                 onClick={() => setShowModelManager(!showModelManager)}
-                className="text-[10px] text-text-tertiary hover:text-text-secondary"
               >
-                ⚙️ Manage Models {showModelManager ? '▲' : '▼'}
-              </button>
+                <div>
+                  <h4 className="text-sm font-medium text-text-primary">📥 Download Qwen Voice Models</h4>
+                  <p className="text-[10px] text-text-tertiary mt-0.5">
+                    Download AI models to enable voice design, cloning, and presets
+                  </p>
+                </div>
+                <span className={`text-text-tertiary transition-transform ${showModelManager ? 'rotate-180' : ''}`}>
+                  ▼
+                </span>
+              </div>
 
               {showModelManager && (
-                <GlassCard className="p-3 mt-2 space-y-2">
-                  <p className="text-[10px] text-text-tertiary">
-                    Downloaded models: {qwen3Status.models_downloaded.length > 0 ? qwen3Status.models_downloaded.join(', ') : 'None'}
-                  </p>
+                <div className="space-y-2 pt-2 border-t border-white/10">
+                  <div className="flex flex-wrap gap-1 text-[9px]">
+                    {qwen3Status.models_downloaded.length > 0 ? (
+                      qwen3Status.models_downloaded.map(m => (
+                        <span key={m} className="bg-green-500/20 text-green-400 px-1.5 py-0.5 rounded">✓ {m}</span>
+                      ))
+                    ) : (
+                      <span className="text-text-tertiary">No models downloaded yet</span>
+                    )}
+                  </div>
                   {downloadingModel && (
                     <div className="bg-white/5 rounded p-2 space-y-1.5">
                       <div className="flex items-center justify-between">
@@ -855,9 +842,9 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
                       })}
                     </div>
                   )}
-                </GlassCard>
+                </div>
               )}
-            </div>
+            </GlassCard>
           )}
         </>
       )}

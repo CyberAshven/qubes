@@ -1306,14 +1306,14 @@ export const SettingsTab: React.FC = () => {
               )}
             </GlassCard>
 
-            {/* Voice Settings */}
+            {/* Custom Voices */}
             <GlassCard className="p-4 mt-4">
               <button
                 onClick={() => togglePanel('voiceSettings')}
                 className="w-full flex items-center justify-between text-left"
               >
                 <h2 className="text-lg font-display text-text-primary">
-                  🎤 Voice Settings
+                  🎤 Custom Voices
                 </h2>
                 <span className={`text-text-tertiary transition-transform ${collapsedPanels.voiceSettings ? '' : 'rotate-180'}`}>
                   ▼
@@ -1323,7 +1323,7 @@ export const SettingsTab: React.FC = () => {
               {!collapsedPanels.voiceSettings && (
                 <>
                   <p className="text-[10px] text-text-tertiary mb-3 mt-2">
-                    Configure text-to-speech voice for each Qube. Select a Qube from the roster to configure its voice.
+                    Create unique voices for your Qubes using AI voice design, cloning, or presets.
                   </p>
 
                   <VoiceSettingsPanel
