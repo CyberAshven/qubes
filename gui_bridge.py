@@ -1727,20 +1727,20 @@ class GUIBridge:
                 use_flash_attention=qwen3_prefs.use_flash_attention
             )
 
-            # Generate preview to temp file
+            # Generate preview (returns audio bytes)
+            audio_bytes = await provider.generate_preview(
+                speaker=preset_voice if voice_type == "preset" else None,
+                design_prompt=design_prompt if voice_type == "designed" else None,
+                clone_audio_path=Path(clone_audio_path) if clone_audio_path and voice_type == "cloned" else None,
+                clone_audio_text=clone_audio_text if voice_type == "cloned" else None,
+                language=language,
+            )
+
+            # Write to temp file
             temp_dir = Path(tempfile.gettempdir())
             output_path = temp_dir / f"voice_preview_{user_id}.wav"
-
-            await provider.generate_preview(
-                text=text,
-                voice_type=voice_type,
-                language=language,
-                design_prompt=design_prompt,
-                clone_audio_path=clone_audio_path,
-                clone_audio_text=clone_audio_text,
-                preset_voice=preset_voice,
-                output_path=output_path
-            )
+            with open(output_path, "wb") as f:
+                f.write(audio_bytes)
 
             return {
                 "success": True,
