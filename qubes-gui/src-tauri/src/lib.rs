@@ -2283,6 +2283,40 @@ async fn record_voice_clone_audio(user_id: String, duration_seconds: Option<i32>
 }
 
 #[tauri::command]
+async fn save_recorded_audio(user_id: String, audio_data: Vec<u8>) -> Result<serde_json::Value, String> {
+    use std::io::Write;
+
+    // Save the audio data to a temp file and convert to WAV via backend
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("save-recorded-audio")
+        .arg(&user_id)
+        .stdin(std::process::Stdio::piped());
+
+    let mut child = cmd.spawn()
+        .map_err(|e| format!("Failed to spawn backend: {}", e))?;
+
+    // Write audio data to stdin
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(&audio_data)
+            .map_err(|e| format!("Failed to write audio data: {}", e))?;
+    }
+
+    let output = child.wait_with_output()
+        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Save recorded audio"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
 async fn transcribe_audio(user_id: String, audio_path: String) -> Result<serde_json::Value, String> {
     let mut cmd = prepare_backend_command()?;
     let output = cmd
@@ -6949,6 +6983,7 @@ pub fn run() {
             delete_qwen3_model,
             update_qwen3_preferences,
             record_voice_clone_audio,
+            save_recorded_audio,
             transcribe_audio,
             // WSL2 TTS Setup Commands
             check_wsl2_tts_status,

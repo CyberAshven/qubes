@@ -1761,9 +1761,11 @@ class GUIBridge:
                     language=language,
                 )
 
-            # Write to temp file
+            # Write to temp file with timestamp to avoid browser caching
+            import time
             temp_dir = Path(tempfile.gettempdir())
-            output_path = temp_dir / f"voice_preview_{user_id}.wav"
+            timestamp = int(time.time() * 1000)
+            output_path = temp_dir / f"voice_preview_{user_id}_{timestamp}.wav"
             with open(output_path, "wb") as f:
                 f.write(audio_bytes)
 
@@ -2169,6 +2171,74 @@ class GUIBridge:
             }
         except Exception as e:
             logger.error(f"Failed to record voice clone audio: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    async def save_recorded_audio(self, user_id: str, audio_data: bytes) -> Dict[str, Any]:
+        """
+        Save recorded audio from browser and convert to WAV format.
+
+        Args:
+            user_id: User ID
+            audio_data: Raw audio bytes (webm format from browser MediaRecorder)
+
+        Returns:
+            Dict with audio_path to saved WAV file
+        """
+        try:
+            import tempfile
+            import subprocess
+            import time
+
+            temp_dir = Path(tempfile.gettempdir())
+            timestamp = int(time.time() * 1000)
+
+            # Save webm input
+            webm_path = temp_dir / f"voice_clone_input_{user_id}_{timestamp}.webm"
+            with open(webm_path, "wb") as f:
+                f.write(audio_data)
+
+            # Convert to WAV using ffmpeg (should be available on most systems)
+            wav_path = temp_dir / f"voice_clone_recording_{user_id}_{timestamp}.wav"
+
+            try:
+                # Try ffmpeg first
+                result = subprocess.run(
+                    ["ffmpeg", "-y", "-i", str(webm_path), "-ar", "16000", "-ac", "1", str(wav_path)],
+                    capture_output=True,
+                    timeout=30
+                )
+                if result.returncode != 0:
+                    raise Exception(f"ffmpeg failed: {result.stderr.decode()}")
+            except FileNotFoundError:
+                # ffmpeg not found, try pydub as fallback
+                try:
+                    from pydub import AudioSegment
+                    audio = AudioSegment.from_file(str(webm_path), format="webm")
+                    audio = audio.set_frame_rate(16000).set_channels(1)
+                    audio.export(str(wav_path), format="wav")
+                except ImportError:
+                    # If pydub not available either, just rename and hope for the best
+                    logger.warning("Neither ffmpeg nor pydub available, audio may not work correctly")
+                    import shutil
+                    shutil.copy(str(webm_path), str(wav_path))
+
+            # Clean up webm file
+            try:
+                webm_path.unlink()
+            except Exception:
+                pass
+
+            logger.info(f"Saved recorded audio to {wav_path}")
+
+            return {
+                "success": True,
+                "audio_path": str(wav_path)
+            }
+        except Exception as e:
+            logger.error(f"Failed to save recorded audio: {e}", exc_info=True)
             return {
                 "success": False,
                 "error": str(e)
@@ -9786,6 +9856,20 @@ async def main():
 
             user_bridge = GUIBridge(user_id=user_id)
             result = await user_bridge.record_voice_clone_audio(user_id, args.duration)
+            print(json.dumps(result))
+
+        elif command == "save-recorded-audio":
+            if len(sys.argv) < 3:
+                print(json.dumps({"error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            # Read audio data from stdin
+            audio_data = sys.stdin.buffer.read()
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.save_recorded_audio(user_id, audio_data)
             print(json.dumps(result))
 
         elif command == "transcribe-audio":

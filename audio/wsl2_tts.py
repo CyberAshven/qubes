@@ -348,7 +348,20 @@ class WSL2TTSProvider(TTSProvider):
         Returns:
             WAV audio bytes
         """
-        preview_text = "Hello! This is a preview of how I will sound when speaking to you."
+        # Localized preview texts
+        preview_texts = {
+            "en": "Hello! This is a preview of how I will sound when speaking to you.",
+            "zh": "你好！这是我说话声音的预览。",
+            "ja": "こんにちは！これは私の声のプレビューです。",
+            "ko": "안녕하세요! 이것은 제 목소리 미리보기입니다.",
+            "de": "Hallo! Dies ist eine Vorschau meiner Stimme.",
+            "fr": "Bonjour! Ceci est un aperçu de ma voix.",
+            "ru": "Привет! Это предварительный просмотр моего голоса.",
+            "pt": "Olá! Esta é uma prévia da minha voz.",
+            "es": "¡Hola! Esta es una vista previa de mi voz.",
+            "it": "Ciao! Questa è un'anteprima della mia voce.",
+        }
+        preview_text = preview_texts.get(language, preview_texts["en"])
 
         # Determine mode based on which parameters are provided
         if design_prompt:

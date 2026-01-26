@@ -303,9 +303,39 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
   const handleRecordCloneAudio = async () => {
     setIsRecording(true);
     try {
-      const result = await invoke<{ success: boolean; audio_path?: string; error?: string }>('record_voice_clone_audio', {
+      // Use browser's MediaRecorder API for reliable recording
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+      const chunks: Blob[] = [];
+
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) {
+          chunks.push(e.data);
+        }
+      };
+
+      // Start recording
+      mediaRecorder.start();
+
+      // Stop after 5 seconds
+      await new Promise<void>((resolve) => {
+        setTimeout(() => {
+          mediaRecorder.stop();
+          stream.getTracks().forEach(track => track.stop());
+        }, 5000);
+
+        mediaRecorder.onstop = () => resolve();
+      });
+
+      // Convert to blob and save via Tauri
+      const blob = new Blob(chunks, { type: 'audio/webm' });
+      const arrayBuffer = await blob.arrayBuffer();
+      const uint8Array = new Uint8Array(arrayBuffer);
+
+      // Save to temp file via backend
+      const result = await invoke<{ success: boolean; audio_path?: string; error?: string }>('save_recorded_audio', {
         userId,
-        durationSeconds: 5,
+        audioData: Array.from(uint8Array),
       });
 
       if (result.success && result.audio_path) {
@@ -313,10 +343,14 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
         // Auto-transcribe
         await handleTranscribeAudio(result.audio_path);
       } else {
-        setError(result.error || 'Failed to record audio');
+        setError(result.error || 'Failed to save recorded audio');
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to record audio');
+      if (err instanceof Error && err.name === 'NotAllowedError') {
+        setError('Microphone access denied. Please allow microphone access in your browser settings.');
+      } else {
+        setError(err instanceof Error ? err.message : 'Failed to record audio');
+      }
     } finally {
       setIsRecording(false);
     }

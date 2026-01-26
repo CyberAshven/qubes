@@ -108,6 +108,10 @@ chess>=1.10.0               # Python chess library for move validation and PGN g
 sounddevice>=0.5.1          # Cross-platform audio playback (updated from 0.4.6)
 pyaudio>=0.2.14             # Microphone recording
 pydub>=0.25.1               # Audio format conversion
+# ffmpeg (system dependency) - Required for audio conversion
+#   Windows: winget install ffmpeg
+#   Ubuntu: sudo apt install ffmpeg
+#   macOS: brew install ffmpeg
 
 # TTS/STT Providers
 # openai already included above
