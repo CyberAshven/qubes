@@ -1909,6 +1909,558 @@ async fn generate_speech(user_id: String, qube_id: String, text: String, passwor
     Ok(speech_response)
 }
 
+// ========== Voice Settings Commands ==========
+
+#[tauri::command]
+async fn get_voice_settings(user_id: String, qube_id: String, password: String) -> Result<serde_json::Value, String> {
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("get-voice-settings")
+        .arg(&user_id)
+        .arg(&qube_id);
+
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
+
+    let (stdout, _) = execute_with_secrets(cmd, secrets)?;
+
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn update_voice_settings(
+    user_id: String,
+    qube_id: String,
+    password: String,
+    voice_library_ref: Option<String>,
+    tts_enabled: Option<bool>
+) -> Result<serde_json::Value, String> {
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("update-voice-settings")
+        .arg(&user_id)
+        .arg(&qube_id);
+
+    if let Some(ref voice_ref) = voice_library_ref {
+        cmd.arg("--voice-library-ref").arg(voice_ref);
+    }
+    if let Some(enabled) = tts_enabled {
+        cmd.arg("--tts-enabled").arg(enabled.to_string());
+    }
+
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
+
+    let (stdout, _) = execute_with_secrets(cmd, secrets)?;
+
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn preview_voice(
+    user_id: String,
+    text: String,
+    voice_type: String,
+    language: Option<String>,
+    design_prompt: Option<String>,
+    clone_audio_path: Option<String>,
+    clone_audio_text: Option<String>,
+    preset_voice: Option<String>
+) -> Result<serde_json::Value, String> {
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("preview-voice")
+        .arg(&user_id)
+        .arg(&text)
+        .arg(&voice_type);
+
+    if let Some(lang) = language {
+        cmd.arg("--language").arg(lang);
+    }
+    if let Some(prompt) = design_prompt {
+        cmd.arg("--design-prompt").arg(prompt);
+    }
+    if let Some(path) = clone_audio_path {
+        cmd.arg("--clone-audio-path").arg(path);
+    }
+    if let Some(audio_text) = clone_audio_text {
+        cmd.arg("--clone-audio-text").arg(audio_text);
+    }
+    if let Some(preset) = preset_voice {
+        cmd.arg("--preset-voice").arg(preset);
+    }
+
+    let output = cmd.output()
+        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Preview voice"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn add_voice_to_library(
+    user_id: String,
+    name: String,
+    voice_type: String,
+    language: Option<String>,
+    design_prompt: Option<String>,
+    clone_audio_path: Option<String>,
+    clone_audio_text: Option<String>
+) -> Result<serde_json::Value, String> {
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("add-voice-to-library")
+        .arg(&user_id)
+        .arg(&name)
+        .arg(&voice_type);
+
+    if let Some(lang) = language {
+        cmd.arg("--language").arg(lang);
+    }
+    if let Some(prompt) = design_prompt {
+        cmd.arg("--design-prompt").arg(prompt);
+    }
+    if let Some(path) = clone_audio_path {
+        cmd.arg("--clone-audio-path").arg(path);
+    }
+    if let Some(audio_text) = clone_audio_text {
+        cmd.arg("--clone-audio-text").arg(audio_text);
+    }
+
+    let output = cmd.output()
+        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Add voice to library"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn delete_voice_from_library(user_id: String, voice_id: String) -> Result<serde_json::Value, String> {
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("delete-voice-from-library")
+        .arg(&user_id)
+        .arg(&voice_id)
+        .output()
+        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Delete voice from library"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn get_voice_library(user_id: String) -> Result<serde_json::Value, String> {
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("get-voice-library")
+        .arg(&user_id)
+        .output()
+        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Get voice library"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn check_qwen3_status(user_id: String) -> Result<serde_json::Value, String> {
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("check-qwen3-status")
+        .arg(&user_id)
+        .output()
+        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Check Qwen3 status"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn get_tts_progress(user_id: String) -> Result<serde_json::Value, String> {
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("get-tts-progress")
+        .arg(&user_id)
+        .output()
+        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Get TTS progress"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn download_qwen3_model(user_id: String, model_name: String) -> Result<serde_json::Value, String> {
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("download-qwen3-model")
+        .arg(&user_id)
+        .arg(&model_name)
+        .output()
+        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Download Qwen3 model"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn get_qwen3_download_progress(user_id: String, download_id: String) -> Result<serde_json::Value, String> {
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("get-qwen3-download-progress")
+        .arg(&user_id)
+        .arg(&download_id)
+        .output()
+        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Get download progress"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn cancel_qwen3_download(user_id: String, download_id: String) -> Result<serde_json::Value, String> {
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("cancel-qwen3-download")
+        .arg(&user_id)
+        .arg(&download_id)
+        .output()
+        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Cancel download"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn delete_qwen3_model(user_id: String, model_name: String) -> Result<serde_json::Value, String> {
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("delete-qwen3-model")
+        .arg(&user_id)
+        .arg(&model_name)
+        .output()
+        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Delete Qwen3 model"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn update_qwen3_preferences(
+    user_id: String,
+    model_variant: Option<String>,
+    use_flash_attention: Option<bool>
+) -> Result<serde_json::Value, String> {
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("update-qwen3-preferences")
+        .arg(&user_id);
+
+    if let Some(variant) = model_variant {
+        cmd.arg("--model-variant").arg(variant);
+    }
+    if let Some(flash) = use_flash_attention {
+        cmd.arg("--use-flash-attention").arg(flash.to_string());
+    }
+
+    let output = cmd.output()
+        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Update Qwen3 preferences"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn record_voice_clone_audio(user_id: String, duration_seconds: Option<i32>) -> Result<serde_json::Value, String> {
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("record-voice-clone-audio")
+        .arg(&user_id);
+
+    if let Some(duration) = duration_seconds {
+        cmd.arg("--duration").arg(duration.to_string());
+    }
+
+    let output = cmd.output()
+        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Record voice clone audio"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn transcribe_audio(user_id: String, audio_path: String) -> Result<serde_json::Value, String> {
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("transcribe-audio")
+        .arg(&user_id)
+        .arg(&audio_path)
+        .output()
+        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Transcribe audio"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+// ========== End Voice Settings Commands ==========
+
+// ========== WSL2 TTS Setup Commands ==========
+
+#[tauri::command]
+async fn check_wsl2_tts_status(user_id: String) -> Result<serde_json::Value, String> {
+    // Validate inputs
+    validate_identifier(&user_id, "user_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("check-wsl2-tts-status")
+        .arg(&user_id)
+        .output()
+        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Check WSL2 TTS status"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn setup_wsl2_tts(user_id: String) -> Result<serde_json::Value, String> {
+    // Validate inputs
+    validate_identifier(&user_id, "user_id")?;
+
+    // This is a long-running operation, so use a longer timeout
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("setup-wsl2-tts")
+        .arg(&user_id);
+
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    let output = cmd
+        .output()
+        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Setup WSL2 TTS"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn get_wsl2_tts_setup_progress(user_id: String) -> Result<serde_json::Value, String> {
+    // Validate inputs
+    validate_identifier(&user_id, "user_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("get-wsl2-tts-setup-progress")
+        .arg(&user_id)
+        .output()
+        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Get WSL2 TTS setup progress"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn start_wsl2_tts_server(user_id: String) -> Result<serde_json::Value, String> {
+    // Validate inputs
+    validate_identifier(&user_id, "user_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("start-wsl2-tts-server")
+        .arg(&user_id);
+
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    let output = cmd
+        .output()
+        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Start WSL2 TTS server"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn stop_wsl2_tts_server(user_id: String) -> Result<serde_json::Value, String> {
+    // Validate inputs
+    validate_identifier(&user_id, "user_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("stop-wsl2-tts-server")
+        .arg(&user_id)
+        .output()
+        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Stop WSL2 TTS server"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn uninstall_wsl2_tts(user_id: String) -> Result<serde_json::Value, String> {
+    // Validate inputs
+    validate_identifier(&user_id, "user_id")?;
+
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("uninstall-wsl2-tts")
+        .arg(&user_id)
+        .output()
+        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Uninstall WSL2 TTS"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+// ========== End WSL2 TTS Setup Commands ==========
+
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
@@ -6381,7 +6933,30 @@ pub fn run() {
             approve_wallet_tx_stored_key,
             // Event Watcher Commands
             start_event_watcher_cmd,
-            stop_event_watcher_cmd
+            stop_event_watcher_cmd,
+            // Voice Settings Commands
+            get_voice_settings,
+            update_voice_settings,
+            preview_voice,
+            add_voice_to_library,
+            delete_voice_from_library,
+            get_voice_library,
+            check_qwen3_status,
+            get_tts_progress,
+            download_qwen3_model,
+            get_qwen3_download_progress,
+            cancel_qwen3_download,
+            delete_qwen3_model,
+            update_qwen3_preferences,
+            record_voice_clone_audio,
+            transcribe_audio,
+            // WSL2 TTS Setup Commands
+            check_wsl2_tts_status,
+            setup_wsl2_tts,
+            get_wsl2_tts_setup_progress,
+            start_wsl2_tts_server,
+            stop_wsl2_tts_server,
+            uninstall_wsl2_tts
         ])
         .setup(|app| {
             // Get the main and splash windows
@@ -6391,6 +6966,22 @@ pub fn run() {
             // Clone for the thread
             let main_window_clone = main_window.clone();
             let splashscreen_window_clone = splashscreen_window.clone();
+
+            // Start TTS server in background (keeps Qwen3 model loaded for fast TTS)
+            std::thread::spawn(|| {
+                if let Ok(python_path) = find_python_path() {
+                    let project_root = get_python_project_path();
+                    if let Err(e) = std::process::Command::new(&python_path)
+                        .args(["-m", "audio.tts_server", "start"])
+                        .current_dir(&project_root)
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .spawn()
+                    {
+                        eprintln!("Failed to start TTS server: {}", e);
+                    }
+                }
+            });
 
             // Wait for the main window to finish loading, then close splash
             std::thread::spawn(move || {
@@ -6407,10 +6998,21 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // Stop all event watchers when main window closes
+            // Stop all event watchers and TTS server when main window closes
             if let tauri::WindowEvent::Destroyed = event {
                 if window.label() == "main" {
                     stop_all_event_watchers();
+
+                    // Stop TTS server
+                    if let Ok(python_path) = find_python_path() {
+                        let project_root = get_python_project_path();
+                        let _ = std::process::Command::new(&python_path)
+                            .args(["-m", "audio.tts_server", "stop"])
+                            .current_dir(&project_root)
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .spawn();
+                    }
                 }
             }
         })

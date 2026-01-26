@@ -1571,6 +1571,763 @@ class GUIBridge:
                 "error": str(e)
             }
 
+    # ========== Voice Settings Commands ==========
+
+    async def get_voice_settings(self, user_id: str, qube_id: str, password: str) -> Dict[str, Any]:
+        """
+        Get voice settings for a qube.
+
+        Returns the qube's voice configuration including voice_library_ref,
+        voice_model, and available voice library entries.
+        """
+        try:
+            if password:
+                self.orchestrator.set_master_key(password)
+
+            # Load the qube
+            if qube_id not in self.orchestrator.qubes:
+                await self.orchestrator.load_qube(qube_id)
+
+            qube = self.orchestrator.qubes[qube_id]
+
+            # Get voice settings from chain_state
+            voice_library_ref = qube.chain_state.get_voice_library_ref() if qube.chain_state else None
+            voice_model = qube.chain_state.get_voice_model() if qube.chain_state else "openai:alloy"
+            tts_enabled = qube.chain_state.is_tts_enabled() if qube.chain_state else False
+
+            # Get user's voice library
+            from config.user_preferences import UserPreferencesManager
+            data_dir = get_user_data_dir(user_id)
+            prefs_manager = UserPreferencesManager(data_dir)
+            voice_library = prefs_manager.get_voice_library()
+            qwen3_prefs = prefs_manager.get_qwen3_preferences()
+
+            return {
+                "success": True,
+                "qube_id": qube_id,
+                "voice_library_ref": voice_library_ref,
+                "voice_model": voice_model,
+                "tts_enabled": tts_enabled,
+                "voice_library": voice_library,
+                "qwen3_preferences": {
+                    "model_variant": qwen3_prefs.model_variant,
+                    "use_flash_attention": qwen3_prefs.use_flash_attention,
+                    "supported_languages": qwen3_prefs.SUPPORTED_LANGUAGES,
+                }
+            }
+        except Exception as e:
+            logger.error(f"Failed to get voice settings for qube {qube_id}: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    async def update_voice_settings(
+        self,
+        user_id: str,
+        qube_id: str,
+        password: str,
+        voice_library_ref: str = None,
+        tts_enabled: bool = None
+    ) -> Dict[str, Any]:
+        """
+        Update voice settings for a qube.
+
+        Args:
+            user_id: User ID
+            qube_id: Qube ID
+            password: Master password
+            voice_library_ref: Reference to voice library entry (e.g., "designed:wise_mentor")
+            tts_enabled: Whether TTS is enabled for this qube
+        """
+        try:
+            if password:
+                self.orchestrator.set_master_key(password)
+
+            # Load the qube
+            if qube_id not in self.orchestrator.qubes:
+                await self.orchestrator.load_qube(qube_id)
+
+            qube = self.orchestrator.qubes[qube_id]
+
+            if not qube.chain_state:
+                return {
+                    "success": False,
+                    "error": "Chain state not initialized"
+                }
+
+            updated_fields = []
+
+            # Update voice_library_ref (also updates voice_model)
+            if voice_library_ref is not None:
+                qube.chain_state.set_voice_library_ref(voice_library_ref)
+                updated_fields.append("voice_library_ref")
+                updated_fields.append("voice_model")
+
+            # Update TTS enabled
+            if tts_enabled is not None:
+                qube.chain_state.set_tts_enabled(tts_enabled)
+                updated_fields.append("tts_enabled")
+
+            return {
+                "success": True,
+                "qube_id": qube_id,
+                "updated_fields": updated_fields,
+                "voice_library_ref": qube.chain_state.get_voice_library_ref(),
+                "voice_model": qube.chain_state.get_voice_model(),
+                "tts_enabled": qube.chain_state.is_tts_enabled()
+            }
+        except Exception as e:
+            logger.error(f"Failed to update voice settings for qube {qube_id}: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    async def preview_voice(
+        self,
+        user_id: str,
+        text: str,
+        voice_type: str,
+        language: str = "en",
+        design_prompt: str = None,
+        clone_audio_path: str = None,
+        clone_audio_text: str = None,
+        preset_voice: str = None
+    ) -> Dict[str, Any]:
+        """
+        Generate a preview of a voice configuration.
+
+        Args:
+            user_id: User ID
+            text: Text to synthesize for preview
+            voice_type: "designed", "cloned", or "preset"
+            language: Language code (default: "en")
+            design_prompt: Voice design description (for designed voices)
+            clone_audio_path: Path to clone audio sample (for cloned voices)
+            clone_audio_text: Transcript of clone audio (for cloned voices)
+            preset_voice: Preset voice name (for preset voices)
+
+        Returns:
+            Dict with audio_path to preview file
+        """
+        try:
+            from audio.qwen_tts import Qwen3TTSProvider
+            from config.user_preferences import UserPreferencesManager
+            import tempfile
+
+            # Get Qwen3 preferences
+            data_dir = get_user_data_dir(user_id)
+            prefs_manager = UserPreferencesManager(data_dir)
+            qwen3_prefs = prefs_manager.get_qwen3_preferences()
+
+            # Initialize provider
+            provider = Qwen3TTSProvider(
+                model_variant=qwen3_prefs.model_variant,
+                use_flash_attention=qwen3_prefs.use_flash_attention
+            )
+
+            # Generate preview to temp file
+            temp_dir = Path(tempfile.gettempdir())
+            output_path = temp_dir / f"voice_preview_{user_id}.wav"
+
+            await provider.generate_preview(
+                text=text,
+                voice_type=voice_type,
+                language=language,
+                design_prompt=design_prompt,
+                clone_audio_path=clone_audio_path,
+                clone_audio_text=clone_audio_text,
+                preset_voice=preset_voice,
+                output_path=output_path
+            )
+
+            return {
+                "success": True,
+                "audio_path": str(output_path)
+            }
+        except Exception as e:
+            logger.error(f"Failed to generate voice preview: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    async def add_voice_to_library(
+        self,
+        user_id: str,
+        name: str,
+        voice_type: str,
+        language: str = "en",
+        design_prompt: str = None,
+        clone_audio_path: str = None,
+        clone_audio_text: str = None
+    ) -> Dict[str, Any]:
+        """
+        Add a new voice to the user's voice library.
+
+        Args:
+            user_id: User ID
+            name: Display name for the voice
+            voice_type: "designed" or "cloned"
+            language: Language code
+            design_prompt: Voice design description (for designed voices)
+            clone_audio_path: Path to clone audio (for cloned voices)
+            clone_audio_text: Transcript of clone audio (for cloned voices)
+
+        Returns:
+            Dict with voice_id of the created entry
+        """
+        try:
+            from config.user_preferences import UserPreferencesManager, VoiceLibraryEntry
+            import shutil
+
+            data_dir = get_user_data_dir(user_id)
+            prefs_manager = UserPreferencesManager(data_dir)
+
+            # For cloned voices, copy the audio file to permanent storage
+            final_clone_path = None
+            if voice_type == "cloned" and clone_audio_path:
+                clones_dir = prefs_manager.get_voice_clones_dir()
+                source_path = Path(clone_audio_path)
+                final_clone_path = clones_dir / f"{name.lower().replace(' ', '_')}_{source_path.suffix}"
+                shutil.copy2(source_path, final_clone_path)
+                final_clone_path = str(final_clone_path)
+
+            # Create library entry
+            entry = VoiceLibraryEntry(
+                name=name,
+                voice_type=voice_type,
+                created_at="",  # Will be set by add_voice_to_library
+                language=language,
+                design_prompt=design_prompt,
+                clone_audio_path=final_clone_path,
+                clone_audio_text=clone_audio_text
+            )
+
+            voice_id = prefs_manager.add_voice_to_library(entry)
+
+            return {
+                "success": True,
+                "voice_id": voice_id,
+                "voice_type": voice_type,
+                "name": name
+            }
+        except Exception as e:
+            logger.error(f"Failed to add voice to library: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    async def update_voice_in_library(
+        self,
+        user_id: str,
+        voice_id: str,
+        name: str = None,
+        language: str = None,
+        design_prompt: str = None
+    ) -> Dict[str, Any]:
+        """
+        Update an existing voice in the library.
+
+        Args:
+            user_id: User ID
+            voice_id: Voice ID to update
+            name: New display name
+            language: New language code
+            design_prompt: New voice design description
+        """
+        try:
+            from config.user_preferences import UserPreferencesManager
+
+            data_dir = get_user_data_dir(user_id)
+            prefs_manager = UserPreferencesManager(data_dir)
+            prefs_manager.update_voice_in_library(
+                voice_id=voice_id,
+                name=name,
+                language=language,
+                design_prompt=design_prompt
+            )
+
+            return {
+                "success": True,
+                "voice_id": voice_id
+            }
+        except Exception as e:
+            logger.error(f"Failed to update voice in library: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    async def delete_voice_from_library(self, user_id: str, voice_id: str) -> Dict[str, Any]:
+        """
+        Delete a voice from the user's library.
+
+        Args:
+            user_id: User ID
+            voice_id: Voice ID to delete
+        """
+        try:
+            from config.user_preferences import UserPreferencesManager
+
+            data_dir = get_user_data_dir(user_id)
+            prefs_manager = UserPreferencesManager(data_dir)
+            prefs_manager.delete_voice_from_library(voice_id)
+
+            return {
+                "success": True,
+                "voice_id": voice_id
+            }
+        except Exception as e:
+            logger.error(f"Failed to delete voice from library: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    async def get_voice_library(self, user_id: str) -> Dict[str, Any]:
+        """
+        Get the user's complete voice library.
+
+        Returns all saved voices (designed and cloned).
+        """
+        try:
+            from config.user_preferences import UserPreferencesManager
+
+            data_dir = get_user_data_dir(user_id)
+            prefs_manager = UserPreferencesManager(data_dir)
+            voice_library = prefs_manager.get_voice_library()
+
+            return {
+                "success": True,
+                "voice_library": voice_library
+            }
+        except Exception as e:
+            logger.error(f"Failed to get voice library: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    async def check_qwen3_status(self, user_id: str) -> Dict[str, Any]:
+        """
+        Check Qwen3-TTS availability and GPU status.
+
+        Returns GPU info, VRAM, downloaded models, and recommended variant.
+        """
+        try:
+            from audio.audio_manager import AudioManager
+
+            # Create temporary audio manager to check status
+            audio_manager = AudioManager()
+            status = audio_manager.check_qwen3_status()
+
+            return {
+                "success": True,
+                **status
+            }
+        except Exception as e:
+            logger.error(f"Failed to check Qwen3 status: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e),
+                "available": False,
+                "fallback_provider": "gemini"
+            }
+
+    async def get_tts_progress(self, user_id: str) -> Dict[str, Any]:
+        """
+        Get current TTS generation progress (for UI polling).
+
+        Returns stage, progress percentage, and message.
+        """
+        try:
+            from audio.qwen_tts import Qwen3TTSProvider
+            progress = Qwen3TTSProvider.get_generation_progress()
+            return {
+                "success": True,
+                **progress
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "stage": "idle",
+                "progress": 0,
+                "message": ""
+            }
+
+    async def download_qwen3_model(self, user_id: str, model_name: str) -> Dict[str, Any]:
+        """
+        Start downloading a Qwen3-TTS model.
+
+        Args:
+            user_id: User ID
+            model_name: Model to download (e.g., "1.7B-CustomVoice")
+
+        Returns:
+            Dict with download_id for tracking progress
+        """
+        try:
+            from audio.model_downloader import Qwen3ModelDownloader
+
+            downloader = Qwen3ModelDownloader()
+            download_id = downloader.start_download(model_name)
+
+            return {
+                "success": True,
+                "download_id": download_id,
+                "model_name": model_name
+            }
+        except Exception as e:
+            logger.error(f"Failed to start Qwen3 model download: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    async def get_qwen3_download_progress(self, user_id: str, download_id: str) -> Dict[str, Any]:
+        """
+        Get download progress for a Qwen3 model.
+
+        Args:
+            user_id: User ID
+            download_id: Download ID from download_qwen3_model
+
+        Returns:
+            Dict with progress percentage, speed, ETA
+        """
+        try:
+            from audio.model_downloader import Qwen3ModelDownloader
+
+            downloader = Qwen3ModelDownloader()
+            progress = downloader.get_progress(download_id)
+
+            return {
+                "success": True,
+                **progress
+            }
+        except Exception as e:
+            logger.error(f"Failed to get download progress: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    async def cancel_qwen3_download(self, user_id: str, download_id: str) -> Dict[str, Any]:
+        """
+        Cancel an in-progress Qwen3 model download.
+
+        Args:
+            user_id: User ID
+            download_id: Download ID to cancel
+        """
+        try:
+            from audio.model_downloader import Qwen3ModelDownloader
+
+            downloader = Qwen3ModelDownloader()
+            downloader.cancel_download(download_id)
+
+            return {
+                "success": True,
+                "download_id": download_id
+            }
+        except Exception as e:
+            logger.error(f"Failed to cancel download: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    async def delete_qwen3_model(self, user_id: str, model_name: str) -> Dict[str, Any]:
+        """
+        Delete a downloaded Qwen3 model to free disk space.
+
+        Args:
+            user_id: User ID
+            model_name: Model to delete (e.g., "1.7B-CustomVoice")
+        """
+        try:
+            import shutil
+            models_dir = Path.home() / ".qubes" / "models" / "qwen3-tts"
+            model_path = models_dir / model_name
+
+            if model_path.exists():
+                shutil.rmtree(model_path)
+                return {
+                    "success": True,
+                    "model_name": model_name,
+                    "deleted": True
+                }
+            else:
+                return {
+                    "success": True,
+                    "model_name": model_name,
+                    "deleted": False,
+                    "message": "Model not found"
+                }
+        except Exception as e:
+            logger.error(f"Failed to delete Qwen3 model: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    async def update_qwen3_preferences(
+        self,
+        user_id: str,
+        model_variant: str = None,
+        use_flash_attention: bool = None
+    ) -> Dict[str, Any]:
+        """
+        Update Qwen3-TTS preferences.
+
+        Args:
+            user_id: User ID
+            model_variant: "1.7B" or "0.6B"
+            use_flash_attention: Whether to use FlashAttention2
+        """
+        try:
+            from config.user_preferences import UserPreferencesManager
+
+            data_dir = get_user_data_dir(user_id)
+            prefs_manager = UserPreferencesManager(data_dir)
+            prefs_manager.update_qwen3_preferences(
+                model_variant=model_variant,
+                use_flash_attention=use_flash_attention
+            )
+
+            qwen3_prefs = prefs_manager.get_qwen3_preferences()
+
+            return {
+                "success": True,
+                "model_variant": qwen3_prefs.model_variant,
+                "use_flash_attention": qwen3_prefs.use_flash_attention
+            }
+        except Exception as e:
+            logger.error(f"Failed to update Qwen3 preferences: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    async def record_voice_clone_audio(self, user_id: str, duration_seconds: int = 5) -> Dict[str, Any]:
+        """
+        Record audio from microphone for voice cloning.
+
+        Args:
+            user_id: User ID
+            duration_seconds: Recording duration (default: 5 seconds, min 3)
+
+        Returns:
+            Dict with audio_path to recorded file
+        """
+        try:
+            from audio.recorder import AudioRecorder
+            import tempfile
+
+            # Ensure minimum 3 seconds for voice cloning
+            duration = max(3, duration_seconds)
+
+            recorder = AudioRecorder()
+            temp_dir = Path(tempfile.gettempdir())
+            output_path = temp_dir / f"voice_clone_recording_{user_id}.wav"
+
+            await recorder.record_fixed_duration(output_path, duration)
+
+            return {
+                "success": True,
+                "audio_path": str(output_path),
+                "duration_seconds": duration
+            }
+        except Exception as e:
+            logger.error(f"Failed to record voice clone audio: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    async def transcribe_audio(self, user_id: str, audio_path: str) -> Dict[str, Any]:
+        """
+        Transcribe audio file for voice cloning.
+
+        Args:
+            user_id: User ID
+            audio_path: Path to audio file
+
+        Returns:
+            Dict with transcribed text
+        """
+        try:
+            from audio.audio_manager import AudioManager
+
+            audio_manager = AudioManager()
+            text = await audio_manager.listen_from_file(Path(audio_path))
+
+            return {
+                "success": True,
+                "text": text,
+                "audio_path": audio_path
+            }
+        except Exception as e:
+            logger.error(f"Failed to transcribe audio: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    # ========== End Voice Settings Commands ==========
+
+    # ========== WSL2 TTS Setup Commands ==========
+
+    async def check_wsl2_tts_status(self, user_id: str) -> Dict[str, Any]:
+        """
+        Check the status of WSL2 TTS installation.
+
+        Returns comprehensive status including:
+        - WSL2 and Ubuntu installation status
+        - Setup completion status
+        - Server running status
+        - GPU detection
+        """
+        try:
+            from audio.wsl2_setup import check_wsl2_tts_status as check_status
+
+            status = await check_status()
+
+            return {
+                "success": True,
+                **status.to_dict()
+            }
+        except Exception as e:
+            logger.error(f"Failed to check WSL2 TTS status: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e),
+                "wsl2_installed": False,
+                "ubuntu_installed": False,
+                "setup_complete": False,
+            }
+
+    async def setup_wsl2_tts(self, user_id: str) -> Dict[str, Any]:
+        """
+        Start WSL2 TTS setup process.
+
+        This is a long-running operation that:
+        1. Creates setup directory and venv in WSL2
+        2. Installs PyTorch with CUDA
+        3. Installs qwen-tts and dependencies
+        4. Downloads Qwen3-TTS model (~4GB)
+        5. Creates TTS server script
+        6. Tests the installation
+
+        Progress can be polled via get_wsl2_tts_setup_progress.
+
+        Returns:
+            Dict with success status and details
+        """
+        try:
+            from audio.wsl2_setup import setup_wsl2_tts as run_setup
+
+            result = await run_setup()
+
+            return result
+        except Exception as e:
+            logger.error(f"Failed to setup WSL2 TTS: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    async def get_wsl2_tts_setup_progress(self, user_id: str) -> Dict[str, Any]:
+        """
+        Get current WSL2 TTS setup progress.
+
+        Returns:
+            Dict with stage, percentage, message, and error
+        """
+        try:
+            from audio.wsl2_setup import get_setup_progress
+
+            progress = get_setup_progress()
+
+            return {
+                "success": True,
+                **progress
+            }
+        except Exception as e:
+            logger.error(f"Failed to get WSL2 TTS setup progress: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e),
+                "stage": "error",
+                "percentage": 0,
+            }
+
+    async def start_wsl2_tts_server(self, user_id: str) -> Dict[str, Any]:
+        """
+        Start the WSL2 TTS server.
+
+        Returns:
+            Dict with success status and server info
+        """
+        try:
+            from audio.wsl2_setup import start_wsl2_tts_server as start_server
+
+            result = await start_server()
+
+            return result
+        except Exception as e:
+            logger.error(f"Failed to start WSL2 TTS server: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    async def stop_wsl2_tts_server(self, user_id: str) -> Dict[str, Any]:
+        """
+        Stop the WSL2 TTS server.
+
+        Returns:
+            Dict with success status
+        """
+        try:
+            from audio.wsl2_setup import stop_wsl2_tts_server as stop_server
+
+            result = await stop_server()
+
+            return result
+        except Exception as e:
+            logger.error(f"Failed to stop WSL2 TTS server: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    async def uninstall_wsl2_tts(self, user_id: str) -> Dict[str, Any]:
+        """
+        Uninstall WSL2 TTS setup (removes directory and models).
+
+        Returns:
+            Dict with success status
+        """
+        try:
+            from audio.wsl2_setup import uninstall_wsl2_tts as uninstall
+
+            result = await uninstall()
+
+            return result
+        except Exception as e:
+            logger.error(f"Failed to uninstall WSL2 TTS: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    # ========== End WSL2 TTS Setup Commands ==========
+
     async def delete_qube(self, qube_id: str) -> Dict[str, Any]:
         """Delete a qube and all its data"""
         try:
@@ -8772,6 +9529,317 @@ async def main():
             user_bridge = GUIBridge(user_id=user_id)
             result = await user_bridge.generate_speech(qube_id, text, password)
             print(json.dumps(result))
+
+        # ========== Voice Settings Commands ==========
+
+        elif command == "get-voice-settings":
+            if len(sys.argv) < 4:
+                print(json.dumps({"error": "User ID and Qube ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            qube_id = validate_qube_id(sys.argv[3])
+            password = get_secret("password", argv_index=4)
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.get_voice_settings(user_id, qube_id, password)
+            print(json.dumps(result))
+
+        elif command == "update-voice-settings":
+            if len(sys.argv) < 4:
+                print(json.dumps({"error": "User ID and Qube ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            qube_id = validate_qube_id(sys.argv[3])
+            password = get_secret("password", argv_index=4)
+
+            # Parse optional args
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("--voice-library-ref", type=str, default=None)
+            parser.add_argument("--tts-enabled", type=str, default=None)
+            args, _ = parser.parse_known_args(sys.argv[5:])
+
+            tts_enabled = None
+            if args.tts_enabled is not None:
+                tts_enabled = args.tts_enabled.lower() == "true"
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.update_voice_settings(
+                user_id, qube_id, password,
+                voice_library_ref=args.voice_library_ref,
+                tts_enabled=tts_enabled
+            )
+            print(json.dumps(result))
+
+        elif command == "preview-voice":
+            if len(sys.argv) < 5:
+                print(json.dumps({"error": "User ID, text, and voice_type required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            text = sys.argv[3]
+            voice_type = sys.argv[4]
+
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("--language", type=str, default="en")
+            parser.add_argument("--design-prompt", type=str, default=None)
+            parser.add_argument("--clone-audio-path", type=str, default=None)
+            parser.add_argument("--clone-audio-text", type=str, default=None)
+            parser.add_argument("--preset-voice", type=str, default=None)
+            args, _ = parser.parse_known_args(sys.argv[5:])
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.preview_voice(
+                user_id, text, voice_type,
+                language=args.language,
+                design_prompt=args.design_prompt,
+                clone_audio_path=args.clone_audio_path,
+                clone_audio_text=args.clone_audio_text,
+                preset_voice=args.preset_voice
+            )
+            print(json.dumps(result))
+
+        elif command == "add-voice-to-library":
+            if len(sys.argv) < 5:
+                print(json.dumps({"error": "User ID, name, and voice_type required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            name = sys.argv[3]
+            voice_type = sys.argv[4]
+
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("--language", type=str, default="en")
+            parser.add_argument("--design-prompt", type=str, default=None)
+            parser.add_argument("--clone-audio-path", type=str, default=None)
+            parser.add_argument("--clone-audio-text", type=str, default=None)
+            args, _ = parser.parse_known_args(sys.argv[5:])
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.add_voice_to_library(
+                user_id, name, voice_type,
+                language=args.language,
+                design_prompt=args.design_prompt,
+                clone_audio_path=args.clone_audio_path,
+                clone_audio_text=args.clone_audio_text
+            )
+            print(json.dumps(result))
+
+        elif command == "delete-voice-from-library":
+            if len(sys.argv) < 4:
+                print(json.dumps({"error": "User ID and voice_id required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            voice_id = sys.argv[3]
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.delete_voice_from_library(user_id, voice_id)
+            print(json.dumps(result))
+
+        elif command == "get-voice-library":
+            if len(sys.argv) < 3:
+                print(json.dumps({"error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.get_voice_library(user_id)
+            print(json.dumps(result))
+
+        elif command == "check-qwen3-status":
+            if len(sys.argv) < 3:
+                print(json.dumps({"error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.check_qwen3_status(user_id)
+            print(json.dumps(result))
+
+        elif command == "get-tts-progress":
+            if len(sys.argv) < 3:
+                print(json.dumps({"error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.get_tts_progress(user_id)
+            print(json.dumps(result))
+
+        elif command == "download-qwen3-model":
+            if len(sys.argv) < 4:
+                print(json.dumps({"error": "User ID and model_name required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            model_name = sys.argv[3]
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.download_qwen3_model(user_id, model_name)
+            print(json.dumps(result))
+
+        elif command == "get-qwen3-download-progress":
+            if len(sys.argv) < 4:
+                print(json.dumps({"error": "User ID and download_id required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            download_id = sys.argv[3]
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.get_qwen3_download_progress(user_id, download_id)
+            print(json.dumps(result))
+
+        elif command == "cancel-qwen3-download":
+            if len(sys.argv) < 4:
+                print(json.dumps({"error": "User ID and download_id required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            download_id = sys.argv[3]
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.cancel_qwen3_download(user_id, download_id)
+            print(json.dumps(result))
+
+        elif command == "delete-qwen3-model":
+            if len(sys.argv) < 4:
+                print(json.dumps({"error": "User ID and model_name required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            model_name = sys.argv[3]
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.delete_qwen3_model(user_id, model_name)
+            print(json.dumps(result))
+
+        elif command == "update-qwen3-preferences":
+            if len(sys.argv) < 3:
+                print(json.dumps({"error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("--model-variant", type=str, default=None)
+            parser.add_argument("--use-flash-attention", type=str, default=None)
+            args, _ = parser.parse_known_args(sys.argv[3:])
+
+            use_flash = None
+            if args.use_flash_attention is not None:
+                use_flash = args.use_flash_attention.lower() == "true"
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.update_qwen3_preferences(
+                user_id,
+                model_variant=args.model_variant,
+                use_flash_attention=use_flash
+            )
+            print(json.dumps(result))
+
+        elif command == "record-voice-clone-audio":
+            if len(sys.argv) < 3:
+                print(json.dumps({"error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("--duration", type=int, default=5)
+            args, _ = parser.parse_known_args(sys.argv[3:])
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.record_voice_clone_audio(user_id, args.duration)
+            print(json.dumps(result))
+
+        elif command == "transcribe-audio":
+            if len(sys.argv) < 4:
+                print(json.dumps({"error": "User ID and audio_path required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            audio_path = sys.argv[3]
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.transcribe_audio(user_id, audio_path)
+            print(json.dumps(result))
+
+        # ========== End Voice Settings Commands ==========
+
+        # ========== WSL2 TTS Setup Commands ==========
+
+        elif command == "check-wsl2-tts-status":
+            if len(sys.argv) < 3:
+                print(json.dumps({"error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.check_wsl2_tts_status(user_id)
+            print(json.dumps(result))
+
+        elif command == "setup-wsl2-tts":
+            if len(sys.argv) < 3:
+                print(json.dumps({"error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.setup_wsl2_tts(user_id)
+            print(json.dumps(result))
+
+        elif command == "get-wsl2-tts-setup-progress":
+            if len(sys.argv) < 3:
+                print(json.dumps({"error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.get_wsl2_tts_setup_progress(user_id)
+            print(json.dumps(result))
+
+        elif command == "start-wsl2-tts-server":
+            if len(sys.argv) < 3:
+                print(json.dumps({"error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.start_wsl2_tts_server(user_id)
+            print(json.dumps(result))
+
+        elif command == "stop-wsl2-tts-server":
+            if len(sys.argv) < 3:
+                print(json.dumps({"error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.stop_wsl2_tts_server(user_id)
+            print(json.dumps(result))
+
+        elif command == "uninstall-wsl2-tts":
+            if len(sys.argv) < 3:
+                print(json.dumps({"error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.uninstall_wsl2_tts(user_id)
+            print(json.dumps(result))
+
+        # ========== End WSL2 TTS Setup Commands ==========
 
         elif command == "update-qube-config":
             if len(sys.argv) < 6:
