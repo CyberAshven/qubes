@@ -956,6 +956,11 @@ class Session:
             self.cleanup_anchored_files(anchored_timestamps)
             logger.info("anchor_final_cleanup_complete", qube_id=self.qube.qube_id)
 
+            # SYNC BLOCK COUNTS: Ensure block_counts matches actual memory chain
+            # This fixes any discrepancies that may have occurred during anchor
+            # (e.g., from race conditions with concurrent processes)
+            self.qube.chain_state.sync_block_counts(self.qube.memory_chain)
+
             return converted_blocks
         finally:
             # SAFEGUARD: Always reset flag even if error occurs

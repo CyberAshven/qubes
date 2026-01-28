@@ -1254,6 +1254,67 @@ class ChainState:
         logger.info("block_counts_rebuilt", counts=rebuilt_counts)
         return True
 
+    def sync_block_counts(self, memory_chain) -> bool:
+        """
+        Sync block_counts with actual memory chain blocks.
+
+        Unlike rebuild_block_counts(), this ALWAYS syncs regardless of current values.
+        Call this after anchor to ensure counts are accurate.
+
+        Args:
+            memory_chain: MemoryChain instance with block_index
+
+        Returns:
+            True if counts were changed, False if already in sync
+        """
+        if not hasattr(memory_chain, 'block_index'):
+            return False
+
+        # Count blocks by type from actual memory chain
+        actual_counts = {
+            "GENESIS": 0,
+            "MESSAGE": 0,
+            "ACTION": 0,
+            "SUMMARY": 0,
+            "GAME": 0,
+        }
+
+        for block_num in memory_chain.block_index.keys():
+            try:
+                block = memory_chain.get_block(block_num)
+                block_type = block.block_type if hasattr(block, 'block_type') else "MESSAGE"
+                if block_type in actual_counts:
+                    actual_counts[block_type] += 1
+            except Exception as e:
+                logger.debug(f"sync_block_counts: Could not read block {block_num}: {e}")
+
+        # Compare with current counts
+        current_counts = self.get_block_counts()
+        if actual_counts == current_counts:
+            return False  # Already in sync
+
+        # Log discrepancy
+        logger.info(
+            "sync_block_counts_fixing_discrepancy",
+            qube_id=self.state.get("qube_id"),
+            current=current_counts,
+            actual=actual_counts
+        )
+
+        # Update chain_state
+        self.state["block_counts"] = actual_counts
+
+        # Also sync chain totals
+        chain = self.state.setdefault("chain", {})
+        total = sum(actual_counts.values())
+        chain["total_blocks"] = total
+        chain["permanent_blocks"] = total
+        chain["length"] = total
+
+        self._save()
+        logger.info("block_counts_synced", counts=actual_counts)
+        return True
+
     # =========================================================================
     # SESSION SECTION METHODS
     # =========================================================================

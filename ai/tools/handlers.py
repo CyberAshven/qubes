@@ -3374,27 +3374,15 @@ async def get_system_state_handler(qube, params: Dict[str, Any]) -> Dict[str, An
             except Exception:
                 pass
 
-        # Fix block_counts section - rebuild from actual memory chain if needed
+        # Fix block_counts section - sync from actual memory chain if needed
         if "block_counts" in data:
-            block_counts = data["block_counts"]
             try:
-                chain_state_total = sum(block_counts.values()) if block_counts else 0
-                actual_block_count = 0
                 if hasattr(qube, 'memory_chain') and hasattr(qube.memory_chain, 'block_index'):
-                    actual_block_count = len(qube.memory_chain.block_index)
-
-                # Rebuild if chain_state shows 0 but memory chain has blocks
-                if chain_state_total == 0 and actual_block_count > 0:
-                    rebuilt_counts = {"GENESIS": 0, "MESSAGE": 0, "ACTION": 0, "SUMMARY": 0, "GAME": 0}
-                    for block_num in qube.memory_chain.block_index.keys():
-                        try:
-                            block = qube.memory_chain.get_block(block_num)
-                            block_type = block.block_type if hasattr(block, 'block_type') else "MESSAGE"
-                            if block_type in rebuilt_counts:
-                                rebuilt_counts[block_type] += 1
-                        except Exception:
-                            pass
-                    data["block_counts"] = rebuilt_counts
+                    # Use sync_block_counts to fix any discrepancies
+                    # This persists the fix to chain_state for future calls
+                    if qube.chain_state.sync_block_counts(qube.memory_chain):
+                        # Counts were updated - refresh data from chain_state
+                        data["block_counts"] = qube.chain_state.get_block_counts()
             except Exception:
                 pass
 
