@@ -710,21 +710,20 @@ class Qube:
 
     def start_session(self) -> Session:
         """
-        Start new session with file lock protection
+        Start new session
 
-        Prevents race condition when multiple processes access same Qube
+        Session creation is safe without locking - it's mostly in-memory.
+        The anchor lock in anchor_to_chain protects critical disk operations.
+        New blocks created during anchoring are preserved via selective cleanup.
         """
-        from utils.file_lock import qube_session_lock
-
-        with qube_session_lock(self.data_dir):
-            # Check if session already exists (another process may have created it)
-            if self.current_session:
-                logger.debug("session_already_exists", session_id=self.current_session.session_id)
-                return self.current_session
-
-            self.current_session = Session(self, auto_anchor_threshold=self.auto_anchor_threshold)
-            logger.info("session_started", session_id=self.current_session.session_id)
+        # Check if session already exists
+        if self.current_session:
+            logger.debug("session_already_exists", session_id=self.current_session.session_id)
             return self.current_session
+
+        self.current_session = Session(self, auto_anchor_threshold=self.auto_anchor_threshold)
+        logger.info("session_started", session_id=self.current_session.session_id)
+        return self.current_session
 
     def add_message(
         self,

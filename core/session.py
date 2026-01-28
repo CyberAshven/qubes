@@ -542,6 +542,8 @@ class Session:
           with qube_session_lock(self.qube.data_dir):
             # Copy the list for iteration (in case of concurrent modifications)
             blocks_to_anchor = list(self.session_blocks)
+            # Track timestamps of blocks being anchored for selective cleanup
+            anchored_timestamps = {b.timestamp for b in blocks_to_anchor}
 
             # Re-check chain length inside lock (another process may have anchored)
             chain_length = self.qube.memory_chain.get_chain_length()
@@ -661,10 +663,10 @@ class Session:
                 "tool_calls": pending_tool_calls
             }
 
-            # Clear all session blocks and files after successful anchoring
+            # Clear only the anchored blocks (by timestamp) - preserves blocks from other processes
             anchored_count = len(blocks_to_anchor)
-            self.session_blocks = []
-            self.cleanup()
+            self.session_blocks = []  # Clear in-memory (this process only)
+            self.cleanup_anchored_files(anchored_timestamps)  # Selective file cleanup
 
             logger.info(
                 "session_cleared_after_conversion",
@@ -2565,6 +2567,69 @@ IMPORTANT: Return ONLY valid JSON, no other text."""
             if failed_files:
                 logger.warning("some_session_blocks_not_deleted", count=len(failed_files), files=failed_files)
 
+    def cleanup_anchored_files(self, anchored_timestamps: set) -> None:
+        """
+        Remove only the session block files for blocks that were anchored.
+
+        This selective cleanup preserves session block files created by other
+        processes during anchoring, preventing data loss in multi-process scenarios.
+
+        Args:
+            anchored_timestamps: Set of timestamps for blocks that were anchored
+        """
+        from pathlib import Path
+        import time
+
+        session_dir = Path(self.qube.data_dir) / "blocks" / "session"
+        if not session_dir.exists():
+            return
+
+        deleted_count = 0
+        failed_files = []
+
+        for block_file in session_dir.glob("*.json"):
+            # Filename format: {block_number}_{block_type}_{timestamp}.json
+            # Extract timestamp from filename (last part before .json)
+            try:
+                parts = block_file.stem.split("_")
+                if len(parts) >= 3:
+                    timestamp = int(parts[-1])
+                    if timestamp not in anchored_timestamps:
+                        # This file is for a block created by another process - PRESERVE IT
+                        logger.debug("preserving_unanchored_session_file", file=block_file.name)
+                        continue
+            except (ValueError, IndexError):
+                # Can't parse timestamp - skip this file to be safe
+                logger.warning("session_block_unparseable_filename", file=block_file.name)
+                continue
+
+            # This file is for an anchored block - DELETE IT
+            for attempt in range(3):
+                try:
+                    block_file.unlink()
+                    deleted_count += 1
+                    logger.debug("anchored_session_block_deleted", file=block_file.name)
+                    break
+                except PermissionError:
+                    if attempt < 2:
+                        time.sleep(0.1 * (attempt + 1))
+                    else:
+                        failed_files.append(block_file.name)
+                        logger.warning("session_block_delete_failed", file=block_file.name, error="Permission denied")
+                except Exception as e:
+                    failed_files.append(block_file.name)
+                    logger.warning("session_block_delete_failed", file=block_file.name, error=str(e))
+                    break
+
+        if failed_files:
+            logger.warning("some_anchored_blocks_not_deleted", count=len(failed_files), files=failed_files)
+
+        logger.info(
+            "anchored_session_files_cleaned",
+            deleted=deleted_count,
+            preserved=len(list(session_dir.glob("*.json"))),
+            qube_id=self.qube.qube_id
+        )
 
     @staticmethod
     def recover_session(qube) -> Optional["Session"]:
