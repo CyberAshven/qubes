@@ -1392,11 +1392,14 @@ class GUIBridge:
             # CRITICAL: Reload chain_state from disk to get latest settings
             if qube.chain_state:
                 qube.chain_state._load()
+                # Debug: show what's in settings after reload
+                settings = qube.chain_state.state.get("settings", {})
+                logger.info(f"TTS_DEBUG: chain_state reloaded, settings.voice_model={settings.get('voice_model', 'NOT SET')}")
             logger.info(f"TTS_DEBUG: chain_state loaded {_t.time()-_t0:.1f}s")
 
             # Get voice model from chain_state
             voice_model = qube.chain_state.get_voice_model() if qube.chain_state else getattr(qube.genesis_block, 'voice_model', 'openai:alloy')
-            logger.info(f"TTS_DEBUG: voice_model={voice_model}")
+            logger.info(f"TTS_DEBUG: voice_model from get_voice_model()={voice_model}")
 
             # Parse provider and voice from format "provider:voice"
             if ':' in voice_model:
@@ -1495,14 +1498,22 @@ class GUIBridge:
             if voice_model is not None:
                 metadata["genesis_block"]["voice_model"] = voice_model
                 updated_fields.append(f"voice_model={voice_model}")
+                logger.info(f"🔊 VOICE_SAVE: Saving voice_model={voice_model} for qube {qube_id}")
                 # Also update chain_state (the single source of truth) using proper setter
                 encryption_key = self._get_qube_encryption_key(qube_dir)
                 if encryption_key:
                     from core.chain_state import ChainState
                     chain_dir = qube_dir / "chain"
+                    logger.info(f"🔊 VOICE_SAVE: chain_dir={chain_dir}")
                     chain_state = ChainState(data_dir=chain_dir, encryption_key=encryption_key)
+                    old_voice = chain_state.get_voice_model()
+                    logger.info(f"🔊 VOICE_SAVE: Before update: {old_voice}")
                     chain_state.set_voice_model(voice_model)  # Use proper setter
-                    logger.info(f"Updated chain_state voice_model={voice_model}")
+                    # Verify it was saved
+                    new_voice = chain_state.get_voice_model()
+                    logger.info(f"🔊 VOICE_SAVE: After update: {new_voice}")
+                else:
+                    logger.warning(f"🔊 VOICE_SAVE: No encryption key available!")
 
             if favorite_color is not None:
                 metadata["genesis_block"]["favorite_color"] = favorite_color
