@@ -1184,6 +1184,15 @@ class GUIBridge:
             session_blocks.sort(key=lambda x: x['block_number'], reverse=True)
             permanent_blocks.sort(key=lambda x: x['block_number'], reverse=True)
 
+            # DEDUPLICATION: Remove session blocks that have already been anchored to permanent storage
+            # This can happen during a race condition where session files exist but blocks were anchored
+            # Check by timestamp since that's the stable identifier
+            permanent_timestamps = {b['timestamp'] for b in permanent_blocks}
+            original_session_count = len(session_blocks)
+            session_blocks = [b for b in session_blocks if b['timestamp'] not in permanent_timestamps]
+            if original_session_count != len(session_blocks):
+                logger.info(f"Deduplicated {original_session_count - len(session_blocks)} already-anchored session blocks")
+
             logger.debug(f"Processed {len(permanent_blocks)} permanent blocks and {len(session_blocks)} session blocks")
 
             return {

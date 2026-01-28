@@ -948,6 +948,14 @@ class Session:
                 except Exception as e:
                     logger.warning("session_audio_cleanup_failed", error=str(e))
 
+            # FINAL CLEANUP: Re-check and delete any session files that may have been
+            # recreated by concurrent processes (race condition during polling)
+            # This is a defensive measure - files matching anchored_timestamps should be gone
+            import time
+            time.sleep(0.1)  # Brief delay to let any in-flight writes complete
+            self.cleanup_anchored_files(anchored_timestamps)
+            logger.info("anchor_final_cleanup_complete", qube_id=self.qube.qube_id)
+
             return converted_blocks
         finally:
             # SAFEGUARD: Always reset flag even if error occurs
@@ -1733,8 +1741,16 @@ Summary:"""
                         except Exception as e:
                             logger.warning("old_session_block_delete_failed", old=old_filename, error=str(e))
 
-                # Save block with correct number (creates new file with correct name and content)
-                self._save_session_block(block)
+                    # Save block with correct number ONLY if number changed
+                    # (This avoids recreating files during recovery which causes race conditions with anchor)
+                    self._save_session_block(block)
+                else:
+                    # Number didn't change - only save if file doesn't exist
+                    # (During initial recovery, files already exist and don't need to be rewritten)
+                    new_filename = f"{new_num}_{block_type_str}_{block.timestamp}.json"
+                    new_file = session_dir / new_filename
+                    if not new_file.exists():
+                        self._save_session_block(block)
 
     def _save_session_block(self, block: Block) -> None:
         """
