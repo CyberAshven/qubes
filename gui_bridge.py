@@ -1558,6 +1558,10 @@ class GUIBridge:
                         qube.ai_provider = "ollama"
                 if voice_model is not None:
                     qube.genesis_block.voice_model = voice_model
+                    # Also update in-memory chain_state (source of truth for TTS)
+                    if qube.chain_state:
+                        settings = qube.chain_state.state.setdefault("settings", {})
+                        settings["voice_model"] = voice_model
                     # Reinitialize audio manager with new voice
                     if qube.audio_manager:
                         qube.init_audio()
