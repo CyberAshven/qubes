@@ -92,9 +92,16 @@ class TTSServer:
                 self._log("No Qwen3-TTS models downloaded")
                 return
 
-            # Pre-load the CustomVoice model (most common)
-            self._log("Loading Qwen3-TTS model...")
-            await self.provider.ensure_ready(voice_mode="preset")
+            # Pre-load the Base model (needed for voice cloning)
+            # This avoids the 3+ second model switch when using cloned voices
+            # If using preset voices, the model will switch on first request
+            models_downloaded = avail.get("models_downloaded", [])
+            if any("Base" in m for m in models_downloaded):
+                self._log("Loading Qwen3-TTS Base model (for voice cloning)...")
+                await self.provider.ensure_ready(voice_mode="cloned")
+            else:
+                self._log("Loading Qwen3-TTS CustomVoice model...")
+                await self.provider.ensure_ready(voice_mode="preset")
             self.model_loaded = True
             self._log("Model loaded successfully!")
 
@@ -114,14 +121,22 @@ class TTSServer:
             voice_mode = data.get("voice_mode", "preset")
             language = data.get("language", "en")
             output_path = data.get("output_path")
+            # Voice cloning parameters
+            clone_audio_path = data.get("clone_audio_path")
+            clone_audio_text = data.get("clone_audio_text")
 
             self._log(f"Generate request: voice={voice_id}, mode={voice_mode}, text_len={len(text)}")
+            if voice_mode == "cloned":
+                self._log(f"  Clone audio: {clone_audio_path}, transcript: {clone_audio_text[:50] if clone_audio_text else 'None'}...")
 
             if not text:
                 return web.json_response({"error": "No text provided"}, status=400)
 
             if not output_path:
                 return web.json_response({"error": "No output_path provided"}, status=400)
+
+            if voice_mode == "cloned" and not clone_audio_path:
+                return web.json_response({"error": "Voice cloning requires clone_audio_path"}, status=400)
 
             if not self.provider or not self.model_loaded:
                 return web.json_response({"error": "Model not loaded"}, status=503)
@@ -139,6 +154,8 @@ class TTSServer:
                 voice_id=voice_id,
                 voice_mode=voice_mode,
                 language=language,
+                clone_audio_path=clone_audio_path,
+                clone_audio_text=clone_audio_text,
             )
 
             # Generate audio

@@ -967,7 +967,28 @@ class Qwen3TTSProvider(TTSProvider):
         """
         await self.ensure_ready(voice_mode="cloned")
 
-        ref_audio_path = Path(ref_audio_path)
+        # Convert path - handle WSL paths when running on Windows
+        # Note: When Path("/mnt/c/...") is created on Windows, forward slashes become backslashes
+        # So we need to check for both /mnt/ and \mnt\
+        ref_audio_str = str(ref_audio_path)
+        import platform
+        if platform.system() == "Windows":
+            # Check for WSL path pattern - could be /mnt/X/... or \mnt\X\...
+            # (forward slashes become backslashes when Path() is called on Windows)
+            if ref_audio_str.startswith("\\mnt\\") and len(ref_audio_str) > 6:
+                # \mnt\c\... -> C:\...
+                drive_letter = ref_audio_str[5].upper()
+                rest_of_path = ref_audio_str[6:]  # Already has backslashes
+                ref_audio_str = f"{drive_letter}:{rest_of_path}"
+                logger.debug("converted_wsl_path_to_windows", original=str(ref_audio_path), converted=ref_audio_str)
+            elif ref_audio_str.startswith("/mnt/") and len(ref_audio_str) > 6:
+                # /mnt/c/... -> C:\... (in case it wasn't converted)
+                drive_letter = ref_audio_str[5].upper()
+                rest_of_path = ref_audio_str[6:].replace("/", "\\")
+                ref_audio_str = f"{drive_letter}:{rest_of_path}"
+                logger.debug("converted_wsl_path_to_windows", original=str(ref_audio_path), converted=ref_audio_str)
+
+        ref_audio_path = Path(ref_audio_str)
         if not ref_audio_path.exists():
             raise AIError(f"Reference audio file not found: {ref_audio_path}")
 
@@ -1018,10 +1039,6 @@ class Qwen3TTSProvider(TTSProvider):
     ) -> bytes:
         """Synchronous voice cloning synthesis (runs in thread pool)."""
         import os
-        import soundfile as sf
-
-        # Load reference audio
-        ref_audio, ref_sr = sf.read(str(ref_audio_path))
 
         # Map language code to Qwen3 format
         qwen_language = self.LANGUAGE_MAP.get(language.lower(), "Auto")
@@ -1035,10 +1052,11 @@ class Qwen3TTSProvider(TTSProvider):
             os.dup2(devnull_fd, 1)
             os.dup2(devnull_fd, 2)
 
+            # Pass file path directly - qwen-tts supports path strings
             wavs, sr = Qwen3TTSProvider._global_model.generate_voice_clone(
                 text=text,
                 language=qwen_language,
-                ref_audio=(ref_sr, ref_audio),
+                ref_audio=str(ref_audio_path),
                 ref_text=ref_text or "",
                 max_new_tokens=2048,
             )

@@ -244,6 +244,7 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
   const [submittingTxid, setSubmittingTxid] = useState<boolean>(false);
   const [voiceDropdownOpen, setVoiceDropdownOpen] = useState(false);
   const voiceDropdownRef = useRef<HTMLDivElement>(null);
+  const [customVoices, setCustomVoices] = useState<Record<string, { name: string; voice_type: string; language: string }>>({});
 
   const [formData, setFormData] = useState<CreateQubeData>({
     name: '',
@@ -306,10 +307,17 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
       'elevenlabs': 'elevenlabs:default'
     };
 
-    if (voiceProvider && defaultVoices[voiceProvider]) {
+    if (voiceProvider === 'custom') {
+      // Use first custom voice as default
+      const firstVoiceId = Object.keys(customVoices)[0];
+      if (firstVoiceId) {
+        const voice = customVoices[firstVoiceId];
+        setFormData(prev => ({ ...prev, voiceModel: `custom:${firstVoiceId}` }));
+      }
+    } else if (voiceProvider && defaultVoices[voiceProvider]) {
       setFormData(prev => ({ ...prev, voiceModel: defaultVoices[voiceProvider] }));
     }
-  }, [voiceProvider]);
+  }, [voiceProvider, customVoices]);
 
   // Close voice dropdown when clicking outside
   useEffect(() => {
@@ -321,6 +329,24 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
+
+  // Load custom voices (user's voice library) when modal opens
+  useEffect(() => {
+    if (isOpen && userId) {
+      loadCustomVoices();
+    }
+  }, [isOpen, userId]);
+
+  const loadCustomVoices = async () => {
+    try {
+      const result = await invoke<{ success: boolean; voice_library?: Record<string, any> }>('get_voice_library', { userId });
+      if (result.success && result.voice_library) {
+        setCustomVoices(result.voice_library);
+      }
+    } catch (err) {
+      console.error('Failed to load custom voices:', err);
+    }
+  };
 
   // Cleanup polling on unmount or close
   useEffect(() => {
@@ -802,7 +828,10 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
                 onChange={(e) => setVoiceProvider(e.target.value)}
                 className="w-full px-4 py-2 bg-glass-bg backdrop-blur-glass border border-glass-border rounded-lg text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-primary/50"
               >
-                <option value="qwen3">Qwen3-TTS Local (9 voices)</option>
+                {Object.keys(customVoices).length > 0 && (
+                  <option value="custom">✨ Custom Voices ({Object.keys(customVoices).length})</option>
+                )}
+                <option value="qwen3">Qwen3-TTS Local (9 presets)</option>
                 <option value="google">Google Cloud TTS (380+ voices)</option>
                 <option value="gemini">Gemini TTS (30 voices)</option>
                 <option value="openai">OpenAI TTS (6 voices)</option>
@@ -829,6 +858,27 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
                 </button>
                 {voiceDropdownOpen && (
                   <div className="absolute z-50 w-full mt-1 bg-[#2a3441] border border-glass-border rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                    {voiceProvider === 'custom' && (
+                      <>
+                        {Object.entries(customVoices).map(([id, voice]) => (
+                          <div
+                            key={id}
+                            onClick={() => { setFormData({ ...formData, voiceModel: `custom:${id}` }); setVoiceDropdownOpen(false); }}
+                            className={`px-4 py-2 cursor-pointer hover:bg-accent-primary/20 ${formData.voiceModel === `custom:${id}` ? 'bg-accent-primary/30' : ''}`}
+                          >
+                            <div className="flex justify-between items-center">
+                              <span>{voice.name}</span>
+                              <span className="text-xs text-text-tertiary capitalize">{voice.voice_type}</span>
+                            </div>
+                          </div>
+                        ))}
+                        {Object.keys(customVoices).length === 0 && (
+                          <div className="px-4 py-2 text-text-tertiary text-sm">
+                            No custom voices yet. Create one in Settings → Custom Voices.
+                          </div>
+                        )}
+                      </>
+                    )}
                     {voiceProvider === 'qwen3' && (
                       <>
                         {[
@@ -944,6 +994,7 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
                 )}
               </div>
               <p className="text-xs text-text-tertiary mt-1">
+                {voiceProvider === 'custom' && 'Your custom voices created with voice cloning or voice design. Runs locally on GPU.'}
                 {voiceProvider === 'qwen3' && 'Qwen3-TTS runs locally on your GPU - FREE and private! Requires downloaded models.'}
                 {voiceProvider === 'google' && 'Google Cloud TTS requires service account credentials. 1M free chars/month for Neural2/WaveNet!'}
                 {voiceProvider === 'gemini' && 'Gemini voices use your Google API key - FREE during preview!'}

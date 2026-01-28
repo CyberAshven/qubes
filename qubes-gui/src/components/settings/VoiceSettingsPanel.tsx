@@ -23,6 +23,7 @@ interface Qwen3Status {
   models_downloaded: string[];
   is_loaded: boolean;
   fallback_provider: string;
+  model_variant?: string;  // Current user preference: "1.7B" or "0.6B"
 }
 
 interface VoiceSettingsPanelProps {
@@ -82,8 +83,16 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
   const [cloneAudioPath, setCloneAudioPath] = useState('');
   const [cloneAudioText, setCloneAudioText] = useState('');
   const [isRecording, setIsRecording] = useState(false);
+  const [recordingCountdown, setRecordingCountdown] = useState<number | null>(null);
+  const [recordingSuccess, setRecordingSuccess] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [isPreviewing, setIsPreviewing] = useState(false);
+  const [previewingVoiceId, setPreviewingVoiceId] = useState<string | null>(null);
+  const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
+
+  // Model variant preference
+  const [modelVariant, setModelVariant] = useState<string>("1.7B");
+  const [savingVariant, setSavingVariant] = useState(false);
 
   // Model download state
   const [showModelManager, setShowModelManager] = useState(false);
@@ -106,25 +115,45 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
     return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
   };
 
-  // Load voice settings when qube changes
-  useEffect(() => {
-    if (selectedQubeId && password) {
-      loadVoiceSettings();
-    }
-  }, [selectedQubeId, password]);
-
-  // Load Qwen3 status on mount
+  // Load voice library on mount (no qube needed - this is user-level)
   useEffect(() => {
     if (userId) {
+      loadVoiceLibrary();
       checkQwen3Status();
     }
   }, [userId]);
 
-  const loadVoiceSettings = async () => {
-    if (!selectedQubeId || !password) return;
+  // Load qube-specific settings when qube changes (for TTS toggle)
+  useEffect(() => {
+    if (selectedQubeId && password) {
+      loadQubeVoiceSettings();
+    }
+  }, [selectedQubeId, password]);
 
-    setLoading(true);
-    setError(null);
+  // Load user's voice library (independent of qube selection)
+  const loadVoiceLibrary = async () => {
+    try {
+      const result = await invoke<{
+        success: boolean;
+        error?: string;
+        voice_library?: Record<string, VoiceLibraryEntry>;
+      }>('get_voice_library', {
+        userId,
+      });
+
+      if (result.success) {
+        setVoiceLibrary(result.voice_library || {});
+      }
+    } catch (err) {
+      console.error('Failed to load voice library:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Load qube-specific voice settings (TTS enabled, selected voice)
+  const loadQubeVoiceSettings = async () => {
+    if (!selectedQubeId || !password) return;
 
     try {
       const result = await invoke<{
@@ -142,16 +171,20 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
       if (result.success) {
         setVoiceLibraryRef(result.voice_library_ref || null);
         setTtsEnabled(result.tts_enabled || false);
-        setVoiceLibrary(result.voice_library || {});
+        // Also update voice library in case it changed
+        if (result.voice_library) {
+          setVoiceLibrary(result.voice_library);
+        }
       } else {
         setError(result.error || 'Failed to load voice settings');
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load voice settings');
-    } finally {
-      setLoading(false);
     }
   };
+
+  // Deprecated - replaced by loadVoiceLibrary and loadQubeVoiceSettings
+  const loadVoiceSettings = loadQubeVoiceSettings;
 
   const checkQwen3Status = async () => {
     try {
@@ -161,6 +194,10 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
 
       if (result.success) {
         setQwen3Status(result);
+        // Initialize model variant from preferences
+        if (result.model_variant) {
+          setModelVariant(result.model_variant);
+        }
       }
     } catch (err) {
       console.error('Failed to check Qwen3 status:', err);
@@ -245,6 +282,38 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
     }
   };
 
+  // Preview a voice from the library
+  const handlePreviewLibraryVoice = async (voiceId: string) => {
+    const voice = voiceLibrary[voiceId];
+    if (!voice) return;
+
+    setPreviewingVoiceId(voiceId);
+    try {
+      const previewText = "Hello! This is a preview of your custom voice.";
+      const result = await invoke<{ success: boolean; audio_path?: string; error?: string }>('preview_voice', {
+        userId,
+        text: previewText,
+        voiceType: voice.voice_type === 'cloned' ? 'clone' : 'design',
+        language: voice.language,
+        designPrompt: voice.design_prompt,
+        cloneAudioPath: voice.clone_audio_path,
+        cloneAudioText: voice.clone_audio_text,
+      });
+
+      if (result.success && result.audio_path) {
+        const audioUrl = convertFileSrc(result.audio_path);
+        const audio = new Audio(audioUrl);
+        await audio.play();
+      } else {
+        setError(result.error || 'Failed to generate preview');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to preview voice');
+    } finally {
+      setPreviewingVoiceId(null);
+    }
+  };
+
   const handleSaveVoice = async () => {
     if (!newVoiceName.trim()) {
       setError('Please enter a name for your voice');
@@ -266,7 +335,7 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
 
       if (result.success) {
         // Refresh voice library
-        await loadVoiceSettings();
+        await loadVoiceLibrary();
         // Reset creator
         setShowVoiceCreator(false);
         setNewVoiceName('');
@@ -291,7 +360,7 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
       });
 
       if (result.success) {
-        await loadVoiceSettings();
+        await loadVoiceLibrary();  // Refresh user-level voice library
       } else {
         setError(result.error || 'Failed to delete voice');
       }
@@ -302,7 +371,14 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
 
   const handleRecordCloneAudio = async () => {
     setIsRecording(true);
+    setRecordingSuccess(false);
     setError(null);
+    setTranscriptionError(null);
+    setRecordingCountdown(10);
+
+    // Track live transcription
+    let liveTranscript = '';
+
     try {
       console.log('[Recording] Requesting microphone access...');
 
@@ -339,17 +415,129 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
         console.error('[Recording] MediaRecorder error:', e);
       };
 
+      // Start browser's native speech recognition for live transcription (same as Chat tab)
+      let recognition: any = null;
+      let recognitionStarted = false;
+      let recognitionGotResults = false;
+      const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      console.log('[Recording] SpeechRecognition API available:', !!SpeechRecognition);
+
+      if (SpeechRecognition) {
+        recognition = new SpeechRecognition();
+        recognition.continuous = true;
+        recognition.interimResults = true;
+        const lang = newVoiceLanguage === 'zh' ? 'zh-CN' :
+                    newVoiceLanguage === 'ja' ? 'ja-JP' :
+                    newVoiceLanguage === 'ko' ? 'ko-KR' :
+                    newVoiceLanguage === 'de' ? 'de-DE' :
+                    newVoiceLanguage === 'fr' ? 'fr-FR' :
+                    newVoiceLanguage === 'ru' ? 'ru-RU' :
+                    newVoiceLanguage === 'pt' ? 'pt-BR' :
+                    newVoiceLanguage === 'es' ? 'es-ES' :
+                    newVoiceLanguage === 'it' ? 'it-IT' : 'en-US';
+        recognition.lang = lang;
+        console.log('[Recording] Speech recognition language:', lang);
+
+        recognition.onstart = () => {
+          console.log('[Recording] Speech recognition actually started');
+          recognitionStarted = true;
+        };
+
+        recognition.onaudiostart = () => {
+          console.log('[Recording] Speech recognition audio started');
+        };
+
+        recognition.onsoundstart = () => {
+          console.log('[Recording] Speech recognition sound detected');
+        };
+
+        recognition.onspeechstart = () => {
+          console.log('[Recording] Speech recognition speech detected');
+        };
+
+        recognition.onresult = (event: any) => {
+          recognitionGotResults = true;
+          let transcript = '';
+          // Use resultIndex to properly handle continuous results (same as Chat tab)
+          for (let i = event.resultIndex; i < event.results.length; i++) {
+            const result = event.results[i];
+            transcript += result[0].transcript;
+            console.log('[Recording] Result', i, '- isFinal:', result.isFinal, 'transcript:', result[0].transcript);
+          }
+          if (transcript) {
+            liveTranscript = transcript;
+            // Update transcript field in real-time
+            setCloneAudioText(transcript);
+            console.log('[Recording] Live transcript:', transcript);
+          }
+        };
+
+        recognition.onerror = (event: any) => {
+          console.warn('[Recording] Speech recognition error:', event.error, event.message);
+          // Common errors: 'no-speech', 'audio-capture', 'not-allowed', 'network'
+          if (event.error === 'network') {
+            console.error('[Recording] Network error - speech recognition requires internet connection');
+          }
+        };
+
+        recognition.onnomatch = () => {
+          console.log('[Recording] Speech recognition: no match found (speech detected but not recognized)');
+        };
+
+        recognition.onend = () => {
+          console.log('[Recording] Speech recognition ended. Got results:', recognitionGotResults);
+          // If recognition ended without results but we detected speech, it might be a network issue
+          if (!recognitionGotResults && recognitionStarted) {
+            console.warn('[Recording] Speech was detected but no transcript - possible network issue with speech recognition service');
+          }
+        };
+
+        try {
+          recognition.start();
+          console.log('[Recording] Called recognition.start()');
+        } catch (e) {
+          console.warn('[Recording] Could not start speech recognition:', e);
+        }
+      } else {
+        console.log('[Recording] Speech recognition not available - will need manual transcript');
+      }
+
       // Start recording
       mediaRecorder.start(1000); // Collect data every 1 second
       console.log('[Recording] Started recording...');
 
-      // Stop after 5 seconds
+      // Countdown timer
+      const countdownInterval = setInterval(() => {
+        setRecordingCountdown(prev => {
+          if (prev === null || prev <= 1) {
+            clearInterval(countdownInterval);
+            return null;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+
+      // Stop after 10 seconds (more audio = better voice cloning)
       await new Promise<void>((resolve, reject) => {
         const timeout = setTimeout(() => {
-          console.log('[Recording] Stopping after 5 seconds...');
+          console.log('[Recording] Stopping after 10 seconds...');
+          clearInterval(countdownInterval);
+          setRecordingCountdown(null);
           mediaRecorder.stop();
           stream.getTracks().forEach(track => track.stop());
-        }, 5000);
+          // Delay stopping speech recognition to let it finish processing
+          // The recognition service may still be processing audio
+          if (recognition) {
+            setTimeout(() => {
+              try {
+                console.log('[Recording] Now stopping speech recognition...');
+                recognition.stop();
+              } catch (e) {
+                // Ignore
+              }
+            }, 1500); // Wait 1.5 seconds for results to come in
+          }
+        }, 10000);
 
         mediaRecorder.onstop = () => {
           clearTimeout(timeout);
@@ -359,6 +547,10 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
 
         mediaRecorder.onerror = (e) => {
           clearTimeout(timeout);
+          clearInterval(countdownInterval);
+          if (recognition) {
+            try { recognition.stop(); } catch (e) { /* ignore */ }
+          }
           reject(new Error('MediaRecorder error: ' + e));
         };
       });
@@ -382,13 +574,23 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
         userId,
         audioData: Array.from(uint8Array),
       });
-      console.log('[Recording] Backend result:', result);
+      console.log('[Recording] Backend result:', JSON.stringify(result));
 
       if (result.success && result.audio_path) {
+        console.log('[Recording] Success! Audio saved to:', result.audio_path);
         setCloneAudioPath(result.audio_path);
-        // Auto-transcribe
-        await handleTranscribeAudio(result.audio_path);
+        setRecordingSuccess(true);
+
+        // Use the live transcript if we got one
+        if (liveTranscript) {
+          console.log('[Recording] Using live transcript:', liveTranscript);
+          setCloneAudioText(liveTranscript);
+        } else if (!cloneAudioText) {
+          // No transcript - show hint to type manually
+          setTranscriptionError('Speech recognition did not capture text. Please type the transcript manually.');
+        }
       } else {
+        console.log('[Recording] Failed:', result.error);
         setError(result.error || 'Failed to save recorded audio');
       }
     } catch (err) {
@@ -406,22 +608,41 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
       }
     } finally {
       setIsRecording(false);
+      setRecordingCountdown(null);
     }
   };
 
   const handleTranscribeAudio = async (audioPath: string) => {
     setIsTranscribing(true);
+    setTranscriptionError(null);
     try {
-      const result = await invoke<{ success: boolean; text?: string; error?: string }>('transcribe_audio', {
+      console.log('[Transcribe] Starting transcription for:', audioPath);
+      const result = await invoke<{ success: boolean; text?: string; error?: string; stt_available?: boolean; debug?: any }>('transcribe_audio', {
         userId,
         audioPath,
       });
+      console.log('[Transcribe] Full result:', JSON.stringify(result, null, 2));
+      if (result.debug) {
+        console.log('[Transcribe] Debug info:', result.debug);
+      }
 
       if (result.success && result.text) {
         setCloneAudioText(result.text);
+        console.log('[Transcribe] Success! Text:', result.text);
+      } else if (result.error) {
+        // Transcription failed - show a helpful message
+        console.warn('[Transcribe] Failed:', result.error);
+        if (result.error.includes('OPENAI_API_KEY')) {
+          setTranscriptionError('Auto-transcription requires OpenAI API key. Please type the transcript manually.');
+        } else if (result.error.includes('All STT providers failed')) {
+          setTranscriptionError('Transcription service error. Please type the transcript manually.');
+        } else {
+          setTranscriptionError('Auto-transcription unavailable. Please type the transcript manually.');
+        }
       }
     } catch (err) {
-      console.error('Failed to transcribe audio:', err);
+      console.error('[Transcribe] Exception:', err);
+      setTranscriptionError('Transcription failed. Please type the transcript manually.');
     } finally {
       setIsTranscribing(false);
     }
@@ -445,6 +666,26 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to delete model');
+    }
+  };
+
+  const handleModelVariantChange = async (variant: string) => {
+    setSavingVariant(true);
+    try {
+      const result = await invoke<{ success: boolean; error?: string }>('update_qwen3_preferences', {
+        userId,
+        modelVariant: variant,
+      });
+
+      if (result.success) {
+        setModelVariant(variant);
+      } else {
+        setError(result.error || 'Failed to update model variant');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update model variant');
+    } finally {
+      setSavingVariant(false);
     }
   };
 
@@ -516,14 +757,6 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
     }
   };
 
-  if (!selectedQubeId) {
-    return (
-      <div className="text-center text-text-tertiary text-sm py-4">
-        Select a Qube from the roster to configure its voice settings.
-      </div>
-    );
-  }
-
   if (loading) {
     return (
       <div className="text-center text-text-tertiary text-sm py-4">
@@ -542,70 +775,64 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
         </div>
       )}
 
-      {/* TTS Toggle */}
-      <div className="flex items-center justify-between">
-        <div>
-          <span className="text-text-primary text-sm font-medium">Enable TTS for {selectedQubeName || selectedQubeId}</span>
-          <p className="text-text-tertiary text-[10px]">Generate voice audio for responses</p>
+      {/* Voice Library - Always visible (user-level, not qube-specific) */}
+      <div className="space-y-2">
+        <label className="text-text-secondary text-xs font-medium block">Your Voice Library</label>
+
+        {/* Voice Library Grid */}
+        <div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto">
+          {Object.entries(voiceLibrary).map(([id, voice]) => (
+            <div
+              key={id}
+              className="p-3 rounded-lg text-left bg-white/5 border border-white/10 hover:bg-white/10 transition-colors"
+            >
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-text-primary font-medium truncate text-sm">{voice.name}</span>
+                <button
+                  onClick={() => handleDeleteVoice(id)}
+                  className="text-text-tertiary hover:text-red-400 text-xs"
+                  title="Delete voice"
+                >
+                  ✕
+                </button>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-text-tertiary text-xs capitalize">{voice.voice_type} • {voice.language}</span>
+                <button
+                  onClick={() => handlePreviewLibraryVoice(id)}
+                  disabled={previewingVoiceId === id}
+                  className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
+                    previewingVoiceId === id
+                      ? 'bg-accent-primary/30 text-accent-primary'
+                      : 'bg-accent-primary/20 text-accent-primary hover:bg-accent-primary/30'
+                  } disabled:opacity-70`}
+                  title="Preview voice"
+                >
+                  {previewingVoiceId === id ? '🔊 Playing...' : '▶ Preview'}
+                </button>
+              </div>
+            </div>
+          ))}
+
+          {Object.keys(voiceLibrary).length === 0 && (
+            <div className="col-span-2 text-center text-text-tertiary text-xs py-4">
+              No custom voices yet. Create one below!
+            </div>
+          )}
         </div>
+
+        {/* Create Voice Button */}
         <button
-          onClick={() => handleTtsToggle(!ttsEnabled)}
-          disabled={saving}
-          className={`w-12 h-6 rounded-full transition-colors ${ttsEnabled ? 'bg-accent-primary' : 'bg-white/10'}`}
+          onClick={() => setShowVoiceCreator(!showVoiceCreator)}
+          className="w-full py-2 rounded bg-accent-primary/20 border border-accent-primary/40 text-accent-primary hover:bg-accent-primary/30 text-xs font-medium"
         >
-          <div className={`w-5 h-5 rounded-full bg-white shadow transition-transform ${ttsEnabled ? 'translate-x-6' : 'translate-x-0.5'}`} />
+          {showVoiceCreator ? 'Cancel' : '+ Create New Voice'}
         </button>
       </div>
 
-      {ttsEnabled && (
-        <>
-          {/* Voice Selection */}
-          <div className="space-y-2">
-            <label className="text-text-secondary text-xs font-medium block">Select Voice</label>
 
-            {/* Voice Library */}
-            <div className="grid grid-cols-2 gap-2 max-h-40 overflow-y-auto">
-              {Object.entries(voiceLibrary).map(([id, voice]) => (
-                <button
-                  key={id}
-                  onClick={() => handleVoiceSelect(`${voice.voice_type}d:${id}`)}
-                  className={`p-2 rounded text-left text-xs transition-all ${
-                    voiceLibraryRef === `${voice.voice_type}d:${id}`
-                      ? 'bg-accent-primary/20 border-2 border-accent-primary/40'
-                      : 'bg-white/5 border border-white/10 hover:bg-white/10'
-                  }`}
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="text-text-primary font-medium truncate">{voice.name}</span>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); handleDeleteVoice(id); }}
-                      className="text-text-tertiary hover:text-red-400 text-[10px]"
-                    >
-                      ✕
-                    </button>
-                  </div>
-                  <span className="text-text-tertiary text-[10px] capitalize">{voice.voice_type}</span>
-                </button>
-              ))}
-
-              {Object.keys(voiceLibrary).length === 0 && (
-                <div className="col-span-2 text-center text-text-tertiary text-xs py-4">
-                  No voices saved yet. Create one below!
-                </div>
-              )}
-            </div>
-
-            {/* Create Voice Button */}
-            <button
-              onClick={() => setShowVoiceCreator(!showVoiceCreator)}
-              className="w-full py-2 rounded bg-white/5 border border-white/10 text-text-secondary hover:bg-white/10 text-xs"
-            >
-              {showVoiceCreator ? 'Cancel' : '+ Create New Voice'}
-            </button>
-          </div>
-
-          {/* Voice Creator */}
-          {showVoiceCreator && (
+      {/* Voice Creator - Always available */}
+      {showVoiceCreator && (
             <GlassCard className="p-3 space-y-3">
               {/* Mode Tabs */}
               <div className="flex gap-1 bg-white/5 p-1 rounded">
@@ -688,40 +915,104 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
 
               {voiceCreatorMode === 'clone' && (
                 <div className="space-y-2">
-                  <label className="text-text-secondary text-[10px] block">Voice Sample</label>
+                  <label className="text-text-secondary text-[10px] block">Voice Sample (10 seconds of clear speech for best results)</label>
                   <div className="flex gap-2">
                     <button
                       onClick={handleRecordCloneAudio}
                       disabled={isRecording}
                       className={`flex-1 py-2 rounded text-xs transition-colors ${
                         isRecording
-                          ? 'bg-red-500/20 text-red-400 animate-pulse'
+                          ? 'bg-red-500/20 text-red-400 border-2 border-red-500/50'
                           : 'bg-white/5 border border-white/10 text-text-secondary hover:bg-white/10'
                       }`}
                     >
-                      {isRecording ? '🔴 Recording...' : '🎙️ Record (5s)'}
+                      {isRecording
+                        ? `🔴 Recording... ${recordingCountdown !== null ? `${recordingCountdown}s` : ''}`
+                        : '🎙️ Record (10s)'}
                     </button>
-                    <button
-                      onClick={() => {/* File upload */}}
-                      className="flex-1 py-2 rounded bg-white/5 border border-white/10 text-text-secondary hover:bg-white/10 text-xs"
-                    >
+                    <label className="flex-1 py-2 rounded bg-white/5 border border-white/10 text-text-secondary hover:bg-white/10 text-xs text-center cursor-pointer">
                       📁 Upload File
-                    </button>
+                      <input
+                        type="file"
+                        accept="audio/*"
+                        className="hidden"
+                        onChange={async (e) => {
+                          const file = e.target.files?.[0];
+                          if (!file) return;
+
+                          try {
+                            setIsRecording(true);
+                            setRecordingSuccess(false);
+                            setError(null);
+
+                            const arrayBuffer = await file.arrayBuffer();
+                            const uint8Array = new Uint8Array(arrayBuffer);
+
+                            const result = await invoke<{ success: boolean; audio_path?: string; error?: string }>('save_recorded_audio', {
+                              userId,
+                              audioData: Array.from(uint8Array),
+                            });
+
+                            if (result.success && result.audio_path) {
+                              setCloneAudioPath(result.audio_path);
+                              setRecordingSuccess(true);
+                              await handleTranscribeAudio(result.audio_path);
+                            } else {
+                              setError(result.error || 'Failed to upload audio');
+                            }
+                          } catch (err) {
+                            setError(err instanceof Error ? err.message : 'Failed to upload audio');
+                          } finally {
+                            setIsRecording(false);
+                          }
+                        }}
+                      />
+                    </label>
                   </div>
-                  {cloneAudioPath && (
-                    <div className="text-[10px] text-text-tertiary">
-                      ✓ Audio recorded
+                  {/* Success message - more prominent */}
+                  {recordingSuccess && cloneAudioPath && (
+                    <div className="p-2 rounded-lg bg-green-500/10 border border-green-500/30 flex items-center gap-2">
+                      <span className="text-green-400 text-lg">✓</span>
+                      <div>
+                        <p className="text-green-400 text-xs font-medium">Audio captured successfully!</p>
+                        <p className="text-green-400/70 text-[10px]">{cloneAudioPath.split(/[/\\]/).pop()}</p>
+                      </div>
+                    </div>
+                  )}
+                  {/* Transcribing indicator */}
+                  {isTranscribing && (
+                    <div className="p-2 rounded-lg bg-blue-500/10 border border-blue-500/30 flex items-center gap-2">
+                      <span className="text-blue-400 animate-spin">⟳</span>
+                      <p className="text-blue-400 text-xs">Transcribing audio...</p>
+                    </div>
+                  )}
+                  {/* Transcription error/notice */}
+                  {transcriptionError && !isTranscribing && (
+                    <div className="p-2 rounded-lg bg-yellow-500/10 border border-yellow-500/30 flex items-center gap-2">
+                      <span className="text-yellow-400">⚠</span>
+                      <p className="text-yellow-400 text-xs">{transcriptionError}</p>
                     </div>
                   )}
                   <div>
-                    <label className="text-text-secondary text-[10px] block mb-1">Transcript</label>
+                    <label className="text-text-secondary text-[10px] block mb-1">
+                      Transcript {cloneAudioText && <span className="text-green-400">(ready)</span>}
+                    </label>
                     <textarea
                       value={cloneAudioText}
                       onChange={(e) => setCloneAudioText(e.target.value)}
-                      placeholder={isTranscribing ? 'Transcribing...' : 'Enter or auto-transcribe the audio content...'}
+                      placeholder={isTranscribing ? 'Transcribing...' : 'Type exactly what was said in the recording...'}
                       disabled={isTranscribing}
-                      className="w-full h-16 px-2 py-1.5 text-xs rounded bg-bg-secondary border border-border-subtle text-text-primary resize-none disabled:opacity-50"
+                      className={`w-full h-16 px-2 py-1.5 text-xs rounded bg-bg-secondary border text-text-primary resize-none disabled:opacity-50 ${
+                        recordingSuccess && !cloneAudioText && !isTranscribing
+                          ? 'border-yellow-500/50 focus:border-yellow-500'
+                          : 'border-border-subtle'
+                      }`}
                     />
+                    <p className="text-text-tertiary text-[9px] mt-0.5">
+                      {recordingSuccess && !cloneAudioText && !isTranscribing
+                        ? '↑ Type the words spoken in the recording to enable voice cloning'
+                        : 'Accurate transcript improves voice cloning quality'}
+                    </p>
                   </div>
                 </div>
               )}
@@ -766,6 +1057,25 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
 
               {showModelManager && (
                 <div className="space-y-2 pt-2 border-t border-white/10">
+                  {/* Model Variant Selector */}
+                  <div className="bg-white/5 rounded p-2">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <label className="text-text-secondary text-[10px] font-medium">Model Size</label>
+                        <p className="text-[9px] text-text-tertiary">Larger = better quality, Smaller = faster</p>
+                      </div>
+                      <select
+                        value={modelVariant}
+                        onChange={(e) => handleModelVariantChange(e.target.value)}
+                        disabled={savingVariant}
+                        className="h-7 px-2 text-xs rounded bg-bg-secondary border border-border-subtle text-text-primary disabled:opacity-50"
+                      >
+                        <option value="1.7B">1.7B (Best Quality)</option>
+                        <option value="0.6B">0.6B (Faster)</option>
+                      </select>
+                    </div>
+                  </div>
+
                   <div className="flex flex-wrap gap-1 text-[9px]">
                     {qwen3Status.models_downloaded.length > 0 ? (
                       qwen3Status.models_downloaded.map(m => (
@@ -817,17 +1127,28 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
                   )}
                   {!downloadingModel && (
                     <div className="grid grid-cols-2 gap-1">
-                      {['1.7B-CustomVoice', '1.7B-VoiceDesign', '0.6B-CustomVoice'].map((model) => {
-                        const isDownloaded = qwen3Status.models_downloaded.includes(model);
-                        return (
-                          <div key={model} className="flex items-center gap-1">
-                            <button
-                              onClick={() => isDownloaded ? null : handleDownloadModel(model)}
-                              disabled={isDownloaded}
-                              className="flex-1 py-1.5 px-2 rounded bg-white/5 border border-white/10 text-[10px] text-text-secondary hover:bg-white/10 disabled:opacity-50 disabled:cursor-default"
-                            >
-                              {isDownloaded ? '✓ ' : '⬇️ '}{model}
-                            </button>
+                      {(() => {
+                        // Model sizes in GB (approximate, from HuggingFace)
+                        // Note: 0.6B-VoiceDesign doesn't exist - VoiceDesign only available in 1.7B
+                        const modelSizes: Record<string, string> = {
+                          '1.7B-CustomVoice': '3.5 GB',
+                          '1.7B-VoiceDesign': '3.5 GB',
+                          '1.7B-Base': '3.4 GB',
+                          '0.6B-CustomVoice': '1.3 GB',
+                          '0.6B-Base': '1.2 GB',
+                        };
+                        return ['1.7B-CustomVoice', '1.7B-VoiceDesign', '1.7B-Base', '0.6B-CustomVoice', '0.6B-Base'].map((model) => {
+                          const isDownloaded = qwen3Status.models_downloaded.includes(model);
+                          const size = modelSizes[model] || '';
+                          return (
+                            <div key={model} className="flex items-center gap-1">
+                              <button
+                                onClick={() => isDownloaded ? null : handleDownloadModel(model)}
+                                disabled={isDownloaded}
+                                className="flex-1 py-1.5 px-2 rounded bg-white/5 border border-white/10 text-[10px] text-text-secondary hover:bg-white/10 disabled:opacity-50 disabled:cursor-default"
+                              >
+                                {isDownloaded ? '✓ ' : '⬇️ '}{model} <span className="text-text-tertiary">({size})</span>
+                              </button>
                             {isDownloaded && (
                               <button
                                 onClick={() => handleDeleteModel(model)}
@@ -837,17 +1158,16 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
                                 🗑️
                               </button>
                             )}
-                          </div>
-                        );
-                      })}
+                            </div>
+                          );
+                        });
+                      })()}
                     </div>
                   )}
                 </div>
               )}
             </GlassCard>
           )}
-        </>
-      )}
 
       {/* Local TTS Setup Section */}
       <GlassCard className="p-4">

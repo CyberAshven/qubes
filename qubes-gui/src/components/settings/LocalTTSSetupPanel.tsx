@@ -55,7 +55,27 @@ export const LocalTTSSetupPanel: React.FC = () => {
   // Collapsed state - default to collapsed
   const [isExpanded, setIsExpanded] = useState(false);
 
-  // Load status on mount and periodically
+  // Load status function
+  const loadStatus = async () => {
+    if (!userId) return;
+
+    setLoadingStatus(true);
+    setError(null);
+
+    try {
+      const result = await invoke<WSL2TTSStatus>('check_wsl2_tts_status', {
+        userId,
+      });
+
+      setStatus(result);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to check status');
+    } finally {
+      setLoadingStatus(false);
+    }
+  };
+
+  // Load status on mount
   useEffect(() => {
     loadStatus();
   }, [userId]);
@@ -84,25 +104,6 @@ export const LocalTTSSetupPanel: React.FC = () => {
 
     return () => clearInterval(interval);
   }, [isSettingUp, userId]);
-
-  const loadStatus = async () => {
-    if (!userId) return;
-
-    setLoadingStatus(true);
-    setError(null);
-
-    try {
-      const result = await invoke<WSL2TTSStatus>('check_wsl2_tts_status', {
-        userId,
-      });
-
-      setStatus(result);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to check status');
-    } finally {
-      setLoadingStatus(false);
-    }
-  };
 
   const handleSetup = async () => {
     setIsSettingUp(true);
@@ -215,15 +216,17 @@ export const LocalTTSSetupPanel: React.FC = () => {
     if (!status) return 'Loading...';
     if (!status.wsl2_installed || !status.ubuntu_installed) return 'Setup Required';
     if (!status.setup_complete) return 'Ready to Install';
-    if (status.server_ready) return 'Running';
-    if (status.server_running) return 'Starting...';
+    // Server running (with or without model loaded) is ready - model loads on first request
+    if (status.server_ready || status.server_running) return 'Ready';
+    if (startingServer) return 'Starting...';
     return 'Stopped';
   };
 
   const statusColor = () => {
     if (!status) return 'text-text-tertiary';
-    if (status.server_ready) return 'text-green-400';
-    if (status.server_running) return 'text-yellow-400';
+    // Server running is green (model loads on first request)
+    if (status.server_ready || status.server_running) return 'text-green-400';
+    if (startingServer) return 'text-yellow-400';
     if (status.setup_complete) return 'text-text-secondary';
     return 'text-yellow-400';
   };
@@ -393,14 +396,9 @@ export const LocalTTSSetupPanel: React.FC = () => {
                   <span>✓</span>
                   <span className="text-sm font-medium">Local TTS Ready</span>
                 </div>
-                {status.server_ready && (
+                {(status.server_ready || status.server_running) && (
                   <span className="text-[10px] bg-green-500/20 text-green-400 px-2 py-0.5 rounded">
-                    Server Running
-                  </span>
-                )}
-                {status.server_running && !status.server_ready && (
-                  <span className="text-[10px] bg-yellow-500/20 text-yellow-400 px-2 py-0.5 rounded animate-pulse">
-                    Loading Model...
+                    Server Ready
                   </span>
                 )}
               </div>
@@ -419,7 +417,7 @@ export const LocalTTSSetupPanel: React.FC = () => {
                 <StatusBadge ok={status.qwen_tts_installed} label="qwen-tts" />
                 <StatusBadge ok={status.model_downloaded} label="Model" />
                 <StatusBadge ok={status.gpu_detected} label="GPU" />
-                <StatusBadge ok={status.server_ready} label="Server" />
+                <StatusBadge ok={status.server_running} label="Server" />
               </div>
 
               {/* Server controls */}
@@ -445,11 +443,9 @@ export const LocalTTSSetupPanel: React.FC = () => {
               </div>
 
               <p className="text-[10px] text-text-tertiary">
-                {status.server_ready
-                  ? 'The server is running and ready. Qubes with WSL2 TTS voice will use local generation.'
-                  : status.server_running
-                  ? 'The server is starting up. First-time model loading takes ~2 minutes for JIT compilation.'
-                  : 'Start the server to enable local TTS generation. Server keeps the model loaded for fast synthesis.'}
+                {status.server_running
+                  ? 'Server ready. Model loads on first TTS request (~45s). Subsequent requests are fast.'
+                  : 'Start the server to enable local TTS generation.'}
               </p>
 
               {/* Uninstall option */}

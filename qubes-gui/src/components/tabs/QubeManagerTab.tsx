@@ -1030,6 +1030,22 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
     fetchModels();
   }, [fetchModels]);
 
+  // Load custom voices on mount
+  useEffect(() => {
+    const loadCustomVoices = async () => {
+      if (!userId) return;
+      try {
+        const result = await invoke<{ success: boolean; voice_library?: Record<string, any> }>('get_voice_library', { userId });
+        if (result.success && result.voice_library) {
+          setCustomVoices(result.voice_library);
+        }
+      } catch (error) {
+        console.error('Failed to load custom voices:', error);
+      }
+    };
+    loadCustomVoices();
+  }, [userId]);
+
   // Wallet Security state
   const [walletSecurityModalOpen, setWalletSecurityModalOpen] = useState(false);
   const [walletSecurity, setWalletSecurity] = useState<{
@@ -1287,6 +1303,9 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
   const [nftBalance, setNftBalance] = useState<number | null>(cachedWalletData?.nftBalance ?? null);  // NFT address ('z')
   const [walletBalanceLoading, setWalletBalanceLoading] = useState(false);
   const [walletBalanceError, setWalletBalanceError] = useState<string | null>(cachedWalletData?.error ?? null);
+
+  // Custom voices state (user-created Qwen3-TTS voices)
+  const [customVoices, setCustomVoices] = useState<Record<string, { name: string; voice_type: string; language: string }>>({});
 
   // Format BCH amount for display (always show 8 decimal places)
   const formatBCH = (sats: number) => {
@@ -1675,6 +1694,12 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
     // Fallback: format "provider:voice" to "Provider: Voice"
     if (voiceId.includes(':')) {
       const [provider, voice] = voiceId.split(':');
+
+      // Special case for custom voices - look up the name
+      if (provider === 'custom' && customVoices[voice]) {
+        return `✨ ${customVoices[voice].name}`;
+      }
+
       // Special case for OpenAI
       const providerName = provider === 'openai' ? 'OpenAI' : provider.charAt(0).toUpperCase() + provider.slice(1);
       const voiceName = voice.charAt(0).toUpperCase() + voice.slice(1);
@@ -1884,7 +1909,10 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
     ],
   };
 
+  // Build voice provider options including custom voices if available
+  const customVoiceCount = Object.keys(customVoices).length;
   const voiceProviderOptions = [
+    ...(customVoiceCount > 0 ? [{ label: `✨ Custom Voices (${customVoiceCount})`, value: 'custom' }] : []),
     { label: 'Qwen3-TTS Local (9 voices)', value: 'qwen3' },
     { label: 'Google Cloud TTS (380+ voices)', value: 'google' },
     { label: 'Gemini TTS (30 voices)', value: 'gemini' },
@@ -1892,7 +1920,20 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
     { label: 'ElevenLabs', value: 'elevenlabs' },
   ];
 
+  // Add custom voices to voiceOptions
+  const customVoiceOptions = Object.entries(customVoices).map(([voiceId, voice]) => ({
+    label: `${voice.name} (${voice.voice_type})`,
+    value: `custom:${voiceId}`,
+  }));
+
+  // Merge custom voices into voiceOptions
+  const voiceOptionsWithCustom: Record<string, Array<{ label: string; value: string }>> = {
+    ...voiceOptions,
+    custom: customVoiceOptions,
+  };
+
   const defaultVoices: Record<string, string> = {
+    custom: customVoiceCount > 0 ? `custom:${Object.keys(customVoices)[0]}` : '',
     qwen3: 'qwen3:Vivian',
     google: 'google:en-US-Neural2-A',
     gemini: 'gemini:puck',
@@ -2237,7 +2278,7 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
                   className="flex-1 px-2 py-1 bg-bg-tertiary border border-glass-border rounded text-xs text-text-primary focus:outline-none focus:ring-1 focus:ring-accent-primary/50"
                   size={10}
                 >
-                  {(voiceOptions[selectedVoiceProvider] || []).map((option) => (
+                  {(voiceOptionsWithCustom[selectedVoiceProvider] || []).map((option) => (
                     <option key={option.value} value={option.value}>
                       {option.label}
                     </option>
@@ -3124,6 +3165,13 @@ const formatVoiceDisplay = (voiceId: string): string => {
   // Fallback: format "provider:voice" to "Provider: Voice"
   if (voiceId.includes(':')) {
     const [provider, voice] = voiceId.split(':');
+
+    // Special case for custom voices
+    if (provider === 'custom') {
+      // Voice ID is the custom voice key - display with sparkle
+      return `✨ Custom: ${voice}`;
+    }
+
     // Special case for OpenAI
     const providerName = provider === 'openai' ? 'OpenAI' : provider.charAt(0).toUpperCase() + provider.slice(1);
     const voiceName = voice.charAt(0).toUpperCase() + voice.slice(1);

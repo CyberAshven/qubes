@@ -617,6 +617,42 @@ class AudioManager:
             block_number=block_number
         )
 
+        # Handle custom voices - look up from voice library and use WSL2/Qwen3
+        custom_voice_config = None
+        if provider == "custom":
+            try:
+                from config.user_preferences import UserPreferencesManager
+                from utils.paths import get_user_data_dir
+                if self.qube_data_dir:
+                    # Extract user_id from qube path: data/users/{user_id}/qubes/{qube_id}/
+                    # qube_data_dir.parent = qubes/, qube_data_dir.parent.parent = {user_id}/
+                    user_id = self.qube_data_dir.parent.parent.name
+                    user_data_dir = get_user_data_dir(user_id)
+                    logger.info("custom_voice_lookup", user_id=user_id, user_data_dir=str(user_data_dir))
+                    prefs_manager = UserPreferencesManager(user_data_dir)
+                    voice_library = prefs_manager.get_voice_library()
+
+                    # voice_model is the voice ID (e.g., "Optimus_prime")
+                    if voice_model in voice_library:
+                        voice_entry = voice_library[voice_model]
+                        logger.info("custom_voice_found", voice_id=voice_model, voice_type=voice_entry.voice_type)
+
+                        # Build custom voice config for Qwen3/WSL2
+                        custom_voice_config = {
+                            "voice_mode": "cloned" if voice_entry.voice_type == "cloned" else "designed",
+                            "clone_audio_path": voice_entry.clone_audio_path,
+                            "clone_audio_text": voice_entry.clone_audio_text,
+                            "design_prompt": voice_entry.design_prompt,
+                            "language": voice_entry.language,
+                        }
+                        # Use WSL2/Qwen3 as the actual provider
+                        provider = "wsl2"
+                    else:
+                        logger.warning("custom_voice_not_found", voice_id=voice_model)
+                        raise AIError(f"Custom voice '{voice_model}' not found in voice library")
+            except ImportError:
+                raise AIError("Voice library not available")
+
         # Determine output directory (qube's audio folder)
         if self.qube_data_dir:
             audio_dir = self.qube_data_dir / "audio"
@@ -625,31 +661,69 @@ class AudioManager:
 
         audio_dir.mkdir(parents=True, exist_ok=True)
 
-        # Use correct extension based on provider (Gemini uses WAV, others use MP3)
-        extension = "wav" if provider == "gemini" else "mp3"
+        # Use correct extension based on provider (Gemini/WSL2/Qwen3 use WAV, others use MP3)
+        extension = "wav" if provider in ("gemini", "wsl2", "qwen3") else "mp3"
+
+        # Get model_variant from user preferences (default to 1.7B)
+        model_variant = "1.7B"
+        if self.qube_data_dir:
+            try:
+                from config.user_preferences import UserPreferencesManager
+                from utils.paths import get_user_data_dir
+                user_id = self.qube_data_dir.parent.parent.name
+                user_data_dir = get_user_data_dir(user_id)
+                prefs_manager = UserPreferencesManager(user_data_dir)
+                prefs = prefs_manager.load_preferences()
+                model_variant = prefs.qwen3.model_variant
+                logger.info("qwen3_model_variant", variant=model_variant)
+            except Exception as e:
+                logger.warning("failed_to_get_model_variant", error=str(e))
 
         # Create voice config
-        voice_config = VoiceConfig(
-            provider=provider,
-            voice_id=voice_model
-        )
+        if custom_voice_config:
+            # Custom voice with cloning/design settings
+            voice_config = VoiceConfig(
+                provider=provider,
+                voice_id=voice_model,
+                voice_mode=custom_voice_config.get("voice_mode", "cloned"),
+                clone_audio_path=custom_voice_config.get("clone_audio_path"),
+                clone_audio_text=custom_voice_config.get("clone_audio_text"),
+                voice_design_prompt=custom_voice_config.get("design_prompt"),
+                language=custom_voice_config.get("language", "en"),
+                model_variant=model_variant,
+            )
+        else:
+            voice_config = VoiceConfig(
+                provider=provider,
+                voice_id=voice_model,
+                model_variant=model_variant,
+            )
 
         # Check if provider is available (handle lazy-loaded Qwen3)
-        if provider not in self.tts_providers:
+        # "qwen" and "Qwen" are aliases for local TTS (routed to wsl2/qwen3)
+        provider_lower = provider.lower()
+        is_local_tts = provider_lower in ("qwen", "qwen3", "wsl2")
+        if not is_local_tts and provider not in self.tts_providers:
             raise AIError(
                 f"TTS provider '{provider}' not available. Available: {list(self.tts_providers.keys())}",
                 context={"provider": provider}
             )
 
         # For Qwen3/WSL2, prefer WSL2 server (much faster - model stays loaded with torch.compile)
-        if provider in ("qwen3", "wsl2"):
-            # Try WSL2 provider which auto-starts the server if needed
+        # Handle various provider name formats: qwen, qwen3, Qwen, wsl2, WSL2, etc.
+        if is_local_tts:
+            wsl2_error = None  # Track WSL2 errors for better error reporting
+            logger.info("tts_using_local_provider", provider=provider, voice=voice_model,
+                       has_wsl2="wsl2" in self.tts_providers, providers=list(self.tts_providers.keys()))
+            # Try WSL2 provider (server is started by Tauri app on launch via wsl2_server_manager)
             if "wsl2" in self.tts_providers:
                 wsl2_provider = self.tts_providers["wsl2"]
-                logger.info("trying_wsl2_tts", voice=voice_model)
+                logger.info("trying_wsl2_tts", voice=voice_model, server_url=wsl2_provider.server_url)
 
-                # Check/start WSL2 server
-                availability = await wsl2_provider.check_availability(try_auto_start=True)
+                # Just check availability - don't try to start (managed server handles that)
+                availability = await wsl2_provider.check_availability(try_auto_start=False)
+                logger.info("wsl2_availability_result", available=availability.get("available"),
+                           error=availability.get("error"))
 
                 if availability["available"]:
                     if availability.get("auto_started"):
@@ -663,34 +737,29 @@ class AudioManager:
                     output_path = audio_dir / filename
 
                     try:
+                        logger.info("wsl2_tts_synthesizing", text_len=len(text), output=str(output_path),
+                                    voice_mode=getattr(voice_config, 'voice_mode', None))
                         await wsl2_provider.synthesize_file(text, voice_config, output_path)
                         logger.info("wsl2_tts_success", audio_path=str(output_path))
                         return output_path.resolve(), 1
                     except Exception as e:
+                        wsl2_error = e  # Store the error for reporting
                         logger.warning("wsl2_tts_failed", error=str(e))
-                        # Fall through to direct Qwen3 or other fallback
+                        # Fall through to fallback providers
                 else:
+                    wsl2_error = AIError(f"WSL2 server not available: {availability.get('error')}")
                     logger.debug("wsl2_tts_not_available", error=availability.get("error"))
 
-            # Fall back to direct Qwen3 loading (slower, but works without WSL2)
-            if provider == "qwen3":
-                logger.info("trying_qwen3_direct", voice=voice_model)
-                qwen3_provider = self._get_qwen3_provider()
-                if qwen3_provider is None:
-                    raise AIError(
-                        "Qwen3-TTS failed to initialize. Check GPU availability.",
-                        context={"provider": provider}
-                    )
-                # Ensure model is ready for this voice config
-                await qwen3_provider.ensure_ready(voice_mode=voice_config.voice_mode or "preset")
-                tts_provider = qwen3_provider
-            else:
-                # WSL2 was requested but not available, raise error
-                raise AIError(
-                    "WSL2 TTS server is not available. Start it with: wsl -d Ubuntu-22.04 ~/qubes-tts/start_server.sh",
-                    context={"provider": provider}
-                )
+            # WSL2/Qwen3 not available or failed - NO silent fallback
+            # User explicitly selected local TTS, so fail with clear error message
+            error_msg = str(wsl2_error) if wsl2_error else "WSL2 TTS server not available"
+            logger.error("local_tts_failed", provider=provider, error=error_msg)
+            raise AIError(
+                f"Local TTS failed: {error_msg}. Please ensure the WSL2 TTS server is running.",
+                context={"provider": provider, "voice": voice_model}
+            )
         else:
+            # Non-local provider (openai, gemini, etc.) - use directly
             tts_provider = self.tts_providers[provider]
 
         # Chunk text if needed (OpenAI has 4096 char limit, keep safe at 4000)

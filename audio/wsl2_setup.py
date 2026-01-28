@@ -33,7 +33,7 @@ logger = get_logger(__name__)
 # WSL2 configuration
 WSL2_DISTRO = "Ubuntu-22.04"
 WSL2_TTS_DIR = "~/qubes-tts"
-WSL2_TTS_PORT = 19533
+WSL2_TTS_PORT = 19532
 
 # Setup stages for progress tracking
 SETUP_STAGES = [
@@ -314,10 +314,20 @@ async def check_wsl2_tts_status() -> WSL2TTSStatus:
         try:
             import httpx
             async with httpx.AsyncClient() as client:
-                response = await client.get(f"http://localhost:{WSL2_TTS_PORT}/health", timeout=2.0)
+                response = await client.get(f"http://localhost:{WSL2_TTS_PORT}/status", timeout=2.0)
                 data = response.json()
-                status.server_running = True
-                status.server_ready = data.get("ready", False)
+                status.server_running = data.get("running", True)
+                status.server_ready = data.get("model_loaded", False)
+
+                # If server is running, setup IS complete (server proves everything works)
+                if status.server_running:
+                    status.setup_complete = True
+                    status.pytorch_installed = True
+                    status.qwen_tts_installed = True
+                    # Get GPU info from server if available
+                    if data.get("gpu"):
+                        status.gpu_detected = True
+                        status.gpu_name = data.get("gpu")
         except Exception:
             pass
 

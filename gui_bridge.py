@@ -1366,13 +1366,19 @@ class GUIBridge:
     async def generate_speech(self, qube_id: str, text: str, password: str = None) -> Dict[str, Any]:
         """Generate speech audio for given text using qube's voice"""
         try:
+            import time as _t
+            _t0 = _t.time()
+            logger.info(f"TTS_DEBUG: start, text_len={len(text)}")
+
             # Set master key if password provided
             if password:
                 self.orchestrator.set_master_key(password)
+            logger.info(f"TTS_DEBUG: master_key set {_t.time()-_t0:.1f}s")
 
             # Load the qube if not already loaded
             if qube_id not in self.orchestrator.qubes:
                 await self.orchestrator.load_qube(qube_id)
+            logger.info(f"TTS_DEBUG: qube loaded {_t.time()-_t0:.1f}s")
 
             qube = self.orchestrator.qubes[qube_id]
 
@@ -1383,8 +1389,14 @@ class GUIBridge:
                     "error": "Audio manager not initialized for this qube"
                 }
 
-            # Get voice model from chain_state (source of truth for runtime settings)
+            # CRITICAL: Reload chain_state from disk to get latest settings
+            if qube.chain_state:
+                qube.chain_state._load()
+            logger.info(f"TTS_DEBUG: chain_state loaded {_t.time()-_t0:.1f}s")
+
+            # Get voice model from chain_state
             voice_model = qube.chain_state.get_voice_model() if qube.chain_state else getattr(qube.genesis_block, 'voice_model', 'openai:alloy')
+            logger.info(f"TTS_DEBUG: voice_model={voice_model}")
 
             # Parse provider and voice from format "provider:voice"
             if ':' in voice_model:
@@ -1407,12 +1419,15 @@ class GUIBridge:
 
             # Generate speech file in qube's audio directory
             # Returns (audio_path, total_chunks) tuple
+            logger.info(f"TTS_DEBUG: calling generate_speech_file {_t.time()-_t0:.1f}s")
             audio_path, total_chunks = await qube.audio_manager.generate_speech_file(
                 text=text,
                 voice_model=voice_name,
                 provider=provider,
                 block_number=block_number
             )
+            logger.info(f"TTS_DEBUG: DONE {_t.time()-_t0:.1f}s")
+            logger.info("tts_generate_speech_complete", provider=provider, voice=voice_name)
 
             return {
                 "success": True,
@@ -1597,10 +1612,16 @@ class GUIBridge:
 
             # Get user's voice library
             from config.user_preferences import UserPreferencesManager
+            from dataclasses import asdict
             data_dir = get_user_data_dir(user_id)
             prefs_manager = UserPreferencesManager(data_dir)
             voice_library = prefs_manager.get_voice_library()
             qwen3_prefs = prefs_manager.get_qwen3_preferences()
+
+            # Convert VoiceLibraryEntry dataclasses to dicts for JSON serialization
+            voice_library_dict = {
+                voice_id: asdict(entry) for voice_id, entry in voice_library.items()
+            }
 
             return {
                 "success": True,
@@ -1608,7 +1629,7 @@ class GUIBridge:
                 "voice_library_ref": voice_library_ref,
                 "voice_model": voice_model,
                 "tts_enabled": tts_enabled,
-                "voice_library": voice_library,
+                "voice_library": voice_library_dict,
                 "qwen3_preferences": {
                     "model_variant": qwen3_prefs.model_variant,
                     "use_flash_attention": qwen3_prefs.use_flash_attention,
@@ -1817,22 +1838,22 @@ class GUIBridge:
             if voice_type == "cloned" and clone_audio_path:
                 clones_dir = prefs_manager.get_voice_clones_dir()
                 source_path = Path(clone_audio_path)
-                final_clone_path = clones_dir / f"{name.lower().replace(' ', '_')}_{source_path.suffix}"
+                # Create safe filename: replace spaces with underscores, keep extension
+                safe_name = name.lower().replace(' ', '_').replace('%', '')
+                file_ext = source_path.suffix if source_path.suffix else '.wav'
+                final_clone_path = clones_dir / f"{safe_name}{file_ext}"
                 shutil.copy2(source_path, final_clone_path)
                 final_clone_path = str(final_clone_path)
 
-            # Create library entry
-            entry = VoiceLibraryEntry(
+            # Add to library (method expects individual args, not VoiceLibraryEntry)
+            voice_id = prefs_manager.add_voice_to_library(
                 name=name,
                 voice_type=voice_type,
-                created_at="",  # Will be set by add_voice_to_library
                 language=language,
                 design_prompt=design_prompt,
                 clone_audio_path=final_clone_path,
                 clone_audio_text=clone_audio_text
             )
-
-            voice_id = prefs_manager.add_voice_to_library(entry)
 
             return {
                 "success": True,
@@ -1892,6 +1913,8 @@ class GUIBridge:
         """
         Delete a voice from the user's library.
 
+        Also deletes the associated audio file for cloned voices.
+
         Args:
             user_id: User ID
             voice_id: Voice ID to delete
@@ -1901,11 +1924,28 @@ class GUIBridge:
 
             data_dir = get_user_data_dir(user_id)
             prefs_manager = UserPreferencesManager(data_dir)
+
+            # Get voice info before deleting to find audio file path
+            voice = prefs_manager.get_voice_by_id(voice_id)
+            audio_deleted = False
+
+            if voice and voice.clone_audio_path:
+                # Delete the audio file if it exists
+                audio_path = Path(voice.clone_audio_path)
+                if audio_path.exists():
+                    try:
+                        audio_path.unlink()
+                        audio_deleted = True
+                        logger.info(f"Deleted voice audio file: {audio_path}")
+                    except Exception as e:
+                        logger.warning(f"Failed to delete voice audio file {audio_path}: {e}")
+
             prefs_manager.delete_voice_from_library(voice_id)
 
             return {
                 "success": True,
-                "voice_id": voice_id
+                "voice_id": voice_id,
+                "audio_deleted": audio_deleted
             }
         except Exception as e:
             logger.error(f"Failed to delete voice from library: {e}", exc_info=True)
@@ -1922,14 +1962,20 @@ class GUIBridge:
         """
         try:
             from config.user_preferences import UserPreferencesManager
+            from dataclasses import asdict
 
             data_dir = get_user_data_dir(user_id)
             prefs_manager = UserPreferencesManager(data_dir)
             voice_library = prefs_manager.get_voice_library()
 
+            # Convert VoiceLibraryEntry dataclasses to dicts for JSON serialization
+            voice_library_dict = {
+                voice_id: asdict(entry) for voice_id, entry in voice_library.items()
+            }
+
             return {
                 "success": True,
-                "voice_library": voice_library
+                "voice_library": voice_library_dict
             }
         except Exception as e:
             logger.error(f"Failed to get voice library: {e}", exc_info=True)
@@ -1942,17 +1988,30 @@ class GUIBridge:
         """
         Check Qwen3-TTS availability and GPU status.
 
-        Returns GPU info, VRAM, downloaded models, and recommended variant.
+        Returns GPU info, VRAM, downloaded models, recommended variant, and current model_variant preference.
         """
         try:
             from audio.audio_manager import AudioManager
+            from config.user_preferences import UserPreferencesManager
+            from utils.paths import get_user_data_dir
 
             # Create temporary audio manager to check status
             audio_manager = AudioManager()
             status = audio_manager.check_qwen3_status()
 
+            # Get current model_variant from user preferences
+            model_variant = "1.7B"  # Default
+            try:
+                user_data_dir = get_user_data_dir(user_id)
+                prefs_manager = UserPreferencesManager(user_data_dir)
+                prefs = prefs_manager.load_preferences()
+                model_variant = prefs.qwen3.model_variant
+            except Exception as e:
+                logger.debug(f"Could not load model_variant preference: {e}")
+
             return {
                 "success": True,
+                "model_variant": model_variant,
                 **status
             }
         except Exception as e:
@@ -1961,6 +2020,7 @@ class GUIBridge:
                 "success": False,
                 "error": str(e),
                 "available": False,
+                "model_variant": "1.7B",
                 "fallback_provider": "gemini"
             }
 
@@ -2257,20 +2317,62 @@ class GUIBridge:
         """
         try:
             from audio.audio_manager import AudioManager
+            import os
+
+            # Check for OpenAI API key
+            openai_key = os.getenv("OPENAI_API_KEY")
+            has_openai_key = bool(openai_key)
+            key_preview = f"{openai_key[:8]}..." if openai_key and len(openai_key) > 8 else "not set"
+            logger.info(f"OpenAI API key status: {key_preview}")
 
             audio_manager = AudioManager()
+
+            # Check if any STT providers are available
+            available_providers = list(audio_manager.stt_providers.keys())
+            logger.info(f"Available STT providers: {available_providers}")
+
+            if not available_providers:
+                # No providers available - give helpful message
+                if not has_openai_key:
+                    return {
+                        "success": False,
+                        "error": "No STT providers available. Set OPENAI_API_KEY environment variable to enable auto-transcription.",
+                        "stt_available": False,
+                        "debug": {"openai_key_set": False, "providers": []}
+                    }
+                else:
+                    return {
+                        "success": False,
+                        "error": "STT initialization failed despite API key being set. Please type the transcript manually.",
+                        "stt_available": False,
+                        "debug": {"openai_key_set": True, "key_preview": key_preview, "providers": []}
+                    }
+
+            # Verify audio file exists
+            if not Path(audio_path).exists():
+                return {
+                    "success": False,
+                    "error": f"Audio file not found: {audio_path}",
+                    "stt_available": True
+                }
+
             text = await audio_manager.listen_from_file(Path(audio_path))
 
             return {
                 "success": True,
                 "text": text,
-                "audio_path": audio_path
+                "audio_path": audio_path,
+                "stt_available": True
             }
         except Exception as e:
             logger.error(f"Failed to transcribe audio: {e}", exc_info=True)
+            error_msg = str(e)
+            if "All STT providers failed" in error_msg:
+                error_msg = f"Transcription failed ({error_msg}). Please type the transcript manually."
             return {
                 "success": False,
-                "error": str(e)
+                "error": error_msg,
+                "stt_available": False
             }
 
     # ========== End Voice Settings Commands ==========
@@ -2369,11 +2471,16 @@ class GUIBridge:
             Dict with success status and server info
         """
         try:
-            from audio.wsl2_setup import start_wsl2_tts_server as start_server
+            from audio.wsl2_server_manager import start_server, get_server_status
 
-            result = await start_server()
+            success = await start_server(force=True)
+            status = get_server_status()
 
-            return result
+            return {
+                "success": success,
+                "message": status.get("message", "Server starting..."),
+                "ready": status.get("ready", False),
+            }
         except Exception as e:
             logger.error(f"Failed to start WSL2 TTS server: {e}", exc_info=True)
             return {
@@ -2389,11 +2496,14 @@ class GUIBridge:
             Dict with success status
         """
         try:
-            from audio.wsl2_setup import stop_wsl2_tts_server as stop_server
+            from audio.wsl2_server_manager import stop_server
 
-            result = await stop_server()
+            success = await stop_server(manual=True)
 
-            return result
+            return {
+                "success": success,
+                "message": "Server stopped" if success else "Failed to stop server"
+            }
         except Exception as e:
             logger.error(f"Failed to stop WSL2 TTS server: {e}", exc_info=True)
             return {
@@ -9615,12 +9725,10 @@ async def main():
                 sys.exit(1)
 
             user_id = sys.argv[2]
-            # SECURITY: Validate qube_id
             qube_id = validate_qube_id(sys.argv[3])
             text = sys.argv[4]
             password = get_secret("password", argv_index=5)
 
-            # Create bridge with correct user
             user_bridge = GUIBridge(user_id=user_id)
             result = await user_bridge.generate_speech(qube_id, text, password)
             print(json.dumps(result))
@@ -9947,6 +10055,54 @@ async def main():
             user_bridge = GUIBridge(user_id=user_id)
             result = await user_bridge.uninstall_wsl2_tts(user_id)
             print(json.dumps(result))
+
+        # ========== WSL2 TTS Managed Server Commands ==========
+
+        elif command == "start-wsl2-tts-managed":
+            # Start WSL2 TTS server with lifecycle management (hidden window, warmup, health checks)
+            # This is called on app startup and stays running to monitor the server
+            force = len(sys.argv) > 2 and sys.argv[2].lower() == "true"
+
+            from audio.wsl2_server_manager import start_server
+            result = await start_server(force=force)
+            print(json.dumps({"success": result}))
+            sys.stdout.flush()
+
+            # Keep running to maintain health check loop (monitors and restarts server on crash)
+            # This process exits when parent (Tauri) dies or stop-wsl2-tts-managed is called
+            if result:
+                import os
+                parent_pid = os.getppid()
+
+                try:
+                    while True:
+                        await asyncio.sleep(10)  # Check every 10 seconds
+                        # Exit if parent process died (orphaned)
+                        try:
+                            os.kill(parent_pid, 0)  # Check if parent exists
+                        except (OSError, ProcessLookupError):
+                            # Parent died, clean up and exit
+                            from audio.wsl2_server_manager import cleanup
+                            cleanup()
+                            break
+                except (KeyboardInterrupt, asyncio.CancelledError):
+                    from audio.wsl2_server_manager import cleanup
+                    cleanup()
+
+        elif command == "stop-wsl2-tts-managed":
+            # Stop WSL2 TTS server with manual flag (prevents auto-restart)
+            # This is called on app shutdown
+            manual = len(sys.argv) < 3 or sys.argv[2].lower() != "false"
+
+            from audio.wsl2_server_manager import stop_server
+            result = await stop_server(manual=manual)
+            print(json.dumps({"success": result}))
+
+        elif command == "get-wsl2-tts-managed-status":
+            # Get current server status for UI indicator
+            from audio.wsl2_server_manager import get_server_status
+            status = get_server_status()
+            print(json.dumps(status))
 
         # ========== End WSL2 TTS Setup Commands ==========
 

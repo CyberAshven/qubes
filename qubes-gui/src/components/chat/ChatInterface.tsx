@@ -17,6 +17,7 @@ import { ChatHeader } from './ChatHeader';
 import { ToolCallBubble } from './ToolCallBubble';
 import EmojiPicker, { EmojiClickData, Theme } from 'emoji-picker-react';
 import { WaveformOverlay } from '../visualizer/WaveformOverlay';
+// import { WSL2TTSStatusIndicator } from '../settings/WSL2TTSStatusIndicator';
 import type { WaveformStyle, ColorTheme, GradientStyle, AnimationSmoothness } from '../../types';
 
 interface ChatInterfaceProps {
@@ -1905,6 +1906,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
 
       {/* Input Area */}
       <GlassCard className="p-4">
+        {/* WSL2 TTS Warmup Indicator - disabled for now */}
+
         {/* File Preview Grid */}
         {uploadedFiles.length > 0 && (
           <div className="mb-3 flex flex-wrap gap-2">

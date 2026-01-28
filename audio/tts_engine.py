@@ -34,6 +34,7 @@ class VoiceConfig:
         clone_audio_path: str | None = None,     # Path to reference audio for cloning
         clone_audio_text: str | None = None,     # Transcript of reference audio
         language: str | None = None,             # Language code (en, zh, ja, ko, de, fr, ru, pt, es, it)
+        model_variant: str | None = None,        # "1.7B" or "0.6B" for Qwen3-TTS
     ):
         self.provider = provider
         self.voice_id = voice_id
@@ -46,6 +47,7 @@ class VoiceConfig:
         self.clone_audio_path = clone_audio_path
         self.clone_audio_text = clone_audio_text
         self.language = language or "en"
+        self.model_variant = model_variant or "1.7B"
 
 
 class TTSProvider(ABC):
