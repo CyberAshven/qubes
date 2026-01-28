@@ -1764,9 +1764,9 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
     const geminiMale = ['achernar', 'algenib', 'alnilam', 'charon', 'fenrir', 'gacrux', 'iapetus', 'orus', 'puck', 'rasalgethi', 'sadachbia', 'sadaltager', 'umbriel', 'zephyr'];
     const geminiFemale = ['achird', 'algieba', 'aoede', 'autonoe', 'callirrhoe', 'despina', 'enceladus', 'erinome', 'kore', 'laomedeia', 'leda', 'pulcherrima', 'schedar', 'sulafat', 'vindemiatrix', 'zubenelgenubi'];
 
-    // OpenAI voices
-    const openaiMale = ['echo', 'fable', 'onyx'];
-    const openaiFemale = ['alloy', 'nova', 'shimmer'];
+    // OpenAI voices (11 total)
+    const openaiMale = ['ash', 'cedar', 'echo', 'fable', 'onyx'];
+    const openaiFemale = ['alloy', 'coral', 'marin', 'nova', 'sage', 'shimmer'];
 
     // Google Cloud TTS voices (Standard, WaveNet, Neural2, Studio, Chirp)
     const googleMale = [
@@ -1834,10 +1834,15 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
     ],
     openai: [
       { label: `Alloy${getVoiceGender('openai:alloy')}`, value: 'openai:alloy' },
+      { label: `Ash${getVoiceGender('openai:ash')}`, value: 'openai:ash' },
+      { label: `Cedar${getVoiceGender('openai:cedar')}`, value: 'openai:cedar' },
+      { label: `Coral${getVoiceGender('openai:coral')}`, value: 'openai:coral' },
       { label: `Echo${getVoiceGender('openai:echo')}`, value: 'openai:echo' },
       { label: `Fable${getVoiceGender('openai:fable')}`, value: 'openai:fable' },
+      { label: `Marin${getVoiceGender('openai:marin')}`, value: 'openai:marin' },
       { label: `Nova${getVoiceGender('openai:nova')}`, value: 'openai:nova' },
       { label: `Onyx${getVoiceGender('openai:onyx')}`, value: 'openai:onyx' },
+      { label: `Sage${getVoiceGender('openai:sage')}`, value: 'openai:sage' },
       { label: `Shimmer${getVoiceGender('openai:shimmer')}`, value: 'openai:shimmer' },
     ],
     google: [
@@ -1903,7 +1908,7 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
     { label: 'Qwen3-TTS Local (9 voices)', value: 'qwen3' },
     { label: 'Google Cloud TTS (380+ voices)', value: 'google' },
     { label: 'Gemini TTS (30 voices)', value: 'gemini' },
-    { label: 'OpenAI TTS (6 voices)', value: 'openai' },
+    { label: 'OpenAI TTS (11 voices)', value: 'openai' },
     { label: 'ElevenLabs', value: 'elevenlabs' },
   ];
 
