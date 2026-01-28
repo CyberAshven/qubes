@@ -1705,6 +1705,7 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
 
   // Reset selections when qube changes
   React.useEffect(() => {
+    console.log('[VOICE_DEBUG] qube changed, syncing state:', { qubeId: qube.qube_id, voice_model: qube.voice_model });
     setSelectedModel(qube.ai_model);
     setSelectedVoice(qube.voice_model || '');
     // Always infer provider from model name (don't trust ai_provider field)
@@ -1725,6 +1726,7 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
   // Reset voice selections when entering voice edit mode
   React.useEffect(() => {
     if (isEditingVoice) {
+      console.log('[VOICE_DEBUG] Edit mode entered, resetting to qube.voice_model:', qube.voice_model);
       setSelectedVoice(qube.voice_model || '');
       const voiceModel = qube.voice_model || '';
       setSelectedVoiceProvider(voiceModel.includes(':') ? voiceModel.split(':')[0] : 'openai');
@@ -1975,13 +1977,16 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
   };
 
   const handleSaveVoice = async () => {
+    console.log('[VOICE_DEBUG] handleSaveVoice called', { qubeId: qube.qube_id, selectedVoice, currentVoiceModel: qube.voice_model });
     try {
+      console.log('[VOICE_DEBUG] Calling onUpdateConfig...', { voice_model: selectedVoice });
       await onUpdateConfig(qube.qube_id, { voice_model: selectedVoice });
+      console.log('[VOICE_DEBUG] onUpdateConfig completed successfully');
       setIsEditingVoice(false);
       // Emit event for Debug Inspector
       emit('qube-settings-changed', { qubeId: qube.qube_id });
     } catch (error) {
-      console.error('Failed to update voice:', error);
+      console.error('[VOICE_DEBUG] Failed to update voice:', error);
       alert(`Failed to update voice: ${error}`);
     }
   };
@@ -2264,7 +2269,10 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
               <div className="flex gap-1 items-center">
                 <select
                   value={selectedVoice}
-                  onChange={(e) => setSelectedVoice(e.target.value)}
+                  onChange={(e) => {
+                    console.log('[VOICE_DEBUG] Voice dropdown changed:', e.target.value);
+                    setSelectedVoice(e.target.value);
+                  }}
                   className="flex-1 px-2 py-1 bg-bg-tertiary border border-glass-border rounded text-xs text-text-primary focus:outline-none focus:ring-1 focus:ring-accent-primary/50"
                   size={10}
                 >

@@ -199,21 +199,28 @@ export const TabContent: React.FC<TabContentProps> = ({ qubes, setQubes, onQubes
   };
 
   const handleUpdateQubeConfig = async (qubeId: string, updates: { ai_model?: string; voice_model?: string; favorite_color?: string; tts_enabled?: boolean; evaluation_model?: string }) => {
-    await invoke('update_qube_config', {
-      userId,
-      qubeId,
-      aiModel: updates.ai_model,
-      voiceModel: updates.voice_model,
-      favoriteColor: updates.favorite_color,
-      ttsEnabled: updates.tts_enabled,
-      evaluationModel: updates.evaluation_model,
-      password,  // Required for chain_state encryption
-    });
+    console.log('[VOICE_DEBUG] handleUpdateQubeConfig called', { qubeId, updates, userId, hasPassword: !!password });
+    try {
+      const result = await invoke('update_qube_config', {
+        userId,
+        qubeId,
+        aiModel: updates.ai_model,
+        voiceModel: updates.voice_model,
+        favoriteColor: updates.favorite_color,
+        ttsEnabled: updates.tts_enabled,
+        evaluationModel: updates.evaluation_model,
+        password,  // Required for chain_state encryption
+      });
+      console.log('[VOICE_DEBUG] invoke update_qube_config returned', result);
+    } catch (error) {
+      console.error('[VOICE_DEBUG] invoke update_qube_config FAILED', error);
+      throw error;
+    }
 
     // Update local state instead of reloading all qubes
     setQubes(prevQubes => prevQubes.map(q => {
       if (q.qube_id === qubeId) {
-        return {
+        const updated = {
           ...q,
           ...(updates.ai_model && { ai_model: updates.ai_model }),
           ...(updates.voice_model && { voice_model: updates.voice_model }),
@@ -221,6 +228,8 @@ export const TabContent: React.FC<TabContentProps> = ({ qubes, setQubes, onQubes
           ...(updates.tts_enabled !== undefined && { tts_enabled: updates.tts_enabled }),
           ...(updates.evaluation_model && { evaluation_model: updates.evaluation_model as any }),
         };
+        console.log('[VOICE_DEBUG] Updating qube state', { qubeId, oldVoice: q.voice_model, newVoice: updated.voice_model });
+        return updated;
       }
       return q;
     }));
@@ -228,6 +237,7 @@ export const TabContent: React.FC<TabContentProps> = ({ qubes, setQubes, onQubes
     // Invalidate and refresh chain state cache
     invalidateCache(qubeId);
     await loadChainState(qubeId, true);
+    console.log('[VOICE_DEBUG] handleUpdateQubeConfig completed');
   };
 
   // Handle model change from chat (e.g., Qube used switch_model tool or revolver mode)

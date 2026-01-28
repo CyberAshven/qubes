@@ -179,7 +179,11 @@ def get_secret(name: str, argv_index: Optional[int] = None, required: bool = Tru
     # Try stdin first (new secure method)
     secrets = _read_stdin_secrets()
     if name in secrets:
-        return secrets[name]
+        value = secrets[name]
+        # Don't return empty strings as valid secrets
+        if value and value.strip():
+            return value
+        # Empty value in stdin - fall through to argv check
 
     # Fall back to argv (legacy method - for backwards compatibility during migration)
     if argv_index is not None and len(sys.argv) > argv_index:
@@ -1389,17 +1393,68 @@ class GUIBridge:
                     "error": "Audio manager not initialized for this qube"
                 }
 
-            # CRITICAL: Reload chain_state from disk to get latest settings
+            # CRITICAL: Read disk state BEFORE loading to see what was saved
             if qube.chain_state:
+                # First, read disk directly with a fresh instance to verify what's actually saved
+                try:
+                    qube_dir = self.orchestrator.data_dir / "qubes"
+                    for dir_entry in qube_dir.iterdir():
+                        if dir_entry.is_dir():
+                            metadata_path = dir_entry / "chain" / "qube_metadata.json"
+                            if metadata_path.exists():
+                                with open(metadata_path, "r") as f:
+                                    data = json.load(f)
+                                    if data.get("qube_id") == qube_id:
+                                        # Found the qube - read chain_state fresh
+                                        from core.chain_state import ChainState
+                                        encryption_key = self._get_qube_encryption_key(dir_entry)
+                                        if encryption_key:
+                                            fresh_cs = ChainState(data_dir=dir_entry / "chain", encryption_key=encryption_key)
+                                            disk_voice = fresh_cs.get_voice_model()
+                                            logger.info(f"TTS_DEBUG: FRESH DISK READ voice_model={disk_voice}")
+                                        break
+                except Exception as e:
+                    logger.warning(f"TTS_DEBUG: Failed to read disk directly: {e}")
+
+                # Now reload the qube's chain_state
                 qube.chain_state._load()
                 # Debug: show what's in settings after reload
                 settings = qube.chain_state.state.get("settings", {})
                 logger.info(f"TTS_DEBUG: chain_state reloaded, settings.voice_model={settings.get('voice_model', 'NOT SET')}")
             logger.info(f"TTS_DEBUG: chain_state loaded {_t.time()-_t0:.1f}s")
 
-            # Get voice model from chain_state
+            # Get voice model from chain_state, with fallback to qube_metadata.json
+            # qube_metadata.json is ALWAYS updated by update_qube_config, but chain_state
+            # may fail to update if encryption key is unavailable. So check both.
             voice_model = qube.chain_state.get_voice_model() if qube.chain_state else getattr(qube.genesis_block, 'voice_model', 'openai:alloy')
-            logger.info(f"TTS_DEBUG: voice_model from get_voice_model()={voice_model}")
+            logger.info(f"TTS_DEBUG: voice_model from chain_state={voice_model}")
+
+            # Check qube_metadata.json for the authoritative voice_model (GUI always saves there)
+            try:
+                qube_dir = self.orchestrator.data_dir / "qubes"
+                for dir_entry in qube_dir.iterdir():
+                    if dir_entry.is_dir():
+                        metadata_path = dir_entry / "chain" / "qube_metadata.json"
+                        if metadata_path.exists():
+                            with open(metadata_path, "r") as f:
+                                metadata = json.load(f)
+                                if metadata.get("qube_id") == qube_id:
+                                    metadata_voice = metadata.get("genesis_block", {}).get("voice_model")
+                                    if metadata_voice and metadata_voice != voice_model:
+                                        logger.warning(f"TTS_DEBUG: Voice mismatch! chain_state={voice_model}, qube_metadata={metadata_voice}. Using metadata.")
+                                        voice_model = metadata_voice
+                                        # Also update chain_state if possible to fix the mismatch
+                                        if qube.chain_state:
+                                            try:
+                                                qube.chain_state.set_voice_model(voice_model)
+                                                logger.info(f"TTS_DEBUG: Fixed chain_state voice_model to {voice_model}")
+                                            except Exception as e:
+                                                logger.warning(f"TTS_DEBUG: Failed to update chain_state: {e}")
+                                    break
+            except Exception as e:
+                logger.warning(f"TTS_DEBUG: Failed to check qube_metadata.json: {e}")
+
+            logger.info(f"TTS_DEBUG: final voice_model={voice_model}")
 
             # Parse provider and voice from format "provider:voice"
             if ':' in voice_model:
@@ -1499,21 +1554,36 @@ class GUIBridge:
                 metadata["genesis_block"]["voice_model"] = voice_model
                 updated_fields.append(f"voice_model={voice_model}")
                 logger.info(f"🔊 VOICE_SAVE: Saving voice_model={voice_model} for qube {qube_id}")
-                # Also update chain_state (the single source of truth) using proper setter
-                encryption_key = self._get_qube_encryption_key(qube_dir)
-                if encryption_key:
-                    from core.chain_state import ChainState
-                    chain_dir = qube_dir / "chain"
-                    logger.info(f"🔊 VOICE_SAVE: chain_dir={chain_dir}")
-                    chain_state = ChainState(data_dir=chain_dir, encryption_key=encryption_key)
-                    old_voice = chain_state.get_voice_model()
-                    logger.info(f"🔊 VOICE_SAVE: Before update: {old_voice}")
-                    chain_state.set_voice_model(voice_model)  # Use proper setter
-                    # Verify it was saved
-                    new_voice = chain_state.get_voice_model()
-                    logger.info(f"🔊 VOICE_SAVE: After update: {new_voice}")
+                # Update chain_state - use loaded qube's chain_state if available (avoids dual-instance issues)
+                # Otherwise create a new instance for disk-only update
+                if qube_id in self.orchestrator.qubes and self.orchestrator.qubes[qube_id].chain_state:
+                    # Qube is loaded - use its chain_state directly (will be updated again below, but consistent instance)
+                    logger.info(f"🔊 VOICE_SAVE: Using loaded qube's chain_state")
                 else:
-                    logger.warning(f"🔊 VOICE_SAVE: No encryption key available!")
+                    # Qube not loaded - create new ChainState instance for disk update
+                    encryption_key = self._get_qube_encryption_key(qube_dir)
+                    if encryption_key:
+                        from core.chain_state import ChainState
+                        chain_dir = qube_dir / "chain"
+                        logger.info(f"🔊 VOICE_SAVE: Creating new ChainState, chain_dir={chain_dir}")
+                        chain_state = ChainState(data_dir=chain_dir, encryption_key=encryption_key)
+                        old_voice = chain_state.get_voice_model()
+                        logger.info(f"🔊 VOICE_SAVE: Before update: {old_voice}")
+                        chain_state.set_voice_model(voice_model)  # Use proper setter
+                        # Verify it was saved in memory
+                        new_voice = chain_state.get_voice_model()
+                        logger.info(f"🔊 VOICE_SAVE: After update (memory): {new_voice}")
+                        # CRITICAL: Verify disk was actually updated by reading with fresh instance
+                        verify_chain_state = ChainState(data_dir=chain_dir, encryption_key=encryption_key)
+                        disk_voice = verify_chain_state.get_voice_model()
+                        logger.info(f"🔊 VOICE_SAVE: After update (fresh disk read): {disk_voice}")
+                        if disk_voice != voice_model:
+                            logger.error(f"🔊 VOICE MISMATCH: Expected {voice_model}, got {disk_voice} from disk!")
+                            raise Exception(f"Voice save failed: disk shows {disk_voice} instead of {voice_model}")
+                    else:
+                        # Log detailed diagnostic info
+                        logger.error(f"🔊 VOICE_SAVE FAILED: No encryption key available! master_key={bool(self.orchestrator.master_key)}")
+                        raise Exception("Voice save failed: encryption key not available (password may be missing)")
 
             if favorite_color is not None:
                 metadata["genesis_block"]["favorite_color"] = favorite_color
@@ -1568,12 +1638,22 @@ class GUIBridge:
                 if voice_model is not None:
                     logger.info(f"🔊 VOICE UPDATE: Setting voice_model={voice_model} for qube {qube_id}")
                     qube.genesis_block.voice_model = voice_model
-                    # Also update in-memory chain_state (source of truth for TTS)
+                    # Update chain_state using proper setter (saves to disk!)
                     if qube.chain_state:
-                        settings = qube.chain_state.state.setdefault("settings", {})
-                        old_voice = settings.get("voice_model", "not set")
-                        settings["voice_model"] = voice_model
-                        logger.info(f"🔊 VOICE UPDATE: chain_state updated from {old_voice} to {voice_model}")
+                        old_voice = qube.chain_state.get_voice_model()
+                        qube.chain_state.set_voice_model(voice_model)  # This calls _save()!
+                        # Verify by reading back from the same instance
+                        verified_voice = qube.chain_state.get_voice_model()
+                        logger.info(f"🔊 VOICE UPDATE: chain_state saved from {old_voice} to {voice_model}, verified={verified_voice}")
+                        # Double-check by creating a fresh ChainState to read disk
+                        from core.chain_state import ChainState
+                        encryption_key = self._get_qube_encryption_key(qube_dir)
+                        if encryption_key:
+                            fresh_chain_state = ChainState(data_dir=qube_dir / "chain", encryption_key=encryption_key)
+                            disk_voice = fresh_chain_state.get_voice_model()
+                            logger.info(f"🔊 VOICE VERIFY: Fresh disk read = {disk_voice}")
+                            if disk_voice != voice_model:
+                                logger.error(f"🔊 VOICE MISMATCH: Expected {voice_model}, got {disk_voice} from disk!")
                     else:
                         logger.warning(f"🔊 VOICE UPDATE: qube has no chain_state!")
                     # Reinitialize audio manager with new voice
@@ -10128,6 +10208,7 @@ async def main():
         # ========== End WSL2 TTS Setup Commands ==========
 
         elif command == "update-qube-config":
+            logger.info(f"🔧 UPDATE_QUBE_CONFIG received: argv={sys.argv[2:]}")
             if len(sys.argv) < 6:
                 print(json.dumps({"error": "User ID, Qube ID, ai_model, voice_model, and favorite_color required"}), file=sys.stderr)
                 sys.exit(1)
@@ -10137,6 +10218,7 @@ async def main():
             qube_id = validate_qube_id(sys.argv[3])
             ai_model = sys.argv[4] if len(sys.argv) > 4 and sys.argv[4] else None
             voice_model = sys.argv[5] if len(sys.argv) > 5 and sys.argv[5] else None
+            logger.info(f"🔧 UPDATE_QUBE_CONFIG parsed: user={user_id}, qube={qube_id}, ai_model={ai_model}, voice_model={voice_model}")
             favorite_color = sys.argv[6] if len(sys.argv) > 6 and sys.argv[6] else None
 
             # Parse tts_enabled from 7th argument (convert string "true"/"false" to boolean)
@@ -10149,6 +10231,7 @@ async def main():
 
             # Parse password from 9th argument (needed for chain_state encryption)
             password = get_secret("password", argv_index=9)
+            logger.info(f"🔧 UPDATE_QUBE_CONFIG: password received={bool(password)}, argv_count={len(sys.argv)}")
 
             # Create bridge with correct user
             user_bridge = GUIBridge(user_id=user_id)
@@ -10156,6 +10239,9 @@ async def main():
             # Set master key if password provided (required for chain_state updates)
             if password:
                 user_bridge.orchestrator.set_master_key(password)
+                logger.info(f"🔧 UPDATE_QUBE_CONFIG: master_key SET")
+            else:
+                logger.warning(f"🔧 UPDATE_QUBE_CONFIG: NO PASSWORD - master_key NOT set!")
 
             result = await user_bridge.update_qube_config(qube_id, ai_model, voice_model, favorite_color, tts_enabled, evaluation_model)
             print(json.dumps(result))

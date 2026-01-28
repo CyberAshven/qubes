@@ -549,6 +549,9 @@ class ChainState:
             if file_data.get("encrypted"):
                 try:
                     self.state = decrypt_block_data(file_data, self.chain_state_key)
+                    # CRITICAL: Log immediately after decryption, before any processing
+                    raw_voice = self.state.get("settings", {}).get("voice_model", "NOT_IN_STATE")
+                    logger.info("chain_state_decrypted_raw", qube_id=self.state.get("qube_id"), raw_voice_model=raw_voice)
                 except Exception as e:
                     logger.error("chain_state_decryption_failed", error=str(e))
                     # Try to recover from backup
@@ -567,13 +570,18 @@ class ChainState:
 
             # Clean up deprecated fields (always run)
             self._cleanup_deprecated_fields()
+            # Log after cleanup to see if voice changed
+            post_cleanup_voice = self.state.get("settings", {}).get("voice_model", "NOT_IN_STATE")
+            logger.info("chain_state_post_cleanup", qube_id=self.state.get("qube_id"), post_cleanup_voice=post_cleanup_voice)
 
-            # Debug: Log qube_profile and skills state after load
+            # Debug: Log voice_model and other key settings after load
+            settings = self.state.get("settings", {})
             qube_profile = self.state.get("qube_profile", {})
             skills = self.state.get("skills", {})
-            logger.debug(
+            logger.info(
                 "chain_state_loaded_from_disk",
                 qube_id=self.state.get("qube_id"),
+                voice_model=settings.get("voice_model", "NOT_SET"),
                 qube_profile_categories_with_data=[
                     cat for cat in ["preferences", "traits", "opinions", "goals", "style", "interests"]
                     if qube_profile.get(cat)
@@ -1051,13 +1059,19 @@ class ChainState:
         try:
             disk_mtime = self.state_file.stat().st_mtime
             if disk_mtime > self._last_load_time:
-                logger.debug(
-                    "chain_state_auto_refresh",
+                logger.info(
+                    "chain_state_auto_refresh_triggered",
                     qube_id=self.qube_id,
                     disk_mtime=disk_mtime,
-                    last_load=self._last_load_time
+                    last_load=self._last_load_time,
+                    voice_before=self.state.get("settings", {}).get("voice_model", "NOT_SET")
                 )
                 self._load()
+                logger.info(
+                    "chain_state_auto_refresh_complete",
+                    qube_id=self.qube_id,
+                    voice_after=self.state.get("settings", {}).get("voice_model", "NOT_SET")
+                )
         except OSError:
             # File access error - skip refresh, use cached state
             pass
@@ -3140,12 +3154,16 @@ class ChainState:
     def get_voice_model(self) -> str:
         """Get the voice model to use for TTS."""
         self._ensure_fresh()
-        return self.state.get("settings", {}).get("voice_model", "openai:alloy")
+        voice = self.state.get("settings", {}).get("voice_model", "openai:alloy")
+        logger.info("get_voice_model_called", qube_id=self.qube_id, voice_model=voice)
+        return voice
 
     def set_voice_model(self, voice_model: str) -> None:
         """Set the voice model for TTS."""
+        old_voice = self.state.get("settings", {}).get("voice_model", "NOT_SET")
         settings = self.state.setdefault("settings", {})
         settings["voice_model"] = voice_model
+        logger.info("set_voice_model_called", qube_id=self.qube_id, old_voice=old_voice, new_voice=voice_model)
         self._save(preserve_gui_fields=False)
 
     def get_voice_library_ref(self) -> Optional[str]:
