@@ -72,6 +72,8 @@ class Session:
         self._pending_anchor_task: Optional[asyncio.Task] = None
         # SAFEGUARD: Flag to prevent concurrent/duplicate anchoring
         self._anchor_in_progress = False
+        # Queue for blocks that arrive during anchoring - will be added after anchor completes
+        self._pending_during_anchor: List[Block] = []
 
         # Emit session started event
         from core.events import Events
@@ -178,6 +180,9 @@ class Session:
         - Earliest timestamp = -1, next = -2, etc.
         - This is stateless and deterministic (no counter to sync)
 
+        If anchoring is in progress, the block is queued and will be added
+        to a fresh session after anchoring completes.
+
         Args:
             block: Block to add (will be modified with session data)
 
@@ -190,6 +195,19 @@ class Session:
         # Ensure block has a timestamp
         if not block.timestamp:
             block.timestamp = int(datetime.now(timezone.utc).timestamp())
+
+        # If anchoring is in progress, queue this block for later
+        # It will be added to a fresh session after anchor completes
+        if self._anchor_in_progress:
+            self._pending_during_anchor.append(block)
+            block.block_number = -1  # Will be reindexed when flushed
+            logger.info(
+                "block_queued_during_anchor",
+                block_type=block.block_type if isinstance(block.block_type, str) else block.block_type.value,
+                qube_id=self.qube.qube_id,
+                pending_count=len(self._pending_during_anchor)
+            )
+            return block
 
         # Add to session list first, then reindex all by timestamp
         self.session_blocks.append(block)
@@ -515,12 +533,16 @@ class Session:
             )
             return []
 
-        self._anchor_in_progress = True
-
+        # Import before setting flag - if import fails, flag stays False
         from utils.file_lock import qube_session_lock
 
+        # Set flag immediately before try so finally always runs
+        self._anchor_in_progress = True
         try:
           with qube_session_lock(self.qube.data_dir):
+            # Copy the list for iteration (in case of concurrent modifications)
+            blocks_to_anchor = list(self.session_blocks)
+
             # Re-check chain length inside lock (another process may have anchored)
             chain_length = self.qube.memory_chain.get_chain_length()
             latest = self.qube.memory_chain.get_latest_block()
@@ -529,11 +551,11 @@ class Session:
             # SCAN BLOCKS FOR SKILLS BEFORE ENCRYPTION
             # Scan session blocks while they're still unencrypted
             logger.info("=== SKILL SCAN START ===")
-            logger.info("scanning_session_blocks_for_skills", block_count=len(self.session_blocks))
+            logger.info("scanning_session_blocks_for_skills", block_count=len(blocks_to_anchor))
 
             # Log what types of blocks we have
             block_types = {}
-            for block in self.session_blocks:
+            for block in blocks_to_anchor:
                 block_type = block.block_type if isinstance(block.block_type, str) else block.block_type.value
                 block_types[block_type] = block_types.get(block_type, 0) + 1
             logger.info("session_block_types", types=block_types)
@@ -545,7 +567,7 @@ class Session:
 
                 # Scan unencrypted session blocks
                 logger.info("calling_scanner_scan_blocks_for_skills")
-                scan_result = await scanner.scan_blocks_for_skills(self.session_blocks)
+                scan_result = await scanner.scan_blocks_for_skills(blocks_to_anchor)
                 logger.info("scanner_returned", result_keys=list(scan_result.keys()))
                 skill_detections = scan_result.get("skill_detections", [])
 
@@ -561,8 +583,8 @@ class Session:
 
             converted_blocks = []
 
-            # Convert blocks in FIFO order
-            for i, session_block in enumerate(self.session_blocks):
+            # Convert blocks in FIFO order (using snapshot, not live list)
+            for i, session_block in enumerate(blocks_to_anchor):
                 # Create permanent block with positive index
                 permanent_block = Block.from_dict(session_block.to_dict())
                 permanent_block.block_number = chain_length + i
@@ -617,7 +639,7 @@ class Session:
             pending_messages_sent = 0
             pending_messages_received = 0
             pending_tool_calls = 0
-            for block in self.session_blocks:
+            for block in blocks_to_anchor:
                 block_type = block.block_type if isinstance(block.block_type, str) else (block.block_type.value if hasattr(block.block_type, 'value') else str(block.block_type))
                 if block_type == "MESSAGE":
                     content = block.content if isinstance(block.content, dict) else {}
@@ -639,16 +661,73 @@ class Session:
                 "tool_calls": pending_tool_calls
             }
 
-            # CLEAR SESSION IMMEDIATELY after conversion
-            # This ensures session blocks are removed even if optional processing below fails/is interrupted
-            session_block_count = len(self.session_blocks)
+            # Clear all session blocks and files after successful anchoring
+            anchored_count = len(blocks_to_anchor)
             self.session_blocks = []
             self.cleanup()
+
             logger.info(
                 "session_cleared_after_conversion",
-                blocks_converted=session_block_count,
+                blocks_anchored=anchored_count,
                 qube_id=self.qube.qube_id
             )
+
+            # Flush any blocks that arrived during anchoring
+            # These start a fresh session at block -1
+            if self._pending_during_anchor:
+                pending_count = len(self._pending_during_anchor)
+                logger.info(
+                    "flushing_blocks_queued_during_anchor",
+                    count=pending_count,
+                    qube_id=self.qube.qube_id
+                )
+
+                for pending_block in self._pending_during_anchor:
+                    # Add to session (now empty, so this starts fresh)
+                    self.session_blocks.append(pending_block)
+
+                # Reindex all pending blocks (assigns -1, -2, etc.)
+                self._reindex_session_blocks()
+
+                # Process each block: emit events, create relationships, save files
+                for pending_block in self._pending_during_anchor:
+                    # Emit session updated event
+                    block_count = len(self.session_blocks)
+                    self.qube.events.emit(Events.SESSION_UPDATED, {
+                        "session_block_count": block_count,
+                        "next_negative_index": -(block_count + 1)
+                    })
+
+                    # Handle MESSAGE block specifics
+                    if pending_block.block_type == "MESSAGE":
+                        try:
+                            self._create_relationship_eagerly(pending_block)
+                        except Exception as e:
+                            logger.warning(
+                                "relationship_creation_failed_for_pending",
+                                qube_id=self.qube.qube_id,
+                                error=str(e)
+                            )
+
+                        # Emit message events
+                        content = pending_block.content if isinstance(pending_block.content, dict) else {}
+                        message_type = content.get("message_type", "")
+                        if message_type in ["qube_to_human", "qube_to_group", "qube_to_qube"]:
+                            self.qube.events.emit(Events.MESSAGE_SENT, {})
+                        elif message_type in ["human_to_qube", "human_to_group", "qube_to_qube_response"]:
+                            self.qube.events.emit(Events.MESSAGE_RECEIVED, {})
+
+                    # Save block file
+                    self._save_session_block(pending_block)
+
+                logger.info(
+                    "pending_blocks_flushed_to_new_session",
+                    count=pending_count,
+                    qube_id=self.qube.qube_id
+                )
+
+                # Clear the pending queue
+                self._pending_during_anchor = []
 
             # APPLY SKILL XP (after conversion so we have real block numbers)
             if skill_detections:

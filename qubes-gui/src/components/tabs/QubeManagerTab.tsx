@@ -13,6 +13,7 @@ import { useQubeSelection } from '../../hooks/useQubeSelection';
 import { useWalletCache } from '../../hooks/useWalletCache';
 import { useModels } from '../../hooks/useModels';
 import { useChainState } from '../../contexts/ChainStateContext';
+import { useVoiceLibrary } from '../../contexts/VoiceLibraryContext';
 import {
   DndContext,
   closestCenter,
@@ -1013,6 +1014,7 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
   const { userId, password: masterPassword } = useAuth();
   const { getWalletData, setBalance: setCachedBalance } = useWalletCache();
   const { invalidateCache, loadChainState } = useChainState();
+  const { voiceLibrary: customVoices } = useVoiceLibrary();
 
   // Fetch models from backend (all models from ModelRegistry)
   const {
@@ -1030,21 +1032,7 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
     fetchModels();
   }, [fetchModels]);
 
-  // Load custom voices on mount
-  useEffect(() => {
-    const loadCustomVoices = async () => {
-      if (!userId) return;
-      try {
-        const result = await invoke<{ success: boolean; voice_library?: Record<string, any> }>('get_voice_library', { userId });
-        if (result.success && result.voice_library) {
-          setCustomVoices(result.voice_library);
-        }
-      } catch (error) {
-        console.error('Failed to load custom voices:', error);
-      }
-    };
-    loadCustomVoices();
-  }, [userId]);
+  // Custom voices are now managed by VoiceLibraryContext - no need for local loading
 
   // Wallet Security state
   const [walletSecurityModalOpen, setWalletSecurityModalOpen] = useState(false);
@@ -1304,8 +1292,7 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
   const [walletBalanceLoading, setWalletBalanceLoading] = useState(false);
   const [walletBalanceError, setWalletBalanceError] = useState<string | null>(cachedWalletData?.error ?? null);
 
-  // Custom voices state (user-created Qwen3-TTS voices)
-  const [customVoices, setCustomVoices] = useState<Record<string, { name: string; voice_type: string; language: string }>>({});
+  // Custom voices now come from VoiceLibraryContext (see useVoiceLibrary hook above)
 
   // Format BCH amount for display (always show 8 decimal places)
   const formatBCH = (sats: number) => {

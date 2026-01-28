@@ -1751,9 +1751,11 @@ class GUIBridge:
                 wsl2_provider = WSL2TTSProvider(auto_start=False)
                 availability = await wsl2_provider.check_availability(try_auto_start=False)
 
+                logger.info(f"WSL2 availability check: {availability}")
+
                 if availability.get("available"):
                     # Use WSL2 TTS server
-                    logger.info("Using WSL2 TTS server for preview")
+                    logger.info(f"Using WSL2 TTS server for preview - voice_type={voice_type}, design_prompt={design_prompt[:50] if design_prompt else None}")
                     audio_bytes = await wsl2_provider.generate_preview(
                         speaker=preset_voice if voice_type == "preset" else None,
                         design_prompt=design_prompt if voice_type == "designed" else None,
@@ -1761,10 +1763,11 @@ class GUIBridge:
                         clone_audio_text=clone_audio_text if voice_type == "cloned" else None,
                         language=language,
                     )
+                    logger.info("WSL2 preview generation completed successfully")
                 else:
-                    raise Exception("WSL2 TTS not available, falling back to local")
+                    raise Exception(f"WSL2 TTS not available: {availability.get('error', 'unknown')}")
             except Exception as e:
-                logger.debug(f"WSL2 TTS not available, using local Qwen3: {e}")
+                logger.warning(f"WSL2 TTS failed, falling back to local Qwen3: {e}")
                 # Fall back to local Qwen3TTSProvider
                 from audio.qwen_tts import Qwen3TTSProvider
                 qwen3_prefs = prefs_manager.get_qwen3_preferences()

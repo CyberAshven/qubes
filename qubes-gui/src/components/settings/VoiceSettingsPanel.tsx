@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { GlassCard, GlassButton, GlassInput } from '../glass';
 import { useAuth } from '../../hooks/useAuth';
+import { useVoiceLibrary } from '../../contexts/VoiceLibraryContext';
 import { LocalTTSSetupPanel } from './LocalTTSSetupPanel';
 
 interface VoiceLibraryEntry {
@@ -61,15 +62,15 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
   selectedQubeName,
 }) => {
   const { userId, password } = useAuth();
+  const { voiceLibrary, refreshVoiceLibrary, isLoading: voiceLibraryLoading } = useVoiceLibrary();
 
   // Voice settings state
   const [ttsEnabled, setTtsEnabled] = useState(false);
   const [voiceLibraryRef, setVoiceLibraryRef] = useState<string | null>(null);
-  const [voiceLibrary, setVoiceLibrary] = useState<Record<string, VoiceLibraryEntry>>({});
   const [qwen3Status, setQwen3Status] = useState<Qwen3Status | null>(null);
 
-  // UI state
-  const [loading, setLoading] = useState(true);
+  // UI state - loading tracks Qwen3 status check
+  const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -115,10 +116,9 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
     return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
   };
 
-  // Load voice library on mount (no qube needed - this is user-level)
+  // Check Qwen3 status on mount
   useEffect(() => {
     if (userId) {
-      loadVoiceLibrary();
       checkQwen3Status();
     }
   }, [userId]);
@@ -129,27 +129,6 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
       loadQubeVoiceSettings();
     }
   }, [selectedQubeId, password]);
-
-  // Load user's voice library (independent of qube selection)
-  const loadVoiceLibrary = async () => {
-    try {
-      const result = await invoke<{
-        success: boolean;
-        error?: string;
-        voice_library?: Record<string, VoiceLibraryEntry>;
-      }>('get_voice_library', {
-        userId,
-      });
-
-      if (result.success) {
-        setVoiceLibrary(result.voice_library || {});
-      }
-    } catch (err) {
-      console.error('Failed to load voice library:', err);
-    } finally {
-      setLoading(false);
-    }
-  };
 
   // Load qube-specific voice settings (TTS enabled, selected voice)
   const loadQubeVoiceSettings = async () => {
@@ -171,10 +150,7 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
       if (result.success) {
         setVoiceLibraryRef(result.voice_library_ref || null);
         setTtsEnabled(result.tts_enabled || false);
-        // Also update voice library in case it changed
-        if (result.voice_library) {
-          setVoiceLibrary(result.voice_library);
-        }
+        // Voice library is now managed by VoiceLibraryContext
       } else {
         setError(result.error || 'Failed to load voice settings');
       }
@@ -334,8 +310,9 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
       });
 
       if (result.success) {
-        // Refresh voice library
-        await loadVoiceLibrary();
+        // Refresh voice library via shared context (updates all components)
+        console.log('[VoiceSettingsPanel] Refreshing voice library via context');
+        await refreshVoiceLibrary();
         // Reset creator
         setShowVoiceCreator(false);
         setNewVoiceName('');
@@ -360,7 +337,8 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
       });
 
       if (result.success) {
-        await loadVoiceLibrary();  // Refresh user-level voice library
+        // Refresh voice library via shared context (updates all components)
+        await refreshVoiceLibrary();
       } else {
         setError(result.error || 'Failed to delete voice');
       }

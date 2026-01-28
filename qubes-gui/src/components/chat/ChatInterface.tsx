@@ -1327,7 +1327,12 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
           });
 
           // Store all ACTION blocks (completed or not) for display with messages
-          const allActionBlocks = result.session_blocks
+          // Include both session and permanent blocks (permanent has post-anchor ACTION blocks)
+          const sessionBlocks = result.session_blocks || [];
+          const permanentBlocks = result.permanent_blocks || [];
+          const combinedBlocks = [...sessionBlocks, ...permanentBlocks];
+
+          const allActionBlocks = combinedBlocks
             .filter((b: any) =>
               b.block_type === 'ACTION' &&
               b.content?.action_type &&
@@ -1368,6 +1373,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
   }, [isLoading, userId, password, selectedQubes]);
 
   // Load action blocks on mount and when qube changes (for historical tool calls)
+  // Includes both session blocks (pre-anchor) and permanent blocks (post-anchor)
   useEffect(() => {
     const loadActionBlocks = async () => {
       if (!userId || !password || selectedQubes.length === 0) {
@@ -1383,23 +1389,27 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
           limit: 50
         });
 
-        if (result?.session_blocks && Array.isArray(result.session_blocks)) {
-          const allActionBlocks = result.session_blocks
-            .filter((b: any) =>
-              b.block_type === 'ACTION' &&
-              b.content?.action_type &&
-              b.content?.action_type !== 'process_document'
-            )
-            .map((b: any) => ({
-              action_type: b.content.action_type,
-              timestamp: b.timestamp,
-              parameters: b.content.parameters || {},
-              result: b.content.result || null,
-              status: b.content.status || 'completed',
-            }));
+        // Combine session blocks and permanent blocks to get all ACTION blocks
+        // After auto-anchor, ACTION blocks move from session to permanent
+        const sessionBlocks = result?.session_blocks || [];
+        const permanentBlocks = result?.permanent_blocks || [];
+        const allBlocks = [...sessionBlocks, ...permanentBlocks];
 
-          setCompletedActionBlocks(allActionBlocks);
-        }
+        const allActionBlocks = allBlocks
+          .filter((b: any) =>
+            b.block_type === 'ACTION' &&
+            b.content?.action_type &&
+            b.content?.action_type !== 'process_document'
+          )
+          .map((b: any) => ({
+            action_type: b.content.action_type,
+            timestamp: b.timestamp,
+            parameters: b.content.parameters || {},
+            result: b.content.result || null,
+            status: b.content.status || 'completed',
+          }));
+
+        setCompletedActionBlocks(allActionBlocks);
       } catch (err) {
         console.error('Failed to load action blocks:', err);
       }

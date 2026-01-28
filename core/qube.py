@@ -884,7 +884,17 @@ class Qube:
             return 0
 
         converted_blocks = await self.current_session.anchor_to_chain(create_summary=create_summary)
-        self.current_session = None
+
+        # Only end the session if it's truly empty
+        # If blocks arrived during anchoring, they were flushed to a fresh session
+        if not self.current_session.session_blocks:
+            self.current_session = None
+        else:
+            logger.info(
+                "session_kept_alive_after_anchor",
+                qube_id=self.qube_id,
+                remaining_blocks=len(self.current_session.session_blocks)
+            )
 
         # Emit anchor created event
         if converted_blocks:

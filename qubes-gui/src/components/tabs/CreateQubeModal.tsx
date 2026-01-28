@@ -6,6 +6,7 @@ import { GlassCard, GlassButton, GlassInput } from '../glass';
 import { PendingMintingResult, MintingStatusResult, MintingStatus } from '../../types';
 import { useAuth } from '../../hooks/useAuth';
 import { useModels } from '../../hooks/useModels';
+import { useVoiceLibrary } from '../../contexts/VoiceLibraryContext';
 
 interface CreateQubeModalProps {
   isOpen: boolean;
@@ -79,6 +80,7 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
 }) => {
   const { userId, password } = useAuth();
   const { providers: dynamicProviders, getModelsForProvider, getDefaultModel, isLoaded: modelsLoaded, fetchModels } = useModels();
+  const { voiceLibrary: customVoices } = useVoiceLibrary();
 
   // Fetch models when modal opens
   useEffect(() => {
@@ -244,7 +246,7 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
   const [submittingTxid, setSubmittingTxid] = useState<boolean>(false);
   const [voiceDropdownOpen, setVoiceDropdownOpen] = useState(false);
   const voiceDropdownRef = useRef<HTMLDivElement>(null);
-  const [customVoices, setCustomVoices] = useState<Record<string, { name: string; voice_type: string; language: string }>>({});
+  // customVoices now comes from VoiceLibraryContext (see useVoiceLibrary hook above)
 
   const [formData, setFormData] = useState<CreateQubeData>({
     name: '',
@@ -330,23 +332,7 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Load custom voices (user's voice library) when modal opens
-  useEffect(() => {
-    if (isOpen && userId) {
-      loadCustomVoices();
-    }
-  }, [isOpen, userId]);
-
-  const loadCustomVoices = async () => {
-    try {
-      const result = await invoke<{ success: boolean; voice_library?: Record<string, any> }>('get_voice_library', { userId });
-      if (result.success && result.voice_library) {
-        setCustomVoices(result.voice_library);
-      }
-    } catch (err) {
-      console.error('Failed to load custom voices:', err);
-    }
-  };
+  // Custom voices now come from VoiceLibraryContext - no need for local loading
 
   // Cleanup polling on unmount or close
   useEffect(() => {

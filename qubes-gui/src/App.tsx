@@ -14,6 +14,7 @@ import { useAuth } from './hooks/useAuth';
 import { useAutoLock } from './hooks/useAutoLock';
 import { AudioProvider } from './contexts/AudioContext';
 import { ChainStateProvider } from './contexts/ChainStateContext';
+import { VoiceLibraryProvider } from './contexts/VoiceLibraryContext';
 import { Qube } from './types';
 
 // Check if we're in dev mode
@@ -79,12 +80,19 @@ function App() {
     checkFirstRun();
   }, []);
 
-  // Load qubes from Python backend after authentication
+  // Load qubes and start TTS server after authentication
   useEffect(() => {
-    if (isAuthenticated) {
+    if (isAuthenticated && userId) {
       loadQubes();
+
+      // Start WSL2 TTS server in background (fire and forget)
+      // Server will be stopped automatically when app closes (via on_window_event in lib.rs)
+      invoke('start_wsl2_tts_server', { userId }).catch((err) => {
+        console.log('WSL2 TTS server start (background):', err);
+        // Don't show error - server start is optional, TTS will work without pre-start
+      });
     }
-  }, [isAuthenticated]);
+  }, [isAuthenticated, userId]);
 
   // Listen for model changes (from revolver mode, switch_model tool, etc.)
   // Updates the qube's ai_model and ai_provider so roster and other components show current model
@@ -342,6 +350,7 @@ function App() {
   return (
     <AudioProvider>
       <ChainStateProvider>
+      <VoiceLibraryProvider>
       {/* Lock Screen Overlay */}
       <LockScreen />
 
@@ -395,6 +404,7 @@ function App() {
           />
         )}
       </div>
+      </VoiceLibraryProvider>
       </ChainStateProvider>
     </AudioProvider>
   );

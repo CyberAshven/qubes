@@ -228,10 +228,17 @@ class WSL2TTSProvider(TTSProvider):
         try:
             client = await self._get_client()
             response = await client.get(f"{self.server_url}/status", timeout=2.0)
-            if response.json().get("model_loaded"):
-                return True
-        except Exception:
-            pass  # Server not responding
+            data = response.json()
+            # Server is ready if running and has models (loaded or downloaded)
+            # Models load on-demand when /generate is called
+            if data.get("running"):
+                models_downloaded = data.get("models_downloaded", [])
+                if models_downloaded or data.get("model_loaded"):
+                    logger.debug("wsl2_tts_server_ready", model_loaded=data.get("model_loaded"),
+                                models_downloaded=models_downloaded)
+                    return True
+        except Exception as e:
+            logger.debug("wsl2_tts_status_check_failed", error=str(e))
 
         # If auto-start is disabled or we've already tried, return False
         if not self.auto_start:
@@ -369,7 +376,7 @@ class WSL2TTSProvider(TTSProvider):
         if voice_mode == "cloned":
             mode = "cloned"
         elif voice_mode == "designed" or (instruct and voice_mode != "preset"):
-            mode = "design"
+            mode = "designed"
         else:
             mode = "preset"
 
@@ -413,7 +420,7 @@ class WSL2TTSProvider(TTSProvider):
                     logger.info("wsl2_tts_clone_mode", clone_path=clone_path_str)
                 else:
                     raise AIError("Voice cloning requires clone_audio_path")
-            elif mode == "design":
+            elif mode == "designed":
                 payload["instruct"] = instruct
 
             response = await client.post(
@@ -488,7 +495,7 @@ class WSL2TTSProvider(TTSProvider):
             speaker_name = "Vivian"  # Not used in clone mode
             instruct = ""
         elif design_prompt:
-            mode = "design"
+            mode = "designed"
             instruct = design_prompt
             speaker_name = "Vivian"  # Not used in design mode
         else:
@@ -498,7 +505,8 @@ class WSL2TTSProvider(TTSProvider):
 
         language_name = self.LANGUAGE_MAP.get(language, "English")
 
-        logger.info("wsl2_tts_preview", mode=mode, speaker=speaker_name if mode == "preset" else None,
+        logger.info("wsl2_tts_preview_start", mode=mode, speaker=speaker_name if mode == "preset" else None,
+                    design_prompt=instruct[:50] if instruct else None,
                     clone_audio=str(clone_audio_path) if clone_audio_path else None)
 
         # Ensure server is running
@@ -519,6 +527,7 @@ class WSL2TTSProvider(TTSProvider):
                 "voice_id": speaker_name,
                 "language": language_name,
                 "output_path": str(output_path),
+                "instruct": instruct,  # Design prompt for voice design mode
             }
 
             # Add clone parameters if in clone mode
@@ -531,6 +540,9 @@ class WSL2TTSProvider(TTSProvider):
                 payload["clone_audio_path"] = clone_path_str
                 payload["clone_audio_text"] = clone_audio_text
                 logger.info("wsl2_tts_clone_path", original=str(clone_audio_path), converted=clone_path_str)
+
+            logger.info("wsl2_tts_preview_sending", url=f"{self.server_url}/generate",
+                        voice_mode=payload.get("voice_mode"), instruct=payload.get("instruct", "")[:50] if payload.get("instruct") else None)
 
             response = await client.post(
                 f"{self.server_url}/generate",

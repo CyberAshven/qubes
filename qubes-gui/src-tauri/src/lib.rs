@@ -7043,7 +7043,7 @@ pub fn run() {
                 if window.label() == "main" {
                     stop_all_event_watchers();
 
-                    // Stop TTS server
+                    // Stop Windows TTS server (legacy)
                     if let Ok(python_path) = find_python_path() {
                         let project_root = get_python_project_path();
                         let _ = std::process::Command::new(&python_path)
@@ -7053,6 +7053,13 @@ pub fn run() {
                             .stderr(std::process::Stdio::null())
                             .spawn();
                     }
+
+                    // Stop WSL2 TTS server
+                    let _ = std::process::Command::new("wsl")
+                        .args(["-d", "Ubuntu-22.04", "--", "pkill", "-f", "tts_server.py"])
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .spawn();
                 }
             }
         })
