@@ -1495,15 +1495,13 @@ class GUIBridge:
             if voice_model is not None:
                 metadata["genesis_block"]["voice_model"] = voice_model
                 updated_fields.append(f"voice_model={voice_model}")
-                # Also update chain_state (the single source of truth)
+                # Also update chain_state (the single source of truth) using proper setter
                 encryption_key = self._get_qube_encryption_key(qube_dir)
                 if encryption_key:
                     from core.chain_state import ChainState
                     chain_dir = qube_dir / "chain"
                     chain_state = ChainState(data_dir=chain_dir, encryption_key=encryption_key)
-                    settings = chain_state.state.setdefault("settings", {})
-                    settings["voice_model"] = voice_model
-                    chain_state._save(preserve_gui_fields=False)
+                    chain_state.set_voice_model(voice_model)  # Use proper setter
                     logger.info(f"Updated chain_state voice_model={voice_model}")
 
             if favorite_color is not None:
@@ -1557,11 +1555,16 @@ class GUIBridge:
                     elif ":" in ai_model:
                         qube.ai_provider = "ollama"
                 if voice_model is not None:
+                    logger.info(f"🔊 VOICE UPDATE: Setting voice_model={voice_model} for qube {qube_id}")
                     qube.genesis_block.voice_model = voice_model
                     # Also update in-memory chain_state (source of truth for TTS)
                     if qube.chain_state:
                         settings = qube.chain_state.state.setdefault("settings", {})
+                        old_voice = settings.get("voice_model", "not set")
                         settings["voice_model"] = voice_model
+                        logger.info(f"🔊 VOICE UPDATE: chain_state updated from {old_voice} to {voice_model}")
+                    else:
+                        logger.warning(f"🔊 VOICE UPDATE: qube has no chain_state!")
                     # Reinitialize audio manager with new voice
                     if qube.audio_manager:
                         qube.init_audio()
