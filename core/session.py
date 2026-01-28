@@ -543,7 +543,8 @@ class Session:
             # Copy the list for iteration (in case of concurrent modifications)
             blocks_to_anchor = list(self.session_blocks)
             # Track timestamps of blocks being anchored for selective cleanup
-            anchored_timestamps = {b.timestamp for b in blocks_to_anchor}
+            # Cast to int to ensure matching with parsed filenames
+            anchored_timestamps = {int(b.timestamp) for b in blocks_to_anchor}
 
             # Re-check chain length inside lock (another process may have anchored)
             chain_length = self.qube.memory_chain.get_chain_length()
@@ -2582,7 +2583,15 @@ IMPORTANT: Return ONLY valid JSON, no other text."""
 
         session_dir = Path(self.qube.data_dir) / "blocks" / "session"
         if not session_dir.exists():
+            logger.debug("cleanup_anchored_files_no_session_dir")
             return
+
+        logger.info(
+            "cleanup_anchored_files_starting",
+            anchored_count=len(anchored_timestamps),
+            anchored_timestamps=list(anchored_timestamps)[:5],  # Log first 5
+            qube_id=self.qube.qube_id
+        )
 
         deleted_count = 0
         failed_files = []
