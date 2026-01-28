@@ -1064,7 +1064,9 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                 </button>
                 {recentHistoryExpanded && (
                   <div className="space-y-2">
-                  {contextPreview.short_term_memory.recent_permanent.blocks.map((block: any, idx: number) => (
+                  {[...contextPreview.short_term_memory.recent_permanent.blocks]
+                    .sort((a: any, b: any) => shortTermNewestFirst ? b.block_number - a.block_number : a.block_number - b.block_number)
+                    .map((block: any, idx: number) => (
                     <GlassCard
                       key={`recent-${idx}`}
                       variant="interactive"
