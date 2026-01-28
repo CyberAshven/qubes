@@ -38,9 +38,9 @@ const getVoiceGender = (voiceId: string): string => {
   const geminiMale = ['achernar', 'algenib', 'alnilam', 'charon', 'fenrir', 'gacrux', 'iapetus', 'orus', 'puck', 'rasalgethi', 'sadachbia', 'sadaltager', 'umbriel', 'zephyr'];
   const geminiFemale = ['achird', 'algieba', 'aoede', 'autonoe', 'callirrhoe', 'despina', 'enceladus', 'erinome', 'kore', 'laomedeia', 'leda', 'pulcherrima', 'schedar', 'sulafat', 'vindemiatrix', 'zubenelgenubi'];
 
-  // OpenAI voices (11 total)
-  const openaiMale = ['ash', 'cedar', 'echo', 'fable', 'onyx'];
-  const openaiFemale = ['alloy', 'coral', 'marin', 'nova', 'sage', 'shimmer'];
+  // OpenAI voices (9 total for tts-1 model)
+  const openaiMale = ['ash', 'echo', 'fable', 'onyx'];
+  const openaiFemale = ['alloy', 'coral', 'nova', 'sage', 'shimmer'];
 
   // Google Cloud TTS voices (Standard, WaveNet, Neural2, Studio, Chirp)
   const googleMale = [
@@ -820,7 +820,7 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
                 <option value="qwen3">Qwen3-TTS Local (9 presets)</option>
                 <option value="google">Google Cloud TTS (380+ voices)</option>
                 <option value="gemini">Gemini TTS (30 voices)</option>
-                <option value="openai">OpenAI TTS (11 voices)</option>
+                <option value="openai">OpenAI TTS (9 voices)</option>
                 <option value="elevenlabs">ElevenLabs</option>
               </select>
             </div>
@@ -903,7 +903,7 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
                     )}
                     {voiceProvider === 'openai' && (
                       <>
-                        {['alloy', 'ash', 'cedar', 'coral', 'echo', 'fable', 'marin', 'nova', 'onyx', 'sage', 'shimmer'].map(voice => (
+                        {['alloy', 'ash', 'coral', 'echo', 'fable', 'nova', 'onyx', 'sage', 'shimmer'].map(voice => (
                           <div
                             key={voice}
                             onClick={() => { setFormData({ ...formData, voiceModel: `openai:${voice}` }); setVoiceDropdownOpen(false); }}
