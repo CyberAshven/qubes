@@ -79,7 +79,8 @@ class UserOrchestrator:
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
         self.qubes: Dict[str, Qube] = {}  # qube_id -> Qube instance
-        self.global_settings = self._load_global_settings()
+        # NOTE: global_settings removed - was never used, and created unnecessary settings.json file
+        # User preferences are managed by UserPreferencesManager (preferences.json)
         self.master_key: Optional[bytes] = None
         self.active_conversations: Dict[str, MultiQubeConversation] = {}  # conversation_id -> conversation
         self.pending_minting: Dict[str, PendingQubeCreation] = {}  # registration_id -> pending creation
