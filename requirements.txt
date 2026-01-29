@@ -139,11 +139,9 @@ huggingface_hub>=0.23.0     # Model downloading from HuggingFace
 
 # Kokoro TTS (Fast lightweight local TTS - 82M params, 54 voices, 8 languages)
 kokoro>=0.9.4               # Kokoro TTS pipeline API (Apache 2.0 license)
+pyopenjtalk>=0.4.0          # Japanese phoneme support for Kokoro (optional but recommended)
 # soundfile already included above
-# Requires espeak-ng system dependency:
-#   Windows: Download .msi from https://github.com/espeak-ng/espeak-ng/releases
-#   Ubuntu: sudo apt install espeak-ng
-#   macOS: brew install espeak
+# espeak-ng is bundled via espeakng-loader package (auto-installed with kokoro)
 
 # ============================================================================
 # CLI & UI (Phase 8)
