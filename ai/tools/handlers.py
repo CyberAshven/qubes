@@ -3376,14 +3376,37 @@ async def get_system_state_handler(qube, params: Dict[str, Any]) -> Dict[str, An
         # Get requested sections from chain_state
         data = qube.chain_state.get_sections(sections if sections else None)
 
-        # Build identity section from genesis block
+        # Build identity section from genesis block + current runtime state
         if include_identity and hasattr(qube, 'genesis_block') and qube.genesis_block:
             genesis = qube.genesis_block
             from utils.time_format import format_timestamp
+            from ai.model_registry import ModelRegistry
 
             # Get available tools (core tools that are always available)
             from ai.tools.registry import ALWAYS_AVAILABLE_TOOLS
             available_tools = sorted(list(ALWAYS_AVAILABLE_TOOLS))
+
+            # Get CURRENT model from runtime (not genesis - genesis is birth model)
+            runtime = qube.chain_state.state.get("runtime", {})
+            current_model = runtime.get("current_model") or genesis.ai_model
+
+            # Get provider from ModelRegistry (accurate) instead of string parsing
+            try:
+                model_info = ModelRegistry.get_model_info(current_model)
+                current_provider = model_info.get("provider", "unknown") if model_info else "unknown"
+            except Exception:
+                # Fallback: try to infer from model name
+                model_lower = current_model.lower() if current_model else ""
+                if "claude" in model_lower:
+                    current_provider = "anthropic"
+                elif "gpt" in model_lower:
+                    current_provider = "openai"
+                elif "gemini" in model_lower:
+                    current_provider = "google"
+                elif "grok" in model_lower or "venice" in model_lower or "llama" in model_lower or "qwen" in model_lower:
+                    current_provider = "venice"
+                else:
+                    current_provider = "unknown"
 
             # GUI expects 'genesis_identity' key
             data["genesis_identity"] = {
@@ -3392,8 +3415,11 @@ async def get_system_state_handler(qube, params: Dict[str, Any]) -> Dict[str, An
                 "birth_date": format_timestamp(genesis.birth_timestamp) if genesis.birth_timestamp else None,
                 "creator": genesis.creator,
                 "favorite_color": genesis.favorite_color,
-                "ai_model": genesis.ai_model,
-                "ai_provider": genesis.ai_model.split(":")[0] if genesis.ai_model and ":" in genesis.ai_model else "anthropic",
+                # Show CURRENT model, not genesis model (AI needs to know what it's running NOW)
+                "ai_model": current_model,
+                "ai_provider": current_provider,
+                # Keep genesis model for reference
+                "genesis_model": genesis.ai_model,
                 "voice_model": genesis.voice_model,
                 "genesis_prompt": genesis.genesis_prompt,
                 "genesis_prompt_preview": (genesis.genesis_prompt[:200] + "...") if genesis.genesis_prompt and len(genesis.genesis_prompt) > 200 else genesis.genesis_prompt,
