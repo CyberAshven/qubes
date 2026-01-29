@@ -3,13 +3,42 @@
 Qubes GUI Bridge - CLI interface for Tauri GUI to communicate with Python backend
 """
 import sys
+import os
+import io
+
+# ============================================================================
+# PYINSTALLER --noconsole FIX (MUST BE FIRST!)
+# ============================================================================
+# In PyInstaller --noconsole mode, stdout/stderr are None which causes crashes
+# when any library (like colorama) tries to write to them.
+# This MUST run before any other imports that might pull in colorama.
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, 'w', encoding='utf-8')
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, 'w', encoding='utf-8')
+
+# Disable colorama if it gets imported (prevents ANSI code errors on Windows)
+os.environ['NO_COLOR'] = '1'
+os.environ['ANSI_COLORS_DISABLED'] = '1'
+
+# ============================================================================
+# GLOBAL UTF-8 FIX FOR WINDOWS
+# ============================================================================
+# Force all Python I/O to use UTF-8 encoding (fixes emoji/Unicode issues on Windows)
+try:
+    if hasattr(sys.stdout, 'buffer') and sys.stdout.buffer is not None:
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+    if hasattr(sys.stderr, 'buffer') and sys.stderr.buffer is not None:
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+except Exception:
+    pass  # If reconfiguration fails, just use defaults
+
 import json
 import asyncio
 import logging
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Any, List, Optional
-import os
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
@@ -21,19 +50,6 @@ load_dotenv()
 # CRITICAL: Disable all logging to stdout/stderr before importing anything
 # Set environment variable to disable structlog output
 os.environ['QUBES_LOG_LEVEL'] = 'ERROR'
-
-# ============================================================================
-# GLOBAL UTF-8 FIX FOR WINDOWS
-# ============================================================================
-# Force all Python I/O to use UTF-8 encoding (fixes emoji/Unicode issues on Windows)
-import sys
-import io
-
-# Reconfigure stdout/stderr to use UTF-8 encoding
-if hasattr(sys.stdout, 'buffer'):
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True)
-if hasattr(sys.stderr, 'buffer'):
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace', line_buffering=True)
 
 # Create logs directory if it doesn't exist
 log_dir = Path(__file__).parent / "logs"
