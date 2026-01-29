@@ -9538,7 +9538,14 @@ async def main():
                 # Spawn detached subprocess to handle auto-anchor
                 # Using CREATE_NEW_PROCESS_GROUP and DETACHED_PROCESS on Windows
                 # to ensure the subprocess continues after parent exits
-                cmd = [sys.executable, __file__, "auto-anchor-background", user_id, qube_id]
+                # In bundled mode, sys.executable IS the backend exe (no script path needed)
+                # In dev mode, we need python + script path
+                if getattr(sys, 'frozen', False):
+                    # Bundled PyInstaller exe - just call the exe directly
+                    cmd = [sys.executable, "auto-anchor-background", user_id, qube_id]
+                else:
+                    # Development mode - use python + script
+                    cmd = [sys.executable, __file__, "auto-anchor-background", user_id, qube_id]
 
                 # Pass password via environment variable (more secure than argv)
                 env = os.environ.copy()
