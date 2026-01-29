@@ -965,9 +965,104 @@ def register_default_tools(registry: ToolRegistry) -> None:
 # TOOL HANDLERS
 # =============================================================================
 
+async def _search_with_perplexity(query: str, api_key: str) -> Dict[str, Any]:
+    """Search using Perplexity Sonar API"""
+    from ai.model_registry import ModelRegistry
+
+    model = ModelRegistry.get_model("sonar", api_key)
+
+    messages = [
+        {"role": "system", "content": "You are a helpful search assistant. Provide concise, factual answers with sources."},
+        {"role": "user", "content": query}
+    ]
+
+    response = await model.generate(messages, max_tokens=1024)
+
+    return {
+        "results": [
+            {
+                "content": response.content,
+                "source": "perplexity_sonar"
+            }
+        ],
+        "query": query,
+        "success": True
+    }
+
+
+async def _search_with_duckduckgo(query: str, num_results: int = 5) -> Dict[str, Any]:
+    """Search using DuckDuckGo (free, no API key needed)"""
+    import httpx
+    from bs4 import BeautifulSoup
+
+    # Use DuckDuckGo HTML search
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+    }
+
+    search_url = f"https://html.duckduckgo.com/html/?q={httpx.QueryParams({'q': query})['q']}"
+
+    async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
+        response = await client.get(search_url, headers=headers)
+        response.raise_for_status()
+
+    soup = BeautifulSoup(response.text, "html.parser")
+
+    results = []
+    # DuckDuckGo HTML results are in .result divs
+    for result in soup.select(".result")[:num_results]:
+        title_elem = result.select_one(".result__title")
+        snippet_elem = result.select_one(".result__snippet")
+        link_elem = result.select_one(".result__url")
+
+        if title_elem and snippet_elem:
+            title = title_elem.get_text(strip=True)
+            snippet = snippet_elem.get_text(strip=True)
+            url = link_elem.get_text(strip=True) if link_elem else ""
+
+            results.append({
+                "title": title,
+                "snippet": snippet,
+                "url": url,
+                "source": "duckduckgo"
+            })
+
+    if not results:
+        # Fallback: try to get any text content
+        return {
+            "results": [{
+                "content": "No results found for this query.",
+                "source": "duckduckgo"
+            }],
+            "query": query,
+            "success": True
+        }
+
+    # Format results as readable content
+    content_parts = []
+    for i, r in enumerate(results, 1):
+        content_parts.append(f"{i}. **{r['title']}**\n   {r['snippet']}\n   URL: {r['url']}")
+
+    return {
+        "results": [
+            {
+                "content": "\n\n".join(content_parts),
+                "source": "duckduckgo"
+            }
+        ],
+        "query": query,
+        "success": True
+    }
+
+
 async def web_search_handler(qube, params: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Web search using Perplexity API
+    Web search using Perplexity API, with DuckDuckGo fallback.
+
+    Tries Perplexity first (better AI-powered results), falls back to
+    DuckDuckGo if Perplexity API key is not configured.
 
     Args:
         params: {"query": str, "num_results": int}
@@ -983,35 +1078,16 @@ async def web_search_handler(qube, params: Dict[str, Any]) -> Dict[str, Any]:
         api_keys = getattr(qube, 'api_keys', {})
         perplexity_key = api_keys.get("perplexity")
 
-        if not perplexity_key:
-            return {
-                "error": "Perplexity API key not configured",
-                "success": False
-            }
+        # Try Perplexity first if API key is available
+        if perplexity_key:
+            try:
+                return await _search_with_perplexity(query, perplexity_key)
+            except Exception as e:
+                logger.warning("perplexity_search_failed", error=str(e), message="Falling back to DuckDuckGo")
 
-        # Use Perplexity Sonar for web search
-        from ai.model_registry import ModelRegistry
-
-        model = ModelRegistry.get_model("sonar", perplexity_key)
-
-        # Simple search query
-        messages = [
-            {"role": "system", "content": "You are a helpful search assistant. Provide concise, factual answers with sources."},
-            {"role": "user", "content": query}
-        ]
-
-        response = await model.generate(messages, max_tokens=1024)
-
-        return {
-            "results": [
-                {
-                    "content": response.content,
-                    "source": "perplexity_sonar"
-                }
-            ],
-            "query": query,
-            "success": True
-        }
+        # Fallback to DuckDuckGo (free, no API key needed)
+        logger.info("using_duckduckgo_fallback", query=query[:50])
+        return await _search_with_duckduckgo(query, num_results)
 
     except Exception as e:
         logger.error("web_search_failed", query=params.get("query"), exc_info=True)
