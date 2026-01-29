@@ -232,7 +232,6 @@ class KokoroTTSProvider(TTSProvider):
         """
         import numpy as np
         import soundfile as sf
-        from kokoro import KPipeline
 
         # Determine language and voice
         lang_code = self._get_lang_code(voice_config)
@@ -250,7 +249,21 @@ class KokoroTTSProvider(TTSProvider):
         # Initialize or switch pipeline if language changed
         if self._pipeline is None or self._current_lang != lang_code:
             logger.info("kokoro_loading_pipeline", lang_code=lang_code)
-            self._pipeline = KPipeline(lang_code=lang_code)
+
+            # Suppress stdout/stderr during Kokoro initialization
+            # (it prints warnings and may run pip install on first use)
+            import warnings
+            from contextlib import redirect_stdout, redirect_stderr
+            from io import StringIO
+
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                # Redirect stdout/stderr to suppress pip install output
+                devnull = StringIO()
+                with redirect_stdout(devnull), redirect_stderr(devnull):
+                    from kokoro import KPipeline
+                    self._pipeline = KPipeline(lang_code=lang_code, repo_id='hexgrad/Kokoro-82M')
+
             self._current_lang = lang_code
 
         # Generate audio
