@@ -1332,9 +1332,110 @@ async def describe_avatar_handler(qube, params: Dict[str, Any]) -> Dict[str, Any
         }
 
 
+async def _browse_with_playwright(url: str, extract_text: bool) -> Dict[str, Any]:
+    """Fetch URL using Playwright headless browser (supports JavaScript)"""
+    from playwright.async_api import async_playwright
+    from bs4 import BeautifulSoup
+
+    async with async_playwright() as p:
+        # Launch headless browser
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
+
+        # Set a realistic user agent to avoid detection
+        await page.set_extra_http_headers({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        })
+
+        # Navigate to URL with timeout
+        try:
+            await page.goto(url, wait_until="networkidle", timeout=30000)
+        except Exception:
+            # If networkidle fails, try with domcontentloaded
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+
+        # Wait a bit for any dynamic content to load
+        await page.wait_for_timeout(2000)
+
+        # Get page content and title
+        content = await page.content()
+        title = await page.title()
+
+        await browser.close()
+
+    if extract_text:
+        content, title = _extract_text_from_html(content, title)
+
+    return {"content": content, "title": title, "method": "playwright"}
+
+
+async def _browse_with_httpx(url: str, extract_text: bool) -> Dict[str, Any]:
+    """Fetch URL using httpx (fallback, no JavaScript support)"""
+    import httpx
+    from bs4 import BeautifulSoup
+
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+    }
+
+    async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
+        response = await client.get(url, headers=headers)
+        response.raise_for_status()
+        content = response.text
+
+    # Try to extract title from HTML
+    title = None
+    if extract_text:
+        content, title = _extract_text_from_html(content, title)
+    else:
+        # Just get title from raw HTML
+        soup = BeautifulSoup(content, "html.parser")
+        title_tag = soup.find("title")
+        if title_tag:
+            title = title_tag.get_text().strip()
+
+    return {"content": content, "title": title, "method": "httpx"}
+
+
+def _extract_text_from_html(content: str, title: str = None) -> tuple:
+    """Extract readable text from HTML content"""
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(content, "html.parser")
+
+    # Get title if not already provided
+    if not title:
+        title_tag = soup.find("title")
+        if title_tag:
+            title = title_tag.get_text().strip()
+
+    # Remove script and style elements
+    for element in soup(["script", "style", "nav", "footer", "header"]):
+        element.decompose()
+
+    # Get text
+    text = soup.get_text()
+
+    # Clean up whitespace
+    lines = (line.strip() for line in text.splitlines())
+    chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+    content = "\n".join(chunk for chunk in chunks if chunk)
+
+    # Limit content length to avoid overwhelming the AI
+    if len(content) > 10000:
+        content = content[:10000] + "\n\n[Content truncated - page is very long]"
+
+    return content, title
+
+
 async def browse_url_handler(qube, params: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Fetch and read content from a URL using a headless browser with JavaScript support
+    Fetch and read content from a URL.
+
+    Tries Playwright first (supports JavaScript-rendered pages), falls back to
+    httpx if Playwright is not available (bundled builds without browser binaries).
 
     Args:
         params: {
@@ -1350,103 +1451,73 @@ async def browse_url_handler(qube, params: Dict[str, Any]) -> Dict[str, Any]:
             "success": bool
         }
     """
+    from utils.input_validation import validate_url_safe
+    from core.exceptions import QubesError
+
+    url = params["url"]
+    extract_text = params.get("extract_text", True)
+
+    # Validate URL with SSRF protection
     try:
-        from playwright.async_api import async_playwright
-        from bs4 import BeautifulSoup
-        from utils.input_validation import validate_url_safe
-        from core.exceptions import QubesError
-        import re
+        url = validate_url_safe(url, allow_private=False)
+    except QubesError as e:
+        logger.warning(
+            "url_validation_failed",
+            url=url[:100],  # Truncate for logging
+            error=str(e),
+            qube_id=qube.qube_id
+        )
+        return {
+            "error": str(e),
+            "success": False
+        }
 
-        url = params["url"]
-        extract_text = params.get("extract_text", True)
+    # Try Playwright first (supports JavaScript), fall back to httpx
+    browse_result = None
+    method_used = None
 
-        # Validate URL with SSRF protection
+    try:
+        browse_result = await _browse_with_playwright(url, extract_text)
+        method_used = "playwright_chromium"
+    except ImportError:
+        # Playwright not installed - use httpx fallback
+        logger.info("playwright_not_available", message="Falling back to httpx")
+    except Exception as pw_error:
+        # Playwright failed (e.g., browser not installed) - try httpx
+        logger.warning("playwright_failed", error=str(pw_error), message="Falling back to httpx")
+
+    if browse_result is None:
         try:
-            url = validate_url_safe(url, allow_private=False)
-        except QubesError as e:
-            logger.warning(
-                "url_validation_failed",
-                url=url[:100],  # Truncate for logging
-                error=str(e),
-                qube_id=qube.qube_id
-            )
+            browse_result = await _browse_with_httpx(url, extract_text)
+            method_used = "httpx"
+        except Exception as httpx_error:
+            logger.error("url_browse_failed", url=url, error=str(httpx_error), exc_info=True)
             return {
-                "error": str(e),
+                "error": f"Failed to fetch URL: {str(httpx_error)}",
                 "success": False
             }
 
-        # Use Playwright to fetch URL with JavaScript support
-        async with async_playwright() as p:
-            # Launch headless browser
-            browser = await p.chromium.launch(headless=True)
-            page = await browser.new_page()
+    content = browse_result["content"]
+    title = browse_result.get("title")
 
-            # Set a realistic user agent to avoid detection
-            await page.set_extra_http_headers({
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            })
+    logger.info(
+        "url_browsed",
+        qube_id=qube.qube_id,
+        url=url,
+        content_length=len(content),
+        browser=method_used
+    )
 
-            # Navigate to URL with timeout
-            try:
-                await page.goto(url, wait_until="networkidle", timeout=30000)
-            except Exception:
-                # If networkidle fails, try with domcontentloaded
-                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+    result = {
+        "url": url,
+        "content": content,
+        "success": True
+    }
 
-            # Wait a bit for any dynamic content to load
-            await page.wait_for_timeout(2000)
+    if title:
+        result["title"] = title
 
-            # Get page content and title
-            content = await page.content()
-            title = await page.title()
-
-            await browser.close()
-
-        if extract_text:
-            # Parse HTML and extract text
-            soup = BeautifulSoup(content, "html.parser")
-
-            # Remove script and style elements
-            for element in soup(["script", "style", "nav", "footer", "header"]):
-                element.decompose()
-
-            # Get text
-            text = soup.get_text()
-
-            # Clean up whitespace
-            lines = (line.strip() for line in text.splitlines())
-            chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-            content = "\n".join(chunk for chunk in chunks if chunk)
-
-            # Limit content length to avoid overwhelming the AI
-            if len(content) > 10000:
-                content = content[:10000] + "\n\n[Content truncated - page is very long]"
-
-        logger.info(
-            "url_browsed",
-            qube_id=qube.qube_id,
-            url=url,
-            content_length=len(content),
-            browser="playwright_chromium"
-        )
-
-        result = {
-            "url": url,
-            "content": content,
-            "success": True
-        }
-
-        if title:
-            result["title"] = title
-
-        return result
-
-    except Exception as e:
-        logger.error("url_browse_failed", url=params.get("url"), error=str(e), exc_info=True)
-        return {
-            "error": f"Browser error: {str(e)}",
-            "success": False
-        }
+    return result
 
 
 async def query_decision_context_handler(qube, params: Dict[str, Any]) -> Dict[str, Any]:
