@@ -21,6 +21,22 @@ if sys.stderr is None:
 os.environ['NO_COLOR'] = '1'
 os.environ['ANSI_COLORS_DISABLED'] = '1'
 
+# Custom exception hook to suppress I/O errors at exit (colorama, broken pipes, etc.)
+_original_excepthook = sys.excepthook
+def _quiet_excepthook(exc_type, exc_value, exc_tb):
+    """Suppress OSError/IOError at exit (common in --noconsole mode)"""
+    if exc_type in (OSError, IOError, BrokenPipeError):
+        return  # Silently ignore I/O errors at exit
+    if exc_type == SystemExit:
+        return  # Normal exit
+    # For other exceptions, try to log to file instead of crashing
+    try:
+        import logging
+        logging.exception("Unhandled exception", exc_info=(exc_type, exc_value, exc_tb))
+    except Exception:
+        pass  # If logging fails, just exit silently
+sys.excepthook = _quiet_excepthook
+
 # ============================================================================
 # GLOBAL UTF-8 FIX FOR WINDOWS
 # ============================================================================
@@ -13671,4 +13687,17 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except (OSError, IOError, BrokenPipeError):
+        # Suppress I/O errors at exit (colorama, broken pipes, etc.)
+        pass
+    except SystemExit:
+        pass
+    except Exception:
+        # Log other errors to file, don't show error dialog
+        try:
+            import logging
+            logging.exception("Unhandled exception in main")
+        except Exception:
+            pass
