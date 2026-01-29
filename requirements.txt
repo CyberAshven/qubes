@@ -139,7 +139,9 @@ huggingface_hub>=0.23.0     # Model downloading from HuggingFace
 
 # Kokoro TTS (Fast lightweight local TTS - 82M params, 54 voices, 8 languages)
 kokoro>=0.9.4               # Kokoro TTS pipeline API (Apache 2.0 license)
-pyopenjtalk>=0.4.0          # Japanese phoneme support for Kokoro (optional but recommended)
+pyopenjtalk>=0.4.0          # Japanese phoneme support for Kokoro
+fugashi>=1.5.0              # Japanese morphological analyzer for Kokoro
+unidic-lite>=1.0.8          # Japanese dictionary for fugashi
 # soundfile already included above
 # espeak-ng is bundled via espeakng-loader package (auto-installed with kokoro)
 
