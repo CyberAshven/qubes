@@ -97,26 +97,23 @@ fn start_event_watcher(
         }
     }
 
-    // Find Python executable
-    let python_path = find_python_path()?;
-    let gui_bridge_path = find_gui_bridge_path()?;
+    // Build command using the same backend as other commands (bundled or Python)
+    let (mut cmd, is_bundled) = create_backend_command();
+    let project_root = get_python_project_path();
+    cmd.current_dir(&project_root);
 
-    // Build command
-    let mut cmd = Command::new(&python_path);
-    cmd.arg(&gui_bridge_path)
-        .arg("watch-events")
+    // Add bridge path argument if not bundled (development mode)
+    if !is_bundled {
+        let bridge_path = get_python_bridge_path();
+        cmd.arg(&bridge_path);
+    }
+
+    cmd.arg("watch-events")
         .arg(&user_id)
         .arg(&qube_id)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-
-    // Windows: Hide console window
-    #[cfg(target_os = "windows")]
-    {
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
 
     // Spawn process
     let mut child = cmd.spawn().map_err(|e| format!("Failed to spawn event watcher: {}", e))?;

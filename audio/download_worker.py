@@ -100,10 +100,16 @@ def ensure_qwen_tts_installed() -> bool:
     except ImportError:
         print("Installing qwen-tts package...", file=sys.stderr)
         import subprocess
+        run_kwargs = {
+            "capture_output": True,
+            "text": True
+        }
+        # Hide console window on Windows
+        if sys.platform == "win32":
+            run_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
         result = subprocess.run(
             [sys.executable, "-m", "pip", "install", "-U", "qwen-tts"],
-            capture_output=True,
-            text=True
+            **run_kwargs
         )
         if result.returncode != 0:
             print(f"Failed to install qwen-tts: {result.stderr}", file=sys.stderr)

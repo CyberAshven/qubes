@@ -302,6 +302,7 @@ async def start_server(force: bool = False) -> bool:
                 ["wsl", "-d", WSL2_DISTRO, "pkill", "-9", "-f", "tts_server.py"],
                 capture_output=True,
                 timeout=10,
+                creationflags=subprocess.CREATE_NO_WINDOW,
             )
             await asyncio.sleep(2)  # Wait for processes to fully terminate
 
@@ -659,10 +660,15 @@ def cleanup():
 
     # Also try to kill via WSL (sync version)
     try:
+        run_kwargs = {
+            "capture_output": True,
+            "timeout": 5,
+        }
+        if sys.platform == "win32":
+            run_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
         subprocess.run(
             ["wsl", "-d", WSL2_DISTRO, "--", "pkill", "-f", "tts_server.py"],
-            capture_output=True,
-            timeout=5,
+            **run_kwargs
         )
     except Exception:
         pass

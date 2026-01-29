@@ -178,12 +178,13 @@ class Qwen3ModelDownloader:
 
         # Use subprocess.Popen to start a detached process
         if sys.platform == 'win32':
-            # Windows: use CREATE_NEW_PROCESS_GROUP and DETACHED_PROCESS
+            # Windows: use CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS, and CREATE_NO_WINDOW
             DETACHED_PROCESS = 0x00000008
             CREATE_NEW_PROCESS_GROUP = 0x00000200
+            CREATE_NO_WINDOW = 0x08000000
             subprocess.Popen(
                 [sys.executable, str(script_path), download_id, model_name, str(self.models_dir)],
-                creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+                creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 stdin=subprocess.DEVNULL,

@@ -2375,10 +2375,16 @@ class GUIBridge:
 
             try:
                 # Try ffmpeg first
+                run_kwargs = {
+                    "capture_output": True,
+                    "timeout": 30
+                }
+                # Hide console window on Windows
+                if sys.platform == "win32":
+                    run_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
                 result = subprocess.run(
                     ["ffmpeg", "-y", "-i", str(webm_path), "-ar", "16000", "-ac", "1", str(wav_path)],
-                    capture_output=True,
-                    timeout=30
+                    **run_kwargs
                 )
                 if result.returncode != 0:
                     raise Exception(f"ffmpeg failed: {result.stderr.decode()}")
@@ -9286,11 +9292,17 @@ async def main():
         # Check if running by trying to list models
         import subprocess
         try:
+            run_kwargs = {
+                "capture_output": True,
+                "text": True,
+                "timeout": 10
+            }
+            # Hide console window on Windows
+            if sys.platform == "win32":
+                run_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
             result = subprocess.run(
                 ["ollama", "list"],
-                capture_output=True,
-                text=True,
-                timeout=10
+                **run_kwargs
             )
             if result.returncode == 0:
                 # Parse model list
@@ -9501,13 +9513,14 @@ async def main():
                 env["QUBES_PASSWORD"] = password
 
                 if sys.platform == "win32":
-                    # Windows: Use CREATE_NEW_PROCESS_GROUP and DETACHED_PROCESS
+                    # Windows: Use CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS, and CREATE_NO_WINDOW
                     DETACHED_PROCESS = 0x00000008
                     CREATE_NEW_PROCESS_GROUP = 0x00000200
+                    CREATE_NO_WINDOW = 0x08000000
                     subprocess.Popen(
                         cmd,
                         env=env,
-                        creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+                        creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW,
                         stdin=subprocess.DEVNULL,
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL
