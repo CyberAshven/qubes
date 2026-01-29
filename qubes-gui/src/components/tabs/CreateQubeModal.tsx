@@ -60,6 +60,11 @@ const getVoiceGender = (voiceId: string): string => {
   const qwen3Male = ['dylan', 'eric', 'ryan', 'aiden', 'uncle_fu'];
   const qwen3Female = ['vivian', 'serena', 'ono_anna', 'sohee'];
 
+  // Kokoro TTS voices (pattern: first char = lang, second char = gender)
+  // af_ = American female, am_ = American male, bf_ = British female, etc.
+  const kokoroFemale = voiceName.length > 1 && voiceName[1] === 'f';
+  const kokoroMale = voiceName.length > 1 && voiceName[1] === 'm';
+
   if (geminiMale.includes(voiceName)) return ' (male)';
   if (geminiFemale.includes(voiceName)) return ' (female)';
   if (openaiMale.includes(voiceName)) return ' (male)';
@@ -68,6 +73,8 @@ const getVoiceGender = (voiceId: string): string => {
   if (googleFemale.includes(voiceName)) return ' (female)';
   if (qwen3Male.includes(voiceName)) return ' (male)';
   if (qwen3Female.includes(voiceName)) return ' (female)';
+  if (kokoroFemale) return ' (female)';
+  if (kokoroMale) return ' (male)';
 
   return ''; // Unknown or no gender info
 };
@@ -302,6 +309,7 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
   // Update voice when voice provider changes
   useEffect(() => {
     const defaultVoices: Record<string, string> = {
+      'kokoro': 'kokoro:af_heart',
       'qwen3': 'qwen3:Vivian',
       'google': 'google:en-US-Neural2-A',
       'gemini': 'gemini:puck',
@@ -817,7 +825,8 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
                 {Object.keys(customVoices).length > 0 && (
                   <option value="custom">✨ Custom Voices ({Object.keys(customVoices).length})</option>
                 )}
-                <option value="qwen3">Qwen3-TTS Local (9 presets)</option>
+                <option value="kokoro">Kokoro Local (54 voices - Fast)</option>
+                <option value="qwen3">Qwen3-TTS Local (9 presets - Voice Cloning)</option>
                 <option value="google">Google Cloud TTS (380+ voices)</option>
                 <option value="gemini">Gemini TTS (30 voices)</option>
                 <option value="openai">OpenAI TTS (9 voices)</option>
@@ -863,6 +872,73 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
                             No custom voices yet. Create one in Settings → Custom Voices.
                           </div>
                         )}
+                      </>
+                    )}
+                    {voiceProvider === 'kokoro' && (
+                      <>
+                        <div className="px-4 py-1 text-xs text-text-tertiary bg-glass-border/30 sticky top-0">American English</div>
+                        {[
+                          { id: 'af_heart', label: 'Heart' }, { id: 'af_bella', label: 'Bella' },
+                          { id: 'af_nova', label: 'Nova' }, { id: 'af_sarah', label: 'Sarah' },
+                          { id: 'am_adam', label: 'Adam' }, { id: 'am_michael', label: 'Michael' },
+                        ].map(v => (
+                          <div
+                            key={v.id}
+                            onClick={() => { setFormData({ ...formData, voiceModel: `kokoro:${v.id}` }); setVoiceDropdownOpen(false); }}
+                            className={`px-4 py-2 cursor-pointer hover:bg-accent-primary/20 ${formData.voiceModel === `kokoro:${v.id}` ? 'bg-accent-primary/30' : ''}`}
+                          >
+                            {v.label}{getVoiceGender(`kokoro:${v.id}`)}
+                          </div>
+                        ))}
+                        <div className="px-4 py-1 text-xs text-text-tertiary bg-glass-border/30 sticky top-0">British English</div>
+                        {[
+                          { id: 'bf_emma', label: 'Emma' }, { id: 'bf_lily', label: 'Lily' },
+                          { id: 'bm_george', label: 'George' }, { id: 'bm_daniel', label: 'Daniel' },
+                        ].map(v => (
+                          <div
+                            key={v.id}
+                            onClick={() => { setFormData({ ...formData, voiceModel: `kokoro:${v.id}` }); setVoiceDropdownOpen(false); }}
+                            className={`px-4 py-2 cursor-pointer hover:bg-accent-primary/20 ${formData.voiceModel === `kokoro:${v.id}` ? 'bg-accent-primary/30' : ''}`}
+                          >
+                            {v.label}{getVoiceGender(`kokoro:${v.id}`)}
+                          </div>
+                        ))}
+                        <div className="px-4 py-1 text-xs text-text-tertiary bg-glass-border/30 sticky top-0">Japanese</div>
+                        {[
+                          { id: 'jf_alpha', label: 'Alpha' }, { id: 'jm_kumo', label: 'Kumo' },
+                        ].map(v => (
+                          <div
+                            key={v.id}
+                            onClick={() => { setFormData({ ...formData, voiceModel: `kokoro:${v.id}` }); setVoiceDropdownOpen(false); }}
+                            className={`px-4 py-2 cursor-pointer hover:bg-accent-primary/20 ${formData.voiceModel === `kokoro:${v.id}` ? 'bg-accent-primary/30' : ''}`}
+                          >
+                            {v.label}{getVoiceGender(`kokoro:${v.id}`)}
+                          </div>
+                        ))}
+                        <div className="px-4 py-1 text-xs text-text-tertiary bg-glass-border/30 sticky top-0">Mandarin Chinese</div>
+                        {[
+                          { id: 'zf_xiaoxiao', label: 'Xiaoxiao' }, { id: 'zm_yunxi', label: 'Yunxi' },
+                        ].map(v => (
+                          <div
+                            key={v.id}
+                            onClick={() => { setFormData({ ...formData, voiceModel: `kokoro:${v.id}` }); setVoiceDropdownOpen(false); }}
+                            className={`px-4 py-2 cursor-pointer hover:bg-accent-primary/20 ${formData.voiceModel === `kokoro:${v.id}` ? 'bg-accent-primary/30' : ''}`}
+                          >
+                            {v.label}{getVoiceGender(`kokoro:${v.id}`)}
+                          </div>
+                        ))}
+                        <div className="px-4 py-1 text-xs text-text-tertiary bg-glass-border/30 sticky top-0">Spanish / French</div>
+                        {[
+                          { id: 'ef_dora', label: 'Dora (ES)' }, { id: 'ff_siwis', label: 'Siwis (FR)' },
+                        ].map(v => (
+                          <div
+                            key={v.id}
+                            onClick={() => { setFormData({ ...formData, voiceModel: `kokoro:${v.id}` }); setVoiceDropdownOpen(false); }}
+                            className={`px-4 py-2 cursor-pointer hover:bg-accent-primary/20 ${formData.voiceModel === `kokoro:${v.id}` ? 'bg-accent-primary/30' : ''}`}
+                          >
+                            {v.label}{getVoiceGender(`kokoro:${v.id}`)}
+                          </div>
+                        ))}
                       </>
                     )}
                     {voiceProvider === 'qwen3' && (
@@ -981,7 +1057,8 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
               </div>
               <p className="text-xs text-text-tertiary mt-1">
                 {voiceProvider === 'custom' && 'Your custom voices created with voice cloning or voice design. Runs locally on GPU.'}
-                {voiceProvider === 'qwen3' && 'Qwen3-TTS runs locally on your GPU - FREE and private! Requires downloaded models.'}
+                {voiceProvider === 'kokoro' && 'Kokoro runs locally (CPU/GPU) - FREE and fast! 82M params, no WSL2 setup required.'}
+                {voiceProvider === 'qwen3' && 'Qwen3-TTS runs locally on your GPU - FREE with voice cloning! Requires WSL2 setup.'}
                 {voiceProvider === 'google' && 'Google Cloud TTS requires service account credentials. 1M free chars/month for Neural2/WaveNet!'}
                 {voiceProvider === 'gemini' && 'Gemini voices use your Google API key - FREE during preview!'}
                 {voiceProvider === 'openai' && 'OpenAI voices use your OpenAI API key.'}

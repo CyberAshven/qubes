@@ -2127,6 +2127,27 @@ async fn check_qwen3_status(user_id: String) -> Result<serde_json::Value, String
 }
 
 #[tauri::command]
+async fn check_kokoro_status(user_id: String) -> Result<serde_json::Value, String> {
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("check-kokoro-status")
+        .arg(&user_id)
+        .output()
+        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Check Kokoro status"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
 async fn get_tts_progress(user_id: String) -> Result<serde_json::Value, String> {
     let mut cmd = prepare_backend_command()?;
     let output = cmd
@@ -7012,6 +7033,7 @@ pub fn run() {
             delete_voice_from_library,
             get_voice_library,
             check_qwen3_status,
+            check_kokoro_status,
             get_tts_progress,
             download_qwen3_model,
             get_qwen3_download_progress,

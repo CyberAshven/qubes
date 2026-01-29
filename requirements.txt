@@ -137,6 +137,14 @@ huggingface_hub>=0.23.0     # Model downloading from HuggingFace
 # flash-attn>=2.5.0         # Optional: FlashAttention2 for 20% VRAM reduction (requires CUDA)
 # Models downloaded on-demand to ~/.qubes/models/qwen3-tts/
 
+# Kokoro TTS (Fast lightweight local TTS - 82M params, 54 voices, 8 languages)
+kokoro>=0.9.4               # Kokoro TTS pipeline API (Apache 2.0 license)
+# soundfile already included above
+# Requires espeak-ng system dependency:
+#   Windows: Download .msi from https://github.com/espeak-ng/espeak-ng/releases
+#   Ubuntu: sudo apt install espeak-ng
+#   macOS: brew install espeak
+
 # ============================================================================
 # CLI & UI (Phase 8)
 # ============================================================================

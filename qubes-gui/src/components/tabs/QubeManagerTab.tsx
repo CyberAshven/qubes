@@ -1788,6 +1788,10 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
     const qwen3Male = ['dylan', 'eric', 'ryan', 'aiden', 'uncle_fu'];
     const qwen3Female = ['vivian', 'serena', 'ono_anna', 'sohee'];
 
+    // Kokoro TTS voices (pattern: first char = lang, second char = gender)
+    const kokoroFemale = voiceName.length > 1 && voiceName[1] === 'f';
+    const kokoroMale = voiceName.length > 1 && voiceName[1] === 'm';
+
     if (geminiMale.includes(voiceName)) return ' (male)';
     if (geminiFemale.includes(voiceName)) return ' (female)';
     if (openaiMale.includes(voiceName)) return ' (male)';
@@ -1796,6 +1800,8 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
     if (googleFemale.includes(voiceName)) return ' (female)';
     if (qwen3Male.includes(voiceName)) return ' (male)';
     if (qwen3Female.includes(voiceName)) return ' (female)';
+    if (kokoroFemale) return ' (female)';
+    if (kokoroMale) return ' (male)';
 
     return '';
   };
@@ -1899,13 +1905,37 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
       { label: `Sohee${getVoiceGender('qwen3:Sohee')}`, value: 'qwen3:Sohee' },
       { label: `Uncle Fu${getVoiceGender('qwen3:Uncle_Fu')}`, value: 'qwen3:Uncle_Fu' },
     ],
+    kokoro: [
+      // American English
+      { label: `Heart${getVoiceGender('kokoro:af_heart')}`, value: 'kokoro:af_heart' },
+      { label: `Bella${getVoiceGender('kokoro:af_bella')}`, value: 'kokoro:af_bella' },
+      { label: `Nova${getVoiceGender('kokoro:af_nova')}`, value: 'kokoro:af_nova' },
+      { label: `Sarah${getVoiceGender('kokoro:af_sarah')}`, value: 'kokoro:af_sarah' },
+      { label: `Adam${getVoiceGender('kokoro:am_adam')}`, value: 'kokoro:am_adam' },
+      { label: `Michael${getVoiceGender('kokoro:am_michael')}`, value: 'kokoro:am_michael' },
+      // British English
+      { label: `Emma (UK)${getVoiceGender('kokoro:bf_emma')}`, value: 'kokoro:bf_emma' },
+      { label: `Lily (UK)${getVoiceGender('kokoro:bf_lily')}`, value: 'kokoro:bf_lily' },
+      { label: `George (UK)${getVoiceGender('kokoro:bm_george')}`, value: 'kokoro:bm_george' },
+      { label: `Daniel (UK)${getVoiceGender('kokoro:bm_daniel')}`, value: 'kokoro:bm_daniel' },
+      // Japanese
+      { label: `Alpha (JP)${getVoiceGender('kokoro:jf_alpha')}`, value: 'kokoro:jf_alpha' },
+      { label: `Kumo (JP)${getVoiceGender('kokoro:jm_kumo')}`, value: 'kokoro:jm_kumo' },
+      // Mandarin Chinese
+      { label: `Xiaoxiao (ZH)${getVoiceGender('kokoro:zf_xiaoxiao')}`, value: 'kokoro:zf_xiaoxiao' },
+      { label: `Yunxi (ZH)${getVoiceGender('kokoro:zm_yunxi')}`, value: 'kokoro:zm_yunxi' },
+      // Spanish / French
+      { label: `Dora (ES)${getVoiceGender('kokoro:ef_dora')}`, value: 'kokoro:ef_dora' },
+      { label: `Siwis (FR)${getVoiceGender('kokoro:ff_siwis')}`, value: 'kokoro:ff_siwis' },
+    ],
   };
 
   // Build voice provider options including custom voices if available
   const customVoiceCount = Object.keys(customVoices).length;
   const voiceProviderOptions = [
     ...(customVoiceCount > 0 ? [{ label: `✨ Custom Voices (${customVoiceCount})`, value: 'custom' }] : []),
-    { label: 'Qwen3-TTS Local (9 voices)', value: 'qwen3' },
+    { label: 'Kokoro Local (54 voices - Fast)', value: 'kokoro' },
+    { label: 'Qwen3-TTS Local (9 voices - Voice Cloning)', value: 'qwen3' },
     { label: 'Google Cloud TTS (380+ voices)', value: 'google' },
     { label: 'Gemini TTS (30 voices)', value: 'gemini' },
     { label: 'OpenAI TTS (9 voices)', value: 'openai' },
@@ -1926,6 +1956,7 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
 
   const defaultVoices: Record<string, string> = {
     custom: customVoiceCount > 0 ? `custom:${Object.keys(customVoices)[0]}` : '',
+    kokoro: 'kokoro:af_heart',
     qwen3: 'qwen3:Vivian',
     google: 'google:en-US-Neural2-A',
     gemini: 'gemini:puck',

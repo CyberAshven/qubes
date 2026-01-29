@@ -2166,6 +2166,43 @@ class GUIBridge:
                 "fallback_provider": "gemini"
             }
 
+    async def check_kokoro_status(self, user_id: str) -> Dict[str, Any]:
+        """
+        Check Kokoro TTS availability.
+
+        Returns availability status, voice count, and any errors.
+        """
+        try:
+            from audio.audio_manager import AudioManager
+
+            # Create temporary audio manager to check status
+            audio_manager = AudioManager()
+            status = audio_manager.check_kokoro_status()
+
+            # Also get available voices for the UI
+            voices = {}
+            if status.get("available"):
+                try:
+                    from audio.kokoro_tts import KokoroTTSProvider
+                    voices = KokoroTTSProvider.get_all_voices()
+                except Exception:
+                    pass
+
+            return {
+                "success": True,
+                "voices": voices,
+                **status
+            }
+        except Exception as e:
+            logger.error(f"Failed to check Kokoro status: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": str(e),
+                "available": False,
+                "voices_count": 0,
+                "languages_count": 0
+            }
+
     async def get_tts_progress(self, user_id: str) -> Dict[str, Any]:
         """
         Get current TTS generation progress (for UI polling).
@@ -10055,6 +10092,17 @@ async def main():
 
             user_bridge = GUIBridge(user_id=user_id)
             result = await user_bridge.check_qwen3_status(user_id)
+            print(json.dumps(result))
+
+        elif command == "check-kokoro-status":
+            if len(sys.argv) < 3:
+                print(json.dumps({"error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.check_kokoro_status(user_id)
             print(json.dumps(result))
 
         elif command == "get-tts-progress":

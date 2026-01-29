@@ -12,6 +12,7 @@ import asyncio
 
 from audio.tts_engine import TTSProvider, OpenAITTS, ElevenLabsTTS, GeminiTTS, GoogleTTS, PiperTTS, VoiceConfig
 from audio.wsl2_tts import WSL2TTSProvider
+from audio.kokoro_tts import KokoroTTSProvider
 from audio.stt_engine import STTProvider, OpenAIWhisper, DeepGramSTT, WhisperCppSTT
 from audio.playback import AudioPlayer
 from audio.recorder import AudioRecorder
@@ -222,6 +223,16 @@ class AudioManager:
         except Exception as e:
             logger.debug("wsl2_tts_not_available", error=str(e))
 
+        # Kokoro TTS (local, no GPU required) - fast 82M param model
+        # Supports 54 voices across 8 languages, runs on CPU or GPU
+        try:
+            self.tts_providers["kokoro"] = KokoroTTSProvider()
+            logger.info("tts_provider_initialized", provider="kokoro")
+        except ImportError as e:
+            logger.debug("kokoro_tts_not_available", error=str(e))
+        except Exception as e:
+            logger.warning("kokoro_tts_init_failed", error=str(e))
+
     def _init_stt_providers(self):
         """Initialize available STT providers"""
         # OpenAI Whisper
@@ -429,9 +440,32 @@ class AudioManager:
 
         return result
 
+    def check_kokoro_status(self) -> Dict[str, Any]:
+        """
+        Get Kokoro TTS availability status.
+
+        Returns:
+            Dict with status info:
+            - available: bool - Whether Kokoro can be used
+            - voices_count: int - Number of available voices
+            - languages_count: int - Number of supported languages
+            - version: str | None - Kokoro version if installed
+            - error: str | None - Error message if not available
+        """
+        try:
+            return KokoroTTSProvider.check_availability()
+        except Exception as e:
+            return {
+                "available": False,
+                "error": str(e),
+                "voices_count": 0,
+                "languages_count": 0,
+            }
+
     def _get_fallback_provider(self) -> str:
         """Get the best available fallback TTS provider"""
-        for provider in ["gemini", "openai", "piper"]:
+        # Prefer kokoro (local, fast) over cloud providers
+        for provider in ["kokoro", "gemini", "openai", "piper"]:
             if provider in self.tts_providers and self.tts_providers[provider] is not None:
                 return provider
         return "piper"
@@ -661,8 +695,8 @@ class AudioManager:
 
         audio_dir.mkdir(parents=True, exist_ok=True)
 
-        # Use correct extension based on provider (Gemini/WSL2/Qwen3 use WAV, others use MP3)
-        extension = "wav" if provider in ("gemini", "wsl2", "qwen3") else "mp3"
+        # Use correct extension based on provider (Gemini/WSL2/Qwen3/Kokoro use WAV, others use MP3)
+        extension = "wav" if provider in ("gemini", "wsl2", "qwen3", "kokoro") else "mp3"
 
         # Get model_variant from user preferences (default to 1.7B)
         model_variant = "1.7B"

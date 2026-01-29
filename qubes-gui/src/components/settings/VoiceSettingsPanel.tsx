@@ -27,6 +27,7 @@ interface Qwen3Status {
   model_variant?: string;  // Current user preference: "1.7B" or "0.6B"
 }
 
+
 interface VoiceSettingsPanelProps {
   selectedQubeId: string | null;
   selectedQubeName?: string;
@@ -56,6 +57,7 @@ const PRESET_VOICES = [
   { id: 'Sohee', name: 'Sohee', description: 'Female, Korean accent' },
   { id: 'Uncle_Fu', name: 'Uncle Fu', description: 'Male, Chinese accent' },
 ];
+
 
 export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
   selectedQubeId,
@@ -179,6 +181,7 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
       console.error('Failed to check Qwen3 status:', err);
     }
   };
+
 
   const handleTtsToggle = async (enabled: boolean) => {
     if (!selectedQubeId || !password) return;
@@ -1147,7 +1150,7 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
             </GlassCard>
           )}
 
-      {/* Local TTS Setup Section */}
+      {/* Local TTS Setup Section (Qwen3 via WSL2) */}
       <GlassCard className="p-4">
         <LocalTTSSetupPanel />
       </GlassCard>
