@@ -227,12 +227,25 @@ fn find_python_path() -> Result<String, String> {
     // Try common Python paths
     #[cfg(target_os = "windows")]
     {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+
         // Try python from PATH first
-        if Command::new("python").arg("--version").output().is_ok() {
+        if Command::new("python")
+            .arg("--version")
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .is_ok()
+        {
             return Ok("python".to_string());
         }
         // Try py launcher
-        if Command::new("py").arg("--version").output().is_ok() {
+        if Command::new("py")
+            .arg("--version")
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .is_ok()
+        {
             return Ok("py".to_string());
         }
     }
