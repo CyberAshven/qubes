@@ -860,3 +860,79 @@ async def uninstall_wsl2_tts() -> Dict[str, Any]:
             "success": False,
             "error": str(e)
         }
+
+
+async def install_wsl2() -> Dict[str, Any]:
+    """
+    Install WSL2 with Ubuntu using administrator privileges.
+
+    This runs 'wsl --install' which:
+    1. Enables WSL feature
+    2. Enables Virtual Machine Platform
+    3. Downloads and installs Linux kernel
+    4. Sets WSL2 as default
+    5. Downloads and installs Ubuntu
+
+    Requires admin privileges (will show UAC prompt).
+    May require a system restart after installation.
+
+    Returns:
+        Dict with success status and message
+    """
+    import sys
+
+    if sys.platform != "win32":
+        return {
+            "success": False,
+            "error": "WSL2 installation is only available on Windows"
+        }
+
+    logger.info("wsl2_install_starting")
+
+    try:
+        # Use PowerShell to run wsl --install with admin elevation
+        # This will trigger a UAC prompt for the user
+        # The -Wait flag makes it wait for the installer to complete
+        powershell_cmd = (
+            'Start-Process -FilePath "wsl" -ArgumentList "--install" '
+            '-Verb RunAs -Wait'
+        )
+
+        process = await asyncio.create_subprocess_shell(
+            f'powershell -Command "{powershell_cmd}"',
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+        stdout, stderr = await asyncio.wait_for(
+            process.communicate(),
+            timeout=600  # 10 minutes max for installation
+        )
+
+        if process.returncode == 0:
+            logger.info("wsl2_install_completed")
+            return {
+                "success": True,
+                "message": "WSL2 installation started. Please restart your computer to complete the installation.",
+                "restart_required": True
+            }
+        else:
+            error_msg = stderr.decode('utf-8', errors='replace') if stderr else "Installation was cancelled or failed"
+            logger.error("wsl2_install_failed", error=error_msg)
+            return {
+                "success": False,
+                "error": error_msg
+            }
+
+    except asyncio.TimeoutError:
+        logger.error("wsl2_install_timeout")
+        return {
+            "success": False,
+            "error": "Installation timed out. Please try running 'wsl --install' manually in an admin terminal."
+        }
+    except Exception as e:
+        logger.error("wsl2_install_error", error=str(e))
+        return {
+            "success": False,
+            "error": str(e)
+        }

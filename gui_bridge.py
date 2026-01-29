@@ -10247,6 +10247,12 @@ async def main():
             result = await user_bridge.uninstall_wsl2_tts(user_id)
             print(json.dumps(result))
 
+        elif command == "install-wsl2":
+            # One-click WSL2 installation (requires admin, shows UAC prompt)
+            from audio.wsl2_setup import install_wsl2
+            result = await install_wsl2()
+            print(json.dumps(result))
+
         # ========== WSL2 TTS Managed Server Commands ==========
 
         elif command == "start-wsl2-tts-managed":

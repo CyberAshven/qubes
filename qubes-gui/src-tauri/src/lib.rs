@@ -2508,6 +2508,27 @@ async fn uninstall_wsl2_tts(user_id: String) -> Result<serde_json::Value, String
     Ok(response)
 }
 
+#[tauri::command]
+async fn install_wsl2() -> Result<serde_json::Value, String> {
+    // One-click WSL2 installation (requires admin, shows UAC prompt)
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("install-wsl2")
+        .output()
+        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Install WSL2"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
 // ========== End WSL2 TTS Setup Commands ==========
 
 #[tauri::command]
@@ -7006,7 +7027,8 @@ pub fn run() {
             get_wsl2_tts_setup_progress,
             start_wsl2_tts_server,
             stop_wsl2_tts_server,
-            uninstall_wsl2_tts
+            uninstall_wsl2_tts,
+            install_wsl2
         ])
         .setup(|app| {
             // Get the main and splash windows
