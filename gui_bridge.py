@@ -9674,6 +9674,35 @@ async def main():
                 )
                 sys.exit(1)
 
+        elif command == "download-qwen-model":
+            # This command handles Qwen TTS model downloads in both dev and bundled mode
+            # It's spawned as a detached subprocess by model_downloader.py
+            if len(sys.argv) < 5:
+                logger.error("download_qwen_model_missing_args")
+                print(json.dumps({"error": "download_id, model_name, and models_dir required"}), file=sys.stderr)
+                sys.exit(1)
+
+            download_id = sys.argv[2]
+            model_name = sys.argv[3]
+            models_dir = Path(sys.argv[4])
+
+            logger.info("download_qwen_model_starting", download_id=download_id, model_name=model_name)
+
+            try:
+                # Import and run the download logic directly
+                from audio.download_worker import download_model
+                download_model(download_id, model_name, models_dir)
+                logger.info("download_qwen_model_completed", download_id=download_id)
+            except Exception as e:
+                import traceback
+                logger.error(
+                    "download_qwen_model_failed",
+                    download_id=download_id,
+                    error=str(e),
+                    traceback=traceback.format_exc()
+                )
+                sys.exit(1)
+
         elif command == "check-sessions":
             if len(sys.argv) < 4:
                 print(json.dumps({"error": "User ID and Qube ID required"}), file=sys.stderr)

@@ -172,9 +172,17 @@ class Qwen3ModelDownloader:
             model_name=model_name
         )
 
-        # Start download in a separate Python process (not a thread)
+        # Start download in a separate process (not a thread)
         # This process will run independently and update the progress file
-        script_path = Path(__file__).parent / "download_worker.py"
+        # In bundled mode, use the exe directly with download-qwen-model command
+        # In dev mode, use Python with the download_worker.py script
+        if getattr(sys, 'frozen', False):
+            # Bundled mode - use the exe with download-qwen-model command
+            cmd = [sys.executable, "download-qwen-model", download_id, model_name, str(self.models_dir)]
+        else:
+            # Dev mode - use Python with the script
+            script_path = Path(__file__).parent / "download_worker.py"
+            cmd = [sys.executable, str(script_path), download_id, model_name, str(self.models_dir)]
 
         # Use subprocess.Popen to start a detached process
         if sys.platform == 'win32':
@@ -183,7 +191,7 @@ class Qwen3ModelDownloader:
             CREATE_NEW_PROCESS_GROUP = 0x00000200
             CREATE_NO_WINDOW = 0x08000000
             subprocess.Popen(
-                [sys.executable, str(script_path), download_id, model_name, str(self.models_dir)],
+                cmd,
                 creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -192,7 +200,7 @@ class Qwen3ModelDownloader:
         else:
             # Unix: use nohup-style detachment
             subprocess.Popen(
-                [sys.executable, str(script_path), download_id, model_name, str(self.models_dir)],
+                cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 stdin=subprocess.DEVNULL,

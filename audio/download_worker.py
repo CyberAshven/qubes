@@ -93,29 +93,21 @@ def check_cancelled(progress_file: Path, download_id: str) -> bool:
 
 
 def ensure_qwen_tts_installed() -> bool:
-    """Ensure qwen-tts package is installed."""
+    """
+    Check if qwen-tts package is installed.
+
+    Note: We no longer try to pip install at runtime - this doesn't work in
+    bundled mode and is unnecessary for downloading models. The qwen-tts
+    package is only needed for inference, not for downloading.
+    """
     try:
         import qwen_tts  # noqa: F401
         return True
     except ImportError:
-        print("Installing qwen-tts package...", file=sys.stderr)
-        import subprocess
-        run_kwargs = {
-            "capture_output": True,
-            "text": True
-        }
-        # Hide console window on Windows
-        if sys.platform == "win32":
-            run_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-        result = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "-U", "qwen-tts"],
-            **run_kwargs
-        )
-        if result.returncode != 0:
-            print(f"Failed to install qwen-tts: {result.stderr}", file=sys.stderr)
-            return False
-        print("qwen-tts installed successfully", file=sys.stderr)
-        return True
+        # Not installed, but we can still download models
+        # The package will be needed later for inference
+        print("qwen-tts package not installed - models can still be downloaded", file=sys.stderr)
+        return True  # Return True to allow download to proceed
 
 
 def download_model(download_id: str, model_name: str, models_dir: Path) -> None:
