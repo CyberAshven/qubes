@@ -264,7 +264,7 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
     ownerPubkey: '',  // NFT address derived automatically from this
     encryptGenesis: false,
     favoriteColor: '#00ff88',
-    generateAvatar: true,
+    generateAvatar: false, // AI avatar generation temporarily disabled
     avatarStyle: 'cyberpunk',
   });
 
@@ -540,7 +540,7 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
       ownerPubkey: '',  // NFT address derived automatically from this
       encryptGenesis: false,
       favoriteColor: '#00ff88',
-      generateAvatar: true,
+      generateAvatar: false, // AI avatar generation temporarily disabled
       avatarStyle: 'cyberpunk',
       avatarFile: undefined,
     });
@@ -582,9 +582,9 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
     }
 
     if (currentStep === 4) {
-      // Avatar is mandatory - must either upload or generate
-      if (!formData.avatarFile && !formData.generateAvatar) {
-        newErrors.avatarFile = 'Avatar is required. Please upload an image or enable AI generation.';
+      // Avatar is mandatory - must upload
+      if (!formData.avatarFile) {
+        newErrors.avatarFile = 'Avatar is required. Please upload an image.';
       }
       // Pinata must be configured for IPFS upload
       if (pinataConfigured === false) {
@@ -1197,33 +1197,34 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
                 </button>
               </div>
 
-              {/* Generate Avatar Option */}
-              <div className="flex items-center justify-between">
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={formData.generateAvatar}
-                    disabled={!!formData.avatarFile}
-                    onChange={(e) =>
-                      setFormData({ ...formData, generateAvatar: e.target.checked })
-                    }
-                    className="w-5 h-5 rounded bg-glass-bg border-glass-border text-accent-primary focus:ring-2 focus:ring-accent-primary/50 disabled:opacity-50"
-                  />
-                  <span className={formData.avatarFile ? 'text-text-tertiary' : 'text-text-primary'}>
-                    Generate AI Avatar (DALL-E 3)
-                  </span>
-                </label>
-                {formData.avatarFile && (
-                  <button
-                    onClick={() => setFormData({ ...formData, avatarFile: undefined })}
-                    className="text-xs text-accent-danger hover:underline"
-                  >
-                    Remove uploaded file
-                  </button>
-                )}
-              </div>
+              {/* Remove uploaded file button */}
+              {formData.avatarFile && (
+                <button
+                  onClick={() => setFormData({ ...formData, avatarFile: undefined })}
+                  className="text-xs text-accent-danger hover:underline"
+                >
+                  Remove uploaded file
+                </button>
+              )}
             </div>
 
+            {/* AI Avatar Generation - temporarily disabled
+            <div className="flex items-center justify-between">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={formData.generateAvatar}
+                  disabled={!!formData.avatarFile}
+                  onChange={(e) =>
+                    setFormData({ ...formData, generateAvatar: e.target.checked })
+                  }
+                  className="w-5 h-5 rounded bg-glass-bg border-glass-border text-accent-primary focus:ring-2 focus:ring-accent-primary/50 disabled:opacity-50"
+                />
+                <span className={formData.avatarFile ? 'text-text-tertiary' : 'text-text-primary'}>
+                  Generate AI Avatar (DALL-E 3)
+                </span>
+              </label>
+            </div>
             {formData.generateAvatar && (
               <div>
                 <label className="block text-sm font-medium text-text-secondary mb-2">
@@ -1246,6 +1247,7 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
                 </div>
               </div>
             )}
+            */}
 
             {/* Pinata IPFS Warning */}
             {checkingPinata ? (
