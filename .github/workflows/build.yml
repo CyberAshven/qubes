@@ -161,7 +161,7 @@ jobs:
         run: |
           cd qubes-gui/src-tauri
           New-Item -ItemType Directory -Force -Path binaries
-          pyinstaller --onefile --name qubes-backend --distpath binaries ../../gui_bridge.py
+          pyinstaller --onefile --noconsole --name qubes-backend --distpath binaries ../../gui_bridge.py
           # Rename to target-triple format for Tauri sidecar
           Move-Item -Force "binaries/qubes-backend.exe" "binaries/qubes-backend-${{ matrix.target }}.exe"
 
@@ -170,7 +170,7 @@ jobs:
         run: |
           cd qubes-gui/src-tauri
           mkdir -p binaries
-          pyinstaller --onefile --name qubes-backend --distpath binaries ../../gui_bridge.py
+          pyinstaller --onefile --noconsole --name qubes-backend --distpath binaries ../../gui_bridge.py
           # Rename to target-triple format for Tauri sidecar
           mv binaries/qubes-backend "binaries/qubes-backend-${{ matrix.target }}"
 
