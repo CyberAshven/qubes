@@ -188,7 +188,8 @@ class MintingAPIClient:
         avatar_format: str = "png",
         avatar_source: str = "generated",
         avatar_ipfs_cid: Optional[str] = None,
-        favorite_color: Optional[str] = None
+        favorite_color: Optional[str] = None,
+        pinata_jwt: Optional[str] = None
     ) -> RegistrationResult:
         """
         Register a Qube for minting
@@ -209,6 +210,7 @@ class MintingAPIClient:
             avatar_source: Source of avatar (generated, uploaded, default)
             avatar_ipfs_cid: Pre-uploaded avatar IPFS CID (if client already uploaded)
             favorite_color: Hex color code
+            pinata_jwt: User's Pinata JWT for server-side BCMR upload
 
         Returns:
             RegistrationResult with payment details
@@ -237,6 +239,8 @@ class MintingAPIClient:
             data["ai_model"] = ai_model
         if favorite_color:
             data["favorite_color"] = favorite_color
+        if pinata_jwt:
+            data["pinata_jwt"] = pinata_jwt
 
         # Handle avatar data
         if avatar_path and Path(avatar_path).exists():

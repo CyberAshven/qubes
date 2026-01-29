@@ -512,6 +512,10 @@ class UserOrchestrator:
             # Register with minting API
             logger.info("registering_with_minting_api", qube_id=qube_id[:16] + "...")
 
+            # Get user's Pinata JWT to pass to server for BCMR upload
+            api_keys = self.get_api_keys()
+            user_pinata_jwt = api_keys.pinata_jwt if api_keys else None
+
             async with MintingAPIClient() as api_client:
                 registration = await api_client.register_qube(
                     qube_id=qube_id,
@@ -527,7 +531,8 @@ class UserOrchestrator:
                     avatar_format=avatar_format,
                     avatar_source=avatar_source,
                     avatar_ipfs_cid=avatar_ipfs_cid,  # Pass the IPFS CID from client upload
-                    favorite_color=config.get("favorite_color")
+                    favorite_color=config.get("favorite_color"),
+                    pinata_jwt=user_pinata_jwt  # User's Pinata JWT for server-side BCMR upload
                 )
 
             # Save Qube to storage (marked as pending)
