@@ -1007,7 +1007,7 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                             ? 'ring-2 ring-accent-warning bg-accent-warning/10'
                             : ''
                         }`}
-                        onMouseDown={(e) => { if (e.shiftKey) e.preventDefault(); }}
+                        onMouseDown={(e: React.MouseEvent) => { if (e.shiftKey) e.preventDefault(); }}
                         onClick={(e) => handleBlockClick(block, 'session', e)}
                       >
                         <div className="flex items-center justify-between mb-1">

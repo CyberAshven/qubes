@@ -1015,8 +1015,8 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
             </GlassCard>
           )}
 
-          {/* Download Voice Models */}
-          {qwen3Status?.available && (
+          {/* Download Voice Models - Always show since WSL2 TTS uses these models */}
+          {qwen3Status && (
             <GlassCard className="p-3 space-y-3">
               <div
                 className="flex items-center justify-between cursor-pointer"

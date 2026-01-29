@@ -4,7 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 
 interface ModelModeIndicatorProps {
   qubeId: string | null;
-  userId: string;
+  userId: string | null;
   password: string | null;
 }
 

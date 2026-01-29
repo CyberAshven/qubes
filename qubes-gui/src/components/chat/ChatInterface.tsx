@@ -1235,7 +1235,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
     }
 
     const pollInterval = setInterval(async () => {
-      const recentActions: Array<{ action_type: string; timestamp: number }> = [];
+      const recentActions: Array<{ action_type: string; timestamp: number; target_model?: string }> = [];
 
       try {
         const result = await invoke<any>('get_qube_blocks', {

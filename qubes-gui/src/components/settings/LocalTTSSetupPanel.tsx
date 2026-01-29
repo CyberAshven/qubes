@@ -52,6 +52,10 @@ export const LocalTTSSetupPanel: React.FC = () => {
   const [uninstalling, setUninstalling] = useState(false);
   const [showUninstallConfirm, setShowUninstallConfirm] = useState(false);
 
+  // WSL2 installation state
+  const [installingWSL2, setInstallingWSL2] = useState(false);
+  const [wsl2InstallMessage, setWsl2InstallMessage] = useState<string | null>(null);
+
   // Collapsed state - default to collapsed
   const [isExpanded, setIsExpanded] = useState(false);
 
@@ -193,6 +197,28 @@ export const LocalTTSSetupPanel: React.FC = () => {
     }
   };
 
+  const handleInstallWSL2 = async () => {
+    setInstallingWSL2(true);
+    setError(null);
+    setWsl2InstallMessage(null);
+
+    try {
+      const result = await invoke<{ success: boolean; error?: string; message?: string }>('install_wsl2');
+
+      if (result.success) {
+        setWsl2InstallMessage(result.message || 'WSL2 installation started. Please restart your computer when prompted, then return here.');
+        // Refresh status after a delay to check if WSL2 is now available
+        setTimeout(() => loadStatus(), 2000);
+      } else {
+        setError(result.error || 'Failed to install WSL2');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to install WSL2');
+    } finally {
+      setInstallingWSL2(false);
+    }
+  };
+
   // Render status badges
   const StatusBadge = ({ ok, label }: { ok: boolean; label: string }) => (
     <div className={`flex items-center gap-1.5 px-2 py-1 rounded text-[10px] ${
@@ -252,7 +278,7 @@ export const LocalTTSSetupPanel: React.FC = () => {
             </span>
           )}
           <GlassButton
-            onClick={(e) => { e.stopPropagation(); loadStatus(); }}
+            onClick={(e) => { e?.stopPropagation(); loadStatus(); }}
             variant="secondary"
             size="sm"
             className="text-[10px] h-6 px-2 whitespace-nowrap flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
@@ -347,11 +373,41 @@ export const LocalTTSSetupPanel: React.FC = () => {
                 )}
               </div>
 
+              {/* WSL2 Install Success Message */}
+              {wsl2InstallMessage && (
+                <div className="p-2 rounded-lg bg-green-500/10 border border-green-500/30 text-xs text-green-400">
+                  {wsl2InstallMessage}
+                </div>
+              )}
+
+              {/* One-click Install Button */}
+              {!status.wsl2_installed && (
+                <GlassButton
+                  onClick={handleInstallWSL2}
+                  disabled={installingWSL2}
+                  className="w-full"
+                >
+                  {installingWSL2 ? 'Installing WSL2...' : '🚀 Install WSL2 with Ubuntu (Requires Admin)'}
+                </GlassButton>
+              )}
+
               <div className="pt-2 border-t border-white/10 space-y-2 text-[10px] text-text-tertiary">
-                <p className="font-medium text-text-secondary">To install WSL2 with Ubuntu:</p>
+                <p className="font-medium text-text-secondary">
+                  {!status.wsl2_installed ? 'Or install manually:' : 'To install Ubuntu in WSL2:'}
+                </p>
                 <ol className="list-decimal list-inside space-y-1">
-                  <li>Open PowerShell as Administrator</li>
-                  <li>Run: <code className="bg-white/10 px-1 rounded">wsl --install -d Ubuntu-22.04</code></li>
+                  {!status.wsl2_installed && (
+                    <>
+                      <li>Open PowerShell as Administrator</li>
+                      <li>Run: <code className="bg-white/10 px-1 rounded">wsl --install -d Ubuntu-22.04</code></li>
+                    </>
+                  )}
+                  {status.wsl2_installed && !status.ubuntu_installed && (
+                    <>
+                      <li>Open PowerShell as Administrator</li>
+                      <li>Run: <code className="bg-white/10 px-1 rounded">wsl --install -d Ubuntu-22.04</code></li>
+                    </>
+                  )}
                   <li>Restart your computer when prompted</li>
                   <li>After restart, Ubuntu will finish installing (create a username/password)</li>
                   <li>Come back here and click Refresh</li>

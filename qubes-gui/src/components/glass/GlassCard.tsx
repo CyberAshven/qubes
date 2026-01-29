@@ -1,10 +1,11 @@
 import React from 'react';
 
-interface GlassCardProps {
+export interface GlassCardProps {
   children: React.ReactNode;
   className?: string;
   variant?: 'default' | 'elevated' | 'interactive';
   onClick?: (e: React.MouseEvent) => void;
+  onMouseDown?: (e: React.MouseEvent) => void;
   style?: React.CSSProperties;
 }
 
@@ -13,6 +14,7 @@ export const GlassCard: React.FC<GlassCardProps> = ({
   className = '',
   variant = 'default',
   onClick,
+  onMouseDown,
   style,
 }) => {
   const baseClasses = 'glass-card';
@@ -26,7 +28,7 @@ export const GlassCard: React.FC<GlassCardProps> = ({
   const classes = `${baseClasses} ${variantClasses[variant]} ${className}`;
 
   return (
-    <div className={classes} onClick={onClick} style={style}>
+    <div className={classes} onClick={onClick} onMouseDown={onMouseDown} style={style}>
       {children}
     </div>
   );

@@ -244,7 +244,12 @@ export type ContextSectionType =
   | 'qube_profile'
   | 'recalled'
   | 'history'
-  | 'chain';
+  | 'chain'
+  // Legacy type names for backwards compatibility
+  | 'genesis'
+  | 'wallet'
+  | 'semantic_recalls'
+  | 'recent_permanent';
 
 export interface ContextSectionData {
   type: ContextSectionType;

@@ -104,7 +104,7 @@ export const TransactionHistory: React.FC<TransactionHistoryProps> = ({
   const hasFetchedRef = useRef<string | null>(null);
 
   // Polling for unconfirmed transactions
-  const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const pollingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollingQubeIdRef = useRef<string | null>(null); // Track which qube we're polling for
   const POLL_INTERVAL_MS = 30000; // Check every 30 seconds
 
