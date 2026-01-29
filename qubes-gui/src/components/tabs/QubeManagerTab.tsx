@@ -1240,6 +1240,7 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
   const [rotation, setRotation] = useState(0); // Track cumulative rotation
   const [isEditingModel, setIsEditingModel] = useState(false);
   const [providerSelectedInEdit, setProviderSelectedInEdit] = useState(false); // Track if provider was selected during edit
+  const [modelSelectedInEdit, setModelSelectedInEdit] = useState(false); // Track if model was selected during edit
 
   // Visualizer settings state
   const [visualizerSettings, setVisualizerSettings] = useState({
@@ -1269,6 +1270,8 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
   const [loadingModelPrefs, setLoadingModelPrefs] = useState(false);
   const [availableMonitors, setAvailableMonitors] = useState<Array<{id: number; name: string}>>([]);
   const [isEditingVoice, setIsEditingVoice] = useState(false);
+  const [voiceProviderSelectedInEdit, setVoiceProviderSelectedInEdit] = useState(false); // Track if voice provider was selected during edit
+  const [voiceSelectedInEdit, setVoiceSelectedInEdit] = useState(false); // Track if voice was selected during edit
   const [isEditingColor, setIsEditingColor] = useState(false);
   const [isEditingEvalModel, setIsEditingEvalModel] = useState(false);
   const [selectedModel, setSelectedModel] = useState(qube.ai_model);
@@ -1969,6 +1972,7 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
   const handleProviderChange = (newProvider: string) => {
     setSelectedProvider(newProvider);
     setProviderSelectedInEdit(true); // Collapse provider dropdown, expand model dropdown
+    setModelSelectedInEdit(false); // Reset model selection state when provider changes
     // Auto-select default model for new provider
     const defaultModel = getDefaultModel(newProvider);
     if (defaultModel) {
@@ -1978,6 +1982,8 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
 
   const handleVoiceProviderChange = (newVoiceProvider: string) => {
     setSelectedVoiceProvider(newVoiceProvider);
+    setVoiceProviderSelectedInEdit(true); // Collapse provider dropdown, expand voice dropdown
+    setVoiceSelectedInEdit(false); // Reset voice selection state when provider changes
     // Auto-select default voice for new provider
     const defaultVoice = defaultVoices[newVoiceProvider];
     if (defaultVoice) {
@@ -2234,9 +2240,9 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
               <div className="flex gap-1 items-center">
                 <select
                   value={selectedModel}
-                  onChange={(e) => setSelectedModel(e.target.value)}
-                  className={`flex-1 px-2 py-1 bg-bg-tertiary border border-glass-border rounded text-xs text-text-primary focus:outline-none focus:ring-1 focus:ring-accent-primary/50 ${providerSelectedInEdit ? 'scrollable-select' : ''}`}
-                  size={providerSelectedInEdit ? Math.min(8, getModelsForProvider(selectedProvider).length) : 1}
+                  onChange={(e) => { setSelectedModel(e.target.value); setModelSelectedInEdit(true); }}
+                  className={`flex-1 px-2 py-1 bg-bg-tertiary border border-glass-border rounded text-xs text-text-primary focus:outline-none focus:ring-1 focus:ring-accent-primary/50 ${providerSelectedInEdit && !modelSelectedInEdit ? 'scrollable-select' : ''}`}
+                  size={providerSelectedInEdit && !modelSelectedInEdit ? Math.min(8, getModelsForProvider(selectedProvider).length) : 1}
                 >
                   {getModelsForProvider(selectedProvider).map((option) => (
                     <option key={option.value} value={option.value}>
@@ -2256,6 +2262,7 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
                     setSelectedModel(qube.ai_model);
                     setSelectedProvider(qube.ai_provider);
                     setProviderSelectedInEdit(false);
+                    setModelSelectedInEdit(false);
                     setIsEditingModel(false);
                   }}
                   className="px-2 py-1 bg-accent-danger/20 text-accent-danger rounded hover:bg-accent-danger/30 transition-all"
@@ -2269,7 +2276,7 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
             <div className="flex gap-1 items-center">
               <span className="text-text-primary font-medium">{formatModelName(qube.ai_model)}</span>
               <button
-                onClick={(e) => { e.stopPropagation(); setProviderSelectedInEdit(false); setIsEditingModel(true); }}
+                onClick={(e) => { e.stopPropagation(); setProviderSelectedInEdit(false); setModelSelectedInEdit(false); setIsEditingModel(true); }}
                 className="px-1 text-accent-primary hover:text-accent-primary/70 transition-colors"
                 title="Edit model"
               >
@@ -2288,7 +2295,8 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
                 <select
                   value={selectedVoiceProvider}
                   onChange={(e) => handleVoiceProviderChange(e.target.value)}
-                  className="flex-1 px-2 py-1 bg-bg-tertiary border border-glass-border rounded text-xs text-text-primary focus:outline-none focus:ring-1 focus:ring-accent-primary/50"
+                  className={`flex-1 px-2 py-1 bg-bg-tertiary border border-glass-border rounded text-xs text-text-primary focus:outline-none focus:ring-1 focus:ring-accent-primary/50 ${!voiceProviderSelectedInEdit ? 'scrollable-select' : ''}`}
+                  size={!voiceProviderSelectedInEdit ? Math.min(6, voiceProviderOptions.length) : 1}
                 >
                   {voiceProviderOptions.map((option) => (
                     <option key={option.value} value={option.value}>
@@ -2303,9 +2311,10 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
                   onChange={(e) => {
                     console.log('[VOICE_DEBUG] Voice dropdown changed:', e.target.value);
                     setSelectedVoice(e.target.value);
+                    setVoiceSelectedInEdit(true);
                   }}
-                  className="flex-1 px-2 py-1 bg-bg-tertiary border border-glass-border rounded text-xs text-text-primary focus:outline-none focus:ring-1 focus:ring-accent-primary/50"
-                  size={10}
+                  className={`flex-1 px-2 py-1 bg-bg-tertiary border border-glass-border rounded text-xs text-text-primary focus:outline-none focus:ring-1 focus:ring-accent-primary/50 ${voiceProviderSelectedInEdit && !voiceSelectedInEdit ? 'scrollable-select' : ''}`}
+                  size={voiceProviderSelectedInEdit && !voiceSelectedInEdit ? Math.min(10, (voiceOptionsWithCustom[selectedVoiceProvider] || []).length) : 1}
                 >
                   {(voiceOptionsWithCustom[selectedVoiceProvider] || []).map((option) => (
                     <option key={option.value} value={option.value}>
@@ -2326,6 +2335,8 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
                     // Reset voice provider when canceling
                     const voiceModel = qube.voice_model || '';
                     setSelectedVoiceProvider(voiceModel.includes(':') ? voiceModel.split(':')[0] : 'openai');
+                    setVoiceProviderSelectedInEdit(false);
+                    setVoiceSelectedInEdit(false);
                     setIsEditingVoice(false);
                   }}
                   className="px-2 py-1 bg-accent-danger/20 text-accent-danger rounded hover:bg-accent-danger/30 transition-all"
@@ -2339,7 +2350,7 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
             <div className="flex gap-1 items-center">
               <span className="text-text-primary font-medium">{formatVoiceName(qube.voice_model || '')}</span>
               <button
-                onClick={() => setIsEditingVoice(true)}
+                onClick={() => { setVoiceProviderSelectedInEdit(false); setVoiceSelectedInEdit(false); setIsEditingVoice(true); }}
                 className="px-1 text-accent-primary hover:text-accent-primary/70 transition-colors"
                 title="Edit voice"
               >
