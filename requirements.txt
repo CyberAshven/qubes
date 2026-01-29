@@ -143,6 +143,7 @@ misaki[en,ja,zh,ko]>=0.9.4  # Phonemizer with all language support
 mojimoji>=0.0.13            # Japanese character conversion (additional)
 # soundfile already included above
 # espeak-ng is bundled via espeakng-loader package (auto-installed with kokoro)
+# For Japanese voices, also run: python -m unidic download (526MB dictionary)
 
 # ============================================================================
 # CLI & UI (Phase 8)
