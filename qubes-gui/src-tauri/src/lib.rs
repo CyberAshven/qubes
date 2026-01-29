@@ -7011,13 +7011,21 @@ pub fn run() {
             std::thread::spawn(|| {
                 if let Ok(python_path) = find_python_path() {
                     let project_root = get_python_project_path();
-                    if let Err(e) = std::process::Command::new(&python_path)
-                        .args(["-m", "audio.tts_server", "start"])
+                    let mut cmd = std::process::Command::new(&python_path);
+                    cmd.args(["-m", "audio.tts_server", "start"])
                         .current_dir(&project_root)
                         .stdout(std::process::Stdio::null())
-                        .stderr(std::process::Stdio::null())
-                        .spawn()
+                        .stderr(std::process::Stdio::null());
+
+                    // Hide console window on Windows
+                    #[cfg(target_os = "windows")]
                     {
+                        use std::os::windows::process::CommandExt;
+                        const CREATE_NO_WINDOW: u32 = 0x08000000;
+                        cmd.creation_flags(CREATE_NO_WINDOW);
+                    }
+
+                    if let Err(e) = cmd.spawn() {
                         eprintln!("Failed to start TTS server: {}", e);
                     }
                 }
@@ -7046,20 +7054,36 @@ pub fn run() {
                     // Stop Windows TTS server (legacy)
                     if let Ok(python_path) = find_python_path() {
                         let project_root = get_python_project_path();
-                        let _ = std::process::Command::new(&python_path)
-                            .args(["-m", "audio.tts_server", "stop"])
+                        let mut cmd = std::process::Command::new(&python_path);
+                        cmd.args(["-m", "audio.tts_server", "stop"])
                             .current_dir(&project_root)
                             .stdout(std::process::Stdio::null())
-                            .stderr(std::process::Stdio::null())
-                            .spawn();
+                            .stderr(std::process::Stdio::null());
+
+                        #[cfg(target_os = "windows")]
+                        {
+                            use std::os::windows::process::CommandExt;
+                            const CREATE_NO_WINDOW: u32 = 0x08000000;
+                            cmd.creation_flags(CREATE_NO_WINDOW);
+                        }
+
+                        let _ = cmd.spawn();
                     }
 
                     // Stop WSL2 TTS server
-                    let _ = std::process::Command::new("wsl")
-                        .args(["-d", "Ubuntu-22.04", "--", "pkill", "-f", "tts_server.py"])
+                    let mut wsl_cmd = std::process::Command::new("wsl");
+                    wsl_cmd.args(["-d", "Ubuntu-22.04", "--", "pkill", "-f", "tts_server.py"])
                         .stdout(std::process::Stdio::null())
-                        .stderr(std::process::Stdio::null())
-                        .spawn();
+                        .stderr(std::process::Stdio::null());
+
+                    #[cfg(target_os = "windows")]
+                    {
+                        use std::os::windows::process::CommandExt;
+                        const CREATE_NO_WINDOW: u32 = 0x08000000;
+                        wsl_cmd.creation_flags(CREATE_NO_WINDOW);
+                    }
+
+                    let _ = wsl_cmd.spawn();
                 }
             }
         })
