@@ -656,6 +656,7 @@ struct BlockPreferencesResponse {
     individual_anchor_threshold: i32,
     group_auto_anchor: bool,
     group_anchor_threshold: i32,
+    auto_sync_ipfs_on_anchor: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -3255,7 +3256,8 @@ async fn update_block_preferences(
     individual_auto_anchor: Option<bool>,
     individual_anchor_threshold: Option<i32>,
     group_auto_anchor: Option<bool>,
-    group_anchor_threshold: Option<i32>
+    group_anchor_threshold: Option<i32>,
+    auto_sync_ipfs_on_anchor: Option<bool>
 ) -> Result<BlockPreferencesResponse, String> {
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
@@ -3277,6 +3279,9 @@ async fn update_block_preferences(
     }
     if let Some(val) = group_anchor_threshold {
         cmd.arg("--group-anchor-threshold").arg(val.to_string());
+    }
+    if let Some(val) = auto_sync_ipfs_on_anchor {
+        cmd.arg("--auto-sync-ipfs").arg(val.to_string());
     }
 
     let output = cmd.output()

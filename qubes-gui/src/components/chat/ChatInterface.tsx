@@ -2029,6 +2029,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
           audioElement={audioElement}
           isPlaying={isPlayingAudio}
           qubeFavoriteColor={selectedQubes[0].favorite_color}
+          avatarUrl={getAvatarPath(selectedQubes[0])}
           waveformStyle={visualizerSettings.waveform_style}
           colorTheme={visualizerSettings.color_theme}
           gradientStyle={visualizerSettings.gradient_style}

@@ -26,6 +26,7 @@ interface BlockPreferences {
   individual_anchor_threshold: number;
   group_auto_anchor: boolean;
   group_anchor_threshold: number;
+  auto_sync_ipfs_on_anchor: boolean;
 }
 
 interface RelationshipSettings {
@@ -116,6 +117,7 @@ export const SettingsTab: React.FC = () => {
     individual_anchor_threshold: 10,
     group_auto_anchor: true,
     group_anchor_threshold: 5,
+    auto_sync_ipfs_on_anchor: false,
   });
   const [loadingPreferences, setLoadingPreferences] = useState(true);
   const [savingPreferences, setSavingPreferences] = useState(false);
@@ -643,7 +645,7 @@ export const SettingsTab: React.FC = () => {
   };
 
   const handleToggleChange = async (
-    field: 'individual_auto_anchor' | 'group_auto_anchor',
+    field: 'individual_auto_anchor' | 'group_auto_anchor' | 'auto_sync_ipfs_on_anchor',
     value: boolean
   ) => {
     try {
@@ -656,6 +658,7 @@ export const SettingsTab: React.FC = () => {
         userId,
         individualAutoAnchor: field === 'individual_auto_anchor' ? value : undefined,
         groupAutoAnchor: field === 'group_auto_anchor' ? value : undefined,
+        autoSyncIpfsOnAnchor: field === 'auto_sync_ipfs_on_anchor' ? value : undefined,
       });
 
       // Update with server response
@@ -1059,7 +1062,7 @@ export const SettingsTab: React.FC = () => {
                   </div>
 
                   {/* Group Chat Settings */}
-                  <div>
+                  <div className="border-b border-white/10 pb-3">
                     <h3 className="text-xs font-medium text-text-primary mb-2">
                       Group Chat
                     </h3>
@@ -1090,6 +1093,28 @@ export const SettingsTab: React.FC = () => {
                           <span className="text-text-tertiary text-[10px]">blocks</span>
                         </div>
                       </label>
+                    </div>
+                  </div>
+
+                  {/* IPFS Sync Settings */}
+                  <div>
+                    <h3 className="text-xs font-medium text-text-primary mb-2">
+                      IPFS Sync
+                    </h3>
+                    <div className="space-y-2">
+                      <label className="flex items-center justify-between text-xs">
+                        <span className="text-text-secondary">Sync to IPFS after auto-anchor</span>
+                        <input
+                          type="checkbox"
+                          checked={blockPreferences.auto_sync_ipfs_on_anchor}
+                          onChange={(e) => handleToggleChange('auto_sync_ipfs_on_anchor', e.target.checked)}
+                          disabled={savingPreferences}
+                          className="w-4 h-4 rounded bg-surface-secondary border-border-subtle accent-accent-primary"
+                        />
+                      </label>
+                      <p className="text-[10px] text-text-tertiary">
+                        Automatically upload .qube package to IPFS after each auto-anchor
+                      </p>
                     </div>
                   </div>
                 </div>

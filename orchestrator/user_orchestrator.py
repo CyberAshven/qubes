@@ -2070,7 +2070,8 @@ class UserOrchestrator:
         individual_auto_anchor: Optional[bool] = None,
         individual_anchor_threshold: Optional[int] = None,
         group_auto_anchor: Optional[bool] = None,
-        group_anchor_threshold: Optional[int] = None
+        group_anchor_threshold: Optional[int] = None,
+        auto_sync_ipfs_on_anchor: Optional[bool] = None
     ) -> BlockPreferences:
         """
         Update block-related preferences
@@ -2080,6 +2081,7 @@ class UserOrchestrator:
             individual_anchor_threshold: Blocks between anchors for individual chats
             group_auto_anchor: Enable/disable auto-anchor for group chats
             group_anchor_threshold: Blocks between anchors for group chats
+            auto_sync_ipfs_on_anchor: Enable/disable auto-sync to IPFS after auto-anchor
 
         Returns:
             Updated BlockPreferences
@@ -2088,7 +2090,8 @@ class UserOrchestrator:
             individual_auto_anchor=individual_auto_anchor,
             individual_anchor_threshold=individual_anchor_threshold,
             group_auto_anchor=group_auto_anchor,
-            group_anchor_threshold=group_anchor_threshold
+            group_anchor_threshold=group_anchor_threshold,
+            auto_sync_ipfs_on_anchor=auto_sync_ipfs_on_anchor
         )
         logger.info(
             "block_preferences_updated",
@@ -2096,12 +2099,13 @@ class UserOrchestrator:
             individual_auto=individual_auto_anchor,
             individual_threshold=individual_anchor_threshold,
             group_auto=group_auto_anchor,
-            group_threshold=group_anchor_threshold
+            group_threshold=group_anchor_threshold,
+            auto_sync_ipfs=auto_sync_ipfs_on_anchor
         )
 
         # Sync preferences to all existing qubes' chain_state
         # Pass both individual and group settings
-        if any([individual_anchor_threshold, individual_auto_anchor, group_auto_anchor, group_anchor_threshold]):
+        if any([individual_anchor_threshold, individual_auto_anchor, group_auto_anchor, group_anchor_threshold, auto_sync_ipfs_on_anchor is not None]):
             from core.chain_state import ChainState
 
             # Update loaded qubes
@@ -2111,7 +2115,8 @@ class UserOrchestrator:
                     individual_enabled=individual_auto_anchor,
                     individual_threshold=individual_anchor_threshold,
                     group_enabled=group_auto_anchor,
-                    group_threshold=group_anchor_threshold
+                    group_threshold=group_anchor_threshold,
+                    auto_sync_ipfs=auto_sync_ipfs_on_anchor
                 )
 
                 # Note: auto_anchor_enabled/threshold are now dynamic properties on Qube
@@ -2127,7 +2132,8 @@ class UserOrchestrator:
                     individual_enabled=individual_auto_anchor,
                     individual_threshold=individual_anchor_threshold,
                     group_enabled=group_auto_anchor,
-                    group_threshold=group_anchor_threshold
+                    group_threshold=group_anchor_threshold,
+                    auto_sync_ipfs=auto_sync_ipfs_on_anchor
                 )
 
             # Also update chain_state for qubes not currently loaded
@@ -2158,7 +2164,8 @@ class UserOrchestrator:
                                     individual_enabled=individual_auto_anchor,
                                     individual_threshold=individual_anchor_threshold,
                                     group_enabled=group_auto_anchor,
-                                    group_threshold=group_anchor_threshold
+                                    group_threshold=group_anchor_threshold,
+                                    auto_sync_ipfs=auto_sync_ipfs_on_anchor
                                 )
 
                                 logger.debug(
@@ -2167,7 +2174,8 @@ class UserOrchestrator:
                                     individual_enabled=individual_auto_anchor,
                                     individual_threshold=individual_anchor_threshold,
                                     group_enabled=group_auto_anchor,
-                                    group_threshold=group_anchor_threshold
+                                    group_threshold=group_anchor_threshold,
+                                    auto_sync_ipfs=auto_sync_ipfs_on_anchor
                                 )
                             except Exception as e:
                                 logger.warning(

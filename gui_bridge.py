@@ -11104,7 +11104,8 @@ async def main():
                     "individual_auto_anchor": prefs.individual_auto_anchor,
                     "individual_anchor_threshold": prefs.individual_anchor_threshold,
                     "group_auto_anchor": prefs.group_auto_anchor,
-                    "group_anchor_threshold": prefs.group_anchor_threshold
+                    "group_anchor_threshold": prefs.group_anchor_threshold,
+                    "auto_sync_ipfs_on_anchor": prefs.auto_sync_ipfs_on_anchor
                 }))
             except Exception as e:
                 logger.error(f"Failed to get block preferences: {e}", exc_info=True)
@@ -11123,6 +11124,7 @@ async def main():
             individual_anchor_threshold = None
             group_auto_anchor = None
             group_anchor_threshold = None
+            auto_sync_ipfs_on_anchor = None
 
             i = 3
             while i < len(sys.argv):
@@ -11138,6 +11140,9 @@ async def main():
                 elif sys.argv[i] == "--group-anchor-threshold":
                     group_anchor_threshold = int(sys.argv[i + 1])
                     i += 2
+                elif sys.argv[i] == "--auto-sync-ipfs":
+                    auto_sync_ipfs_on_anchor = sys.argv[i + 1].lower() == "true"
+                    i += 2
                 else:
                     i += 1
 
@@ -11149,13 +11154,15 @@ async def main():
                     individual_auto_anchor=individual_auto_anchor,
                     individual_anchor_threshold=individual_anchor_threshold,
                     group_auto_anchor=group_auto_anchor,
-                    group_anchor_threshold=group_anchor_threshold
+                    group_anchor_threshold=group_anchor_threshold,
+                    auto_sync_ipfs_on_anchor=auto_sync_ipfs_on_anchor
                 )
                 print(json.dumps({
                     "individual_auto_anchor": prefs.individual_auto_anchor,
                     "individual_anchor_threshold": prefs.individual_anchor_threshold,
                     "group_auto_anchor": prefs.group_auto_anchor,
-                    "group_anchor_threshold": prefs.group_anchor_threshold
+                    "group_anchor_threshold": prefs.group_anchor_threshold,
+                    "auto_sync_ipfs_on_anchor": prefs.auto_sync_ipfs_on_anchor
                 }))
             except Exception as e:
                 logger.error(f"Failed to update block preferences: {e}", exc_info=True)

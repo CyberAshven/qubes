@@ -119,6 +119,7 @@ def create_default_chain_state(genesis_block: Dict[str, Any], qube_id: str = Non
             "individual_auto_anchor_threshold": 20,
             "group_auto_anchor_enabled": True,
             "group_auto_anchor_threshold": 20,
+            "auto_sync_ipfs_on_anchor": False,  # Auto-sync to IPFS after auto-anchor
             "tts_enabled": tts_enabled,
             "voice_model": voice_model,
             "voice_library_ref": None,  # Reference to voice library entry (e.g., "designed:wise_mentor")
@@ -271,6 +272,7 @@ class ChainState:
         "individual_auto_anchor_threshold",
         "group_auto_anchor_enabled",
         "group_auto_anchor_threshold",
+        "auto_sync_ipfs_on_anchor",
         "tts_enabled",
         "voice_model",
         "voice_library_ref",
@@ -418,6 +420,7 @@ class ChainState:
                 "individual_auto_anchor_threshold": 20,
                 "group_auto_anchor_enabled": True,
                 "group_auto_anchor_threshold": 20,
+                "auto_sync_ipfs_on_anchor": False,  # Auto-sync to IPFS after auto-anchor
                 "tts_enabled": False,
                 "voice_model": "openai:alloy",
                 "voice_library_ref": None,
@@ -674,6 +677,7 @@ class ChainState:
                 "individual_auto_anchor_threshold": old.get("individual_auto_anchor_threshold", 20),
                 "group_auto_anchor_enabled": old.get("group_auto_anchor_enabled", True),
                 "group_auto_anchor_threshold": old.get("group_auto_anchor_threshold", 20),
+                "auto_sync_ipfs_on_anchor": old.get("auto_sync_ipfs_on_anchor", False),
                 "tts_enabled": old.get("tts_enabled", False),
                 "voice_model": old.get("voice_model", "openai:alloy"),
                 "voice_library_ref": old.get("voice_library_ref"),
@@ -795,6 +799,9 @@ class ChainState:
             changed = True
         if "group_auto_anchor_threshold" not in settings:
             settings["group_auto_anchor_threshold"] = 20
+            changed = True
+        if "auto_sync_ipfs_on_anchor" not in settings:
+            settings["auto_sync_ipfs_on_anchor"] = False
             changed = True
 
         # Migrate and populate model pools
@@ -3013,12 +3020,18 @@ class ChainState:
             return settings.get("group_auto_anchor_threshold", 20)
         return settings.get("individual_auto_anchor_threshold", 20)
 
+    def is_auto_sync_ipfs_enabled(self) -> bool:
+        """Check if auto-sync to IPFS on anchor is enabled."""
+        self._ensure_fresh()
+        return self.state.get("settings", {}).get("auto_sync_ipfs_on_anchor", False)
+
     def set_auto_anchor(
         self,
         individual_enabled: bool = None,
         individual_threshold: int = None,
         group_enabled: bool = None,
-        group_threshold: int = None
+        group_threshold: int = None,
+        auto_sync_ipfs: bool = None
     ) -> None:
         """Configure auto-anchor settings for individual and group chats."""
         settings = self.state.setdefault("settings", {})
@@ -3034,6 +3047,10 @@ class ChainState:
             settings["group_auto_anchor_enabled"] = group_enabled
         if group_threshold is not None:
             settings["group_auto_anchor_threshold"] = group_threshold
+
+        # IPFS sync setting
+        if auto_sync_ipfs is not None:
+            settings["auto_sync_ipfs_on_anchor"] = auto_sync_ipfs
 
         # Use preserve_gui_fields=False since we're intentionally updating GUI-managed settings
         self._save(preserve_gui_fields=False)

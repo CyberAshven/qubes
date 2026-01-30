@@ -28,6 +28,9 @@ class BlockPreferences:
     group_auto_anchor: bool = True
     group_anchor_threshold: int = 20  # Anchor threshold for group chats
 
+    # IPFS backup settings
+    auto_sync_ipfs_on_anchor: bool = False  # Auto-sync to IPFS after auto-anchor
+
 
 @dataclass
 class AudioPreferences:
@@ -268,7 +271,8 @@ class UserPreferencesManager:
         individual_auto_anchor: Optional[bool] = None,
         individual_anchor_threshold: Optional[int] = None,
         group_auto_anchor: Optional[bool] = None,
-        group_anchor_threshold: Optional[int] = None
+        group_anchor_threshold: Optional[int] = None,
+        auto_sync_ipfs_on_anchor: Optional[bool] = None
     ) -> UserPreferences:
         """
         Update block-related preferences.
@@ -278,6 +282,7 @@ class UserPreferencesManager:
             individual_anchor_threshold: Blocks between anchors for individual chats
             group_auto_anchor: Enable/disable auto-anchor for group chats
             group_anchor_threshold: Blocks between anchors for group chats
+            auto_sync_ipfs_on_anchor: Enable/disable auto-sync to IPFS after auto-anchor
 
         Returns:
             Updated UserPreferences object
@@ -299,6 +304,9 @@ class UserPreferencesManager:
             if group_anchor_threshold < 1:
                 raise ValueError("Anchor threshold must be at least 1")
             prefs.blocks.group_anchor_threshold = group_anchor_threshold
+
+        if auto_sync_ipfs_on_anchor is not None:
+            prefs.blocks.auto_sync_ipfs_on_anchor = auto_sync_ipfs_on_anchor
 
         self.save_preferences(prefs)
         return prefs

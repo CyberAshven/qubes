@@ -378,6 +378,15 @@ class Session:
             debug_log(f"Calling qube.anchor_session(create_summary=True)...")
             blocks_anchored = await self.qube.anchor_session(create_summary=True)
             debug_log(f"anchor_session returned: blocks_anchored={blocks_anchored}")
+
+            # Check if auto-sync to IPFS is enabled
+            if self.qube.chain_state.is_auto_sync_ipfs_enabled():
+                debug_log(f"Auto-sync to IPFS is enabled, starting sync...")
+                await self._auto_sync_to_ipfs_after_anchor(debug_log)
+                debug_log(f"Auto-sync to IPFS completed")
+            else:
+                debug_log(f"Auto-sync to IPFS is disabled, skipping")
+
             debug_log(f"=== AUTO-ANCHOR COMPLETED ===")
 
             logger.info(
@@ -404,6 +413,85 @@ class Session:
             logger.info("auto_anchor_cleanup_after_failure", qube_id=self.qube.qube_id)
             self.session_blocks = []
             self.cleanup()
+
+    async def _auto_sync_to_ipfs_after_anchor(self, debug_log) -> None:
+        """
+        Sync Qube to IPFS after auto-anchor (if enabled and prerequisites met).
+
+        Prerequisites:
+        - Qube must have minted NFT (category_id)
+        - User must have Pinata JWT configured
+
+        This method runs after a successful auto-anchor and silently handles
+        failures to avoid disrupting the anchor process.
+        """
+        from blockchain.chain_sync import ChainSyncService
+
+        try:
+            # Check prerequisites
+            genesis = self.qube.genesis_block.to_dict()
+            category_id = genesis.get("nft_category_id")
+
+            if not category_id or category_id == "pending_minting":
+                debug_log("Skipping IPFS sync - no NFT minted")
+                logger.debug("auto_sync_ipfs_skipped", reason="no_nft_minted", qube_id=self.qube.qube_id)
+                return
+
+            # Get owner public key for encryption
+            owner_pubkey = genesis.get("wallet", {}).get("owner_pubkey")
+            if not owner_pubkey:
+                debug_log("Skipping IPFS sync - no owner public key")
+                logger.warning("auto_sync_ipfs_skipped", reason="no_owner_pubkey", qube_id=self.qube.qube_id)
+                return
+
+            # Get encryption key from qube
+            encryption_key = self.qube._encryption_key if hasattr(self.qube, '_encryption_key') else None
+
+            debug_log(f"Starting IPFS sync for qube {self.qube.qube_id}, category_id={category_id[:16]}...")
+            logger.info(
+                "auto_sync_to_ipfs_started",
+                qube_id=self.qube.qube_id,
+                category_id=category_id[:16] + "..."
+            )
+
+            sync_service = ChainSyncService()
+            result = await sync_service.sync_to_chain(
+                qube_dir=str(self.qube.data_dir),
+                qube_id=self.qube.qube_id,
+                qube_name=self.qube.name,
+                owner_public_key_hex=owner_pubkey,
+                genesis_block=self.qube.genesis_block,
+                user_id=self.qube.user_name,
+                category_id=category_id,
+                encryption_key=encryption_key
+            )
+
+            if result.success:
+                debug_log(f"IPFS sync completed successfully, CID={result.ipfs_cid}")
+                logger.info(
+                    "auto_sync_to_ipfs_completed",
+                    qube_id=self.qube.qube_id,
+                    ipfs_cid=result.ipfs_cid
+                )
+            else:
+                debug_log(f"IPFS sync failed: {result.error}")
+                logger.warning(
+                    "auto_sync_to_ipfs_failed",
+                    qube_id=self.qube.qube_id,
+                    error=result.error
+                )
+
+        except Exception as e:
+            # Don't fail the anchor if IPFS sync fails
+            import traceback
+            tb = traceback.format_exc()
+            debug_log(f"IPFS sync error: {e}\n{tb}")
+            logger.warning(
+                "auto_sync_to_ipfs_error",
+                qube_id=self.qube.qube_id,
+                error=str(e),
+                traceback=tb
+            )
 
     def get_block(self, index: int) -> Optional[Block]:
         """

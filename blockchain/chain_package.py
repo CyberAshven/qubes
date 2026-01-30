@@ -344,7 +344,7 @@ def _collect_qube_data(
         try:
             chain_dir = qube_dir / "chain"
             cs = ChainState(chain_dir, encryption_key, qube_id)
-            chain_state = cs.get_all_settings()
+            chain_state = cs.get_state()  # Returns full state, not just settings
         except Exception as e:
             logger.warning(f"Failed to read encrypted chain_state, falling back to plain JSON: {e}")
             chain_state = _load_json_file(qube_dir / "chain" / "chain_state.json") or {}
