@@ -3,6 +3,12 @@ import { Handle, Position } from '@xyflow/react';
 import * as d3 from 'd3';
 import { Skill, SkillCategory } from '../../types';
 
+// Format XP value for display (handles floating point precision)
+const formatXP = (xp: number): string => {
+  const rounded = Math.round(xp * 10) / 10;
+  return Number.isInteger(rounded) ? rounded.toString() : rounded.toFixed(1);
+};
+
 interface PlanetNodeProps {
   data: {
     skill: Skill;
@@ -159,7 +165,7 @@ export const PlanetNode = memo(({ data }: PlanetNodeProps) => {
           {skill.unlocked && (
             <>
               <div className="text-[9px] opacity-90 mb-1">
-                Level {skill.level} • {skill.xp}/{skill.maxXP} XP ({Math.round(progressPercent)}%)
+                Level {skill.level} • {formatXP(skill.xp)}/{skill.maxXP} XP ({Math.round(progressPercent)}%)
               </div>
               <div className="text-[8px] opacity-80">
                 Tier: {skill.tier}

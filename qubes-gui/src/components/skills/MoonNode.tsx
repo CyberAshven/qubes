@@ -2,6 +2,12 @@ import { memo } from 'react';
 import { Handle, Position } from '@xyflow/react';
 import { Skill, SkillCategory } from '../../types';
 
+// Format XP value for display (handles floating point precision)
+const formatXP = (xp: number): string => {
+  const rounded = Math.round(xp * 10) / 10;
+  return Number.isInteger(rounded) ? rounded.toString() : rounded.toFixed(1);
+};
+
 interface MoonNodeProps {
   data: {
     skill: Skill;
@@ -98,7 +104,7 @@ export const MoonNode = memo(({ data }: MoonNodeProps) => {
           {skill.unlocked && (
             <>
               <div className="text-[8px] opacity-90">
-                Level {skill.level} • {skill.xp}/{skill.maxXP} XP
+                Level {skill.level} • {formatXP(skill.xp)}/{skill.maxXP} XP
               </div>
               <div className="text-[7px] opacity-80 mt-0.5">
                 {Math.round(progressPercent)}% complete

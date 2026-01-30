@@ -6,19 +6,13 @@ export const ALWAYS_AVAILABLE_TOOLS = [
   'update_system_state',
   'get_skill_tree',
   'search_memory',
-  'get_recent_memories',
-  'get_current_time',
   'describe_my_avatar',
-  'send_message',
   'web_search',
   'browse_url',
   'generate_image',
   'chess_move',
   'send_bch',
   'switch_model',
-  'query_decision_context',
-  'compare_options',
-  'check_my_capability',
 ] as const;
 
 // Tool descriptions for display in the UI
@@ -27,19 +21,17 @@ export const TOOL_DESCRIPTIONS: Record<string, { name: string; description: stri
   get_skill_tree: { name: 'Get Skill Tree', description: 'View all possible skills and progress', icon: '🌳' },
   update_system_state: { name: 'Update System State', description: 'Modify the system state', icon: '✏️' },
   search_memory: { name: 'Search Memory', description: 'Search through memories', icon: '🔍' },
-  get_recent_memories: { name: 'Recent Memories', description: 'Get recent memories', icon: '📝' },
-  get_current_time: { name: 'Get Time', description: 'Get current date and time', icon: '🕐' },
   describe_my_avatar: { name: 'Describe Avatar', description: 'Describe your avatar', icon: '🖼️' },
-  send_message: { name: 'Send Message', description: 'Send a message', icon: '💬' },
   web_search: { name: 'Web Search', description: 'Search the web', icon: '🌐' },
   browse_url: { name: 'Browse URL', description: 'Visit a web page', icon: '🔗' },
   generate_image: { name: 'Generate Image', description: 'Create an image', icon: '🎨' },
   chess_move: { name: 'Chess Move', description: 'Make a chess move', icon: '♟️' },
   send_bch: { name: 'Send BCH', description: 'Send Bitcoin Cash', icon: '💰' },
   switch_model: { name: 'Switch Model', description: 'Change AI model', icon: '🔄' },
-  query_decision_context: { name: 'Decision Context', description: 'Query decision context', icon: '🤔' },
-  compare_options: { name: 'Compare Options', description: 'Compare different options', icon: '⚖️' },
-  check_my_capability: { name: 'Check Capability', description: 'Check what you can do', icon: '✅' },
+  // Skill-unlocked tools
+  query_decision_context: { name: 'Decision Context', description: 'Query decision context for an entity', icon: '🤔' },
+  compare_options: { name: 'Compare Options', description: 'Compare entities for decisions', icon: '⚖️' },
+  check_my_capability: { name: 'Check Capability', description: 'Self-evaluate capability', icon: '✅' },
 };
 
 // Skill Categories (Suns) - Major skill domains
@@ -215,7 +207,7 @@ export const SKILL_DEFINITIONS: Record<string, Partial<Skill>[]> = {
       name: 'Social Intelligence',
       description: 'Master social dynamics and interpersonal skills',
       nodeType: 'sun',
-      toolCallReward: 'send_message',
+      toolCallReward: 'draft_message_variants',
       icon: '🤝',
     },
     // Planets

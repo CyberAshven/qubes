@@ -1445,22 +1445,16 @@ Make your move using the chess_move tool. Use one of the legal moves listed abov
                     "get_system_state": "View your identity, memories, relationships, skills, and settings",
                     "update_system_state": "Update owner info, your profile, or preferences",
                     "switch_model": "Change to a different AI model mid-conversation",
-                    # Memory & Search
+                    # Memory
                     "search_memory": "Search past conversations and stored knowledge by keyword",
-                    "get_recent_memories": "Retrieve your most recent interactions",
                     # Web & Research
                     "browse_url": "Fetch and read content from a specific URL",
                     "web_search": "Search the web for current information",
-                    # Communication
-                    "send_message": "Send a message to another Qube",
+                    # Wallet
                     "send_bch": "Send Bitcoin Cash from your wallet",
                     # Visual & Creative
                     "generate_image": "Create images using AI image generation",
                     "describe_my_avatar": "Get a description of your avatar's appearance",
-                    # Decision Intelligence
-                    "query_decision_context": "Get trust/relationship context for decisions about an entity",
-                    "compare_options": "Systematically compare multiple options",
-                    "check_my_capability": "Check if you can perform a specific action",
                     # Skills
                     "get_skill_tree": "View your skills, XP progress, and locked tools",
                     # Games
@@ -1470,14 +1464,13 @@ Make your move using the chess_move tool. Use one of the legal moves listed abov
                     "process_document": "Extract text from PDFs, images, or documents",
                 }
 
-                # Define tool categories
+                # Define tool categories (core tools only - skill-unlocked tools added dynamically)
                 tool_categories = {
                     "Core System": ["get_system_state", "update_system_state", "switch_model"],
-                    "Memory & Search": ["search_memory", "get_recent_memories"],
+                    "Memory": ["search_memory"],
                     "Web & Research": ["browse_url", "web_search"],
-                    "Communication": ["send_message", "send_bch"],
+                    "Wallet": ["send_bch"],
                     "Visual & Creative": ["generate_image", "describe_my_avatar"],
-                    "Decision Intelligence": ["query_decision_context", "compare_options", "check_my_capability"],
                     "Skills": ["get_skill_tree"],
                     "Games": ["chess_move", "chess_analyze"],
                     "Document Processing": ["process_document"]

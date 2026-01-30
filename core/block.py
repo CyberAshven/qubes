@@ -771,7 +771,7 @@ def create_game_block(
     total_moves: int,
     pgn: str,
     duration_seconds: int,
-    xp_earned: int,
+    xp_earned: float,
     key_moments: Optional[List[Dict[str, Any]]] = None,
     chat_log: Optional[List[Dict[str, Any]]] = None
 ) -> Block:

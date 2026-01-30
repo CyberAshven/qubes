@@ -3550,11 +3550,12 @@ class GUIBridge:
                 "error": str(e)
             }
 
-    async def add_skill_xp(self, user_id: str, qube_id: str, skill_id: str, xp_amount: int, evidence_block_id: Optional[str] = None) -> Dict[str, Any]:
+    async def add_skill_xp(self, user_id: str, qube_id: str, skill_id: str, xp_amount: float, evidence_block_id: Optional[str] = None) -> Dict[str, Any]:
         """Add XP to a specific skill.
 
         Note: This modifies the skills_cache.json file only.
         The proper chain_state update happens during active chat sessions via the backend.
+        Supports fractional XP amounts (e.g., 0.1 XP per chess move).
         """
         try:
             from utils.skill_definitions import generate_all_skills
@@ -8215,7 +8216,7 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
 
         return ""
 
-    def _calculate_skill_level(self, xp: int) -> int:
+    def _calculate_skill_level(self, xp: float) -> int:
         """Calculate skill level from XP."""
         if xp < 100:
             return 1
@@ -11620,9 +11621,9 @@ async def main():
             skill_id = sys.argv[4]
 
             try:
-                xp_amount = int(sys.argv[5])
+                xp_amount = float(sys.argv[5])
             except ValueError:
-                print(json.dumps({"success": False, "error": "XP amount must be an integer"}), file=sys.stderr)
+                print(json.dumps({"success": False, "error": "XP amount must be a number"}), file=sys.stderr)
                 sys.exit(1)
 
             evidence_block_id = sys.argv[6] if len(sys.argv) > 6 else None

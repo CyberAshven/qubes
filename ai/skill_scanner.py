@@ -183,7 +183,7 @@ class SkillScanner:
             blocks: List of unencrypted Block objects (session blocks)
 
         Returns:
-            Dict with skill_detections: [{"skill_id": str, "xp_amount": int, "evidence": str, "block_number": int}]
+            Dict with skill_detections: [{"skill_id": str, "xp_amount": float, "evidence": str, "block_number": int}]
         """
         if not blocks:
             return {"skill_detections": []}
@@ -296,9 +296,8 @@ class SkillScanner:
                         xp_amount = 2
                         evidence = f"Used {action_type} tool"
                     else:
-                        # Failed or error: +1 XP (still attempted)
-                        xp_amount = 1
-                        evidence = f"Attempted {action_type} tool"
+                        # Failed or error: no XP (prevents gaming)
+                        continue
 
                     # Extract detailed parameters for skill_history
                     params = content.get("parameters", {})
@@ -435,7 +434,7 @@ class SkillScanner:
         Apply XP gains from skill detections to the qube's skills
 
         Args:
-            skill_detections: List of {"skill_id": str, "xp_amount": int, "evidence": str}
+            skill_detections: List of {"skill_id": str, "xp_amount": float, "evidence": str}
             block_numbers: List of block numbers that were scanned (for evidence)
 
         Returns:

@@ -27,6 +27,12 @@ interface SkillsTabProps {
   qubes: Qube[];
 }
 
+// Format XP value for display (handles floating point precision)
+const formatXP = (xp: number): string => {
+  const rounded = Math.round(xp * 10) / 10;
+  return Number.isInteger(rounded) ? rounded.toString() : rounded.toFixed(1);
+};
+
 // Calculate orbital positions for nodes
 const calculateOrbitalPosition = (
   centerX: number,
@@ -1016,7 +1022,7 @@ export const SkillsTab: React.FC<SkillsTabProps> = ({ qubes }) => {
                                       Level {skill.level || 0}
                                     </span>
                                     <span className="text-text-secondary text-xs">
-                                      {skill.xp || 0} / {skill.maxXP || 0} XP
+                                      {formatXP(skill.xp || 0)} / {skill.maxXP || 0} XP
                                     </span>
                                   </div>
                                   <div className="w-full h-2 bg-glass-light rounded-full overflow-hidden">

@@ -374,18 +374,19 @@ const DecisionBlockContent: React.FC<{ content: any }> = memo(({ content }) => {
 });
 
 const GenesisBlockContent: React.FC<{ content: any }> = memo(({ content }) => {
-  // Core tools that are always available to every Qube
+  // Core tools that are always available to every Qube (11 tools)
   const alwaysAvailableTools = [
+    { id: 'get_system_state', name: 'Get System State', icon: '📊' },
+    { id: 'update_system_state', name: 'Update System State', icon: '✏️' },
+    { id: 'get_skill_tree', name: 'Skill Tree', icon: '🌳' },
     { id: 'search_memory', name: 'Search Memory', icon: '🔍' },
-    { id: 'get_recent_memories', name: 'Recent Memories', icon: '📚' },
-    { id: 'get_current_time', name: 'Current Time', icon: '🕐' },
-    { id: 'describe_my_skills', name: 'Describe Skills', icon: '📊' },
     { id: 'describe_my_avatar', name: 'Describe Avatar', icon: '🖼️' },
-    { id: 'get_relationships', name: 'Relationships', icon: '🤝' },
-    { id: 'send_message', name: 'Send Message', icon: '💬' },
     { id: 'web_search', name: 'Web Search', icon: '🌐' },
     { id: 'browse_url', name: 'Browse URL', icon: '🔗' },
+    { id: 'generate_image', name: 'Generate Image', icon: '🎨' },
     { id: 'chess_move', name: 'Chess Move', icon: '♟️' },
+    { id: 'send_bch', name: 'Send BCH', icon: '💰' },
+    { id: 'switch_model', name: 'Switch Model', icon: '🔄' },
   ];
 
   // Format voice model nicely (e.g., "openai:fable" -> "OpenAI: Fable")

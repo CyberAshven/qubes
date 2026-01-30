@@ -59,7 +59,7 @@ SKILL_TREE = {
     ],
     "social_intelligence": [
         # Sun
-        {"id": "social_intelligence", "name": "Social Intelligence", "node_type": "sun", "xp_required": 1000, "tool_unlock": "send_message", "icon": "🤝", "description": "Master social dynamics and interpersonal skills"},
+        {"id": "social_intelligence", "name": "Social Intelligence", "node_type": "sun", "xp_required": 1000, "tool_unlock": "draft_message_variants", "icon": "🤝", "description": "Master social dynamics and interpersonal skills"},
         # Planets (5)
         {"id": "emotional_intelligence", "name": "Emotional Intelligence", "node_type": "planet", "parent": "social_intelligence", "xp_required": 500, "tool_unlock": "emotion_analysis", "icon": "❤️", "description": "Understand and respond to emotions effectively"},
         {"id": "communication", "name": "Communication", "node_type": "planet", "parent": "social_intelligence", "xp_required": 500, "tool_unlock": "communication_strategy", "icon": "💭", "description": "Communicate clearly and effectively"},

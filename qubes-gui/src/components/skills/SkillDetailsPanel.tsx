@@ -27,6 +27,12 @@ const TIER_COLORS: Record<string, string> = {
   expert: '#F39C12',
 };
 
+// Format XP value for display (handles floating point precision)
+const formatXP = (xp: number): string => {
+  const rounded = Math.round(xp * 10) / 10;
+  return Number.isInteger(rounded) ? rounded.toString() : rounded.toFixed(1);
+};
+
 export const SkillDetailsPanel = memo(({ skill, category, allSkills, qubeId, onClose, onSkillUnlocked }: SkillDetailsPanelProps) => {
   const { userId } = useAuth();
   const [isUnlocking, setIsUnlocking] = useState(false);
@@ -168,7 +174,7 @@ export const SkillDetailsPanel = memo(({ skill, category, allSkills, qubeId, onC
               <div className="flex items-center justify-between mb-2">
                 <span className="text-text-secondary text-sm">Experience</span>
                 <span className="text-text-primary text-sm">
-                  {skill.xp} / {skill.maxXP} XP
+                  {formatXP(skill.xp)} / {skill.maxXP} XP
                 </span>
               </div>
               <div className="w-full h-3 bg-glass-dark rounded-full overflow-hidden">
@@ -246,7 +252,7 @@ export const SkillDetailsPanel = memo(({ skill, category, allSkills, qubeId, onC
                       <div className="text-text-secondary">{description}</div>
                     )}
                     {xpGained !== null && (
-                      <div className="text-accent-primary">+{xpGained} XP</div>
+                      <div className="text-accent-primary">+{formatXP(xpGained)} XP</div>
                     )}
                   </div>
                 );
@@ -294,7 +300,7 @@ export const SkillDetailsPanel = memo(({ skill, category, allSkills, qubeId, onC
                   Required XP: <span className="text-accent-primary font-medium">{unlockThreshold} XP</span>
                 </div>
                 <div className="text-sm text-text-secondary">
-                  Current XP: <span className="text-accent-primary font-medium">{parentSkill.xp} XP</span>
+                  Current XP: <span className="text-accent-primary font-medium">{formatXP(parentSkill.xp)} XP</span>
                 </div>
 
                 {canUnlock ? (
@@ -309,7 +315,7 @@ export const SkillDetailsPanel = memo(({ skill, category, allSkills, qubeId, onC
                 ) : (
                   <GlassButton variant="primary" className="w-full" disabled>
                     {parentSkill.unlocked
-                      ? `Need ${unlockThreshold - parentSkill.xp} more XP in ${parentSkill.name}`
+                      ? `Need ${formatXP(unlockThreshold - parentSkill.xp)} more XP in ${parentSkill.name}`
                       : `Unlock ${parentSkill.name} first`
                     }
                   </GlassButton>

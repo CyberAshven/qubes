@@ -23,11 +23,8 @@ ALWAYS_AVAILABLE_TOOLS: Set[str] = {
     "get_skill_tree",        # View all possible skills and progress
     # Memory operations (search blocks directly)
     "search_memory",
-    "get_recent_memories",
     # Basic information
     "describe_my_avatar",
-    # Communication
-    "send_message",
     # Web access
     "web_search",
     "browse_url",
@@ -39,10 +36,6 @@ ALWAYS_AVAILABLE_TOOLS: Set[str] = {
     "send_bch",
     # Model switching
     "switch_model",
-    # Decision Intelligence tools (relationship and self-evaluation based decisions)
-    "query_decision_context",  # Get decision context for an entity
-    "compare_options",         # Compare multiple entities for a decision
-    "check_my_capability",     # Assess own capability for a task
     # Note: Document processing happens automatically in gui_bridge.py
     # No tool needed - results injected as tool results in reasoner.py
 }
@@ -328,7 +321,8 @@ class ToolRegistry:
                     elif status == "completed":
                         xp_amount = 2  # Completed but may have issues
                     else:
-                        xp_amount = 1  # Failed or error (still attempted)
+                        xp_amount = 0  # Failed or error - no XP (prevents gaming)
+                        skill_id = None  # Don't award XP for failures
 
                 # Award XP immediately (writes to chain_state.skills)
                 skills_manager = SkillsManager(self.qube.chain_state)

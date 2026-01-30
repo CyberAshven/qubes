@@ -3,6 +3,12 @@ import { Handle, Position } from '@xyflow/react';
 import * as d3 from 'd3';
 import { Skill, SkillCategory } from '../../types';
 
+// Format XP value for display (handles floating point precision)
+const formatXP = (xp: number): string => {
+  const rounded = Math.round(xp * 10) / 10;
+  return Number.isInteger(rounded) ? rounded.toString() : rounded.toFixed(1);
+};
+
 interface SunNodeProps {
   data: {
     skill: Skill;
@@ -128,7 +134,7 @@ export const SunNode = memo(({ data }: SunNodeProps) => {
           />
         </div>
         <div className="text-[9px] text-white/70 mt-0.5">
-          {skill.xp}/{skill.maxXP} XP
+          {formatXP(skill.xp)}/{skill.maxXP} XP
         </div>
 
         {/* Unlock indicator */}
@@ -159,7 +165,7 @@ export const SunNode = memo(({ data }: SunNodeProps) => {
         >
           <div className="font-bold mb-1 text-base">{category?.icon} {skill.name}</div>
           <div className="text-xs opacity-90 mb-1">
-            Level {skill.level} • {skill.xp}/{skill.maxXP} XP ({Math.round(progressPercent)}%)
+            Level {skill.level} • {formatXP(skill.xp)}/{skill.maxXP} XP ({Math.round(progressPercent)}%)
           </div>
           <div className="text-xs opacity-80 mb-2">
             Tier: {skill.tier}

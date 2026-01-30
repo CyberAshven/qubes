@@ -8,10 +8,10 @@ UPDATED FOR COMPACT STORAGE:
 
 Storage Structure (within chain_state.json):
     skills: {
-        skill_xp: {skill_id: {xp: int, level: int}, ...},  # Only skills with XP
+        skill_xp: {skill_id: {xp: float, level: int}, ...},  # Only skills with XP
         extra_unlocked: [skill_id, ...],  # Skills unlocked beyond defaults (suns are default unlocked)
         history: [...],  # Capped at 100 entries
-        total_xp: int,
+        total_xp: float,
         last_xp_gain: timestamp or null
     }
 
@@ -324,7 +324,7 @@ class SkillsManager:
     def add_xp(
         self,
         skill_id: str,
-        xp_amount: int,
+        xp_amount: float,
         evidence_block_id: Optional[str] = None,
         evidence_description: Optional[str] = None,
         tool_details: Optional[Dict[str, Any]] = None
@@ -336,7 +336,7 @@ class SkillsManager:
 
         Args:
             skill_id: ID of the skill to add XP to
-            xp_amount: Amount of XP to add
+            xp_amount: Amount of XP to add (supports decimals, e.g., 0.1)
             evidence_block_id: Optional block ID that contributed this XP
             evidence_description: Optional description of how skill was demonstrated
             tool_details: Optional dict with tool-specific details

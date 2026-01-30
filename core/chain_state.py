@@ -168,7 +168,7 @@ def create_default_chain_state(genesis_block: Dict[str, Any], qube_id: str = Non
 
         # Skills section - compact format (only stores skills with XP)
         "skills": {
-            "skill_xp": {},  # {skill_id: {xp: int, level: int}} - only skills with XP > 0
+            "skill_xp": {},  # {skill_id: {xp: float, level: int}} - only skills with XP > 0
             "extra_unlocked": [],  # Skills unlocked beyond defaults (suns are default unlocked)
             "total_xp": 0,
             "last_xp_gain": None,
@@ -469,7 +469,7 @@ class ChainState:
 
             # Skills section - compact format (only stores skills with XP)
             "skills": {
-                "skill_xp": {},  # {skill_id: {xp: int, level: int}} - only skills with XP > 0
+                "skill_xp": {},  # {skill_id: {xp: float, level: int}} - only skills with XP > 0
                 "extra_unlocked": [],  # Skills unlocked beyond defaults
                 "total_xp": 0,
                 "last_xp_gain": None,
@@ -1603,7 +1603,7 @@ class ChainState:
         self._ensure_fresh()
         return self.state.get("skills", {}).get("unlocked", [])
 
-    def unlock_skill(self, skill_id: str, xp: int = 0) -> None:
+    def unlock_skill(self, skill_id: str, xp: float = 0) -> None:
         """Add a skill to unlocked list."""
         skills = self.state.setdefault("skills", {"unlocked": [], "total_xp": 0, "history": []})
         now = int(datetime.now(timezone.utc).timestamp())
@@ -1624,7 +1624,7 @@ class ChainState:
         self._save()
         logger.info("skill_unlocked", skill_id=skill_id)
 
-    def add_skill_xp(self, skill_id: str, xp_amount: int, reason: str = None, block_id: str = None) -> None:
+    def add_skill_xp(self, skill_id: str, xp_amount: float, reason: str = None, block_id: str = None) -> None:
         """Add XP to a skill."""
         skills = self.state.setdefault("skills", {"unlocked": [], "total_xp": 0, "history": []})
         now = int(datetime.now(timezone.utc).timestamp())

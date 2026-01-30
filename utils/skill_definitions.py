@@ -70,7 +70,7 @@ def generate_all_skills() -> List[Dict[str, Any]]:
     skills.append(_create_skill("planning_adaptation", "Plan Adaptation", "Adjust plans based on changing conditions", "ai_reasoning", "moon", "multistep_planning", "multistep_planning", icon="🔄"))
 
     # ===== SOCIAL INTELLIGENCE (16 skills) =====
-    skills.append(_create_skill("social_intelligence", "Social Intelligence", "Master social dynamics and interpersonal skills", "social_intelligence", "sun", tool_reward="send_message", icon="🤝"))
+    skills.append(_create_skill("social_intelligence", "Social Intelligence", "Master social dynamics and interpersonal skills", "social_intelligence", "sun", tool_reward="draft_message_variants", icon="🤝"))
     # Planets
     skills.append(_create_skill("emotional_intelligence", "Emotional Intelligence", "Understand and respond to emotions effectively", "social_intelligence", "planet", "social_intelligence", tool_reward="emotion_analysis", icon="❤️"))
     skills.append(_create_skill("communication", "Communication", "Communicate clearly and effectively", "social_intelligence", "planet", "social_intelligence", tool_reward="communication_strategy", icon="💭"))

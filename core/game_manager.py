@@ -187,7 +187,7 @@ class GameManager:
         opponent_id: str,
         opponent_type: str,
         qube_color: str,
-        xp_earned: int,
+        xp_earned: float,
         opponent_elo: Optional[int] = None
     ) -> None:
         """
@@ -223,7 +223,7 @@ class GameManager:
                 "total_time_played_seconds": 0,
                 "longest_game_moves": 0,
                 "shortest_win_moves": None,
-                "total_xp_earned": 0,
+                "total_xp_earned": 0.0,
                 "last_game_at": None,
                 "elo": 1200  # Starting Elo for beginners
             }
@@ -665,19 +665,15 @@ class GameManager:
 
         return key_moments
 
-    def _calculate_xp(self, result: str, total_moves: int, termination: str) -> int:
+    def _calculate_xp(self, result: str, total_moves: int, termination: str) -> float:
         """
         Calculate XP earned from the game
 
-        Base XP:
-        - Win: 25 XP
-        - Draw: 15 XP
-        - Loss: 10 XP
-
-        Bonuses:
-        - Game reached 20+ moves: +5 XP
-        - Game reached 40+ moves: +5 XP
-        - Checkmate (not resignation): +5 XP
+        Formula:
+        - 0.1 XP per move made by Qube
+        - Win: +5 XP
+        - Draw: +2 XP
+        - Loss: +0 XP
         """
         # Determine if Qube won
         qube_color = "white" if self.active_game.white_player["id"] == self.qube.qube_id else "black"
@@ -686,23 +682,18 @@ class GameManager:
                    (result == "0-1" and qube_color == "black")
         qube_drew = result == "1/2-1/2"
 
-        # Base XP
+        # Calculate Qube's moves (roughly half of total moves)
+        qube_moves = (total_moves + 1) // 2 if qube_color == "white" else total_moves // 2
+
+        # Base XP: 0.1 per move
+        xp = qube_moves * 0.1
+
+        # Outcome bonus
         if qube_won:
-            xp = 25
+            xp += 5.0
         elif qube_drew:
-            xp = 15
-        else:
-            xp = 10
-
-        # Length bonuses
-        if total_moves >= 20:
-            xp += 5
-        if total_moves >= 40:
-            xp += 5
-
-        # Checkmate bonus
-        if termination == "checkmate":
-            xp += 5
+            xp += 2.0
+        # Loss adds 0 XP
 
         return xp
 
