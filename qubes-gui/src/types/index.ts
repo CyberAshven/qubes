@@ -176,14 +176,14 @@ export interface SkillData {
 }
 
 // Audio Visualizer Types
-export type WaveformStyle = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11;
+export type WaveformStyle = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12;
 export type ColorTheme = 'qube-color' | 'rainbow' | 'neon-cyan' | 'electric-purple' | 'matrix-green' | 'fire' | 'ice';
 export type GradientStyle = 'solid' | 'gradient-dark' | 'gradient-complementary' | 'gradient-analogous';
 export type AnimationSmoothness = 'low' | 'medium' | 'high' | 'ultra';
 
 export interface VisualizerSettings {
   enabled: boolean;               // Can be toggled with V key
-  waveform_style: WaveformStyle;  // 1-11 (F1-F11)
+  waveform_style: WaveformStyle;  // 1-12 (keys 1-9, 0, -, =)
   color_theme: ColorTheme;        // Color scheme for visualization
   gradient_style: GradientStyle;  // Gradient variant when using qube-color
   sensitivity: number;            // 0-100 (default: 50)

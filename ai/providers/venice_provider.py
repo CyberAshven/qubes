@@ -154,9 +154,14 @@ class VeniceModel(AIModelInterface):
         try:
             from openai import AsyncOpenAI
 
+            # Use longer timeout for thinking models which may take more time
+            is_thinking_model = "thinking" in self.model_name.lower()
+            timeout = 120.0 if is_thinking_model else 60.0
+
             client = AsyncOpenAI(
                 api_key=self.api_key,
-                base_url=self.BASE_URL
+                base_url=self.BASE_URL,
+                timeout=timeout
             )
 
             # Build request parameters
@@ -435,9 +440,14 @@ class VeniceModel(AIModelInterface):
         try:
             from openai import AsyncOpenAI
 
+            # Use longer timeout for thinking models which may take more time
+            is_thinking_model = "thinking" in self.model_name.lower()
+            timeout = 120.0 if is_thinking_model else 60.0
+
             client = AsyncOpenAI(
                 api_key=self.api_key,
-                base_url=self.BASE_URL
+                base_url=self.BASE_URL,
+                timeout=timeout
             )
 
             params = {

@@ -71,7 +71,9 @@ export function useAudioAnalyzer(
       // Create AnalyserNode
       const analyzer = audioContext.createAnalyser();
       analyzer.fftSize = fftSize;
-      analyzer.smoothingTimeConstant = smoothingTimeConstant;
+      analyzer.smoothingTimeConstant = 0.6; // Lower = faster decay, less "memory"
+      analyzer.minDecibels = -80; // Raise floor to reduce noise sensitivity
+      analyzer.maxDecibels = -10;
       analyzerRef.current = analyzer;
 
       // IMPORTANT: Only create MediaElementSource once
@@ -143,10 +145,36 @@ export function useAudioAnalyzer(
       const sensitivityMultiplier = 0.5 + (sensitivity / 100) * 1.5;
       const volume = Math.min(1.0, rms * sensitivityMultiplier);
 
-      // Apply sensitivity to frequency data
+      // Apply sensitivity to frequency data with aggressive noise floor filtering
       const adjustedFrequencyData = new Uint8Array(bufferLength);
+      const noiseFloor = 25; // Values below this are considered noise
+      const spikeThreshold = 40; // Isolated spikes above neighbors by this much are zeroed
+
       for (let i = 0; i < bufferLength; i++) {
-        adjustedFrequencyData[i] = Math.min(255, frequencyData[i] * sensitivityMultiplier);
+        // Zero out first 5 bins (DC offset and sub-bass rumble)
+        if (i < 5) {
+          adjustedFrequencyData[i] = 0;
+          continue;
+        }
+
+        const raw = frequencyData[i];
+
+        // Apply noise floor
+        if (raw < noiseFloor) {
+          adjustedFrequencyData[i] = 0;
+          continue;
+        }
+
+        // Spike detection: if this bin is way higher than both neighbors, it's noise
+        const prev = i > 0 ? frequencyData[i - 1] : 0;
+        const next = i < bufferLength - 1 ? frequencyData[i + 1] : 0;
+        const neighborAvg = (prev + next) / 2;
+        if (raw > neighborAvg + spikeThreshold && neighborAvg < noiseFloor) {
+          adjustedFrequencyData[i] = 0;
+          continue;
+        }
+
+        adjustedFrequencyData[i] = Math.min(255, raw * sensitivityMultiplier);
       }
 
       setAnalyzerData({

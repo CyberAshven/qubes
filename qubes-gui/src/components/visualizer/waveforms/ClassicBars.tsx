@@ -16,6 +16,23 @@ export const ClassicBars: React.FC<ClassicBarsProps> = ({
   frequencyRange
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const animationRef = useRef<number>(0);
+  const scanLineRef = useRef<number>(0);
+  const peaksRef = useRef<number[]>([]);
+
+  const getColor = () => {
+    if (Array.isArray(colors) && colors.length > 0) return colors[0];
+    return typeof colors === 'string' ? colors : '#00ffff';
+  };
+
+  const parseHex = (hex: string) => {
+    const h = hex.replace('#', '');
+    return {
+      r: parseInt(h.substr(0, 2), 16),
+      g: parseInt(h.substr(2, 2), 16),
+      b: parseInt(h.substr(4, 2), 16)
+    };
+  };
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -24,112 +41,141 @@ export const ClassicBars: React.FC<ClassicBarsProps> = ({
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    // Set canvas resolution - don't use DPR scaling, just use actual dimensions
     canvas.width = width;
     canvas.height = height;
 
-    // Clear canvas
-    ctx.clearRect(0, 0, width, height);
+    const primaryColor = getColor();
+    const rgb = parseHex(primaryColor);
+    const barCount = 64;
 
-    // Calculate bar dimensions - use a good number of bars for visual effect
-    const barCount = 128; // Fixed number of bars for consistent look
-    const barWidth = width / barCount;
-    const gap = Math.max(2, barWidth * 0.1); // At least 2px gap, or 10% of bar width
-    const actualBarWidth = barWidth - gap;
-
-    // Prepare gradient or solid color
-    let fillStyle: string | CanvasGradient;
-    if (Array.isArray(colors)) {
-      // Create vertical gradient
-      const gradient = ctx.createLinearGradient(0, height, 0, 0);
-      const colorStops = colors.length;
-      colors.forEach((color, index) => {
-        gradient.addColorStop(index / (colorStops - 1), color);
-      });
-      fillStyle = gradient;
-    } else {
-      fillStyle = colors;
+    // Initialize peaks
+    if (peaksRef.current.length !== barCount) {
+      peaksRef.current = new Array(barCount).fill(0);
     }
 
-    // Draw bars
-    // Only use the lower frequency bins where most audio energy is
-    const usableDataLength = Math.floor(frequencyData.length * (frequencyRange / 100));
+    const animate = () => {
+      scanLineRef.current = (scanLineRef.current + 1.5) % height;
 
-    for (let i = 0; i < barCount; i++) {
-      // Map bars to lower frequencies for better visualization
-      const dataIndex = Math.floor((i / barCount) * usableDataLength);
-      const value = frequencyData[dataIndex];
+      // Dark gradient background
+      const bgGrad = ctx.createLinearGradient(0, 0, 0, height);
+      bgGrad.addColorStop(0, '#0a0a12');
+      bgGrad.addColorStop(1, '#050508');
+      ctx.fillStyle = bgGrad;
+      ctx.fillRect(0, 0, width, height);
 
-      // Normalize value (0-255 -> 0-1)
-      const normalizedValue = value / 255;
-
-      // Calculate bar height (with minimum height for aesthetics)
-      const minHeight = height * 0.02;
-      const barHeight = minHeight + (normalizedValue * (height - minHeight));
-
-      // Calculate bar position
-      const x = i * barWidth;
-      const y = height - barHeight;
-
-      // Draw reflection/shadow below bar
-      if (normalizedValue > 0.2) {
-        const reflectionGradient = ctx.createLinearGradient(0, height, 0, height - 100);
-        reflectionGradient.addColorStop(0, Array.isArray(colors) ? colors[0] + '20' : colors + '20');
-        reflectionGradient.addColorStop(1, 'transparent');
-        ctx.fillStyle = reflectionGradient;
-        ctx.fillRect(x, height, actualBarWidth, -80 * normalizedValue);
-      }
-
-      // Enhanced glow effect behind bar
-      if (normalizedValue > 0.3) {
-        ctx.shadowBlur = 40 * normalizedValue;
-        ctx.shadowColor = Array.isArray(colors) ? colors[0] : colors;
-        ctx.fillStyle = fillStyle;
+      // Grid
+      ctx.strokeStyle = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.07)`;
+      ctx.lineWidth = 1;
+      const gridSize = 30;
+      for (let x = 0; x < width; x += gridSize) {
         ctx.beginPath();
-        ctx.roundRect(x, y, actualBarWidth, barHeight, [4, 4, 0, 0]);
-        ctx.fill();
-        ctx.shadowBlur = 0;
-      }
-
-      // Main bar with gradient
-      ctx.fillStyle = fillStyle;
-      ctx.beginPath();
-      ctx.roundRect(x, y, actualBarWidth, barHeight, [4, 4, 0, 0]);
-      ctx.fill();
-
-      // Add bright highlight on top for active bars
-      if (normalizedValue > 0.6) {
-        const highlightGradient = ctx.createLinearGradient(0, y, 0, y + 20);
-        highlightGradient.addColorStop(0, 'rgba(255, 255, 255, 0.4)');
-        highlightGradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
-        ctx.fillStyle = highlightGradient;
-        ctx.beginPath();
-        ctx.roundRect(x, y, actualBarWidth, Math.min(20, barHeight), [4, 4, 0, 0]);
-        ctx.fill();
-      }
-
-      // Add inner glow for intense peaks
-      if (normalizedValue > 0.8) {
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.roundRect(x + 1, y + 1, actualBarWidth - 2, barHeight - 2, [3, 3, 0, 0]);
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, height);
         ctx.stroke();
       }
-    }
+      for (let y = 0; y < height; y += gridSize) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(width, y);
+        ctx.stroke();
+      }
+
+      // Scan line
+      const scanGrad = ctx.createLinearGradient(0, scanLineRef.current - 30, 0, scanLineRef.current + 30);
+      scanGrad.addColorStop(0, 'transparent');
+      scanGrad.addColorStop(0.5, `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.1)`);
+      scanGrad.addColorStop(1, 'transparent');
+      ctx.fillStyle = scanGrad;
+      ctx.fillRect(0, scanLineRef.current - 30, width, 60);
+
+      const usableDataLength = Math.floor(frequencyData.length * (frequencyRange / 100));
+      const barWidth = width / barCount;
+      const gap = Math.max(2, barWidth * 0.2);
+      const actualBarWidth = barWidth - gap;
+      const peaks = peaksRef.current;
+
+      for (let i = 0; i < barCount; i++) {
+        const dataIndex = Math.floor((i / barCount) * usableDataLength);
+        // Skip first 2 bins (DC offset)
+        const value = dataIndex < 2 ? 0 : frequencyData[dataIndex];
+        const normalizedValue = value / 255;
+
+        // Threshold
+        if (normalizedValue < 0.03) {
+          // Decay peak
+          peaks[i] = Math.max(0, peaks[i] - 0.02);
+          continue;
+        }
+
+        const barHeight = normalizedValue * (height - 40);
+        const x = i * barWidth + gap / 2;
+        const y = height - barHeight - 20;
+
+        // Update peak
+        if (normalizedValue > peaks[i]) {
+          peaks[i] = normalizedValue;
+        } else {
+          peaks[i] = Math.max(0, peaks[i] - 0.01);
+        }
+
+        // Color based on intensity
+        let r = rgb.r, g = rgb.g, b = rgb.b;
+        if (normalizedValue > 0.7) {
+          r = Math.min(255, rgb.r + 100);
+          g = Math.min(255, rgb.g - 50);
+          b = Math.max(0, rgb.b - 100);
+        }
+
+        // Bar glow
+        for (let glow = 3; glow >= 0; glow--) {
+          const alpha = (0.15 - glow * 0.04) * normalizedValue;
+          ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${alpha})`;
+          ctx.fillRect(x - glow * 3, y - glow * 3, actualBarWidth + glow * 6, barHeight + glow * 6);
+        }
+
+        // Main bar gradient
+        const barGrad = ctx.createLinearGradient(x, y + barHeight, x, y);
+        barGrad.addColorStop(0, `rgba(${r}, ${g}, ${b}, 0.9)`);
+        barGrad.addColorStop(0.5, `rgba(${Math.min(255, r + 50)}, ${Math.min(255, g + 50)}, ${Math.min(255, b + 50)}, 1)`);
+        barGrad.addColorStop(1, `rgba(255, 255, 255, 0.9)`);
+        ctx.fillStyle = barGrad;
+        ctx.fillRect(x, y, actualBarWidth, barHeight);
+
+        // Peak indicator
+        if (peaks[i] > 0.05) {
+          const peakY = height - peaks[i] * (height - 40) - 20;
+          ctx.fillStyle = '#ffffff';
+          ctx.shadowColor = primaryColor;
+          ctx.shadowBlur = 10;
+          ctx.fillRect(x, peakY - 3, actualBarWidth, 3);
+          ctx.shadowBlur = 0;
+        }
+      }
+
+      // Corner brackets
+      ctx.strokeStyle = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.5)`;
+      ctx.lineWidth = 2;
+      const cs = 25;
+      ctx.beginPath();
+      ctx.moveTo(15, 15 + cs); ctx.lineTo(15, 15); ctx.lineTo(15 + cs, 15);
+      ctx.moveTo(width - 15 - cs, 15); ctx.lineTo(width - 15, 15); ctx.lineTo(width - 15, 15 + cs);
+      ctx.moveTo(15, height - 15 - cs); ctx.lineTo(15, height - 15); ctx.lineTo(15 + cs, height - 15);
+      ctx.moveTo(width - 15 - cs, height - 15); ctx.lineTo(width - 15, height - 15); ctx.lineTo(width - 15, height - 15 - cs);
+      ctx.stroke();
+
+      animationRef.current = requestAnimationFrame(animate);
+    };
+
+    animate();
+    return () => cancelAnimationFrame(animationRef.current);
   }, [frequencyData, colors, width, height, frequencyRange]);
 
   return (
     <canvas
       ref={canvasRef}
-      style={{
-        width: `${width}px`,
-        height: `${height}px`,
-        display: 'block',
-        position: 'absolute',
-        top: 0,
-        left: 0
-      }}
+      width={width}
+      height={height}
+      style={{ position: 'absolute', top: 0, left: 0 }}
     />
   );
 };

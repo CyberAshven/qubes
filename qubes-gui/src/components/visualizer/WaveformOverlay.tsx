@@ -7,11 +7,12 @@ import { SmoothWaveform } from './waveforms/SmoothWaveform';
 import { RadialSpectrum } from './waveforms/RadialSpectrum';
 import { DotMatrix } from './waveforms/DotMatrix';
 import { PolygonMorph } from './waveforms/PolygonMorph';
-import { ConcentricCircles } from './waveforms/ConcentricCircles';
-import { SpiralWave } from './waveforms/SpiralWave';
-import { ParticleField } from './waveforms/ParticleField';
-import { RingBars } from './waveforms/RingBars';
-import { WaveMesh } from './waveforms/WaveMesh';
+import { WaterRipples } from './waveforms/WaterRipples';
+import { SpectrumRings } from './waveforms/SpectrumRings';
+import { VUMeters } from './waveforms/VUMeters';
+import { AvatarFace } from './waveforms/AvatarFace';
+// Slots 7-9: Water Ripples, Spectrum Rings, VU Meters
+// Slots 10-12: Avatar with intensity levels (Glow, Spectrum, Cosmic)
 
 interface WaveformOverlayProps {
   audioElement: HTMLAudioElement | null;
@@ -26,6 +27,7 @@ interface WaveformOverlayProps {
   frequencyRange: number;
   enabled: boolean;
   outputMonitor: number;
+  avatarUrl?: string;
   onWaveformChange?: (style: WaveformStyle) => void;
   onToggle?: (enabled: boolean) => void;
 }
@@ -43,6 +45,7 @@ export const WaveformOverlay: React.FC<WaveformOverlayProps> = ({
   frequencyRange,
   enabled,
   outputMonitor,
+  avatarUrl,
   onWaveformChange,
   onToggle
 }) => {
@@ -99,6 +102,12 @@ export const WaveformOverlay: React.FC<WaveformOverlayProps> = ({
       event.preventDefault();
       setCurrentWaveform(11);
       onWaveformChange?.(11);
+    }
+    // =: Waveform 12 (Talking Face)
+    else if (event.key === '=' || event.key === '+') {
+      event.preventDefault();
+      setCurrentWaveform(12);
+      onWaveformChange?.(12);
     }
     // V: Toggle visualizer on/off
     else if (event.key === 'v' || event.key === 'V') {
@@ -221,9 +230,9 @@ export const WaveformOverlay: React.FC<WaveformOverlayProps> = ({
             frequencyRange={frequencyRange}
           />
         );
-      case 7: // Concentric Circles
+      case 7: // Water Ripples
         return (
-          <ConcentricCircles
+          <WaterRipples
             frequencyData={analyzerData.frequencyData}
             colors={colors}
             width={window.innerWidth}
@@ -231,9 +240,9 @@ export const WaveformOverlay: React.FC<WaveformOverlayProps> = ({
             frequencyRange={frequencyRange}
           />
         );
-      case 8: // Spiral Wave
+      case 8: // Spectrum Rings
         return (
-          <SpiralWave
+          <SpectrumRings
             frequencyData={analyzerData.frequencyData}
             colors={colors}
             width={window.innerWidth}
@@ -241,9 +250,9 @@ export const WaveformOverlay: React.FC<WaveformOverlayProps> = ({
             frequencyRange={frequencyRange}
           />
         );
-      case 9: // Particle Field
+      case 9: // VU Meters
         return (
-          <ParticleField
+          <VUMeters
             frequencyData={analyzerData.frequencyData}
             colors={colors}
             width={window.innerWidth}
@@ -251,24 +260,40 @@ export const WaveformOverlay: React.FC<WaveformOverlayProps> = ({
             frequencyRange={frequencyRange}
           />
         );
-      case 10: // Ring Bars
+      case 10: // Avatar Glow (intensity 2)
         return (
-          <RingBars
+          <AvatarFace
             frequencyData={analyzerData.frequencyData}
             colors={colors}
             width={window.innerWidth}
             height={window.innerHeight}
             frequencyRange={frequencyRange}
+            avatarUrl={avatarUrl}
+            intensity={2}
           />
         );
-      case 11: // Wave Mesh
+      case 11: // Avatar Spectrum (intensity 4)
         return (
-          <WaveMesh
+          <AvatarFace
             frequencyData={analyzerData.frequencyData}
             colors={colors}
             width={window.innerWidth}
             height={window.innerHeight}
             frequencyRange={frequencyRange}
+            avatarUrl={avatarUrl}
+            intensity={4}
+          />
+        );
+      case 12: // Avatar Cosmic (intensity 6)
+        return (
+          <AvatarFace
+            frequencyData={analyzerData.frequencyData}
+            colors={colors}
+            width={window.innerWidth}
+            height={window.innerHeight}
+            frequencyRange={frequencyRange}
+            avatarUrl={avatarUrl}
+            intensity={6}
           />
         );
       default:
@@ -291,7 +316,7 @@ export const WaveformOverlay: React.FC<WaveformOverlayProps> = ({
 
         {/* Keyboard hint */}
         <div className="absolute bottom-4 right-4 text-white/30 text-xs font-mono pointer-events-none">
-          1-9, 0, -: Switch Style | V: Toggle
+          1-9, 0, -, =: Switch Style | V: Toggle
         </div>
       </div>
     </div>

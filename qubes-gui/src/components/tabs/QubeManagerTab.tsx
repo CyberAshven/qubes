@@ -2847,11 +2847,12 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
                       <option value={4}>4. Radial Spectrum</option>
                       <option value={5}>5. Dot Matrix</option>
                       <option value={6}>6. Polygon Morph</option>
-                      <option value={7}>7. Concentric Circles</option>
-                      <option value={8}>8. Spiral Wave</option>
-                      <option value={9}>9. Particle Field</option>
-                      <option value={10}>10. Ring Bars</option>
-                      <option value={11}>11. Wave Mesh</option>
+                      <option value={7}>7. Water Ripples</option>
+                      <option value={8}>8. Spectrum Rings</option>
+                      <option value={9}>9. VU Meters</option>
+                      <option value={10}>10. Avatar Glow</option>
+                      <option value={11}>11. Avatar Spectrum</option>
+                      <option value={12}>12. Avatar Cosmic</option>
                     </select>
                   </div>
 

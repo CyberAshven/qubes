@@ -2301,7 +2301,7 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                         <div className="flex justify-between items-center">
                           <span className="text-text-secondary">Waveform Style</span>
                           <span className="text-text-primary text-sm">
-                            {['Classic Bars', 'Symmetric Bars', 'Smooth Waveform', 'Radial Spectrum', 'Dot Matrix', 'Polygon Morph', 'Concentric Circles', 'Spiral Wave', 'Particle Field', 'Ring Bars', 'Wave Mesh'][selectedContextSection.data.visualizer.waveform_style - 1] || `Style ${selectedContextSection.data.visualizer.waveform_style}`}
+                            {['Classic Bars', 'Symmetric Bars', 'Smooth Waveform', 'Radial Spectrum', 'Dot Matrix', 'Polygon Morph', 'Water Ripples', 'Spectrum Rings', 'VU Meters', 'Avatar Glow', 'Avatar Spectrum', 'Avatar Cosmic'][selectedContextSection.data.visualizer.waveform_style - 1] || `Style ${selectedContextSection.data.visualizer.waveform_style}`}
                           </span>
                         </div>
                         <div className="flex justify-between items-center">

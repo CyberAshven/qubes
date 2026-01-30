@@ -435,16 +435,21 @@ class AIFallbackChain:
 
         # Retry with exponential backoff
         retry_delays = [1, 2, 4]  # Exponential backoff: 1s, 2s, 4s
+        # Longer delays for empty response errors (thinking models can be slow to warm up)
+        empty_response_delays = [2, 5, 10, 15]
         errors = []
+        is_empty_response_issue = False
+        effective_max_retries = max_retries
+        attempt = 0
 
-        for attempt in range(max_retries):
+        while attempt < effective_max_retries:
             try:
                 logger.debug(
                     "manual_mode_attempt",
                     model=model_name,
                     provider=provider,
                     attempt=attempt + 1,
-                    max_retries=max_retries
+                    max_retries=effective_max_retries
                 )
 
                 response = await model.generate(
@@ -482,6 +487,7 @@ class AIFallbackChain:
                 })
 
                 # Check if this is a retryable error (5xx, timeout, rate limit, empty response)
+                is_empty_response = "empty response" in error_str.lower()
                 is_retryable = (
                     "500" in error_str or
                     "502" in error_str or
@@ -490,20 +496,32 @@ class AIFallbackChain:
                     "timeout" in error_str.lower() or
                     "rate" in error_str.lower() or
                     "overloaded" in error_str.lower() or
-                    "empty response" in error_str.lower()  # Kimi K2 intermittently returns empty
+                    is_empty_response  # Kimi K2 intermittently returns empty
                 )
 
-                if attempt < max_retries - 1 and is_retryable:
-                    delay = retry_delays[min(attempt, len(retry_delays) - 1)]
+                # For empty response errors (common with thinking models), use longer delays and more retries
+                if is_empty_response and not is_empty_response_issue:
+                    is_empty_response_issue = True
+                    effective_max_retries = max(max_retries, 4)  # At least 4 retries for empty response
+
+                if attempt < effective_max_retries - 1 and is_retryable:
+                    # Use longer delays for empty response issues
+                    if is_empty_response_issue:
+                        delay = empty_response_delays[min(attempt, len(empty_response_delays) - 1)]
+                    else:
+                        delay = retry_delays[min(attempt, len(retry_delays) - 1)]
                     logger.warning(
                         "manual_mode_retrying",
                         model=model_name,
                         provider=provider,
                         attempt=attempt + 1,
+                        max_retries=effective_max_retries,
                         delay=delay,
-                        error=error_str
+                        error=error_str,
+                        is_empty_response=is_empty_response_issue
                     )
                     await asyncio.sleep(delay)
+                    attempt += 1
                     continue
                 else:
                     # Non-retryable error or exhausted retries
@@ -521,16 +539,30 @@ class AIFallbackChain:
         # All retries exhausted - include the actual error in the message
         last_error = errors[-1]["error"] if errors else "Unknown error"
         actual_attempts = len(errors)
+
+        # Provide more helpful message for empty response issues
+        if is_empty_response_issue:
+            error_msg = (
+                f"Model '{model_name}' returned empty responses after {actual_attempts} attempt(s). "
+                f"This is a temporary API issue - please try again, or switch to Auto mode to allow fallback to other models.\n"
+                f"Error: {last_error}"
+            )
+        else:
+            error_msg = (
+                f"Model '{model_name}' failed after {actual_attempts} attempt(s). "
+                f"In Manual mode, no fallback to other models will occur.\n"
+                f"Error: {last_error}"
+            )
+
         raise AIError(
-            f"Model '{model_name}' failed after {actual_attempts} attempt(s). "
-            f"In Manual mode, no fallback to other models will occur.\n"
-            f"Error: {last_error}",
+            error_msg,
             context={
                 "model": model_name,
                 "provider": provider,
                 "attempts": actual_attempts,
                 "errors": errors,
-                "mode": "manual"
+                "mode": "manual",
+                "is_empty_response_issue": is_empty_response_issue
             }
         )
 

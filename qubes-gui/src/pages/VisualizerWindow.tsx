@@ -8,11 +8,12 @@ import { SmoothWaveform } from '../components/visualizer/waveforms/SmoothWavefor
 import { RadialSpectrum } from '../components/visualizer/waveforms/RadialSpectrum';
 import { DotMatrix } from '../components/visualizer/waveforms/DotMatrix';
 import { PolygonMorph } from '../components/visualizer/waveforms/PolygonMorph';
-import { ConcentricCircles } from '../components/visualizer/waveforms/ConcentricCircles';
-import { SpiralWave } from '../components/visualizer/waveforms/SpiralWave';
-import { ParticleField } from '../components/visualizer/waveforms/ParticleField';
-import { RingBars } from '../components/visualizer/waveforms/RingBars';
-import { WaveMesh } from '../components/visualizer/waveforms/WaveMesh';
+import { WaterRipples } from '../components/visualizer/waveforms/WaterRipples';
+import { SpectrumRings } from '../components/visualizer/waveforms/SpectrumRings';
+import { VUMeters } from '../components/visualizer/waveforms/VUMeters';
+import { AvatarFace } from '../components/visualizer/waveforms/AvatarFace';
+// Slots 7-9: Water Ripples, Spectrum Rings, VU Meters
+// Slots 10-12: Avatar with intensity levels (Glow, Spectrum, Cosmic)
 
 // This component is displayed in a separate fullscreen window
 // It receives visualizer settings and audio data via Tauri events from the main window
@@ -63,6 +64,11 @@ export const VisualizerWindow: React.FC = () => {
       else if (event.key === '-' || event.key === '_') {
         event.preventDefault();
         setSettings({ ...settings, waveform_style: 11 });
+      }
+      // =: Waveform 12 (Talking Face)
+      else if (event.key === '=' || event.key === '+') {
+        event.preventDefault();
+        setSettings({ ...settings, waveform_style: 12 });
       }
       // V: Toggle visualizer (emit event to main window to toggle enabled setting)
       else if (event.key === 'v' || event.key === 'V') {
@@ -230,15 +236,17 @@ export const VisualizerWindow: React.FC = () => {
         case 6:
           return <PolygonMorph frequencyData={frequencyData} colors={colors} width={width} height={height} frequencyRange={settings.frequency_range} />;
         case 7:
-          return <ConcentricCircles frequencyData={frequencyData} colors={colors} width={width} height={height} frequencyRange={settings.frequency_range} />;
+          return <WaterRipples frequencyData={frequencyData} colors={colors} width={width} height={height} frequencyRange={settings.frequency_range} />;
         case 8:
-          return <SpiralWave frequencyData={frequencyData} colors={colors} width={width} height={height} frequencyRange={settings.frequency_range} />;
+          return <SpectrumRings frequencyData={frequencyData} colors={colors} width={width} height={height} frequencyRange={settings.frequency_range} />;
         case 9:
-          return <ParticleField frequencyData={frequencyData} colors={colors} width={width} height={height} frequencyRange={settings.frequency_range} />;
+          return <VUMeters frequencyData={frequencyData} colors={colors} width={width} height={height} frequencyRange={settings.frequency_range} />;
         case 10:
-          return <RingBars frequencyData={frequencyData} colors={colors} width={width} height={height} frequencyRange={settings.frequency_range} />;
+          return <AvatarFace frequencyData={frequencyData} colors={colors} width={width} height={height} frequencyRange={settings.frequency_range} intensity={2} />;
         case 11:
-          return <WaveMesh frequencyData={frequencyData} colors={colors} width={width} height={height} frequencyRange={settings.frequency_range} />;
+          return <AvatarFace frequencyData={frequencyData} colors={colors} width={width} height={height} frequencyRange={settings.frequency_range} intensity={4} />;
+        case 12:
+          return <AvatarFace frequencyData={frequencyData} colors={colors} width={width} height={height} frequencyRange={settings.frequency_range} intensity={6} />;
         default:
           return <ClassicBars frequencyData={frequencyData} colors={colors} width={width} height={height} frequencyRange={settings.frequency_range} />;
       }
