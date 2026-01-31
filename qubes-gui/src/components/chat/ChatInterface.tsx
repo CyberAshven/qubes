@@ -1340,7 +1340,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
             )
             .map((b: any) => ({
               action_type: b.content.action_type,
-              timestamp: b.timestamp,
+              // Convert from seconds (backend) to milliseconds (frontend Date.getTime())
+              timestamp: b.timestamp * 1000,
               parameters: b.content.parameters || {},
               result: b.content.result || null,
               status: b.content.status || 'completed',
@@ -1403,7 +1404,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
           )
           .map((b: any) => ({
             action_type: b.content.action_type,
-            timestamp: b.timestamp,
+            // Convert from seconds (backend) to milliseconds (frontend Date.getTime())
+            timestamp: b.timestamp * 1000,
             parameters: b.content.parameters || {},
             result: b.content.result || null,
             status: b.content.status || 'completed',

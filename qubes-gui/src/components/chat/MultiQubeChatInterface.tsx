@@ -1432,11 +1432,12 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
 
                       if (result?.session_blocks && Array.isArray(result.session_blocks)) {
                         // Find ACTION blocks from the last 5 seconds (but skip prefetch actions)
+                        // Note: b.timestamp is in seconds, now is in milliseconds
                         const actionBlocks = result.session_blocks.filter((b: any) =>
                           b.block_type === 'ACTION' &&
                           b.content?.action_type &&
                           b.timestamp &&
-                          (now - b.timestamp) < 5000 && // Within last 5 seconds
+                          (now - b.timestamp * 1000) < 5000 && // Within last 5 seconds
                           b.content?.prefetch !== true // Skip prefetch actions to avoid showing background work
                         );
 
@@ -1444,7 +1445,8 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
                         actionBlocks.forEach((b: any) => {
                           recentActions.push({
                             action_type: b.content.action_type,
-                            timestamp: b.timestamp,
+                            // Convert from seconds (backend) to milliseconds (frontend)
+                            timestamp: b.timestamp * 1000,
                             qube_id: qube.qube_id
                           });
                         });
