@@ -150,6 +150,8 @@ export interface Skill {
   evidence: (string | { block_id: string; description?: string; xp_gained?: number })[];  // Block IDs or detailed evidence objects
   parentSkill?: string;  // For planets/moons, the parent skill ID
   icon?: string;  // Emoji/icon for planets and moons
+  achievement?: boolean;  // For achievement-based skills (Board Games)
+  reward?: string;  // Cosmetic reward for achievement skills
 }
 
 export interface SkillTreeNode {

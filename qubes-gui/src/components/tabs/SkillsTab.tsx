@@ -422,6 +422,28 @@ export const SkillsTab: React.FC<SkillsTabProps> = ({ qubes }) => {
           });
         } else {
           loadedSkills = response.skills as Skill[];
+
+          // Ensure Suns and Planets are always unlocked (migration for existing data)
+          let needsSave = false;
+          loadedSkills = loadedSkills.map(skill => {
+            if ((skill.nodeType === 'sun' || skill.nodeType === 'planet') && !skill.unlocked) {
+              needsSave = true;
+              return { ...skill, unlocked: true };
+            }
+            return skill;
+          });
+
+          // Save updated skills if any were migrated
+          if (needsSave) {
+            await invoke('save_qube_skills', {
+              userId,
+              qubeId: selectedQube.qube_id,
+              skillsJson: JSON.stringify({
+                skills: loadedSkills,
+                last_updated: new Date().toISOString(),
+              }),
+            });
+          }
         }
 
         // Generate visual tree
@@ -607,9 +629,9 @@ export const SkillsTab: React.FC<SkillsTabProps> = ({ qubes }) => {
               />
             </ReactFlow>
 
-            {/* Branches Legend */}
-            <div className="absolute top-4 left-4 z-10">
-              <GlassCard className="p-4 space-y-2 w-[260px]">
+            {/* Branches Legend - Top Left */}
+            <div className="absolute top-4 left-4 z-10 w-[280px]">
+              <GlassCard className="p-4 space-y-2">
                 <h3
                   className="text-lg font-display text-accent-primary mb-3 flex items-center justify-between cursor-pointer"
                   onClick={() => setIsBranchesExpanded(!isBranchesExpanded)}
@@ -638,11 +660,11 @@ export const SkillsTab: React.FC<SkillsTabProps> = ({ qubes }) => {
               </GlassCard>
             </div>
 
-            {/* Tools Panel */}
-            <div className="absolute bottom-4 left-4 z-10">
-              <GlassCard className="p-4 space-y-2 w-[280px]">
+            {/* Tools Panel - Bottom Left */}
+            <div className="absolute bottom-4 left-4 z-10 w-[280px]">
+              <GlassCard className="p-4 space-y-2 max-h-[400px] flex flex-col">
                 <h3
-                  className="text-lg font-display text-accent-primary mb-3 flex items-center justify-between cursor-pointer"
+                  className="text-lg font-display text-accent-primary mb-3 flex items-center justify-between cursor-pointer flex-shrink-0"
                   onClick={() => setIsToolsExpanded(!isToolsExpanded)}
                 >
                   <div className="flex items-center gap-2">
@@ -653,7 +675,7 @@ export const SkillsTab: React.FC<SkillsTabProps> = ({ qubes }) => {
                   <span className="text-sm transition-transform" style={{ transform: isToolsExpanded ? 'rotate(0deg)' : 'rotate(180deg)' }}>▼</span>
                 </h3>
                 {isToolsExpanded && (
-                  <div className="space-y-3 max-h-[500px] overflow-y-auto custom-scrollbar pr-2">
+                  <div className="space-y-3 overflow-y-auto custom-scrollbar pr-2 flex-1 min-h-0">
                     {/* Skill-based tools */}
                     {skillTools.length > 0 && (
                       <div className="space-y-2">

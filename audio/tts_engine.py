@@ -50,6 +50,10 @@ class VoiceConfig:
         self.model_variant = model_variant or "1.7B"
 
 
+# Re-export from voice_registry for backwards compatibility
+from audio.voice_registry import get_available_voices, VoiceRegistry
+
+
 class TTSProvider(ABC):
     """Abstract base class for TTS providers"""
 

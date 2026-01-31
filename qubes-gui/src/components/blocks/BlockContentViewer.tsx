@@ -76,6 +76,8 @@ export const BlockContentViewer: React.FC<BlockContentViewerProps> = memo(({ blo
         return <SummaryBlockContent content={content} />;
       case 'GAME':
         return <GameBlockContent content={content} />;
+      case 'LEARNING':
+        return <LearningBlockContent content={content} />;
       case 'MEMORY_ANCHOR':
       case 'COLLABORATIVE_MEMORY':
       default:
@@ -814,6 +816,118 @@ const GameBlockContent: React.FC<{ content: any }> = memo(({ content }) => {
             ))}
           </div>
         </details>
+      )}
+    </div>
+  );
+});
+
+const LearningBlockContent: React.FC<{ content: any }> = memo(({ content }) => {
+  const learningTypeIcons: Record<string, string> = {
+    fact: '📝',
+    procedure: '📋',
+    synthesis: '🔗',
+    insight: '💡',
+    pattern: '🔄',
+    relationship: '👥',
+    threat: '⚠️',
+    trust: '🤝',
+  };
+
+  const learningTypeColors: Record<string, string> = {
+    fact: 'blue',
+    procedure: 'green',
+    synthesis: 'purple',
+    insight: 'yellow',
+    pattern: 'cyan',
+    relationship: 'pink',
+    threat: 'red',
+    trust: 'emerald',
+  };
+
+  const learningType = content.learning_type || 'unknown';
+  const icon = learningTypeIcons[learningType] || '📚';
+  const colorName = learningTypeColors[learningType] || 'blue';
+  const confidence = content.confidence;
+  const sourceBlock = content.source_block;
+  const sourceBlockType = content.source_block_type;
+  const sourceCategory = content.source_category;
+
+  // Extract the main content based on learning type
+  const getMainContent = () => {
+    switch (learningType) {
+      case 'fact':
+        return content.fact;
+      case 'procedure':
+        return content.procedure;
+      case 'synthesis':
+        return content.synthesis;
+      case 'insight':
+        return content.insight;
+      case 'pattern':
+        return content.pattern;
+      case 'relationship':
+        return content.relationship_description;
+      case 'threat':
+        return content.threat_description || content.threat_type;
+      case 'trust':
+        return content.trust_description;
+      default:
+        return JSON.stringify(content);
+    }
+  };
+
+  return (
+    <div className={`bg-${colorName}-500/10 border border-${colorName}-500/30 rounded-lg p-4`}>
+      {/* Header */}
+      <div className="flex items-center gap-3 mb-3">
+        <span className="text-2xl">{icon}</span>
+        <div className="flex-1">
+          <div className={`text-sm font-semibold text-${colorName}-400 uppercase tracking-wide`}>
+            {learningType.replace('_', ' ')} learned
+          </div>
+          {confidence !== undefined && (
+            <div className="text-xs text-text-tertiary mt-0.5">
+              {confidence}% confidence
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Main Content */}
+      <div className="text-text-primary whitespace-pre-wrap mb-3">
+        {getMainContent()}
+      </div>
+
+      {/* Threat-specific warning */}
+      {learningType === 'threat' && content.severity && (
+        <div className="bg-red-500/20 border border-red-500/40 rounded p-3 mb-3">
+          <div className="flex items-center gap-2">
+            <span className="text-lg">⚠️</span>
+            <div>
+              <div className="text-red-400 font-medium">Severity: {content.severity}</div>
+              {content.threat_type && (
+                <div className="text-xs text-red-300">Type: {content.threat_type}</div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Source Information */}
+      {(sourceBlock !== undefined || sourceCategory) && (
+        <div className="mt-3 pt-3 border-t border-glass-border">
+          <div className="text-xs text-text-tertiary">
+            {sourceBlock !== undefined && (
+              <span>Source: Block #{sourceBlock}</span>
+            )}
+            {sourceBlockType && (
+              <span> ({sourceBlockType})</span>
+            )}
+            {sourceCategory && (
+              <span className="ml-2">• Category: {sourceCategory}</span>
+            )}
+          </div>
+        </div>
       )}
     </div>
   );

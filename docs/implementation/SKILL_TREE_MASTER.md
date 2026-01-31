@@ -8264,7 +8264,7 @@ async def validate_reasoning(qube, params: Dict[str, Any]) -> Dict[str, Any]:
 - [ ] Implement special XP formula for `verify_chain_integrity`
 
 #### 6.7 Make `browse_url` Use Intelligent Routing
-- [ ] Remove `browse_url` from Security & Privacy Sun tool
+- [x] Remove `browse_url` from Security & Privacy Sun tool
 - [ ] Implement intelligent routing based on URL content (like `web_search`)
 
 ---

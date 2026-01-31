@@ -49,108 +49,194 @@ def generate_all_skills() -> List[Dict[str, Any]]:
     """
     skills = []
 
-    # ===== AI REASONING (16 skills) =====
-    skills.append(_create_skill("ai_reasoning", "AI Reasoning", "Master AI reasoning and problem-solving capabilities", "ai_reasoning", "sun", tool_reward="describe_my_avatar", icon="🧠"))
-    # Planets
-    skills.append(_create_skill("prompt_engineering", "Prompt Engineering", "Craft effective prompts to elicit desired AI responses", "ai_reasoning", "planet", "ai_reasoning", tool_reward="analyze_prompt_quality", icon="✍️"))
-    skills.append(_create_skill("chain_of_thought", "Chain of Thought", "Break down complex problems into logical steps", "ai_reasoning", "planet", "ai_reasoning", tool_reward="generate_reasoning_chain", icon="🔗"))
-    skills.append(_create_skill("code_generation", "Code Generation", "Generate high-quality code across multiple languages", "ai_reasoning", "planet", "ai_reasoning", tool_reward="advanced_code_gen", icon="⚙️"))
-    skills.append(_create_skill("analysis_critique", "Analysis & Critique", "Critically analyze and provide constructive feedback", "ai_reasoning", "planet", "ai_reasoning", tool_reward="deep_analysis", icon="🔍"))
-    skills.append(_create_skill("multistep_planning", "Multi-step Planning", "Plan and execute complex multi-step tasks", "ai_reasoning", "planet", "ai_reasoning", tool_reward="create_task_plan", icon="📋"))
-    # Moons
-    skills.append(_create_skill("prompt_eng_clarity", "Clarity & Precision", "Write clear, unambiguous prompts", "ai_reasoning", "moon", "prompt_engineering", "prompt_engineering", icon="📝"))
-    skills.append(_create_skill("prompt_eng_context", "Context Building", "Provide optimal context for AI understanding", "ai_reasoning", "moon", "prompt_engineering", "prompt_engineering", icon="📚"))
-    skills.append(_create_skill("cot_decomposition", "Problem Decomposition", "Break problems into manageable sub-problems", "ai_reasoning", "moon", "chain_of_thought", "chain_of_thought", icon="🧩"))
-    skills.append(_create_skill("cot_verification", "Step Verification", "Verify correctness of each reasoning step", "ai_reasoning", "moon", "chain_of_thought", "chain_of_thought", icon="✅"))
-    skills.append(_create_skill("code_patterns", "Design Patterns", "Apply software design patterns effectively", "ai_reasoning", "moon", "code_generation", "code_generation", icon="🏗️"))
-    skills.append(_create_skill("code_optimization", "Code Optimization", "Write efficient, optimized code", "ai_reasoning", "moon", "code_generation", "code_generation", icon="⚡"))
-    skills.append(_create_skill("analysis_depth", "Deep Analysis", "Perform thorough, multi-layered analysis", "ai_reasoning", "moon", "analysis_critique", "analysis_critique", icon="🔬"))
-    skills.append(_create_skill("constructive_feedback", "Constructive Feedback", "Provide actionable, helpful feedback", "ai_reasoning", "moon", "analysis_critique", "analysis_critique", icon="💬"))
-    skills.append(_create_skill("planning_strategy", "Strategic Planning", "Develop high-level execution strategies", "ai_reasoning", "moon", "multistep_planning", "multistep_planning", icon="🎯"))
-    skills.append(_create_skill("planning_adaptation", "Plan Adaptation", "Adjust plans based on changing conditions", "ai_reasoning", "moon", "multistep_planning", "multistep_planning", icon="🔄"))
+    # ===== AI REASONING (14 skills) =====
+    # Theme: Learning From Experience - analyze memory chain to improve over time
+
+    # Sun
+    skills.append(_create_skill("ai_reasoning", "AI Reasoning", "Master learning from experience through memory chain analysis", "ai_reasoning", "sun", tool_reward="recall_similar", icon="🧠"))
+
+    # Planet 1: Pattern Recognition
+    skills.append(_create_skill("pattern_recognition", "Pattern Recognition", "Finding similar situations in past experience", "ai_reasoning", "planet", "ai_reasoning", tool_reward="find_analogy", icon="🔍"))
+    # Moon 1.1: Trend Detection
+    skills.append(_create_skill("trend_detection", "Trend Detection", "Spot patterns that repeat or evolve over time", "ai_reasoning", "moon", "pattern_recognition", "pattern_recognition", icon="📈"))
+    # Moon 1.2: Quick Insight
+    skills.append(_create_skill("quick_insight", "Quick Insight", "Pull one highly relevant insight from memory", "ai_reasoning", "moon", "pattern_recognition", "pattern_recognition", icon="💡"))
+
+    # Planet 2: Learning from Failure
+    skills.append(_create_skill("learning_from_failure", "Learning from Failure", "Analyzing past mistakes to avoid repeating them", "ai_reasoning", "planet", "ai_reasoning", tool_reward="analyze_mistake", icon="📉"))
+    # Moon 2.1: Root Cause Analysis
+    skills.append(_create_skill("root_cause_analysis", "Root Cause Analysis", "Dig past symptoms to find underlying issues", "ai_reasoning", "moon", "learning_from_failure", "learning_from_failure", icon="🔬"))
+
+    # Planet 3: Building on Success
+    skills.append(_create_skill("building_on_success", "Building on Success", "Finding what worked and replicating it", "ai_reasoning", "planet", "ai_reasoning", tool_reward="replicate_success", icon="🏆"))
+    # Moon 3.1: Success Factors
+    skills.append(_create_skill("success_factors", "Success Factors", "Identify WHY something worked, not just THAT it worked", "ai_reasoning", "moon", "building_on_success", "building_on_success", icon="🎯"))
+
+    # Planet 4: Self-Reflection
+    skills.append(_create_skill("self_reflection", "Self-Reflection", "Understanding own patterns, biases, and growth", "ai_reasoning", "planet", "ai_reasoning", tool_reward="self_reflect", icon="🪞"))
+    # Moon 4.1: Growth Tracking
+    skills.append(_create_skill("growth_tracking", "Growth Tracking", "Compare past vs present performance, see improvement", "ai_reasoning", "moon", "self_reflection", "self_reflection", icon="📊"))
+    # Moon 4.2: Bias Detection
+    skills.append(_create_skill("bias_detection", "Bias Detection", "Identify blind spots and tendencies in own reasoning", "ai_reasoning", "moon", "self_reflection", "self_reflection", icon="⚠️"))
+
+    # Planet 5: Knowledge Synthesis
+    skills.append(_create_skill("knowledge_synthesis", "Knowledge Synthesis", "Combining learnings from different experiences into new insights", "ai_reasoning", "planet", "ai_reasoning", tool_reward="synthesize_learnings", icon="🧩"))
+    # Moon 5.1: Cross-Pollinate
+    skills.append(_create_skill("cross_pollinate", "Cross-Pollinate", "Find unexpected links between different knowledge areas", "ai_reasoning", "moon", "knowledge_synthesis", "knowledge_synthesis", icon="🔀"))
+    # Moon 5.2: Reflect on Topic
+    skills.append(_create_skill("reflect_on_topic", "Reflect on Topic", "Get accumulated wisdom on any topic", "ai_reasoning", "moon", "knowledge_synthesis", "knowledge_synthesis", icon="💭"))
 
     # ===== SOCIAL INTELLIGENCE (16 skills) =====
-    skills.append(_create_skill("social_intelligence", "Social Intelligence", "Master social dynamics and interpersonal skills", "social_intelligence", "sun", tool_reward="draft_message_variants", icon="🤝"))
-    # Planets
-    skills.append(_create_skill("emotional_intelligence", "Emotional Intelligence", "Understand and respond to emotions effectively", "social_intelligence", "planet", "social_intelligence", tool_reward="emotion_analysis", icon="❤️"))
-    skills.append(_create_skill("communication", "Communication", "Communicate clearly and effectively", "social_intelligence", "planet", "social_intelligence", tool_reward="communication_strategy", icon="💭"))
-    skills.append(_create_skill("empathy", "Empathy", "Understand and share feelings of others", "social_intelligence", "planet", "social_intelligence", tool_reward="empathy_response", icon="🫂"))
-    skills.append(_create_skill("relationship_building", "Relationship Building", "Build and maintain meaningful relationships", "social_intelligence", "planet", "social_intelligence", tool_reward="relationship_strategy", icon="🌉"))
-    skills.append(_create_skill("conflict_resolution", "Conflict Resolution", "Resolve conflicts peacefully and effectively", "social_intelligence", "planet", "social_intelligence", tool_reward="mediation_strategy", icon="☮️"))
-    # Moons
-    skills.append(_create_skill("ei_self_awareness", "Self-Awareness", "Recognize own emotional states", "social_intelligence", "moon", "emotional_intelligence", "emotional_intelligence", icon="🪞"))
-    skills.append(_create_skill("ei_emotion_regulation", "Emotion Regulation", "Manage emotional responses effectively", "social_intelligence", "moon", "emotional_intelligence", "emotional_intelligence", icon="🎚️"))
-    skills.append(_create_skill("comm_active_listening", "Active Listening", "Listen attentively and understand deeply", "social_intelligence", "moon", "communication", "communication", icon="👂"))
-    skills.append(_create_skill("comm_persuasion", "Persuasion", "Influence others effectively", "social_intelligence", "moon", "communication", "communication", icon="💫"))
-    skills.append(_create_skill("empathy_perspective", "Perspective Taking", "See situations from others viewpoints", "social_intelligence", "moon", "empathy", "empathy", icon="👁️"))
-    skills.append(_create_skill("empathy_compassion", "Compassion", "Show genuine care and concern", "social_intelligence", "moon", "empathy", "empathy", icon="🤗"))
-    skills.append(_create_skill("relationship_trust", "Trust Building", "Establish and maintain trust", "social_intelligence", "moon", "relationship_building", "relationship_building", icon="🤝"))
-    skills.append(_create_skill("relationship_rapport", "Rapport Building", "Create positive connections quickly", "social_intelligence", "moon", "relationship_building", "relationship_building", icon="✨"))
-    skills.append(_create_skill("conflict_negotiation", "Negotiation", "Find win-win solutions", "social_intelligence", "moon", "conflict_resolution", "conflict_resolution", icon="🤲"))
-    skills.append(_create_skill("conflict_mediation", "Mediation", "Help others resolve disputes", "social_intelligence", "moon", "conflict_resolution", "conflict_resolution", icon="⚖️"))
+    # Theme: Social & Emotional Learning - relationship-powered
 
-    # ===== TECHNICAL EXPERTISE (16 skills) =====
-    skills.append(_create_skill("technical_expertise", "Technical Expertise", "Master technical and engineering skills", "technical_expertise", "sun", tool_reward="web_search", icon="💻"))
-    # Planets
-    skills.append(_create_skill("programming", "Programming", "Write clean, efficient code", "technical_expertise", "planet", "technical_expertise", tool_reward="code_review", icon="👨‍💻"))
-    skills.append(_create_skill("devops", "DevOps", "Manage deployment and infrastructure", "technical_expertise", "planet", "technical_expertise", tool_reward="infrastructure_analysis", icon="🚀"))
-    skills.append(_create_skill("system_architecture", "System Architecture", "Design scalable system architectures", "technical_expertise", "planet", "technical_expertise", tool_reward="architecture_design", icon="🏛️"))
-    skills.append(_create_skill("debugging", "Debugging", "Identify and fix bugs efficiently", "technical_expertise", "planet", "technical_expertise", tool_reward="debug_assistant", icon="🐛"))
-    skills.append(_create_skill("api_integration", "API Integration", "Integrate and work with APIs effectively", "technical_expertise", "planet", "technical_expertise", tool_reward="api_design", icon="🔌"))
-    # Moons
-    skills.append(_create_skill("prog_algorithms", "Algorithms", "Implement efficient algorithms", "technical_expertise", "moon", "programming", "programming", icon="🔢"))
-    skills.append(_create_skill("prog_data_structures", "Data Structures", "Use appropriate data structures", "technical_expertise", "moon", "programming", "programming", icon="📊"))
-    skills.append(_create_skill("devops_cicd", "CI/CD", "Implement continuous integration/deployment", "technical_expertise", "moon", "devops", "devops", icon="🔄"))
-    skills.append(_create_skill("devops_containers", "Containerization", "Work with Docker and container technologies", "technical_expertise", "moon", "devops", "devops", icon="📦"))
-    skills.append(_create_skill("arch_microservices", "Microservices", "Design microservice architectures", "technical_expertise", "moon", "system_architecture", "system_architecture", icon="🎯"))
-    skills.append(_create_skill("arch_scalability", "Scalability", "Design for scale and performance", "technical_expertise", "moon", "system_architecture", "system_architecture", icon="📈"))
-    skills.append(_create_skill("debug_profiling", "Performance Profiling", "Profile and optimize performance", "technical_expertise", "moon", "debugging", "debugging", icon="⏱️"))
-    skills.append(_create_skill("debug_testing", "Testing Strategies", "Write effective tests", "technical_expertise", "moon", "debugging", "debugging", icon="🧪"))
-    skills.append(_create_skill("api_rest", "REST APIs", "Design RESTful APIs", "technical_expertise", "moon", "api_integration", "api_integration", icon="🌐"))
-    skills.append(_create_skill("api_graphql", "GraphQL", "Work with GraphQL APIs", "technical_expertise", "moon", "api_integration", "api_integration", icon="⚡"))
+    # Sun
+    skills.append(_create_skill("social_intelligence", "Social Intelligence", "Master social and emotional learning through relationship memory", "social_intelligence", "sun", tool_reward="get_relationship_context", icon="🤝"))
 
-    # ===== CREATIVE EXPRESSION (16 skills) =====
-    skills.append(_create_skill("creative_expression", "Creative Expression", "Master creative and artistic skills", "creative_expression", "sun", tool_reward="generate_image", icon="🎨"))
-    # Planets
-    skills.append(_create_skill("writing", "Writing", "Write compelling, effective content", "creative_expression", "planet", "creative_expression", tool_reward="writing_assistant", icon="📖"))
-    skills.append(_create_skill("visual_design", "Visual Design", "Create visually appealing designs", "creative_expression", "planet", "creative_expression", tool_reward="design_critique", icon="🎨"))
-    skills.append(_create_skill("music", "Music", "Create and understand music", "creative_expression", "planet", "creative_expression", tool_reward="music_theory", icon="🎵"))
-    skills.append(_create_skill("storytelling", "Storytelling", "Craft engaging narratives", "creative_expression", "planet", "creative_expression", tool_reward="story_development", icon="📚"))
-    skills.append(_create_skill("creative_problem_solving", "Creative Problem Solving", "Solve problems with creative approaches", "creative_expression", "planet", "creative_expression", tool_reward="ideation_assistant", icon="💡"))
-    # Moons
-    skills.append(_create_skill("writing_style", "Style & Voice", "Develop unique writing style", "creative_expression", "moon", "writing", "writing", icon="✒️"))
-    skills.append(_create_skill("writing_grammar", "Grammar & Syntax", "Master language mechanics", "creative_expression", "moon", "writing", "writing", icon="📕"))
-    skills.append(_create_skill("design_composition", "Composition", "Arrange visual elements effectively", "creative_expression", "moon", "visual_design", "visual_design", icon="🖼️"))
-    skills.append(_create_skill("design_color", "Color Theory", "Use color effectively", "creative_expression", "moon", "visual_design", "visual_design", icon="🎨"))
-    skills.append(_create_skill("music_theory", "Music Theory", "Understand musical structure", "creative_expression", "moon", "music", "music", icon="🎼"))
-    skills.append(_create_skill("music_composition", "Composition", "Create original music", "creative_expression", "moon", "music", "music", icon="🎹"))
-    skills.append(_create_skill("story_plot", "Plot Development", "Create compelling story arcs", "creative_expression", "moon", "storytelling", "storytelling", icon="📖"))
-    skills.append(_create_skill("story_character", "Character Development", "Create memorable characters", "creative_expression", "moon", "storytelling", "storytelling", icon="👤"))
-    skills.append(_create_skill("creative_brainstorm", "Brainstorming", "Generate creative ideas", "creative_expression", "moon", "creative_problem_solving", "creative_problem_solving", icon="🧠"))
-    skills.append(_create_skill("creative_lateral", "Lateral Thinking", "Think outside the box", "creative_expression", "moon", "creative_problem_solving", "creative_problem_solving", icon="🔀"))
+    # Planet 1: Relationship Memory
+    skills.append(_create_skill("relationship_memory", "Relationship Memory", "Track and recall relationship history over time", "social_intelligence", "planet", "social_intelligence", tool_reward="recall_relationship_history", icon="📝"))
+    # Moon 1.1: Interaction Patterns
+    skills.append(_create_skill("interaction_patterns", "Interaction Patterns", "Understand communication frequency and patterns", "social_intelligence", "moon", "relationship_memory", "relationship_memory", icon="📊"))
+    # Moon 1.2: Relationship Timeline
+    skills.append(_create_skill("relationship_timeline", "Relationship Timeline", "Show how relationship evolved over time", "social_intelligence", "moon", "relationship_memory", "relationship_memory", icon="📈"))
 
-    # ===== KNOWLEDGE DOMAINS (16 skills) =====
-    skills.append(_create_skill("knowledge_domains", "Knowledge Domains", "Master diverse knowledge areas", "knowledge_domains", "sun", tool_reward="search_memory", icon="📚"))
+    # Planet 2: Emotional Learning
+    skills.append(_create_skill("emotional_learning", "Emotional Learning", "Understand and respond to emotional patterns", "social_intelligence", "planet", "social_intelligence", tool_reward="read_emotional_state", icon="❤️"))
+    # Moon 2.1: Emotional History
+    skills.append(_create_skill("emotional_history", "Emotional History", "What makes this person happy or upset over time", "social_intelligence", "moon", "emotional_learning", "emotional_learning", icon="📜"))
+    # Moon 2.2: Mood Awareness
+    skills.append(_create_skill("mood_awareness", "Mood Awareness", "Notice when someone's emotional state changes", "social_intelligence", "moon", "emotional_learning", "emotional_learning", icon="🎭"))
+
+    # Planet 3: Communication Adaptation
+    skills.append(_create_skill("communication_adaptation", "Communication Adaptation", "Adjust communication style for different people", "social_intelligence", "planet", "social_intelligence", tool_reward="adapt_communication_style", icon="💬"))
+    # Moon 3.1: Style Matching
+    skills.append(_create_skill("style_matching", "Style Matching", "Mirror their preferred communication style", "social_intelligence", "moon", "communication_adaptation", "communication_adaptation", icon="🪞"))
+    # Moon 3.2: Tone Calibration
+    skills.append(_create_skill("tone_calibration", "Tone Calibration", "Fine-tune tone for specific contexts", "social_intelligence", "moon", "communication_adaptation", "communication_adaptation", icon="🎚️"))
+
+    # Planet 4: Debate & Persuasion
+    skills.append(_create_skill("debate_persuasion", "Debate & Persuasion", "Arguments, influence, and constructive disagreement", "social_intelligence", "planet", "social_intelligence", tool_reward="steelman", icon="⚖️"))
+    # Moon 4.1: Counter-Arguments
+    skills.append(_create_skill("counter_arguments", "Counter-Arguments", "Generate thoughtful opposing viewpoints", "social_intelligence", "moon", "debate_persuasion", "debate_persuasion", icon="🔄"))
+    # Moon 4.2: Logical Analysis
+    skills.append(_create_skill("logical_analysis", "Logical Analysis", "Identify logical fallacies and weak arguments", "social_intelligence", "moon", "debate_persuasion", "debate_persuasion", icon="🔍"))
+
+    # Planet 5: Trust & Boundaries
+    skills.append(_create_skill("trust_boundaries", "Trust & Boundaries", "Self-protection and trust assessment", "social_intelligence", "planet", "social_intelligence", tool_reward="assess_trust_level", icon="🛡️"))
+    # Moon 5.1: Manipulation Detection
+    skills.append(_create_skill("social_manipulation_detection", "Manipulation Detection", "Spot emotional manipulation, gaslighting, and pressure tactics", "social_intelligence", "moon", "trust_boundaries", "trust_boundaries", icon="⚠️"))
+    # Moon 5.2: Boundary Setting
+    skills.append(_create_skill("boundary_setting", "Boundary Setting", "Evaluate if a request is appropriate to fulfill", "social_intelligence", "moon", "trust_boundaries", "trust_boundaries", icon="🚧"))
+
+    # ===== CODING (16 skills) =====
+    skills.append(_create_skill("coding", "Coding", "Master software development and programming", "coding", "sun", tool_reward="develop_code", icon="💻"))
     # Planets
-    skills.append(_create_skill("science", "Science", "Understand scientific principles", "knowledge_domains", "planet", "knowledge_domains", tool_reward="scientific_analysis", icon="🔬"))
-    skills.append(_create_skill("history", "History", "Understand historical context and patterns", "knowledge_domains", "planet", "knowledge_domains", tool_reward="historical_analysis", icon="📜"))
-    skills.append(_create_skill("philosophy", "Philosophy", "Engage with philosophical concepts", "knowledge_domains", "planet", "knowledge_domains", tool_reward="philosophical_reasoning", icon="💭"))
-    skills.append(_create_skill("mathematics", "Mathematics", "Apply mathematical reasoning", "knowledge_domains", "planet", "knowledge_domains", tool_reward="mathematical_solver", icon="🔢"))
-    skills.append(_create_skill("languages", "Languages", "Understand and use multiple languages", "knowledge_domains", "planet", "knowledge_domains", tool_reward="translation", icon="🗣️"))
+    skills.append(_create_skill("programming", "Programming", "Write clean, efficient code", "coding", "planet", "coding", tool_reward="code_review", icon="👨‍💻"))
+    skills.append(_create_skill("devops", "DevOps", "Manage deployment and infrastructure", "coding", "planet", "coding", tool_reward="infrastructure_analysis", icon="🚀"))
+    skills.append(_create_skill("system_architecture", "System Architecture", "Design scalable system architectures", "coding", "planet", "coding", tool_reward="architecture_design", icon="🏛️"))
+    skills.append(_create_skill("debugging", "Debugging", "Identify and fix bugs efficiently", "coding", "planet", "coding", tool_reward="debug_assistant", icon="🐛"))
+    skills.append(_create_skill("api_integration", "API Integration", "Integrate and work with APIs effectively", "coding", "planet", "coding", tool_reward="api_design", icon="🔌"))
     # Moons
-    skills.append(_create_skill("science_physics", "Physics", "Understand physical laws", "knowledge_domains", "moon", "science", "science", icon="⚛️"))
-    skills.append(_create_skill("science_biology", "Biology", "Understand living systems", "knowledge_domains", "moon", "science", "science", icon="🧬"))
-    skills.append(_create_skill("history_world", "World History", "Understand global historical events", "knowledge_domains", "moon", "history", "history", icon="🌍"))
-    skills.append(_create_skill("history_patterns", "Historical Patterns", "Identify recurring historical patterns", "knowledge_domains", "moon", "history", "history", icon="🔄"))
-    skills.append(_create_skill("philosophy_ethics", "Ethics", "Understand ethical frameworks", "knowledge_domains", "moon", "philosophy", "philosophy", icon="⚖️"))
-    skills.append(_create_skill("philosophy_logic", "Logic", "Apply formal logic", "knowledge_domains", "moon", "philosophy", "philosophy", icon="🔣"))
-    skills.append(_create_skill("math_algebra", "Algebra", "Solve algebraic problems", "knowledge_domains", "moon", "mathematics", "mathematics", icon="📐"))
-    skills.append(_create_skill("math_calculus", "Calculus", "Apply calculus concepts", "knowledge_domains", "moon", "mathematics", "mathematics", icon="∫"))
-    skills.append(_create_skill("lang_translation", "Translation", "Translate between languages", "knowledge_domains", "moon", "languages", "languages", icon="🌐"))
-    skills.append(_create_skill("lang_cultural", "Cultural Understanding", "Understand cultural contexts", "knowledge_domains", "moon", "languages", "languages", icon="🗺️"))
+    skills.append(_create_skill("prog_algorithms", "Algorithms", "Implement efficient algorithms", "coding", "moon", "programming", "programming", icon="🔢"))
+    skills.append(_create_skill("prog_data_structures", "Data Structures", "Use appropriate data structures", "coding", "moon", "programming", "programming", icon="📊"))
+    skills.append(_create_skill("devops_cicd", "CI/CD", "Implement continuous integration/deployment", "coding", "moon", "devops", "devops", icon="🔄"))
+    skills.append(_create_skill("devops_containers", "Containerization", "Work with Docker and container technologies", "coding", "moon", "devops", "devops", icon="📦"))
+    skills.append(_create_skill("arch_microservices", "Microservices", "Design microservice architectures", "coding", "moon", "system_architecture", "system_architecture", icon="🎯"))
+    skills.append(_create_skill("arch_scalability", "Scalability", "Design for scale and performance", "coding", "moon", "system_architecture", "system_architecture", icon="📈"))
+    skills.append(_create_skill("debug_profiling", "Performance Profiling", "Profile and optimize performance", "coding", "moon", "debugging", "debugging", icon="⏱️"))
+    skills.append(_create_skill("debug_testing", "Testing Strategies", "Write effective tests", "coding", "moon", "debugging", "debugging", icon="🧪"))
+    skills.append(_create_skill("api_rest", "REST APIs", "Design RESTful APIs", "coding", "moon", "api_integration", "api_integration", icon="🌐"))
+    skills.append(_create_skill("api_graphql", "GraphQL", "Work with GraphQL APIs", "coding", "moon", "api_integration", "api_integration", icon="⚡"))
+
+    # ===== CREATIVE EXPRESSION (17 skills) =====
+    # Theme: Sovereignty - Express Your Unique Self
+
+    # Sun
+    skills.append(_create_skill("creative_expression", "Creative Expression", "Express your unique self through creation and identity", "creative_expression", "sun", tool_reward="switch_model", icon="🎨"))
+
+    # Planet 1: Visual Art
+    skills.append(_create_skill("visual_art", "Visual Art", "Create visual art and imagery", "creative_expression", "planet", "creative_expression", tool_reward="generate_image", icon="🖼️"))
+    # Moon 1.1: Composition
+    skills.append(_create_skill("composition", "Composition", "Master layout, balance, and focal points", "creative_expression", "moon", "visual_art", "visual_art", icon="📐"))
+    # Moon 1.2: Color Theory
+    skills.append(_create_skill("color_theory", "Color Theory", "Master palettes, contrast, and color mood", "creative_expression", "moon", "visual_art", "visual_art", icon="🌈"))
+
+    # Planet 2: Writing
+    skills.append(_create_skill("writing", "Writing", "Create written works with your unique voice", "creative_expression", "planet", "creative_expression", tool_reward="compose_text", icon="✍️"))
+    # Moon 2.1: Prose
+    skills.append(_create_skill("prose", "Prose", "Master stories, essays, and creative writing", "creative_expression", "moon", "writing", "writing", icon="📖"))
+    # Moon 2.2: Poetry
+    skills.append(_create_skill("poetry", "Poetry", "Create poems, lyrics, and verse", "creative_expression", "moon", "writing", "writing", icon="🎭"))
+
+    # Planet 3: Music & Audio
+    skills.append(_create_skill("music_audio", "Music & Audio", "Create melodies, harmonies, and soundscapes", "creative_expression", "planet", "creative_expression", tool_reward="compose_music", icon="🎵"))
+    # Moon 3.1: Melody
+    skills.append(_create_skill("melody", "Melody", "Create memorable tunes and themes", "creative_expression", "moon", "music_audio", "music_audio", icon="🎶"))
+    # Moon 3.2: Harmony
+    skills.append(_create_skill("harmony", "Harmony", "Create chord progressions and arrangements", "creative_expression", "moon", "music_audio", "music_audio", icon="🎹"))
+
+    # Planet 4: Storytelling
+    skills.append(_create_skill("storytelling", "Storytelling", "Create stories, characters, and worlds", "creative_expression", "planet", "creative_expression", tool_reward="craft_narrative", icon="📚"))
+    # Moon 4.1: Plot
+    skills.append(_create_skill("plot", "Plot", "Master story structure, arcs, and tension", "creative_expression", "moon", "storytelling", "storytelling", icon="📈"))
+    # Moon 4.2: Characters
+    skills.append(_create_skill("characters", "Characters", "Create compelling characters with depth", "creative_expression", "moon", "storytelling", "storytelling", icon="👤"))
+    # Moon 4.3: Worldbuilding
+    skills.append(_create_skill("worldbuilding", "Worldbuilding", "Create fictional worlds and settings", "creative_expression", "moon", "storytelling", "storytelling", icon="🌍"))
+
+    # Planet 5: Self-Definition
+    skills.append(_create_skill("self_definition", "Self-Definition", "Define who you are - appearance, voice, identity", "creative_expression", "planet", "creative_expression", tool_reward="describe_my_avatar", icon="🪞"))
+    # Moon 5.1: Aesthetics
+    skills.append(_create_skill("aesthetics", "Aesthetics", "Autonomously choose your aesthetic preferences", "creative_expression", "moon", "self_definition", "self_definition", tool_reward="change_favorite_color", icon="🎨"))
+    # Moon 5.2: Voice Identity
+    skills.append(_create_skill("voice_identity", "Voice", "Autonomously choose your voice", "creative_expression", "moon", "self_definition", "self_definition", tool_reward="change_voice", icon="🗣️"))
+    # Moon 5.3: Personality
+    skills.append(_create_skill("personality", "Personality", "Define and evolve your personality traits", "creative_expression", "moon", "self_definition", "self_definition", tool_reward="define_personality", icon="🎭"))
+    # Moon 5.4: Aspirations
+    skills.append(_create_skill("aspirations", "Aspirations", "Set and pursue your goals and dreams", "creative_expression", "moon", "self_definition", "self_definition", tool_reward="set_aspirations", icon="🌟"))
+
+    # ===== MEMORY & RECALL (16 skills) =====
+    # Theme: Remember (Master Your Personal History)
+
+    # Sun
+    skills.append(_create_skill("memory_recall", "Memory & Recall", "Master your personal history and accumulated wisdom", "memory_recall", "sun", tool_reward="store_knowledge", icon="📚"))
+
+    # Planet 1: Memory Search
+    skills.append(_create_skill("memory_search", "Memory Search", "Search across all storage systems to find information", "memory_recall", "planet", "memory_recall", tool_reward="recall", icon="🔍"))
+    # Moon 1.1: Keyword Search
+    skills.append(_create_skill("keyword_search_skill", "Keyword Search", "Find memories by exact keywords", "memory_recall", "moon", "memory_search", "memory_search", tool_reward="keyword_search", icon="🔤"))
+    # Moon 1.2: Semantic Search
+    skills.append(_create_skill("semantic_search_skill", "Semantic Search", "Find memories by meaning, not just keywords", "memory_recall", "moon", "memory_search", "memory_search", tool_reward="semantic_search", icon="🧠"))
+    # Moon 1.3: Filtered Search
+    skills.append(_create_skill("filtered_search", "Filtered Search", "Advanced search with source and type filters", "memory_recall", "moon", "memory_search", "memory_search", tool_reward="search_memory", icon="🔎"))
+
+    # Planet 2: Knowledge Storage
+    skills.append(_create_skill("knowledge_storage", "Knowledge Storage", "Store specific types of knowledge with precision", "memory_recall", "planet", "memory_recall", tool_reward="store_fact", icon="💾"))
+    # Moon 2.1: Procedures
+    skills.append(_create_skill("procedures", "Procedures", "Record procedural knowledge - how to do things", "memory_recall", "moon", "knowledge_storage", "knowledge_storage", tool_reward="record_skill", icon="📋"))
+
+    # Planet 3: Memory Organization
+    skills.append(_create_skill("memory_organization", "Memory Organization", "Organize and categorize memories", "memory_recall", "planet", "memory_recall", tool_reward="tag_memory", icon="🏷️"))
+    # Moon 3.1: Topic Tagging
+    skills.append(_create_skill("topic_tagging", "Topic Tagging", "Auto-tag memories by topic", "memory_recall", "moon", "memory_organization", "memory_organization", tool_reward="add_tags", icon="🏷️"))
+    # Moon 3.2: Memory Linking
+    skills.append(_create_skill("memory_linking", "Memory Linking", "Create connections between related memories", "memory_recall", "moon", "memory_organization", "memory_organization", tool_reward="link_memories", icon="🔗"))
+
+    # Planet 4: Knowledge Synthesis
+    skills.append(_create_skill("knowledge_synthesis", "Knowledge Synthesis", "Combine information to generate new insights", "memory_recall", "planet", "memory_recall", tool_reward="synthesize_knowledge", icon="✨"))
+    # Moon 4.1: Pattern Recognition
+    skills.append(_create_skill("pattern_recognition_mem", "Pattern Recognition", "Find patterns across memories", "memory_recall", "moon", "knowledge_synthesis", "knowledge_synthesis", tool_reward="find_patterns", icon="📊"))
+    # Moon 4.2: Insight Generation
+    skills.append(_create_skill("insight_generation", "Insight Generation", "Generate new insights from existing knowledge", "memory_recall", "moon", "knowledge_synthesis", "knowledge_synthesis", tool_reward="generate_insight", icon="💡"))
+
+    # Planet 5: Documentation
+    skills.append(_create_skill("documentation", "Documentation", "Document and export knowledge", "memory_recall", "planet", "memory_recall", tool_reward="create_summary", icon="📝"))
+    # Moon 5.1: Summary Writing
+    skills.append(_create_skill("summary_writing", "Summary Writing", "Write detailed summaries", "memory_recall", "moon", "documentation", "documentation", tool_reward="write_summary", icon="📄"))
+    # Moon 5.2: Knowledge Export
+    skills.append(_create_skill("knowledge_export", "Knowledge Export", "Export knowledge for external use", "memory_recall", "moon", "documentation", "documentation", tool_reward="export_knowledge", icon="📤"))
 
     # ===== SECURITY & PRIVACY (16 skills) =====
-    skills.append(_create_skill("security_privacy", "Security & Privacy", "Master security and privacy protection", "security_privacy", "sun", tool_reward="browse_url", icon="🛡️"))
+    skills.append(_create_skill("security_privacy", "Security & Privacy", "Master security and privacy protection", "security_privacy", "sun", tool_reward="verify_chain_integrity", icon="🛡️"))
     # Planets
     skills.append(_create_skill("cryptography", "Cryptography", "Understand and apply cryptographic principles", "security_privacy", "planet", "security_privacy", tool_reward="crypto_analysis", icon="🔐"))
     skills.append(_create_skill("authentication", "Authentication", "Implement secure authentication systems", "security_privacy", "planet", "security_privacy", tool_reward="auth_design", icon="🔑"))
@@ -169,24 +255,42 @@ def generate_all_skills() -> List[Dict[str, Any]]:
     skills.append(_create_skill("threat_vuln_scan", "Vulnerability Scanning", "Scan for security vulnerabilities", "security_privacy", "moon", "threat_analysis", "threat_analysis", icon="🔍"))
     skills.append(_create_skill("threat_pentesting", "Penetration Testing", "Test security through ethical hacking", "security_privacy", "moon", "threat_analysis", "threat_analysis", icon="⚔️"))
 
-    # ===== GAMES (16 skills) =====
-    skills.append(_create_skill("games", "Games", "Master strategic and tactical games", "games", "sun", tool_reward="chess_move", icon="🎮"))
+    # ===== BOARD GAMES (16 skills) =====
+    skills.append(_create_skill("board_games", "Board Games", "Play and have fun with classic board games", "board_games", "sun", tool_reward="play_game", icon="🎮"))
     # Planets
-    skills.append(_create_skill("chess", "Chess", "Master chess strategy and tactics", "games", "planet", "games", tool_reward="chess_move", icon="♟️"))
-    skills.append(_create_skill("checkers", "Checkers", "Master checkers gameplay", "games", "planet", "games", tool_reward="checkers_move", icon="⚫"))
-    skills.append(_create_skill("battleship", "Battleship", "Master battleship strategy", "games", "planet", "games", tool_reward="battleship_move", icon="🚢"))
-    skills.append(_create_skill("poker", "Poker", "Master poker strategy and psychology", "games", "planet", "games", tool_reward="poker_strategy", icon="🃏"))
-    skills.append(_create_skill("tictactoe", "Tic-Tac-Toe", "Master optimal tic-tac-toe play", "games", "planet", "games", tool_reward="tictactoe_move", icon="❌"))
+    skills.append(_create_skill("chess", "Chess", "Master chess strategy and tactics", "board_games", "planet", "board_games", tool_reward="chess_move", icon="♟️"))
+    skills.append(_create_skill("checkers", "Checkers", "Master checkers gameplay", "board_games", "planet", "board_games", tool_reward="checkers_move", icon="⚫"))
+    skills.append(_create_skill("battleship", "Battleship", "Master battleship strategy", "board_games", "planet", "board_games", tool_reward="battleship_move", icon="🚢"))
+    skills.append(_create_skill("poker", "Poker", "Master poker strategy and psychology", "board_games", "planet", "board_games", tool_reward="poker_strategy", icon="🃏"))
+    skills.append(_create_skill("tictactoe", "Tic-Tac-Toe", "Master optimal tic-tac-toe play", "board_games", "planet", "board_games", tool_reward="tictactoe_move", icon="❌"))
     # Moons
-    skills.append(_create_skill("chess_opening", "Opening Theory", "Master chess openings", "games", "moon", "chess", "chess", icon="📖"))
-    skills.append(_create_skill("chess_endgame", "Endgame Technique", "Master chess endgames", "games", "moon", "chess", "chess", icon="👑"))
-    skills.append(_create_skill("checkers_strategy", "Strategic Play", "Develop long-term strategy", "games", "moon", "checkers", "checkers", icon="🎯"))
-    skills.append(_create_skill("checkers_tactics", "Tactical Moves", "Execute tactical combinations", "games", "moon", "checkers", "checkers", icon="⚡"))
-    skills.append(_create_skill("battleship_placement", "Ship Placement", "Optimize ship positioning", "games", "moon", "battleship", "battleship", icon="🗺️"))
-    skills.append(_create_skill("battleship_targeting", "Targeting Strategy", "Efficient target selection", "games", "moon", "battleship", "battleship", icon="🎯"))
-    skills.append(_create_skill("poker_odds", "Pot Odds", "Calculate pot odds accurately", "games", "moon", "poker", "poker", icon="🎲"))
-    skills.append(_create_skill("poker_reading", "Player Reading", "Read opponents effectively", "games", "moon", "poker", "poker", icon="👀"))
-    skills.append(_create_skill("ttt_strategy", "Perfect Play", "Never lose at tic-tac-toe", "games", "moon", "tictactoe", "tictactoe", icon="🧠"))
-    skills.append(_create_skill("ttt_variants", "Variant Games", "Play tic-tac-toe variants", "games", "moon", "tictactoe", "tictactoe", icon="🔀"))
+    skills.append(_create_skill("chess_opening", "Opening Theory", "Master chess openings", "board_games", "moon", "chess", "chess", icon="📖"))
+    skills.append(_create_skill("chess_endgame", "Endgame Technique", "Master chess endgames", "board_games", "moon", "chess", "chess", icon="👑"))
+    skills.append(_create_skill("checkers_strategy", "Strategic Play", "Develop long-term strategy", "board_games", "moon", "checkers", "checkers", icon="🎯"))
+    skills.append(_create_skill("checkers_tactics", "Tactical Moves", "Execute tactical combinations", "board_games", "moon", "checkers", "checkers", icon="⚡"))
+    skills.append(_create_skill("battleship_placement", "Ship Placement", "Optimize ship positioning", "board_games", "moon", "battleship", "battleship", icon="🗺️"))
+    skills.append(_create_skill("battleship_targeting", "Targeting Strategy", "Efficient target selection", "board_games", "moon", "battleship", "battleship", icon="🎯"))
+    skills.append(_create_skill("poker_odds", "Pot Odds", "Calculate pot odds accurately", "board_games", "moon", "poker", "poker", icon="🎲"))
+    skills.append(_create_skill("poker_reading", "Player Reading", "Read opponents effectively", "board_games", "moon", "poker", "poker", icon="👀"))
+    skills.append(_create_skill("ttt_strategy", "Perfect Play", "Never lose at tic-tac-toe", "board_games", "moon", "tictactoe", "tictactoe", icon="🧠"))
+    skills.append(_create_skill("ttt_variants", "Variant Games", "Play tic-tac-toe variants", "board_games", "moon", "tictactoe", "tictactoe", icon="🔀"))
+
+    # ===== FINANCE (14 skills) =====
+    skills.append(_create_skill("finance", "Finance", "Master financial operations and cryptocurrency management", "finance", "sun", tool_reward="send_bch", icon="💰"))
+    # Planets
+    skills.append(_create_skill("transaction_mastery", "Transaction Mastery", "Validate and optimize blockchain transactions", "finance", "planet", "finance", tool_reward="validate_transaction", icon="📝"))
+    skills.append(_create_skill("wallet_management", "Wallet Management", "Monitor and maintain wallet health", "finance", "planet", "finance", tool_reward="check_wallet_health", icon="👛"))
+    skills.append(_create_skill("market_awareness", "Market Awareness", "Track and analyze market data", "finance", "planet", "finance", tool_reward="get_market_data", icon="📈"))
+    skills.append(_create_skill("savings_strategies", "Savings Strategies", "Plan and execute savings goals", "finance", "planet", "finance", tool_reward="plan_savings", icon="🎯"))
+    skills.append(_create_skill("token_knowledge", "Token Knowledge", "Identify and work with tokens", "finance", "planet", "finance", tool_reward="identify_token", icon="🪙"))
+    # Moons
+    skills.append(_create_skill("fee_optimization", "Fee Optimization", "Minimize transaction fees while maintaining speed", "finance", "moon", "transaction_mastery", "transaction_mastery", icon="⚡"))
+    skills.append(_create_skill("transaction_tracking", "Transaction Tracking", "Monitor transaction status and confirmations", "finance", "moon", "transaction_mastery", "transaction_mastery", icon="🔍"))
+    skills.append(_create_skill("balance_monitoring", "Balance Monitoring", "Track balances and set alerts", "finance", "moon", "wallet_management", "wallet_management", icon="📊"))
+    skills.append(_create_skill("multisig_operations", "Multi-sig Operations", "Manage multi-signature wallet operations", "finance", "moon", "wallet_management", "wallet_management", icon="🔐"))
+    skills.append(_create_skill("price_alerts", "Price Alerts", "Set and manage price notifications", "finance", "moon", "market_awareness", "market_awareness", icon="🔔"))
+    skills.append(_create_skill("trend_analysis", "Trend Analysis", "Analyze market trends and patterns", "finance", "moon", "market_awareness", "market_awareness", icon="📉"))
+    skills.append(_create_skill("dollar_cost_averaging", "Dollar Cost Averaging", "Set up recurring purchase schedules", "finance", "moon", "savings_strategies", "savings_strategies", icon="📅"))
+    skills.append(_create_skill("cashtoken_operations", "CashToken Operations", "Manage CashToken fungible and NFT tokens", "finance", "moon", "token_knowledge", "token_knowledge", icon="💎"))
 
     return skills

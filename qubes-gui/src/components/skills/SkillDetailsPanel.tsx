@@ -251,7 +251,7 @@ export const SkillDetailsPanel = memo(({ skill, category, allSkills, qubeId, onC
                     {description && (
                       <div className="text-text-secondary">{description}</div>
                     )}
-                    {xpGained !== null && (
+                    {xpGained !== null && xpGained !== undefined && (
                       <div className="text-accent-primary">+{formatXP(xpGained)} XP</div>
                     )}
                   </div>

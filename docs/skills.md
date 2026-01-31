@@ -87,7 +87,7 @@ When a skill reaches level 100, it unlocks a tool:
 | AI Reasoning Sun | `describe_my_avatar` |
 | Technical Expertise Sun | `web_search` |
 | Knowledge Domains Sun | `search_memory` |
-| Security & Privacy Sun | `browse_url` |
+| Security & Privacy Sun | `verify_chain_integrity` |
 | Games Sun | `describe_my_skills` |
 
 ## XP Sources

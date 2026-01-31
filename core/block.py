@@ -26,6 +26,30 @@ class BlockType(str, Enum):
     COLLABORATIVE_MEMORY = "COLLABORATIVE_MEMORY"
     SUMMARY = "SUMMARY"
     GAME = "GAME"
+    LEARNING = "LEARNING"  # Cross-cutting knowledge storage
+
+
+# LEARNING Block Content Schema
+# Used by multiple Suns to persist learned knowledge
+#
+# content = {
+#     "learning_type": str,       # fact, procedure, synthesis, insight, pattern, relationship, threat, trust
+#     "source_block": int,        # Block number that triggered this learning (optional)
+#     "source_block_type": str,   # MESSAGE, ACTION, GAME, SUMMARY (optional)
+#     "source_category": str,     # Which Sun/context created this (e.g., "social_intelligence")
+#     "confidence": int,          # 0-100
+#
+#     # Type-specific fields:
+#     # fact: {"fact": str, "subject": str, "source": str}
+#     # procedure: {"steps": List[str], "context": str}
+#     # synthesis: {"combined_from": List[int], "synthesis": str}
+#     # insight: {"insight": str, "evidence": List[int]}
+#     # pattern: {"pattern": str, "occurrences": int}
+#     # relationship: {"entity_id": str, "relationship_type": str, "details": Dict}
+#     # threat: {"threat_type": str, "severity": int, "details": Dict}
+#     # trust: {"entity_id": str, "trust_delta": int, "reason": str}
+# }
+VALID_LEARNING_TYPES = {"fact", "procedure", "synthesis", "insight", "pattern", "relationship", "threat", "trust"}
 
 
 class Block(BaseModel):
@@ -828,6 +852,72 @@ def create_game_block(
         content=content,
         encrypted=False,  # GAME blocks are PUBLIC - enables signature verification by third parties
         temporary=False,  # Games are always permanent
+        previous_hash=previous_hash
+    )
+
+    block.block_hash = block.compute_hash()
+    return block
+
+
+def create_learning_block(
+    qube_id: str,
+    block_number: int,
+    previous_hash: str,
+    learning_type: str,
+    content_data: Dict[str, Any],
+    source_block: Optional[int] = None,
+    source_block_type: Optional[str] = None,
+    source_category: Optional[str] = None,
+    confidence: int = 80
+) -> Block:
+    """
+    Create LEARNING block for persisting knowledge.
+
+    LEARNING blocks are cross-cutting knowledge storage used by multiple Suns.
+    They capture facts, procedures, insights, patterns, and relationships
+    learned through interactions.
+
+    Args:
+        qube_id: Qube identifier
+        block_number: Block number in chain
+        previous_hash: Hash of previous block
+        learning_type: One of: fact, procedure, synthesis, insight, pattern, relationship, threat, trust
+        content_data: Type-specific content fields
+        source_block: Block number that triggered this learning (optional)
+        source_block_type: Type of source block (optional)
+        source_category: Which Sun/context created this (optional)
+        confidence: Confidence level 0-100 (default 80)
+
+    Returns:
+        LEARNING block
+
+    Raises:
+        ValueError: If learning_type is invalid
+    """
+    if learning_type not in VALID_LEARNING_TYPES:
+        raise ValueError(f"Invalid learning_type: {learning_type}. Must be one of {VALID_LEARNING_TYPES}")
+
+    content = {
+        "learning_type": learning_type,
+        "confidence": confidence,
+        **content_data
+    }
+
+    # Optional source tracking
+    if source_block is not None:
+        content["source_block"] = source_block
+    if source_block_type is not None:
+        content["source_block_type"] = source_block_type
+    if source_category is not None:
+        content["source_category"] = source_category
+
+    block = Block(
+        block_type=BlockType.LEARNING,
+        qube_id=qube_id,
+        block_number=block_number,
+        content=content,
+        encrypted=True,  # LEARNING blocks are encrypted (contain personal knowledge)
+        temporary=False,  # LEARNINGs are always permanent
         previous_hash=previous_hash
     )
 

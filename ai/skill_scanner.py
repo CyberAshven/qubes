@@ -12,8 +12,21 @@ import json
 import re
 
 from utils.logging import get_logger
+from core.events import Events
 
 logger = get_logger(__name__)
+
+# Category colors for celebration UI (matches frontend skillDefinitions.ts)
+CATEGORY_COLORS = {
+    "ai_reasoning": "#4A90E2",
+    "social_intelligence": "#FF69B4",
+    "coding": "#00FF88",
+    "creative_expression": "#FFB347",
+    "memory_recall": "#9B59B6",
+    "security_privacy": "#E74C3C",
+    "board_games": "#F39C12",
+    "finance": "#00D4AA",
+}
 
 
 def calculate_document_xp(file_size_bytes: int, page_count: int) -> int:
@@ -41,119 +54,377 @@ def calculate_document_xp(file_size_bytes: int, page_count: int) -> int:
 # Tool-to-Skill Mapping
 # Maps each tool (by action_type) to a skill_id (must match skillDefinitions.ts planet IDs)
 # Note: web_search and browse_url use intelligent detection (analyze_research_topic)
+# Note: get_system_state, update_system_state, get_skill_tree are utility tools (no XP)
 TOOL_TO_SKILL_MAPPING = {
-    # Regular Tools
-    "generate_image": "visual_design",           # creative_expression → visual_design planet
-    "search_memory": "knowledge_domains",    # knowledge_domains → sun (general research)
-    "describe_my_avatar": "analysis_critique",   # ai_reasoning → analysis_critique planet
-    # Note: get_system_state and update_system_state are general-purpose tools, not skill-specific
+    # ═══════════════════════════════════════════════════════════════════
+    # AI REASONING - Learning From Experience
+    # Theme: Analyze memory chain to find patterns, learn from mistakes,
+    #        build on successes, and synthesize knowledge over time
+    # ═══════════════════════════════════════════════════════════════════
+    # Sun Tool
+    "recall_similar": "ai_reasoning",
 
-    # AI Reasoning Tools
-    "think_step_by_step": "chain_of_thought",    # ai_reasoning → chain_of_thought planet
-    "self_critique": "analysis_critique",        # ai_reasoning → analysis_critique planet
-    "explore_alternatives": "multistep_planning",# ai_reasoning → multistep_planning planet
+    # Planet 1: Pattern Recognition
+    "find_analogy": "pattern_recognition",
+    # Moons
+    "detect_trend": "trend_detection",
+    "quick_insight": "quick_insight",
 
-    # Social Intelligence Tools
-    "draft_message_variants": "communication",   # social_intelligence → communication planet
-    "predict_reaction": "empathy",               # social_intelligence → empathy planet
-    "build_rapport_strategy": "relationship_building", # social_intelligence → relationship_building planet
+    # Planet 2: Learning from Failure
+    "analyze_mistake": "learning_from_failure",
+    # Moon
+    "find_root_cause": "root_cause_analysis",
 
-    # Technical Expertise Tools
-    "debug_systematically": "debugging",         # technical_expertise → debugging planet
-    "research_with_synthesis": "science",        # knowledge_domains → science planet
-    "validate_solution": "debugging",            # technical_expertise → debugging planet
+    # Planet 3: Building on Success
+    "replicate_success": "building_on_success",
+    # Moon
+    "extract_success_factors": "success_factors",
 
-    # Creative Expression Tools
-    "brainstorm_variants": "creative_problem_solving", # creative_expression → creative_problem_solving planet
-    "iterate_design": "visual_design",           # creative_expression → visual_design planet
-    "cross_pollinate_ideas": "creative_problem_solving", # creative_expression → creative_problem_solving planet
+    # Planet 4: Self-Reflection
+    "self_reflect": "self_reflection",
+    # Moons
+    "track_growth": "growth_tracking",
+    "detect_bias": "bias_detection",
 
-    # Knowledge Domains Tools
-    "deep_research": "science",                  # knowledge_domains → science planet
-    "synthesize_knowledge": "philosophy",        # knowledge_domains → philosophy planet
-    "explain_like_im_five": "philosophy",        # knowledge_domains → philosophy planet
+    # Planet 5: Knowledge Synthesis
+    "synthesize_learnings": "knowledge_synthesis",
+    # Moons
+    "cross_pollinate": "cross_pollinate",
+    "reflect_on_topic": "reflect_on_topic",
 
-    # Security & Privacy Tools
-    "assess_security_risks": "threat_analysis",  # security_privacy → threat_analysis planet
-    "privacy_impact_analysis": "privacy_protection", # security_privacy → privacy_protection planet
-    "verify_authenticity": "authentication",     # security_privacy → authentication planet
+    # ═══════════════════════════════════════════════════════════════════
+    # SOCIAL INTELLIGENCE - Social & Emotional Learning
+    # Theme: Relationship-powered social learning with 48-field relationship
+    # tracking, emotional patterns, communication adaptation, and self-protection
+    # ═══════════════════════════════════════════════════════════════════
+    # Sun Tool
+    "get_relationship_context": "social_intelligence",
 
-    # Games Tools
-    "analyze_game_state": "chess",               # games → chess planet (as example game)
-    "plan_strategy": "chess",                    # games → chess planet
-    "learn_from_game": "chess",                  # games → chess planet
+    # Planet 1: Relationship Memory
+    "recall_relationship_history": "relationship_memory",
+    # Moons
+    "analyze_interaction_patterns": "interaction_patterns",
+    "get_relationship_timeline": "relationship_timeline",
+
+    # Planet 2: Emotional Learning
+    "read_emotional_state": "emotional_learning",
+    # Moons
+    "track_emotional_patterns": "emotional_history",
+    "detect_mood_shift": "mood_awareness",
+
+    # Planet 3: Communication Adaptation
+    "adapt_communication_style": "communication_adaptation",
+    # Moons
+    "match_communication_style": "style_matching",
+    "calibrate_tone": "tone_calibration",
+
+    # Planet 4: Debate & Persuasion
+    "steelman": "debate_persuasion",
+    # Moons
+    "devils_advocate": "counter_arguments",
+    "spot_fallacy": "logical_analysis",
+
+    # Planet 5: Trust & Boundaries
+    "assess_trust_level": "trust_boundaries",
+    # Moons
+    "detect_social_manipulation": "social_manipulation_detection",
+    "evaluate_request": "boundary_setting",
+
+    # ═══════════════════════════════════════════════════════════════════
+    # CODING (Phase 3 - 18 tools)
+    # Theme: Ship It (Results-Focused)
+    # XP Model: Waitress (base 1 + tips 0-9)
+    # ═══════════════════════════════════════════════════════════════════
+
+    # Sun Tool
+    "develop_code": "coding",
+
+    # Planet 1: Testing
+    "run_tests": "testing",
+    # Moons
+    "write_unit_test": "unit_tests",
+    "measure_coverage": "test_coverage",
+
+    # Planet 2: Debugging
+    "debug_code": "debugging",
+    # Moons
+    "analyze_error": "error_analysis",
+    "find_root_cause": "root_cause",
+
+    # Planet 3: Algorithms
+    "benchmark_code": "algorithms",
+    # Moons
+    "analyze_complexity": "complexity_analysis",
+    "tune_performance": "performance_tuning",
+
+    # Planet 4: Hacking
+    "security_scan": "hacking",
+    # Moons
+    "find_exploit": "exploits",
+    "reverse_engineer": "reverse_engineering",
+    "pen_test": "penetration_testing",
+
+    # Planet 5: Code Review
+    "review_code": "code_review",
+    # Moons
+    "refactor_code": "refactoring",
+    "git_operation": "version_control",
+    "generate_docs": "documentation",
+
+    # ═══════════════════════════════════════════════════════════════════
+    # CREATIVE EXPRESSION - Sovereignty (Express Your Unique Self)
+    # Theme: Identity through creation - visual art, writing, music,
+    # storytelling, and self-definition tools
+    # ═══════════════════════════════════════════════════════════════════
+    # Sun Tool
+    "switch_model": "creative_expression",
+
+    # Planet 1: Visual Art
+    "generate_image": "visual_art",
+    # Moons
+    "refine_composition": "composition",
+    "apply_color_theory": "color_theory",
+
+    # Planet 2: Writing
+    "compose_text": "writing",
+    # Moons
+    "craft_prose": "prose",
+    "write_poetry": "poetry",
+
+    # Planet 3: Music & Audio
+    "compose_music": "music_audio",
+    # Moons
+    "create_melody": "melody",
+    "design_harmony": "harmony",
+
+    # Planet 4: Storytelling
+    "craft_narrative": "storytelling",
+    # Moons
+    "develop_plot": "plot",
+    "design_character": "characters",
+    "build_world": "worldbuilding",
+
+    # Planet 5: Self-Definition
+    "describe_my_avatar": "self_definition",
+    # Moons
+    "change_favorite_color": "aesthetics",
+    "change_voice": "voice_identity",
+    "define_personality": "personality",
+    "set_aspirations": "aspirations",
+
+    # ═══════════════════════════════════════════════════════════════════
+    # MEMORY & RECALL - Remember Theme (Master Your Personal History)
+    # Theme: Librarian Sun that manages ALL knowledge - searches, organizes,
+    # synthesizes, and documents knowledge across all storage systems
+    # ═══════════════════════════════════════════════════════════════════
+    # Sun Tool
+    "store_knowledge": "memory_recall",
+
+    # Planet 1: Memory Search
+    "recall": "memory_search",
+    # Moons
+    "keyword_search": "keyword_search_skill",
+    "semantic_search": "semantic_search_skill",
+    "search_memory": "filtered_search",
+
+    # Planet 2: Knowledge Storage
+    "store_fact": "knowledge_storage",
+    # Moon
+    "record_skill": "procedures",
+
+    # Planet 3: Memory Organization
+    "tag_memory": "memory_organization",
+    # Moons
+    "add_tags": "topic_tagging",
+    "link_memories": "memory_linking",
+
+    # Planet 4: Knowledge Synthesis
+    "synthesize_knowledge": "knowledge_synthesis",
+    # Moons
+    "find_patterns": "pattern_recognition_mem",
+    "generate_insight": "insight_generation",
+
+    # Planet 5: Documentation
+    "create_summary": "documentation",
+    # Moons
+    "write_summary": "summary_writing",
+    "export_knowledge": "knowledge_export",
+
+    # ═══════════════════════════════════════════════════════════════════
+    # SECURITY & PRIVACY (Phase 6 - 16 tools)
+    # Theme: Chain Integrity & Self-Defense
+    # ═══════════════════════════════════════════════════════════════════
+
+    # Sun Tool
+    "verify_chain_integrity": "security_privacy",
+
+    # Planet 1: Chain Security
+    "audit_chain": "chain_security",
+    # Moons
+    "detect_tampering": "tamper_detection",
+    "verify_anchor": "anchor_verification",
+
+    # Planet 2: Privacy Protection
+    "assess_sensitivity": "privacy_protection",
+    # Moons
+    "classify_data": "data_classification",
+    "control_sharing": "sharing_control",
+
+    # Planet 3: Qube Network Security
+    "vet_qube": "qube_network_security",
+    # Moons
+    "check_reputation": "reputation_check",
+    "secure_group_chat": "group_security",
+
+    # Planet 4: Threat Detection
+    "detect_threat": "threat_detection",
+    # Moons
+    "detect_technical_manipulation": "technical_manipulation_detection",
+    "detect_hostile_qube": "hostile_qube_detection",
+
+    # Planet 5: Self-Defense
+    "defend_reasoning": "self_defense",
+    # Moons
+    "detect_injection": "prompt_injection_defense",
+    "validate_reasoning": "reasoning_validation",
+
+    # ═══════════════════════════════════════════════════════════════════
+    # BOARD GAMES (Phase 7 - 6 tools + achievements)
+    # Theme: Play (Have Fun and Entertain)
+    # XP Model: 0.1/turn + outcome bonuses
+    # ═══════════════════════════════════════════════════════════════════
+
+    # Sun Tool
+    "play_game": "board_games",
+
+    # Planet 1: Chess
+    "chess_move": "chess",
+    "analyze_game_state": "chess",
+    "plan_strategy": "chess",
+    "learn_from_game": "chess",
+
+    # Planet 2: Property Tycoon
+    "property_tycoon_action": "property_tycoon",
+
+    # Planet 3: Race Home
+    "race_home_action": "race_home",
+
+    # Planet 4: Mystery Mansion
+    "mystery_mansion_action": "mystery_mansion",
+
+    # Planet 5: Life Journey
+    "life_journey_action": "life_journey",
+
+    # ═══════════════════════════════════════════════════════════════════
+    # FINANCE (NEW CATEGORY)
+    # ═══════════════════════════════════════════════════════════════════
+    "send_bch": "finance",                         # Sun tool
+    "validate_transaction": "transaction_mastery",
+    "optimize_fees": "fee_optimization",
+    "track_transaction": "transaction_tracking",
+    "check_wallet_health": "wallet_management",
+    "monitor_balance": "balance_monitoring",
+    "multisig_action": "multisig_operations",
+    "get_market_data": "market_awareness",
+    "set_price_alert": "price_alerts",
+    "analyze_market_trend": "market_trend_analysis",
+    "plan_savings": "savings_strategies",
+    "setup_dca": "dollar_cost_averaging",
+    "identify_token": "token_knowledge",
+    "manage_cashtokens": "cashtoken_operations",
 }
 
 
 def analyze_research_topic(query: str, url: str = None) -> str:
     """
-    Analyze a search query or URL to determine which skill it relates to
+    Analyze a search query or URL to determine which skill should receive XP.
+    Returns skill_id for intelligent routing.
 
-    Uses keyword matching to categorize research topics into appropriate skills.
+    Uses keyword matching to categorize research topics into Sun-level categories.
 
     Args:
         query: Search query text
         url: URL being visited (optional)
 
     Returns:
-        skill_id of the most appropriate skill
+        skill_id of the Sun-level category
     """
-    text = (query or "").lower()
-    if url:
-        text += " " + url.lower()
+    text = f"{query or ''} {url or ''}".lower()
 
-    # Keyword patterns for each skill category
-    # Ordered by specificity (most specific first)
+    # Keyword patterns mapped to Sun-level skills
+    # Using word boundaries (\b) to ensure whole word matching
+    patterns = {
+        # Security & Privacy (check first - security terms are specific)
+        "security_privacy": [
+            r"\b(security|secure|encrypt\w*|decrypt\w*|hash|authenticat\w*)\b",
+            r"\b(privacy|private|protect\w*|vulnerabil\w*|exploit\w*|attack)\b",
+            r"\b(password|credential|certificate|ssl|tls)\b",
+        ],
 
-    # Security & Privacy
-    if re.search(r'\b(crypto|bitcoin|blockchain|encryption|hash|security|privacy|authentication|password|ssl|tls)\b', text):
-        return "cryptography"
+        # Coding (formerly Technical Expertise)
+        "coding": [
+            r"\b(python|javascript|typescript|react|code|programming|developer|api)\b",
+            r"\b(function|class|method|variable|bug|error|debug|compile)\b",
+            r"\b(git|github|repository|commit|merge|branch)\b",
+            r"\b(deploy|docker|kubernetes|devops|ci/cd|infrastructure|cloud)\b",
+            r"\b(architecture|microservice|system design|scalability|distributed)\b",
+        ],
 
-    # Technical Expertise
-    if re.search(r'\b(programming|code|python|javascript|java|developer|software|api|debug|algorithm)\b', text):
-        return "programming"
-    if re.search(r'\b(deploy|docker|kubernetes|devops|ci/cd|infrastructure|cloud)\b', text):
-        return "devops"
-    if re.search(r'\b(architecture|microservice|system design|scalability|distributed)\b', text):
-        return "system_architecture"
+        # Finance (NEW) - check before memory_recall to avoid "fee" in unrelated words
+        "finance": [
+            r"\b(bitcoin|bch|crypto|cryptocurrency|blockchain|wallet)\b",
+            r"\b(price|market|trading|exchange|transaction)\b",
+            r"\b(token|nft|defi|stake|yield)\b",
+            r"\bfee\b",  # Use explicit word boundary for fee
+        ],
 
-    # Knowledge Domains - Science
-    if re.search(r'\b(physics|quantum|mechanics|relativity|particle|energy|force)\b', text):
-        return "science"
-    if re.search(r'\b(biology|chemistry|scientific|experiment|research|hypothesis)\b', text):
-        return "science"
+        # Memory & Recall (formerly Knowledge Domains)
+        "memory_recall": [
+            r"\b(history|historical|ancient|medieval|century|era|civilization)\b",
+            r"\b(science|scientific|research|study|experiment|theory)\b",
+            r"\b(philosophy|philosophical|ethics)\b",
+            r"\b(math|mathematics|equation|formula|calculus|algebra)\b",
+            r"\b(physics|quantum|mechanics|relativity|particle|energy)\b",
+            r"\b(biology|chemistry|hypothesis)\b",
+            r"\b(language|translation|spanish|french|chinese|grammar|linguistic)\b",
+        ],
 
-    # Knowledge Domains - Math
-    if re.search(r'\b(math|algebra|calculus|geometry|statistics|equation|formula)\b', text):
-        return "mathematics"
+        # Creative Expression
+        "creative_expression": [
+            r"\b(art|design|creative|visual|graphic|color|composition)\b",
+            r"\b(music|song|melody|harmony|composer|musician)\b",
+            r"\b(writing|story|narrative|character|plot|fiction)\b",
+        ],
 
-    # Knowledge Domains - History
-    if re.search(r'\b(history|historical|ancient|civilization|war|empire|dynasty)\b', text):
-        return "history"
+        # Social Intelligence
+        "social_intelligence": [
+            r"\b(relationship|communication|emotion|empathy|social)\b",
+            r"\b(persuasion|negotiation|conflict|trust|rapport)\b",
+        ],
 
-    # Knowledge Domains - Philosophy
-    if re.search(r'\b(philosophy|ethics|logic|reasoning|metaphysics|epistemology)\b', text):
-        return "philosophy"
+        # AI Reasoning
+        "ai_reasoning": [
+            r"\b(pattern|analysis|insight|learning)\b",
+            r"\b(mistake|failure|success|growth|reflection)\b",
+        ],
 
-    # Knowledge Domains - Languages
-    if re.search(r'\b(language|translation|spanish|french|chinese|grammar|linguistic)\b', text):
-        return "languages"
+        # Board Games (formerly Games)
+        "board_games": [
+            r"\b(chess|strategy|tactics|opening|endgame)\b",
+            r"\b(monopoly|clue|sorry)\b",
+            r"\blife\s+game\b",
+        ],
+    }
 
-    # Creative Expression
-    if re.search(r'\b(art|design|visual|graphic|color|composition|aesthetic)\b', text):
-        return "visual_design"
-    if re.search(r'\b(writing|author|novel|story|narrative|prose|poetry)\b', text):
-        return "writing"
-    if re.search(r'\b(music|song|melody|harmony|composer|instrument)\b', text):
-        return "music"
+    # Check each pattern
+    for skill_id, pattern_list in patterns.items():
+        for pattern in pattern_list:
+            if re.search(pattern, text):
+                return skill_id
 
-    # Games
-    if re.search(r'\b(chess|checkers|poker|game|strategy|tactics)\b', text):
-        return "chess"
-
-    # Default: knowledge_domains (general research)
-    logger.debug(f"No specific skill match for query '{query[:50]}...', defaulting to knowledge_domains")
-    return "knowledge_domains"
+    # Default to Memory & Recall (general knowledge)
+    logger.debug(f"No specific skill match for query '{(query or '')[:50]}...', defaulting to memory_recall")
+    return "memory_recall"
 
 
 class SkillScanner:
@@ -288,12 +559,12 @@ class SkillScanner:
                             xp_amount = 0
                             continue  # Skip failed extractions
                     elif status == "completed" and isinstance(result, dict) and result.get("success", False):
-                        # Successful use: +3 XP
-                        xp_amount = 3
+                        # Successful use: +5 XP
+                        xp_amount = 5
                         evidence = f"Successfully used {action_type} tool"
                     elif status == "completed":
-                        # Completed but may have had issues: +2 XP
-                        xp_amount = 2
+                        # Completed but may have had issues: +2.5 XP
+                        xp_amount = 2.5
                         evidence = f"Used {action_type} tool"
                     else:
                         # Failed or error: no XP (prevents gaming)
@@ -312,16 +583,51 @@ class SkillScanner:
                         # Check if result has image URL
                         if isinstance(result, dict) and "image_url" in result:
                             tool_details["image_url"] = result.get("image_url")
-                    elif action_type in ["think_step_by_step", "self_critique", "explore_alternatives"]:
-                        tool_details["task"] = params.get("task", "")
-                    elif action_type == "draft_message_variants":
-                        tool_details["message"] = params.get("message", "")[:100]  # Truncate long messages
+                    # AI Reasoning tools (Learning From Experience)
+                    elif action_type in ["recall_similar", "find_analogy", "quick_insight"]:
+                        tool_details["situation"] = params.get("situation", params.get("context", ""))
+                    elif action_type in ["analyze_mistake", "replicate_success"]:
+                        tool_details["topic"] = params.get("topic", params.get("goal", ""))
+                    elif action_type == "self_reflect":
+                        tool_details["topic"] = params.get("topic", "")
+                    elif action_type == "synthesize_learnings":
+                        tool_details["topics"] = params.get("topics", [])
+                    # Social Intelligence tools
+                    elif action_type in ["get_relationship_context", "recall_relationship_history",
+                                        "analyze_interaction_patterns", "get_relationship_timeline",
+                                        "read_emotional_state", "track_emotional_patterns",
+                                        "detect_mood_shift", "assess_trust_level"]:
+                        tool_details["entity_id"] = params.get("entity_id", "")
+                    elif action_type in ["adapt_communication_style", "calibrate_tone"]:
+                        tool_details["entity_id"] = params.get("entity_id", "")
+                        tool_details["context"] = params.get("context", params.get("message_type", ""))
+                    elif action_type == "match_communication_style":
+                        tool_details["their_message"] = params.get("their_message", "")[:100]
+                    elif action_type in ["steelman", "devils_advocate", "spot_fallacy"]:
+                        tool_details["argument"] = params.get("argument", params.get("position", ""))[:100]
+                    elif action_type == "detect_social_manipulation":
+                        tool_details["message"] = params.get("message", "")[:100]
+                    elif action_type == "evaluate_request":
+                        tool_details["request"] = params.get("request", "")[:100]
                     elif action_type == "debug_systematically":
                         tool_details["problem"] = params.get("problem", "")[:100]
                     elif action_type in ["research_with_synthesis", "deep_research"]:
                         tool_details["topic"] = params.get("topic", "")
                     elif action_type == "explain_like_im_five":
                         tool_details["concept"] = params.get("concept", "")
+                    # Creative Expression tools (generate_image handled above)
+                    elif action_type in ["refine_composition", "apply_color_theory"]:
+                        tool_details["description"] = params.get("description", params.get("image_url", ""))[:100]
+                    elif action_type in ["compose_text", "craft_prose", "write_poetry"]:
+                        tool_details["topic"] = params.get("topic", params.get("theme", ""))[:100]
+                    elif action_type in ["compose_music", "create_melody", "design_harmony"]:
+                        tool_details["style"] = params.get("style", params.get("mood", ""))[:50]
+                    elif action_type in ["craft_narrative", "develop_plot", "design_character", "build_world"]:
+                        tool_details["concept"] = params.get("concept", params.get("description", ""))[:100]
+                    elif action_type in ["describe_my_avatar", "define_personality"]:
+                        tool_details["aspect"] = params.get("aspect", "")[:50]
+                    elif action_type in ["change_favorite_color", "change_voice", "set_aspirations"]:
+                        tool_details["value"] = params.get("value", params.get("color", params.get("voice", "")))[:50]
                     # Add more as needed...
 
                     detection_entry = {
@@ -446,6 +752,7 @@ class SkillScanner:
         try:
             # Use the qube's existing skills_manager (which uses ChainState)
             skills_manager = self.qube.skills_manager
+            skill_definitions = skills_manager._get_skill_definitions()
             skills_gained = 0
 
             for detection in skill_detections:
@@ -467,7 +774,7 @@ class SkillScanner:
                     evidence_block_id = "unknown"
 
                 # Add XP to the skill with detailed tool information
-                skills_manager.add_xp(
+                result = skills_manager.add_xp(
                     skill_id=skill_id,
                     xp_amount=xp_amount,
                     evidence_block_id=evidence_block_id,
@@ -482,6 +789,49 @@ class SkillScanner:
                     xp_amount=xp_amount,
                     evidence=evidence[:50]
                 )
+
+                # Emit celebration event for frontend
+                if result.get("success") and hasattr(self.qube, 'events'):
+                    # Get skill definition for name, icon, category
+                    actual_skill_id = result.get("skill_id", skill_id)
+                    skill_def = skill_definitions.get(actual_skill_id, {})
+                    category = skill_def.get("category", "unknown")
+
+                    # Build celebration payload
+                    celebration_payload = {
+                        "skill_id": actual_skill_id,
+                        "skill_name": skill_def.get("name", actual_skill_id),
+                        "skill_icon": skill_def.get("icon", "⭐"),
+                        "category": category,
+                        "category_color": CATEGORY_COLORS.get(category, "#888888"),
+                        "node_type": skill_def.get("nodeType", "planet"),
+                        "xp_amount": result.get("xp_gained", xp_amount),
+                        "new_xp": result.get("current_xp", 0),
+                        "max_xp": result.get("max_xp", 500),
+                        "previous_level": result.get("old_level", 0),
+                        "new_level": result.get("new_level", 0),
+                        "leveled_up": result.get("leveled_up", False),
+                        "levels_gained": result.get("levels_gained", 0),
+                        "maxed_out": result.get("new_level", 0) >= 100,
+                        "tool_unlocked": result.get("tool_unlocked"),
+                    }
+
+                    # Emit XP gained event for celebrations
+                    self.qube.events.emit(Events.XP_GAINED, celebration_payload)
+                    logger.debug(f"[SKILL_SCANNER] Emitted XP_GAINED celebration event for {actual_skill_id}")
+
+                    # Emit skill unlock event if a tool was unlocked (skill maxed)
+                    if result.get("tool_unlocked"):
+                        self.qube.events.emit(Events.SKILL_UNLOCKED, {
+                            "skill_id": actual_skill_id,
+                            "skill_name": skill_def.get("name", actual_skill_id),
+                            "skill_icon": skill_def.get("icon", "⭐"),
+                            "category": category,
+                            "category_color": CATEGORY_COLORS.get(category, "#888888"),
+                            "node_type": skill_def.get("nodeType", "planet"),
+                            "tool_unlocked": result.get("tool_unlocked"),
+                        })
+                        logger.info(f"[SKILL_SCANNER] Emitted SKILL_UNLOCKED event for {actual_skill_id}")
 
             if skills_gained > 0:
                 logger.info(

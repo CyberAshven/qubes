@@ -23,6 +23,8 @@ from core.block import (
     create_memory_anchor_block,
     create_collaborative_memory_block,
     create_summary_block,
+    create_learning_block,
+    VALID_LEARNING_TYPES,
 )
 
 
@@ -693,3 +695,124 @@ class TestBlockEdgeCases:
 
         assert block.block_number == 0
         assert block.block_type == BlockType.THOUGHT
+
+
+# ==============================================================================
+# LEARNING BLOCK TESTS (Phase 0)
+# ==============================================================================
+
+class TestLearningBlockType:
+    """Test the LEARNING block type exists and works correctly"""
+
+    @pytest.mark.unit
+    def test_learning_block_type_exists(self):
+        """Verify LEARNING block type is defined"""
+        assert hasattr(BlockType, 'LEARNING')
+        assert BlockType.LEARNING.value == "LEARNING"
+
+    @pytest.mark.unit
+    def test_valid_learning_types(self):
+        """Verify all learning types are defined"""
+        expected_types = {"fact", "procedure", "synthesis", "insight", "pattern", "relationship", "threat", "trust"}
+        assert VALID_LEARNING_TYPES == expected_types
+
+    @pytest.mark.unit
+    def test_create_learning_block_fact(self):
+        """Verify LEARNING block creation for fact type"""
+        block = create_learning_block(
+            qube_id="TEST1234",
+            block_number=42,
+            previous_hash="abc123",
+            learning_type="fact",
+            content_data={"fact": "The sky is blue"},
+            confidence=95
+        )
+
+        assert block.block_type == BlockType.LEARNING
+        assert block.block_number == 42
+        assert block.qube_id == "TEST1234"
+        assert block.previous_hash == "abc123"
+        assert block.content["learning_type"] == "fact"
+        assert block.content["fact"] == "The sky is blue"
+        assert block.content["confidence"] == 95
+
+    @pytest.mark.unit
+    def test_create_learning_block_insight(self):
+        """Verify LEARNING block creation for insight type"""
+        block = create_learning_block(
+            qube_id="TEST1234",
+            block_number=43,
+            previous_hash="def456",
+            learning_type="insight",
+            content_data={"insight": "Users prefer simplicity"},
+            source_block=10,
+            source_block_type="MESSAGE"
+        )
+
+        assert block.block_type == BlockType.LEARNING
+        assert block.content["learning_type"] == "insight"
+        assert block.content["insight"] == "Users prefer simplicity"
+        assert block.content["source_block"] == 10
+        assert block.content["source_block_type"] == "MESSAGE"
+
+    @pytest.mark.unit
+    def test_create_learning_block_threat(self):
+        """Verify LEARNING block creation for threat type"""
+        block = create_learning_block(
+            qube_id="TEST1234",
+            block_number=44,
+            previous_hash="ghi789",
+            learning_type="threat",
+            content_data={
+                "threat_type": "phishing",
+                "threat_description": "Suspicious email pattern detected",
+                "severity": "high"
+            },
+            confidence=80
+        )
+
+        assert block.block_type == BlockType.LEARNING
+        assert block.content["learning_type"] == "threat"
+        assert block.content["threat_type"] == "phishing"
+        assert block.content["severity"] == "high"
+
+    @pytest.mark.unit
+    def test_create_learning_block_invalid_type(self):
+        """Verify LEARNING block rejects invalid learning types"""
+        with pytest.raises(ValueError) as exc_info:
+            create_learning_block(
+                qube_id="TEST1234",
+                block_number=45,
+                previous_hash="jkl012",
+                learning_type="invalid_type",
+                content_data={"data": "test"}
+            )
+
+        assert "Invalid learning_type" in str(exc_info.value)
+
+    @pytest.mark.unit
+    def test_create_learning_block_default_confidence(self):
+        """Verify LEARNING block uses default confidence of 80"""
+        block = create_learning_block(
+            qube_id="TEST1234",
+            block_number=46,
+            previous_hash="mno345",
+            learning_type="pattern",
+            content_data={"pattern": "Users log in between 9-10 AM"}
+        )
+
+        assert block.content["confidence"] == 80
+
+    @pytest.mark.unit
+    def test_learning_block_all_types(self):
+        """Verify all learning types can be used"""
+        for learning_type in VALID_LEARNING_TYPES:
+            block = create_learning_block(
+                qube_id="TEST1234",
+                block_number=50,
+                previous_hash="test123",
+                learning_type=learning_type,
+                content_data={learning_type: f"Test {learning_type} content"}
+            )
+
+            assert block.content["learning_type"] == learning_type

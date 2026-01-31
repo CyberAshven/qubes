@@ -255,6 +255,13 @@ class Qube:
             self.skills_manager = SkillsManager(self.chain_state)
 
         # =====================================================================
+        # QUBE LOCKER (storage for creative works and documents)
+        # =====================================================================
+
+        from core.locker import QubeLocker
+        self.locker = QubeLocker(str(qube_data_dir))
+
+        # =====================================================================
         # WALLET TRANSACTION MANAGER (migrates from files if needed)
         # =====================================================================
 

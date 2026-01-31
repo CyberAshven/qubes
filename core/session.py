@@ -1632,7 +1632,14 @@ Summary:"""
         elif action_type in ["think_step_by_step", "self_critique", "explore_alternatives"]:
             return f"[Reasoning: {action_type.replace('_', ' ')}]"
 
-        elif action_type in ["draft_message_variants", "predict_reaction", "build_rapport_strategy"]:
+        elif action_type in ["get_relationship_context", "recall_relationship_history",
+                              "analyze_interaction_patterns", "get_relationship_timeline",
+                              "read_emotional_state", "track_emotional_patterns",
+                              "detect_mood_shift", "adapt_communication_style",
+                              "match_communication_style", "calibrate_tone",
+                              "steelman", "devils_advocate", "spot_fallacy",
+                              "assess_trust_level", "detect_social_manipulation",
+                              "evaluate_request"]:
             return f"[Social: {action_type.replace('_', ' ')}]"
 
         elif action_type in ["debug_systematically", "research_with_synthesis", "validate_solution"]:

@@ -648,7 +648,7 @@ Example tool mappings:
 - **Technical Expertise** → web_search
 - **Creative Expression** → generate_image
 - **Knowledge Domains** → search_memory
-- **Security & Privacy** → browse_url
+- **Security & Privacy** → verify_chain_integrity
 - **Games** → describe_my_skills
 
 ### The Solar System Visualization

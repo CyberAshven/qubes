@@ -15,6 +15,8 @@ import { useAutoLock } from './hooks/useAutoLock';
 import { AudioProvider } from './contexts/AudioContext';
 import { ChainStateProvider } from './contexts/ChainStateContext';
 import { VoiceLibraryProvider } from './contexts/VoiceLibraryContext';
+import { CelebrationProvider } from './contexts/CelebrationContext';
+import { CelebrationOverlay } from './components/celebrations';
 import { Qube } from './types';
 
 // Check if we're in dev mode
@@ -351,8 +353,12 @@ function App() {
     <AudioProvider>
       <ChainStateProvider>
       <VoiceLibraryProvider>
+      <CelebrationProvider>
       {/* Lock Screen Overlay */}
       <LockScreen />
+
+      {/* Celebration UI (XP toasts, level-ups, etc) */}
+      <CelebrationOverlay />
 
       <div className={`h-screen w-screen flex flex-col bg-bg-primary ${isLocked ? 'invisible' : ''}`}>
         {/* Title Bar */}
@@ -404,6 +410,7 @@ function App() {
           />
         )}
       </div>
+      </CelebrationProvider>
       </VoiceLibraryProvider>
       </ChainStateProvider>
     </AudioProvider>

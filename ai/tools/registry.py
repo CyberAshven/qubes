@@ -17,25 +17,74 @@ logger = get_logger(__name__)
 # Core tools that are always available regardless of skill level
 # These are essential for basic qube functionality
 ALWAYS_AVAILABLE_TOOLS: Set[str] = {
-    # Unified System State tools (single source of truth)
+    # Utility tools (no XP)
     "get_system_state",      # Read all state: relationships, skills, owner_info, mood, wallet, etc.
     "update_system_state",   # Write state: owner_info, mood, skills, settings
     "get_skill_tree",        # View all possible skills and progress
-    # Memory operations (search blocks directly)
-    "search_memory",
-    # Basic information
-    "describe_my_avatar",
-    # Web access
+
+    # Sun tools (always available, earn XP for their category)
+    "recall_similar",            # AI Reasoning Sun
+    "get_relationship_context",  # Social Intelligence Sun
+    "verify_chain_integrity",    # Security & Privacy Sun
+    "switch_model",              # Creative Expression Sun
+    "send_bch",                  # Finance Sun
+    "play_game",                 # Board Games Sun
+    "store_knowledge",           # Memory & Recall Sun
+    "develop_code",              # Coding Sun
+
+    # Intelligent routing tools (XP based on content)
     "web_search",
     "browse_url",
-    # Image generation
     "generate_image",
-    # Games (runtime check for active game)
+
+    # Planet tools (unlocked from start)
+    # AI Reasoning planets
+    "find_analogy",
+    "analyze_mistake",
+    "replicate_success",
+    "self_reflect",
+    "synthesize_learnings",
+    # Social Intelligence planets
+    "recall_relationship_history",
+    "read_emotional_state",
+    "adapt_communication_style",
+    "steelman",
+    "assess_trust_level",
+    # Coding planets
+    "run_tests",
+    "debug_code",
+    "benchmark_code",
+    "security_scan",
+    "review_code",
+    # Creative Expression planets
+    "compose_text",
+    "compose_music",
+    "craft_narrative",
+    "describe_my_avatar",
+    # Memory & Recall planets
+    "recall",
+    "store_fact",
+    "tag_memory",
+    "synthesize_knowledge",
+    "create_summary",
+    # Security & Privacy planets
+    "audit_chain",
+    "assess_sensitivity",
+    "vet_qube",
+    "detect_threat",
+    "defend_reasoning",
+    # Board Games planets
     "chess_move",
-    # Wallet operations
-    "send_bch",
-    # Model switching
-    "switch_model",
+    "property_tycoon_action",
+    "race_home_action",
+    "mystery_mansion_action",
+    "life_journey_action",
+    # Finance planets
+    "validate_transaction",
+    "check_wallet_health",
+    "get_market_data",
+    "plan_savings",
+    "identify_token",
     # Note: Document processing happens automatically in gui_bridge.py
     # No tool needed - results injected as tool results in reasoner.py
 }

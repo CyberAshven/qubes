@@ -6,6 +6,7 @@ import { useChainState } from '../../contexts/ChainStateContext';
 import { useUpdater } from '../../hooks/useUpdater';
 import { useQubeSelection } from '../../hooks/useQubeSelection';
 import { VoiceSettingsPanel } from '../settings/VoiceSettingsPanel';
+import { useCelebration } from '../../contexts/CelebrationContext';
 
 interface APIKeyStatus {
   provider: string;
@@ -75,6 +76,7 @@ interface MemoryConfig {
 export const SettingsTab: React.FC = () => {
   const { userId, password, autoLockEnabled, autoLockTimeout, setAutoLockSettings } = useAuth();
   const { invalidateCache, loadChainState } = useChainState();
+  const { settings: celebrationSettings, updateSettings: updateCelebrationSettings } = useCelebration();
 
   const {
     updateAvailable,
@@ -202,6 +204,7 @@ export const SettingsTab: React.FC = () => {
     voiceSettings: true,
     decisionIntelligence: true,
     security: true,
+    celebrationSettings: true,
     softwareUpdates: true,
   });
 
@@ -1861,6 +1864,149 @@ export const SettingsTab: React.FC = () => {
                   </div>
                 )}
               </div>
+                </>
+              )}
+            </GlassCard>
+
+            {/* Celebration Settings */}
+            <GlassCard className="p-4 mt-4">
+              <button
+                onClick={() => togglePanel('celebrationSettings')}
+                className="w-full flex items-center justify-between text-left"
+              >
+                <h2 className="text-lg font-display text-text-primary">
+                  &#127881; Celebrations
+                </h2>
+                <span className={`text-text-tertiary transition-transform ${collapsedPanels.celebrationSettings ? '' : 'rotate-180'}`}>
+                  &#9660;
+                </span>
+              </button>
+
+              {!collapsedPanels.celebrationSettings && (
+                <>
+                  <p className="text-[10px] text-text-tertiary mb-3 mt-2">
+                    Configure visual and audio feedback for XP gains and level-ups.
+                  </p>
+
+                  <div className="space-y-4">
+                    {/* Master toggle */}
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <h3 className="text-sm font-medium text-text-primary">Enable Celebrations</h3>
+                        <p className="text-[10px] text-text-tertiary">
+                          Show visual feedback for XP and level-ups
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => updateCelebrationSettings({ enabled: !celebrationSettings.enabled })}
+                        className={`w-12 h-6 rounded-full transition-colors duration-200 relative ${
+                          celebrationSettings.enabled ? 'bg-accent-primary' : 'bg-white/20'
+                        }`}
+                      >
+                        <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform duration-200 ${
+                          celebrationSettings.enabled ? 'translate-x-7' : 'translate-x-1'
+                        }`} />
+                      </button>
+                    </div>
+
+                    {/* Sub-settings (only shown when enabled) */}
+                    {celebrationSettings.enabled && (
+                      <div className="pl-4 border-l-2 border-accent-primary/30 space-y-3">
+                        {/* XP Toasts */}
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs text-text-secondary">XP Gain Notifications</span>
+                          <button
+                            onClick={() => updateCelebrationSettings({ xpToasts: !celebrationSettings.xpToasts })}
+                            className={`w-10 h-5 rounded-full transition-colors duration-200 relative ${
+                              celebrationSettings.xpToasts ? 'bg-accent-primary/80' : 'bg-white/20'
+                            }`}
+                          >
+                            <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform duration-200 ${
+                              celebrationSettings.xpToasts ? 'translate-x-5' : 'translate-x-0.5'
+                            }`} />
+                          </button>
+                        </div>
+
+                        {/* Level-up modals */}
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs text-text-secondary">Level-Up Celebrations</span>
+                          <button
+                            onClick={() => updateCelebrationSettings({ levelUpModals: !celebrationSettings.levelUpModals })}
+                            className={`w-10 h-5 rounded-full transition-colors duration-200 relative ${
+                              celebrationSettings.levelUpModals ? 'bg-accent-primary/80' : 'bg-white/20'
+                            }`}
+                          >
+                            <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform duration-200 ${
+                              celebrationSettings.levelUpModals ? 'translate-x-5' : 'translate-x-0.5'
+                            }`} />
+                          </button>
+                        </div>
+
+                        {/* Unlock animations */}
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs text-text-secondary">Skill Unlock Animations</span>
+                          <button
+                            onClick={() => updateCelebrationSettings({ unlockAnimations: !celebrationSettings.unlockAnimations })}
+                            className={`w-10 h-5 rounded-full transition-colors duration-200 relative ${
+                              celebrationSettings.unlockAnimations ? 'bg-accent-primary/80' : 'bg-white/20'
+                            }`}
+                          >
+                            <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform duration-200 ${
+                              celebrationSettings.unlockAnimations ? 'translate-x-5' : 'translate-x-0.5'
+                            }`} />
+                          </button>
+                        </div>
+
+                        {/* Confetti */}
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs text-text-secondary">Confetti Effects</span>
+                          <button
+                            onClick={() => updateCelebrationSettings({ confetti: !celebrationSettings.confetti })}
+                            className={`w-10 h-5 rounded-full transition-colors duration-200 relative ${
+                              celebrationSettings.confetti ? 'bg-accent-primary/80' : 'bg-white/20'
+                            }`}
+                          >
+                            <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform duration-200 ${
+                              celebrationSettings.confetti ? 'translate-x-5' : 'translate-x-0.5'
+                            }`} />
+                          </button>
+                        </div>
+
+                        {/* Sounds */}
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs text-text-secondary">Sound Effects</span>
+                          <button
+                            onClick={() => updateCelebrationSettings({ sounds: !celebrationSettings.sounds })}
+                            className={`w-10 h-5 rounded-full transition-colors duration-200 relative ${
+                              celebrationSettings.sounds ? 'bg-accent-primary/80' : 'bg-white/20'
+                            }`}
+                          >
+                            <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform duration-200 ${
+                              celebrationSettings.sounds ? 'translate-x-5' : 'translate-x-0.5'
+                            }`} />
+                          </button>
+                        </div>
+
+                        {/* Reduced motion */}
+                        <div className="flex items-center justify-between pt-2 border-t border-white/10">
+                          <div>
+                            <span className="text-xs text-text-secondary">Reduced Motion</span>
+                            <p className="text-[9px] text-text-tertiary">Disable animations for accessibility</p>
+                          </div>
+                          <button
+                            onClick={() => updateCelebrationSettings({ reducedMotion: !celebrationSettings.reducedMotion })}
+                            className={`w-10 h-5 rounded-full transition-colors duration-200 relative ${
+                              celebrationSettings.reducedMotion ? 'bg-accent-primary/80' : 'bg-white/20'
+                            }`}
+                          >
+                            <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform duration-200 ${
+                              celebrationSettings.reducedMotion ? 'translate-x-5' : 'translate-x-0.5'
+                            }`} />
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </>
               )}
             </GlassCard>
