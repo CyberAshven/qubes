@@ -302,7 +302,7 @@ IMPORTANT RULES:
             if last_msg.get("role") == "assistant" and "[Tool results]" in last_msg.get("content", ""):
                 new_messages.append({
                     "role": "user",
-                    "content": "Please respond based on the tool results above."
+                    "content": "Now interpret the tool results above and give me a helpful response. What did the tool find? Summarize the results for me."
                 })
                 logger.debug("added_continuation_prompt_after_tool_results")
 
