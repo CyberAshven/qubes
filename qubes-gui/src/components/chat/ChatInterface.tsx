@@ -1686,8 +1686,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
               </React.Fragment>
             ))}
 
-            {/* Current turn tool calls (shown in real-time during loading) */}
-            {isLoading && selectedQubes.length > 0 && (() => {
+            {/* Current turn tool calls (shown during loading AND TTS generation) */}
+            {(isLoading || isGeneratingTTS) && selectedQubes.length > 0 && (() => {
               // Get the block number of the last qube message
               let lastQubeBlockNumber: number | null = null;
               for (let i = messages.length - 1; i >= 0; i--) {
