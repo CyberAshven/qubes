@@ -31,7 +31,7 @@ interface ChatResponse {
   qube_name?: string;
   message?: string;
   response?: string;
-  timestamp?: string;
+  timestamp?: number;  // Unix timestamp in seconds from backend MESSAGE block
   current_model?: string;
   current_provider?: string;
   error?: string;
@@ -48,7 +48,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
   const [processingStage, setProcessingStage] = useState<'document' | 'response' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [lastResponseText, setLastResponseText] = useState<string>('');
-  const [pendingResponse, setPendingResponse] = useState<{ qubeName: string; content: string } | null>(null);
+  const [pendingResponse, setPendingResponse] = useState<{ qubeName: string; content: string; timestamp?: number; blockNumber?: number } | null>(null);
   const [activeTypewriterMessageId, setActiveTypewriterMessageId] = useState<string | null>(null);
   const [currentModel, setCurrentModel] = useState<string | null>(null); // Local model state for header updates
   const [isRecording, setIsRecording] = useState(false);
@@ -66,11 +66,14 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
   const [completedActionBlocks, setCompletedActionBlocks] = useState<Array<{
     action_type: string;
     timestamp: number;
+    blockNumber: number;  // Sequence number for reliable association
     parameters: any;
     result: any;
     status: string;
   }>>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);  // Scroll container for smart scroll
+  const isUserAtBottomRef = useRef<boolean>(true);  // Track if user is at bottom (use ref to avoid re-renders)
   const recognitionRef = useRef<any>(null);
   const pendingTypewriterRef = useRef<string | null>(null); // Track message waiting for typewriter activation
   const processingResponseRef = useRef<string | null>(null); // Track which response is being processed (guards against double execution)
@@ -147,10 +150,32 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
   const messages = selectedQubes.length > 0 ? getMessages(selectedQubes[0].qube_id) : [];
   const uploadedFiles = selectedQubes.length > 0 ? getUploadedFiles(selectedQubes[0].qube_id) : [];
 
-  // Scroll to bottom helper function
-  const scrollToBottom = () => {
+  // Check if user is near the bottom of the scroll container (within 100px)
+  const checkIfAtBottom = useCallback(() => {
+    const container = messagesContainerRef.current;
+    if (!container) return true;
+    const threshold = 100; // pixels from bottom to consider "at bottom"
+    const isAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < threshold;
+    return isAtBottom;
+  }, []);
+
+  // Handle scroll events to track user position
+  const handleScroll = useCallback(() => {
+    isUserAtBottomRef.current = checkIfAtBottom();
+  }, [checkIfAtBottom]);
+
+  // Scroll to bottom helper function - only scrolls if user is at bottom (smart scroll)
+  const scrollToBottom = useCallback((force = false) => {
+    if (force || isUserAtBottomRef.current) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, []);
+
+  // Force scroll to bottom (e.g., when user sends a new message)
+  const forceScrollToBottom = useCallback(() => {
+    isUserAtBottomRef.current = true;
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
+  }, []);
 
   // Helper function to save an image to disk
   const saveImageToDisk = async (imageUrl: string) => {
@@ -904,6 +929,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
     addMessage(selectedQubes[0].qube_id, userMessage);
     setInputValue('');
     clearUploadedFiles(selectedQubes[0].qube_id);
+    forceScrollToBottom();  // Always scroll when user sends a message
     setIsLoading(true);
     setProcessingStage('response'); // Default to response processing
     setError(null);
@@ -1006,6 +1032,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
             setPendingResponse({
               qubeName: selectedQubes[0].name,
               content: combinedResponse,
+              timestamp: textResponse.timestamp ? Number(textResponse.timestamp) : undefined,
+              blockNumber: textResponse.block_number ? Number(textResponse.block_number) : undefined,
             });
             setLastResponseText(cleanContentForDisplay(combinedResponse));
 
@@ -1047,6 +1075,12 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
           setPendingResponse({
             qubeName: response.qube_name || selectedQubes[0].name,
             content: response.response,
+            timestamp: response.timestamp ? Number(response.timestamp) : undefined,
+            // block_number is the authoritative sequence for ACTION block association
+            // Note: session blocks have negative numbers, so we can't use truthiness check
+            blockNumber: response.block_number !== undefined && response.block_number !== null
+              ? Number(response.block_number)
+              : undefined,
           });
           setLastResponseText(cleanContentForDisplay(response.response));
 
@@ -1158,12 +1192,18 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
 
       const currentQube = selectedQubes[0];
       const messageId = (Date.now() + 1).toString();
+      // Use backend timestamp (in seconds) converted to Date, or fall back to current time
+      const messageTimestamp = pendingResponse.timestamp
+        ? new Date(pendingResponse.timestamp * 1000)  // Convert seconds to ms
+        : new Date();
       const qubeResponse: Message = {
         id: messageId,
         sender: 'qube',
         qubeName: pendingResponse.qubeName,
         content: pendingResponse.content,
-        timestamp: new Date(),
+        timestamp: messageTimestamp,
+        // block_number is the authoritative sequence for ACTION block association
+        blockNumber: pendingResponse.blockNumber,
       };
 
       // Check if TTS is enabled for this qube
@@ -1340,12 +1380,13 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
             )
             .map((b: any) => ({
               action_type: b.content.action_type,
-              // Convert from seconds (backend) to milliseconds (frontend Date.getTime())
               timestamp: b.timestamp * 1000,
+              blockNumber: b.block_number,  // Sequence number for reliable association
               parameters: b.content.parameters || {},
               result: b.content.result || null,
               status: b.content.status || 'completed',
-            }));
+            }))
+            .sort((a, b) => a.blockNumber - b.blockNumber);  // Sort by sequence
 
           setCompletedActionBlocks(allActionBlocks);
 
@@ -1373,8 +1414,10 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
     return () => clearInterval(pollInterval);
   }, [isLoading, userId, password, selectedQubes]);
 
-  // Load action blocks on mount and when qube changes (for historical tool calls)
+  // Load action blocks on mount, when qube changes, and after loading completes
   // Includes both session blocks (pre-anchor) and permanent blocks (post-anchor)
+  // Re-runs when isLoading becomes false to ensure action blocks are correctly associated
+  // with the newly added message
   useEffect(() => {
     const loadActionBlocks = async () => {
       if (!userId || !password || selectedQubes.length === 0) {
@@ -1404,12 +1447,13 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
           )
           .map((b: any) => ({
             action_type: b.content.action_type,
-            // Convert from seconds (backend) to milliseconds (frontend Date.getTime())
             timestamp: b.timestamp * 1000,
+            blockNumber: b.block_number,  // Sequence number for reliable association
             parameters: b.content.parameters || {},
             result: b.content.result || null,
             status: b.content.status || 'completed',
-          }));
+          }))
+          .sort((a, b) => a.blockNumber - b.blockNumber);  // Sort by sequence
 
         setCompletedActionBlocks(allActionBlocks);
       } catch (err) {
@@ -1417,12 +1461,15 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
       }
     };
 
-    loadActionBlocks();
-  }, [userId, password, selectedQubes]);
+    // Only reload when NOT loading (either on mount or when loading finishes)
+    // This ensures action blocks are reloaded after a response completes
+    if (!isLoading) {
+      loadActionBlocks();
+    }
+  }, [userId, password, selectedQubes, isLoading]);
 
   // Memoized mapping of message index to tool calls
-  // This prevents recalculation on every render, fixing the typewriter glitch
-  // when expanding ToolCallBubbles during animation
+  // Uses block_number (sequence) for reliable association - matches backend order exactly
   const toolCallsByMessageIndex = useMemo(() => {
     const mapping: Map<number, typeof completedActionBlocks> = new Map();
 
@@ -1434,20 +1481,33 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
       const currentMsg = messages[msgIndex];
       if (currentMsg.sender !== 'qube') continue;
 
-      const currentTimestamp = currentMsg.timestamp.getTime();
+      const currentBlockNumber = currentMsg.blockNumber;
+      if (currentBlockNumber === undefined || currentBlockNumber === null) continue;
 
-      // Find the previous message timestamp
-      let prevTimestamp = 0;
+      // Find the previous QUBE message's block number
+      let prevQubeBlockNumber: number | null = null;
       for (let i = msgIndex - 1; i >= 0; i--) {
-        prevTimestamp = messages[i].timestamp.getTime();
-        break;
+        if (messages[i].sender === 'qube' && messages[i].blockNumber !== undefined) {
+          prevQubeBlockNumber = messages[i].blockNumber!;
+          break;
+        }
       }
 
-      // Find ACTION blocks between previous message and current message
+      // Find ACTION blocks between previous qube message and current qube message
+      // Session blocks use NEGATIVE numbers that DECREASE: -1, -2, -3...
+      // So "between" means: blockNumber < prevBlockNumber AND blockNumber > currentBlockNumber
+      // (because -2 comes after -1 but before -3 in sequence)
       const toolCalls = completedActionBlocks.filter(block => {
-        const blockTime = block.timestamp;
-        return blockTime > prevTimestamp && blockTime <= currentTimestamp;
-      }).sort((a, b) => a.timestamp - b.timestamp);
+        if (prevQubeBlockNumber === null) {
+          // No previous qube message - include all actions before current
+          return block.blockNumber > currentBlockNumber;
+        }
+        // Action is between prev and current if: prev > action > current (for negative numbers)
+        // Or for positive: prev < action < current
+        // Generalized: action is between if it's closer to current than prev
+        return (block.blockNumber < prevQubeBlockNumber && block.blockNumber > currentBlockNumber) ||
+               (block.blockNumber > prevQubeBlockNumber && block.blockNumber < currentBlockNumber);
+      }).sort((a, b) => b.blockNumber - a.blockNumber); // Sort by sequence (descending for negative)
 
       if (toolCalls.length > 0) {
         mapping.set(msgIndex, toolCalls);
@@ -1481,7 +1541,12 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
       <ChatHeader qube={selectedQubes[0]} userId={userId || ''} currentModel={currentModel} />
 
       {/* Messages Area */}
-      <GlassCard className="flex-1 p-4 pb-6 overflow-y-auto">
+      <GlassCard className="flex-1 p-4 pb-6 overflow-hidden flex flex-col">
+        <div
+          ref={messagesContainerRef}
+          onScroll={handleScroll}
+          className="flex-1 overflow-y-auto"
+        >
         {messages.length === 0 ? (
           <div className="h-full flex items-center justify-center">
             <p className="text-text-tertiary text-center">
@@ -1623,15 +1688,22 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
 
             {/* Current turn tool calls (shown in real-time during loading) */}
             {isLoading && selectedQubes.length > 0 && (() => {
-              // Get the timestamp of the last message
-              const lastMsgTimestamp = messages.length > 0
-                ? messages[messages.length - 1].timestamp.getTime()
-                : 0;
+              // Get the block number of the last qube message
+              let lastQubeBlockNumber: number | null = null;
+              for (let i = messages.length - 1; i >= 0; i--) {
+                if (messages[i].sender === 'qube' && messages[i].blockNumber !== undefined) {
+                  lastQubeBlockNumber = messages[i].blockNumber!;
+                  break;
+                }
+              }
 
-              // Find tool calls from the current turn (after last message)
-              const currentTurnTools = completedActionBlocks.filter(
-                block => block.timestamp > lastMsgTimestamp
-              ).sort((a, b) => a.timestamp - b.timestamp);
+              // Find tool calls from the current turn (after last qube message)
+              // Session blocks use negative numbers: -1, -2, -3 (more negative = later)
+              // So "after" the last qube means: blockNumber < lastQubeBlockNumber
+              const currentTurnTools = completedActionBlocks.filter(block => {
+                if (lastQubeBlockNumber === null) return true;
+                return block.blockNumber < lastQubeBlockNumber;
+              }).sort((a, b) => b.blockNumber - a.blockNumber); // Sort newest first
 
               if (currentTurnTools.length === 0) return null;
 
@@ -1640,7 +1712,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
                   <div className="max-w-[70%]">
                     {currentTurnTools.map((block, idx) => (
                       <ToolCallBubble
-                        key={`current-${block.timestamp}-${idx}`}
+                        key={`current-${block.blockNumber}-${idx}`}
                         toolName={block.action_type}
                         input={block.parameters}
                         result={block.result}
@@ -1927,6 +1999,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
             <div ref={messagesEndRef} />
           </div>
         )}
+        </div>
       </GlassCard>
 
       {/* Input Area */}

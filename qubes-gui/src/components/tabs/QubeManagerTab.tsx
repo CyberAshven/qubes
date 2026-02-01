@@ -1690,9 +1690,11 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
         return `✨ ${customVoices[voice].name}`;
       }
 
+      // Use alias if available, otherwise capitalize
+      const voiceName = VOICE_NAME_ALIASES[voice] || voice.charAt(0).toUpperCase() + voice.slice(1);
+
       // Special case for OpenAI
       const providerName = provider === 'openai' ? 'OpenAI' : provider.charAt(0).toUpperCase() + provider.slice(1);
-      const voiceName = voice.charAt(0).toUpperCase() + voice.slice(1);
       return `${providerName}: ${voiceName}`;
     }
 
@@ -1936,13 +1938,13 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
   // Build voice provider options including custom voices if available
   const customVoiceCount = Object.keys(customVoices).length;
   const voiceProviderOptions = [
-    ...(customVoiceCount > 0 ? [{ label: `✨ Custom Voices (${customVoiceCount})`, value: 'custom' }] : []),
-    { label: 'Kokoro Local (54 voices - Fast)', value: 'kokoro' },
-    { label: 'Qwen3-TTS Local (9 voices - Voice Cloning)', value: 'qwen3' },
-    { label: 'Google Cloud TTS (380+ voices)', value: 'google' },
-    { label: 'Gemini TTS (30 voices)', value: 'gemini' },
-    { label: 'OpenAI TTS (9 voices)', value: 'openai' },
-    { label: 'ElevenLabs', value: 'elevenlabs' },
+    ...(customVoiceCount > 0 ? [{ label: `Custom Voices (local)`, value: 'custom' }] : []),
+    { label: 'Kokoro (local)', value: 'kokoro' },
+    { label: 'Qwen3 (local)', value: 'qwen3' },
+    { label: 'Google Cloud (API)', value: 'google' },
+    { label: 'Google Gemini (API)', value: 'gemini' },
+    { label: 'OpenAI (API)', value: 'openai' },
+    { label: 'ElevenLabs (API)', value: 'elevenlabs' },
   ];
 
   // Add custom voices to voiceOptions
@@ -3199,6 +3201,37 @@ const formatModelDisplay = (modelId: string): string => {
   return modelId;
 };
 
+// Voice name aliases for cleaner display (e.g., "bm_george" → "George")
+const VOICE_NAME_ALIASES: Record<string, string> = {
+  // Kokoro voices
+  'af_heart': 'Heart',
+  'af_bella': 'Bella',
+  'af_nova': 'Nova',
+  'af_sarah': 'Sarah',
+  'am_adam': 'Adam',
+  'am_michael': 'Michael',
+  'bf_emma': 'Emma',
+  'bf_lily': 'Lily',
+  'bm_george': 'George',
+  'bm_daniel': 'Daniel',
+  'jf_alpha': 'Alpha',
+  'jm_kumo': 'Kumo',
+  'zf_xiaoxiao': 'Xiaoxiao',
+  'zm_yunxi': 'Yunxi',
+  'ef_dora': 'Dora',
+  'ff_siwis': 'Siwis',
+  // Qwen3 voices
+  'Vivian': 'Vivian',
+  'Serena': 'Serena',
+  'Dylan': 'Dylan',
+  'Eric': 'Eric',
+  'Ryan': 'Ryan',
+  'Aiden': 'Aiden',
+  'Ono_Anna': 'Ono Anna',
+  'Uncle_Fu': 'Uncle Fu',
+  'Sohee': 'Sohee',
+};
+
 // Helper function to format voice names (used by both components)
 const formatVoiceDisplay = (voiceId: string): string => {
   if (!voiceId) return 'None';
@@ -3213,9 +3246,11 @@ const formatVoiceDisplay = (voiceId: string): string => {
       return `✨ Custom: ${voice}`;
     }
 
+    // Use alias if available, otherwise capitalize
+    const voiceName = VOICE_NAME_ALIASES[voice] || voice.charAt(0).toUpperCase() + voice.slice(1);
+
     // Special case for OpenAI
     const providerName = provider === 'openai' ? 'OpenAI' : provider.charAt(0).toUpperCase() + provider.slice(1);
-    const voiceName = voice.charAt(0).toUpperCase() + voice.slice(1);
     return `${providerName}: ${voiceName}`;
   }
 

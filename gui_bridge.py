@@ -1014,6 +1014,19 @@ class GUIBridge:
             )
             logger.debug(f"Got response from qube {qube_id}, length: {len(response) if response else 0}")
 
+            # Get the timestamp and block_number of the most recent qube_to_human MESSAGE block
+            # block_number is the authoritative sequence - ACTION blocks before this number belong to this response
+            response_timestamp = None
+            response_block_number = None
+            if qube.current_session:
+                for block in reversed(qube.current_session.session_blocks):
+                    if block.block_type == 'MESSAGE':
+                        content = block.content if isinstance(block.content, dict) else {}
+                        if content.get('message_type') == 'qube_to_human':
+                            response_timestamp = block.timestamp
+                            response_block_number = block.block_number
+                            break
+
             # Record relationship interaction (conversation with user)
             if response:
                 try:
@@ -1063,7 +1076,10 @@ class GUIBridge:
                 "qube_name": qube.genesis_block.qube_name,
                 "message": message,
                 "response": response,
-                "timestamp": datetime.now().isoformat(),
+                # Use actual MESSAGE block timestamp (in seconds) for correct ACTION block association
+                "timestamp": response_timestamp,
+                # block_number is the authoritative sequence for associating ACTION blocks
+                "block_number": response_block_number,
                 "current_model": current_model,
                 "current_provider": current_provider
             }

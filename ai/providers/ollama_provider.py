@@ -42,8 +42,11 @@ class OllamaModel(AIModelInterface):
         "codellama:7b",      # Code-focused, no function calling
         "codellama:13b",
         "codellama:34b",
+        "llama3.2",          # Base model, native tools unreliable
         "llama3.2:1b",       # Very small, limited tool support
         "llama3.2:3b",
+        "llama3.2-vision:11b",  # Vision models don't support native tools
+        "llama3.2-vision:90b",
         "gemma2:9b",         # Gemma has weak native tool support
         "phi4:14b",          # Phi has inconsistent tool support
         "mistral:7b",

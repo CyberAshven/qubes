@@ -6,6 +6,7 @@ export interface Message {
   qubeName?: string;
   content: string;
   timestamp: Date;
+  blockNumber?: number;  // Backend block sequence number for reliable ACTION block association
 }
 
 export interface UploadedFile {

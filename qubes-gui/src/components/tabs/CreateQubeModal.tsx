@@ -30,6 +30,44 @@ export interface CreateQubeData {
   avatarStyle?: string;
 }
 
+// Voice name aliases for cleaner display
+const VOICE_NAME_ALIASES: Record<string, string> = {
+  // Kokoro voices
+  'af_heart': 'Heart',
+  'af_bella': 'Bella',
+  'af_nova': 'Nova',
+  'af_sarah': 'Sarah',
+  'am_adam': 'Adam',
+  'am_michael': 'Michael',
+  'bf_emma': 'Emma',
+  'bf_lily': 'Lily',
+  'bm_george': 'George',
+  'bm_daniel': 'Daniel',
+  'jf_alpha': 'Alpha',
+  'jm_kumo': 'Kumo',
+  'zf_xiaoxiao': 'Xiaoxiao',
+  'zm_yunxi': 'Yunxi',
+  'ef_dora': 'Dora',
+  'ff_siwis': 'Siwis',
+  // Qwen3 voices
+  'Vivian': 'Vivian',
+  'Serena': 'Serena',
+  'Dylan': 'Dylan',
+  'Eric': 'Eric',
+  'Ryan': 'Ryan',
+  'Aiden': 'Aiden',
+  'Ono_Anna': 'Ono Anna',
+  'Uncle_Fu': 'Uncle Fu',
+  'Sohee': 'Sohee',
+};
+
+// Format voice name for display (use alias or capitalize)
+const formatVoiceName = (voiceId: string): string => {
+  if (!voiceId) return 'Select voice';
+  const voice = voiceId.includes(':') ? voiceId.split(':')[1] : voiceId;
+  return VOICE_NAME_ALIASES[voice] || voice.charAt(0).toUpperCase() + voice.slice(1);
+};
+
 // Voice gender mapping
 const getVoiceGender = (voiceId: string): string => {
   const voiceName = voiceId.includes(':') ? voiceId.split(':')[1].toLowerCase() : voiceId.toLowerCase();
@@ -823,14 +861,14 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
                 className="w-full px-4 py-2 bg-glass-bg backdrop-blur-glass border border-glass-border rounded-lg text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-primary/50"
               >
                 {Object.keys(customVoices).length > 0 && (
-                  <option value="custom">✨ Custom Voices ({Object.keys(customVoices).length})</option>
+                  <option value="custom">Custom Voices (local)</option>
                 )}
-                <option value="kokoro">Kokoro Local (54 voices - Fast)</option>
-                <option value="qwen3">Qwen3-TTS Local (9 presets - Voice Cloning)</option>
-                <option value="google">Google Cloud TTS (380+ voices)</option>
-                <option value="gemini">Gemini TTS (30 voices)</option>
-                <option value="openai">OpenAI TTS (9 voices)</option>
-                <option value="elevenlabs">ElevenLabs</option>
+                <option value="kokoro">Kokoro (local)</option>
+                <option value="qwen3">Qwen3 (local)</option>
+                <option value="google">Google Cloud (API)</option>
+                <option value="gemini">Google Gemini (API)</option>
+                <option value="openai">OpenAI (API)</option>
+                <option value="elevenlabs">ElevenLabs (API)</option>
               </select>
             </div>
 
@@ -845,7 +883,7 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
                   className="w-full px-4 py-2 bg-glass-bg backdrop-blur-glass border border-glass-border rounded-lg text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-primary/50 text-left flex justify-between items-center"
                 >
                   <span>
-                    {formData.voiceModel?.split(':')[1] || 'Select voice'}{getVoiceGender(formData.voiceModel || '')}
+                    {formatVoiceName(formData.voiceModel || '')}{getVoiceGender(formData.voiceModel || '')}
                   </span>
                   <svg className={`w-4 h-4 transition-transform ${voiceDropdownOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />

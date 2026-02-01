@@ -103,9 +103,14 @@ class VeniceModel(AIModelInterface):
         "deepseek-v3.2",
         "grok-code-fast-1",         # Code-focused, no native tools
         "llama-3.2-3b",             # Small model, limited tool support
+        "llama-3.3-70b",            # Llama through Venice proxy - use prompt-based
         "kimi-k2-thinking",         # No native tools, but prompt-based works for tool calls
         "qwen3-4b",                 # Small model, limited tool support
+        "qwen3-235b-a22b-thinking-2507",  # Thinking models should use prompt-based
         "google-gemma-3-27b-it",    # Gemma has weak native tool support
+        # Models proxied through Venice use their native format, not OpenAI format
+        "claude-opus-45",           # Claude uses Anthropic format
+        "openai-gpt-52",            # GPT through Venice proxy
         # Legacy aliases
         "dolphin-2.9.3-mistral-7b",
     }

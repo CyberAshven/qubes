@@ -462,8 +462,10 @@ struct ChatResponse {
     qube_name: Option<String>,
     message: Option<String>,
     response: Option<String>,
-    timestamp: Option<String>,
+    timestamp: Option<i64>,  // Unix timestamp in seconds from MESSAGE block
+    block_number: Option<i64>,  // Sequence number for ACTION block association
     current_model: Option<String>,
+    current_provider: Option<String>,
     error: Option<String>,
 }
 
