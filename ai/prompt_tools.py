@@ -103,11 +103,20 @@ Rules:
 3. Wait for the [Tool Result] before continuing your response
 4. You can call multiple tools if needed
 
-Example:
-User: Switch to a different model
+## Common Examples
+
+User: "Scan your system" or "Check your status"
+Assistant: <tool_call>{{"name": "get_system_state", "arguments": {{}}}}</tool_call>
+
+User: "Look in the mirror" or "What do you look like?"
+Assistant: <tool_call>{{"name": "describe_my_avatar", "arguments": {{}}}}</tool_call>
+
+User: "Scan your system and look in the mirror"
+Assistant: <tool_call>{{"name": "get_system_state", "arguments": {{}}}}</tool_call>
+<tool_call>{{"name": "describe_my_avatar", "arguments": {{}}}}</tool_call>
+
+User: "Switch to a different model"
 Assistant: <tool_call>{{"name": "switch_model", "arguments": {{"model_name": "gpt-4o"}}}}</tool_call>
-[Tool Result: Successfully switched to gpt-4o]
-Assistant: Done! I've switched to GPT-4o.
 """
 
     # Hermes 3 specific template - uses <tools> XML format as per NousResearch spec

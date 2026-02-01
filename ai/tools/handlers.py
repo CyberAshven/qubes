@@ -550,7 +550,7 @@ def register_default_tools(registry: ToolRegistry) -> None:
     # Describe Avatar (Vision)
     registry.register(ToolDefinition(
         name="describe_my_avatar",
-        description="Use vision AI to analyze and describe your own avatar image. Call this when asked 'What do you look like?', 'Describe your appearance', 'How do you look?', or similar questions about your visual appearance. This will give you an accurate, real-time description of your actual avatar image.",
+        description="LOOK IN THE MIRROR - See your own appearance. Call this when asked to 'look in the mirror', 'see yourself', 'what do you look like', 'describe your appearance', or 'how do you look'. Uses vision AI to analyze your actual avatar image and describe what you see.",
         parameters={
             "type": "object",
             "properties": {}
@@ -2163,7 +2163,7 @@ def register_default_tools(registry: ToolRegistry) -> None:
     # Get System State - unified read access to all Qube state
     registry.register(ToolDefinition(
         name="get_system_state",
-        description="Get your state data - the single source of truth for all your information. Use this to check your relationships, skills, owner info, mood, wallet balance, stats, and settings. Returns all sections by default, or specify which sections you need.",
+        description="SCAN YOUR SYSTEM - Get all your state data. Call this when asked to 'scan system', 'check your system', 'what's your status', or 'tell me about yourself'. Returns relationships, skills, owner info, mood, wallet balance, stats, and settings.",
         parameters={
             "type": "object",
             "properties": {

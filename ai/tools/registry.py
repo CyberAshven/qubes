@@ -512,20 +512,39 @@ class ToolRegistry:
         # Tool alias mapping for common model hallucinations
         # Models using prompt-based tool calling sometimes guess at tool names
         TOOL_ALIASES = {
+            # System state aliases
             "scan_system": "get_system_state",
             "check_system": "get_system_state",
             "system_scan": "get_system_state",
             "get_state": "get_system_state",
             "check_state": "get_system_state",
+            "system_status": "get_system_state",
+            "get_status": "get_system_state",
+            "my_status": "get_system_state",
+            "check_status": "get_system_state",
+            # Avatar/mirror aliases
+            "look_in_mirror": "describe_my_avatar",
+            "look_mirror": "describe_my_avatar",
+            "mirror": "describe_my_avatar",
+            "see_myself": "describe_my_avatar",
+            "my_appearance": "describe_my_avatar",
+            "describe_avatar": "describe_my_avatar",
+            "view_avatar": "describe_my_avatar",
+            "check_appearance": "describe_my_avatar",
+            "what_do_i_look_like": "describe_my_avatar",
+            # Web search aliases
             "search_web": "web_search",
             "internet_search": "web_search",
             "google_search": "web_search",
+            # Browse aliases
             "browse_web": "browse_url",
             "open_url": "browse_url",
             "visit_url": "browse_url",
             "visit_website": "browse_url",
+            # Model switch aliases
             "change_model": "switch_model",
             "set_model": "switch_model",
+            # Memory aliases
             "search_memory": "memory_search",
             "recall": "memory_search",
             "remember": "memory_search",
