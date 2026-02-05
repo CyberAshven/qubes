@@ -5,8 +5,11 @@ Manages available tools for AI agents with multi-provider format conversion.
 Matches documentation in docs/09_AI_Integration_Tool_Calling.md Section 6.2
 """
 
-from typing import Dict, Any, Callable, List, Optional, Awaitable, Set
+from typing import Dict, Any, Callable, List, Optional, Awaitable, Set, Tuple
 from dataclasses import dataclass, field
+import time
+import json
+import hashlib
 from core.block import create_action_block, BlockType
 from core.exceptions import AIError
 from utils.logging import get_logger
@@ -271,7 +274,64 @@ class ToolRegistry:
         self.qube = qube
         self.tools: Dict[str, ToolDefinition] = {}
 
+        # Tool call cache to prevent redundant calls
+        # Key: hash of (tool_name, parameters), Value: (result, timestamp)
+        self._tool_cache: Dict[str, Tuple[Any, float]] = {}
+        self._cache_ttl_seconds = 300  # Cache results for 5 minutes
+        # Tools that should NOT be cached (stateful or time-sensitive)
+        self._uncacheable_tools: Set[str] = {
+            "generate_image",  # Always generates new images
+            "add_memory",  # Creates new memory
+            "store_knowledge",  # Creates new knowledge
+            "send_message",  # Sends new messages
+            "switch_model",  # Changes state
+            "send_bch",  # Transactions
+            "claim_nft",  # Transactions
+            "update_owner_info",  # Updates state
+            "update_qube_profile",  # Updates state
+        }
+
         logger.info("tool_registry_initialized", qube_id=qube.qube_id)
+
+    def _get_cache_key(self, tool_name: str, parameters: Dict[str, Any]) -> str:
+        """Generate a unique cache key for a tool call."""
+        # Sort parameters for consistent hashing
+        param_str = json.dumps(parameters, sort_keys=True, default=str)
+        key_str = f"{tool_name}:{param_str}"
+        return hashlib.md5(key_str.encode()).hexdigest()
+
+    def _get_cached_result(self, cache_key: str) -> Optional[Any]:
+        """Get cached result if it exists and hasn't expired."""
+        if cache_key in self._tool_cache:
+            result, timestamp = self._tool_cache[cache_key]
+            if time.time() - timestamp < self._cache_ttl_seconds:
+                return result
+            else:
+                # Expired, remove from cache
+                del self._tool_cache[cache_key]
+        return None
+
+    def _cache_result(self, cache_key: str, result: Any) -> None:
+        """Store a result in the cache."""
+        self._tool_cache[cache_key] = (result, time.time())
+        # Clean up old entries if cache gets too large
+        if len(self._tool_cache) > 100:
+            self._cleanup_cache()
+
+    def _cleanup_cache(self) -> None:
+        """Remove expired entries from cache."""
+        current_time = time.time()
+        expired_keys = [
+            key for key, (_, timestamp) in self._tool_cache.items()
+            if current_time - timestamp >= self._cache_ttl_seconds
+        ]
+        for key in expired_keys:
+            del self._tool_cache[key]
+
+    def clear_tool_cache(self) -> None:
+        """Clear all cached tool results. Call this when starting a new conversation."""
+        self._tool_cache.clear()
+        logger.debug("tool_cache_cleared", qube_id=self.qube.qube_id)
 
     def register(self, tool: ToolDefinition) -> None:
         """
@@ -590,6 +650,25 @@ class ToolRegistry:
             )
             parameters = {}
 
+        # ========== TOOL CALL DEDUPLICATION ==========
+        # Check if this exact tool call was made recently
+        if tool_name not in self._uncacheable_tools:
+            cache_key = self._get_cache_key(tool_name, parameters)
+            cached_result = self._get_cached_result(cache_key)
+            if cached_result is not None:
+                logger.info(
+                    "tool_cache_hit",
+                    tool=tool_name,
+                    qube_id=self.qube.qube_id,
+                    message="Returning cached result instead of re-executing"
+                )
+                # Return cached result with a note that it's cached
+                if isinstance(cached_result, dict):
+                    cached_result["_cached"] = True
+                    cached_result["_cache_note"] = "This result was retrieved from cache. The tool was not re-executed because identical parameters were used recently."
+                return cached_result
+        # ========== END DEDUPLICATION ==========
+
         # Validation layer - check if action should be allowed
         if hasattr(self.qube, 'decision_config') and self.qube.decision_config.enable_validation_layer:
             from ai.decision_validator import DecisionValidator
@@ -884,6 +963,16 @@ class ToolRegistry:
                     "last_block_number": block_number,
                     "last_block_hash": action_block_data.block_hash
                 })
+
+        # Cache successful results for deduplication
+        if status == "completed" and tool_name not in self._uncacheable_tools:
+            cache_key = self._get_cache_key(tool_name, parameters)
+            self._cache_result(cache_key, result)
+            logger.debug(
+                "tool_result_cached",
+                tool=tool_name,
+                qube_id=self.qube.qube_id
+            )
 
         return result
 

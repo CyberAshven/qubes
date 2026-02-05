@@ -106,6 +106,9 @@ class MultiQubeConversation:
                     qube_id=qube.qube_id,
                     conversation_id=self.conversation_id
                 )
+            # Clear tool cache for fresh conversation
+            if hasattr(qube, 'tool_registry') and qube.tool_registry:
+                qube.tool_registry.clear_tool_cache()
 
         # Create user's MESSAGE block (signed by user, witnessed by all Qubes)
         user_message_block = self._create_user_message_block(initial_prompt)
