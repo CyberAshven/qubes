@@ -9719,12 +9719,24 @@ async def main():
                     logger.error("auto_anchor_background_qube_not_found", qube_id=qube_id)
                     sys.exit(1)
 
+                # Log session state before anchoring
+                session_blocks_count = len(qube.current_session.session_blocks) if qube.current_session else 0
+                session_dir = qube.data_dir / "blocks" / "session"
+                session_files = list(session_dir.glob("*.json")) if session_dir.exists() else []
+                debug_log(f"Session state before anchor: in_memory_blocks={session_blocks_count}, session_files={len(session_files)}")
+                if session_files:
+                    debug_log(f"Session files: {[f.name for f in session_files[:10]]}...")
+
                 debug_log(f"Calling anchor_session(create_summary=True)...")
 
                 # Run anchor with summary creation
                 blocks_anchored = await qube.anchor_session(create_summary=True)
 
-                debug_log(f"anchor_session returned: blocks_anchored={blocks_anchored}")
+                # Log session state after anchoring
+                remaining_files = list(session_dir.glob("*.json")) if session_dir.exists() else []
+                debug_log(f"Session state after anchor: blocks_anchored={blocks_anchored}, remaining_files={len(remaining_files)}")
+                if remaining_files:
+                    debug_log(f"Remaining files: {[f.name for f in remaining_files]}")
                 debug_log(f"=== AUTO-ANCHOR SUBPROCESS COMPLETED ===")
 
                 logger.info(

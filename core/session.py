@@ -2982,17 +2982,31 @@ IMPORTANT: Return ONLY valid JSON, no other text."""
             logger.debug("cleanup_anchored_files_no_session_dir")
             return
 
+        # Get all file timestamps for diagnostic logging
+        all_files = list(session_dir.glob("*.json"))
+        file_timestamps = {}
+        for f in all_files:
+            try:
+                parts = f.stem.split("_")
+                if len(parts) >= 3:
+                    file_timestamps[f.name] = int(parts[-1])
+            except (ValueError, IndexError):
+                file_timestamps[f.name] = None
+
         logger.info(
             "cleanup_anchored_files_starting",
             anchored_count=len(anchored_timestamps),
-            anchored_timestamps=list(anchored_timestamps)[:5],  # Log first 5
+            anchored_timestamps=sorted(list(anchored_timestamps)),
+            file_count=len(all_files),
+            file_timestamps=file_timestamps,
             qube_id=self.qube.qube_id
         )
 
         deleted_count = 0
         failed_files = []
+        preserved_files = []
 
-        for block_file in session_dir.glob("*.json"):
+        for block_file in all_files:
             # Filename format: {block_number}_{block_type}_{timestamp}.json
             # Extract timestamp from filename (last part before .json)
             try:
@@ -3001,7 +3015,8 @@ IMPORTANT: Return ONLY valid JSON, no other text."""
                     timestamp = int(parts[-1])
                     if timestamp not in anchored_timestamps:
                         # This file is for a block created by another process - PRESERVE IT
-                        logger.debug("preserving_unanchored_session_file", file=block_file.name)
+                        preserved_files.append(block_file.name)
+                        logger.debug("preserving_unanchored_session_file", file=block_file.name, timestamp=timestamp)
                         continue
             except (ValueError, IndexError):
                 # Can't parse timestamp - skip this file to be safe
@@ -3013,7 +3028,7 @@ IMPORTANT: Return ONLY valid JSON, no other text."""
                 try:
                     block_file.unlink()
                     deleted_count += 1
-                    logger.debug("anchored_session_block_deleted", file=block_file.name)
+                    logger.debug("anchored_session_block_deleted", file=block_file.name, timestamp=timestamp)
                     break
                 except PermissionError:
                     if attempt < 2:
@@ -3029,10 +3044,17 @@ IMPORTANT: Return ONLY valid JSON, no other text."""
         if failed_files:
             logger.warning("some_anchored_blocks_not_deleted", count=len(failed_files), files=failed_files)
 
+        # Verification: Check remaining files after cleanup
+        remaining_files = list(session_dir.glob("*.json"))
+
         logger.info(
             "anchored_session_files_cleaned",
             deleted=deleted_count,
-            preserved=len(list(session_dir.glob("*.json"))),
+            failed=len(failed_files),
+            preserved=len(preserved_files),
+            preserved_files=preserved_files[:10] if preserved_files else [],  # Log first 10
+            remaining_count=len(remaining_files),
+            remaining_files=[f.name for f in remaining_files[:10]] if remaining_files else [],
             qube_id=self.qube.qube_id
         )
 
