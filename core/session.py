@@ -1140,11 +1140,15 @@ class Session:
 
                 if total_unsummarized >= SUMMARY_THRESHOLD:
                     debug_log(f"Creating summary block for {total_unsummarized} blocks...")
+                    import time as _time
+                    step_start = _time.time()
+
                     # Create SUMMARY covering ALL unsummarized blocks
                     try:
                         debug_log(f"Calling generate_summary_block...")
                         summary_block = await self.generate_summary_block(unsummarized_blocks)
-                        debug_log(f"generate_summary_block returned: block_number={summary_block.block_number if summary_block else 'None'}")
+                        summary_duration = _time.time() - step_start
+                        debug_log(f"generate_summary_block returned: block_number={summary_block.block_number if summary_block else 'None'} (took {summary_duration:.1f}s)")
                     except Exception as e:
                         import traceback
                         debug_log(f"❌ generate_summary_block FAILED: {type(e).__name__}: {e}")
@@ -1153,8 +1157,12 @@ class Session:
 
                     # AI-DRIVEN RELATIONSHIP EVALUATION
                     # Evaluate relationships with AI before encrypting
+                    step_start = _time.time()
                     logger.info("evaluating_relationships_with_ai", block_count=total_unsummarized)
+                    debug_log(f"Calling _evaluate_relationships_with_ai...")
                     relationships_affected = await self._evaluate_relationships_with_ai(unsummarized_blocks)
+                    rel_duration = _time.time() - step_start
+                    debug_log(f"_evaluate_relationships_with_ai returned: {len(relationships_affected)} relationships (took {rel_duration:.1f}s)")
 
                     # Store AI evaluation in SUMMARY block content
                     if summary_block.content:
@@ -1163,8 +1171,12 @@ class Session:
 
                     # AI-DRIVEN SELF-EVALUATION
                     # Evaluate own performance with AI before encrypting
+                    step_start = _time.time()
                     logger.info("evaluating_self_with_ai", block_count=total_unsummarized)
+                    debug_log(f"Calling _evaluate_self_with_ai...")
                     self_evaluation = await self._evaluate_self_with_ai(unsummarized_blocks)
+                    self_duration = _time.time() - step_start
+                    debug_log(f"_evaluate_self_with_ai returned: {'success' if self_evaluation else 'None'} (took {self_duration:.1f}s)")
 
                     # Store self-evaluation in SUMMARY block content
                     if summary_block.content and self_evaluation:
@@ -2246,12 +2258,21 @@ Return ONLY valid JSON with this exact structure:
             logger.info("calling_reasoner_for_self_evaluation", evaluation_model=evaluation_model)
 
             # Call AI for evaluation using the evaluation_model (set max_iterations=1 to minimize tool usage and get JSON response)
-            response = await self.qube.reasoner.process_input(
-                input_message=prompt,
-                model_name=evaluation_model,  # Use evaluation model instead of main AI model
-                temperature=0.7,
-                max_iterations=1  # Minimize tool calls to get pure JSON response
-            )
+            # TIMEOUT: 60 seconds to prevent hanging the anchor process
+            SELF_EVAL_TIMEOUT = 60
+            try:
+                response = await asyncio.wait_for(
+                    self.qube.reasoner.process_input(
+                        input_message=prompt,
+                        model_name=evaluation_model,  # Use evaluation model instead of main AI model
+                        temperature=0.7,
+                        max_iterations=1  # Minimize tool calls to get pure JSON response
+                    ),
+                    timeout=SELF_EVAL_TIMEOUT
+                )
+            except asyncio.TimeoutError:
+                logger.warning("self_evaluation_timeout", timeout=SELF_EVAL_TIMEOUT)
+                return None
 
             logger.info("reasoner_response_received", response_length=len(response))
             logger.debug(f"Self-evaluation raw response: {response[:1000]}")  # Log first 1000 chars
@@ -2617,12 +2638,21 @@ IMPORTANT: Return ONLY valid JSON, no other text."""
         try:
             # Call AI with temperature 0.3 for consistent evaluation
             # IMPORTANT: Pass model_name to mark as internal call and avoid triggering revolver mode
+            # TIMEOUT: 60 seconds to prevent hanging the anchor process
+            RELATIONSHIP_EVAL_TIMEOUT = 60
             logger.debug("calling_ai_for_evaluation", prompt_length=len(prompt), participants=list(participants), model=evaluation_model)
-            response = await self.qube.reasoner.process_input(
-                input_message=prompt,
-                model_name=evaluation_model,  # Prevents revolver mode from creating switch block
-                temperature=0.3
-            )
+            try:
+                response = await asyncio.wait_for(
+                    self.qube.reasoner.process_input(
+                        input_message=prompt,
+                        model_name=evaluation_model,  # Prevents revolver mode from creating switch block
+                        temperature=0.3
+                    ),
+                    timeout=RELATIONSHIP_EVAL_TIMEOUT
+                )
+            except asyncio.TimeoutError:
+                logger.warning("relationship_evaluation_timeout", timeout=RELATIONSHIP_EVAL_TIMEOUT, participants=list(participants))
+                return {}
 
             logger.debug("ai_response_received", response_length=len(response), response_preview=response[:500])
 
