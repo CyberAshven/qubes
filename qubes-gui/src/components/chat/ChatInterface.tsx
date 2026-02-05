@@ -32,6 +32,7 @@ interface ChatResponse {
   message?: string;
   response?: string;
   timestamp?: number;  // Unix timestamp in seconds from backend MESSAGE block
+  block_number?: number;  // Session block number for ACTION block association
   current_model?: string;
   current_provider?: string;
   error?: string;
@@ -47,6 +48,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
   const [isLoading, setIsLoading] = useState(false);
   const [processingStage, setProcessingStage] = useState<'document' | 'response' | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [failedMessage, setFailedMessage] = useState<string | null>(null); // Store message for retry
   const [lastResponseText, setLastResponseText] = useState<string>('');
   const [pendingResponse, setPendingResponse] = useState<{ qubeName: string; content: string; timestamp?: number; blockNumber?: number } | null>(null);
   const [activeTypewriterMessageId, setActiveTypewriterMessageId] = useState<string | null>(null);
@@ -399,12 +401,31 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
     return cleaned;
   };
 
-  // Helper function to truncate text for TTS
-  // OpenAI TTS has a hard limit of 4096 characters, so keep it safe at 4000
+  // Helper function to clean and truncate text for TTS
+  // Removes non-speakable elements and respects OpenAI's 4096 char limit
   const truncateForTTS = (text: string, maxLength: number = 4000): string => {
-    // First, shorten long hexadecimal strings (BCH addresses, transaction IDs, etc.)
+    let processedText = text;
+
+    // Remove code blocks first (```...```)
+    processedText = processedText.replace(/```[\s\S]*?```/g, '');
+
+    // Remove inline code (`code`)
+    processedText = processedText.replace(/`[^`]+`/g, '');
+
+    // IMPORTANT: Handle markdown bold/italic BEFORE action asterisks
+    // Otherwise *[^*]+* matches inside **bold** and breaks things
+    processedText = processedText.replace(/\*\*\*([^*]+)\*\*\*/g, '$1');  // ***bold italic*** -> text
+    processedText = processedText.replace(/\*\*([^*]+)\*\*/g, '$1');      // **bold** -> bold
+    processedText = processedText.replace(/__([^_]+)__/g, '$1');          // __bold__ -> bold
+
+    // Remove asterisk CHARACTERS but keep the content inside, add comma for natural pause
+    // *waves hello* becomes "waves hello," (speaks action with brief pause after)
+    // Must come AFTER bold removal to avoid matching inside **bold**
+    processedText = processedText.replace(/\*([^*]+)\*/g, '$1,');
+
+    // Shorten long hexadecimal strings (BCH addresses, transaction IDs, etc.)
     // Pattern: Any hex string longer than 20 characters
-    let processedText = text.replace(/\b([a-fA-F0-9]{20,})\b/g, (match) => {
+    processedText = processedText.replace(/\b([a-fA-F0-9]{20,})\b/g, (match) => {
       // Keep first 8 and last 8 characters
       return `${match.substring(0, 8)}...${match.substring(match.length - 8)}`;
     });
@@ -417,6 +438,9 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
       }
       return match;
     });
+
+    // Normalize whitespace (multiple spaces/newlines -> single space)
+    processedText = processedText.replace(/\s+/g, ' ').trim();
 
     // Now check overall length and truncate if needed
     if (processedText.length <= maxLength) {
@@ -1097,6 +1121,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
           }
         } else {
           setError(response.error || 'Failed to get response from qube');
+          setFailedMessage(messageToSend); // Store for retry
           setIsLoading(false);
       setProcessingStage(null);
         }
@@ -1105,9 +1130,83 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
       console.error('[ERROR] Failed to process message:', err);
       console.error('[ERROR] Error type:', typeof err, 'Error object:', err);
       setError(`Backend failed. Please try again or check the logs for details.`);
+      setFailedMessage(messageToSend); // Store for retry
       setIsLoading(false);
       setProcessingStage(null);
     }
+  };
+
+  // Retry the failed message
+  const handleRetry = async () => {
+    if (!failedMessage || isLoading || !userId) return;
+
+    // First, discard the failed block from the backend to avoid duplicate detection
+    try {
+      await invoke<{ success: boolean; error?: string }>('discard_last_block', {
+        userId,
+        qubeId: selectedQubes[0].qube_id,
+        password,
+      });
+    } catch (err) {
+      console.error('Failed to discard block before retry:', err);
+      // Continue anyway - the retry might still work
+    }
+
+    setError(null);
+    const messageToRetry = failedMessage;
+    setFailedMessage(null);
+
+    // Remove the failed user message from the chat (it will be re-added by handleSend)
+    const messages = getMessages(selectedQubes[0].qube_id);
+    if (messages.length > 0) {
+      // Find and remove the last user message
+      const lastUserMsgIndex = messages.findLastIndex((m: Message) => m.sender === 'user');
+      if (lastUserMsgIndex >= 0) {
+        clearMessages(selectedQubes[0].qube_id);
+        // Re-add all messages except the last user message
+        messages.slice(0, lastUserMsgIndex).forEach((m: Message) => addMessage(selectedQubes[0].qube_id, m));
+      }
+    }
+
+    // Set input and trigger send after state update
+    setInputValue(messageToRetry);
+    setTimeout(() => {
+      const sendButton = document.querySelector('[data-send-button]') as HTMLButtonElement;
+      if (sendButton) sendButton.click();
+    }, 100);
+  };
+
+  // Discard the failed message and its block
+  const handleDiscard = async () => {
+    if (!selectedQubes.length || !userId) return;
+
+    try {
+      // Call backend to discard the last session block
+      const response = await invoke<{ success: boolean; error?: string }>('discard_last_block', {
+        userId,
+        qubeId: selectedQubes[0].qube_id,
+        password,
+      });
+
+      if (response.success) {
+        // Remove the failed user message from chat
+        const messages = getMessages(selectedQubes[0].qube_id);
+        if (messages.length > 0) {
+          const lastUserMsgIndex = messages.findLastIndex((m: Message) => m.sender === 'user');
+          if (lastUserMsgIndex >= 0) {
+            clearMessages(selectedQubes[0].qube_id);
+            messages.slice(0, lastUserMsgIndex).forEach((m: Message) => addMessage(selectedQubes[0].qube_id, m));
+          }
+        }
+      } else {
+        console.error('Failed to discard block:', response.error);
+      }
+    } catch (err) {
+      console.error('Failed to discard block:', err);
+    }
+
+    setError(null);
+    setFailedMessage(null);
   };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
@@ -1470,6 +1569,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
 
   // Memoized mapping of message index to tool calls
   // Uses block_number (sequence) for reliable association - matches backend order exactly
+  // Falls back to timestamp-based association when blockNumber is not available
   const toolCallsByMessageIndex = useMemo(() => {
     const mapping: Map<number, typeof completedActionBlocks> = new Map();
 
@@ -1482,35 +1582,61 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
       if (currentMsg.sender !== 'qube') continue;
 
       const currentBlockNumber = currentMsg.blockNumber;
-      if (currentBlockNumber === undefined || currentBlockNumber === null) continue;
+      const currentTimestamp = currentMsg.timestamp.getTime(); // milliseconds
 
-      // Find the previous QUBE message's block number
-      let prevQubeBlockNumber: number | null = null;
-      for (let i = msgIndex - 1; i >= 0; i--) {
-        if (messages[i].sender === 'qube' && messages[i].blockNumber !== undefined) {
-          prevQubeBlockNumber = messages[i].blockNumber!;
+      // Strategy 1: Use blockNumber if available (most reliable)
+      if (currentBlockNumber !== undefined && currentBlockNumber !== null) {
+        // Find the previous QUBE message's block number
+        let prevQubeBlockNumber: number | null = null;
+        for (let i = msgIndex - 1; i >= 0; i--) {
+          if (messages[i].sender === 'qube' && messages[i].blockNumber !== undefined) {
+            prevQubeBlockNumber = messages[i].blockNumber!;
+            break;
+          }
+        }
+
+        // Find ACTION blocks between previous qube message and current qube message
+        // Session blocks use NEGATIVE numbers that DECREASE: -1, -2, -3...
+        // So "between" means: blockNumber < prevBlockNumber AND blockNumber > currentBlockNumber
+        // (because -2 comes after -1 but before -3 in sequence)
+        const toolCalls = completedActionBlocks.filter(block => {
+          if (prevQubeBlockNumber === null) {
+            // No previous qube message - include all actions before current
+            return block.blockNumber > currentBlockNumber;
+          }
+          // Action is between prev and current if: prev > action > current (for negative numbers)
+          // Or for positive: prev < action < current
+          // Generalized: action is between if it's closer to current than prev
+          return (block.blockNumber < prevQubeBlockNumber && block.blockNumber > currentBlockNumber) ||
+                 (block.blockNumber > prevQubeBlockNumber && block.blockNumber < currentBlockNumber);
+        }).sort((a, b) => b.blockNumber - a.blockNumber); // Sort by sequence (descending for negative)
+
+        if (toolCalls.length > 0) {
+          mapping.set(msgIndex, toolCalls);
+        }
+      } else {
+        // Strategy 2: Fallback to timestamp-based association
+        // Find previous message timestamp (any sender)
+        let prevTimestamp = 0;
+        for (let i = msgIndex - 1; i >= 0; i--) {
+          prevTimestamp = messages[i].timestamp.getTime();
           break;
         }
-      }
 
-      // Find ACTION blocks between previous qube message and current qube message
-      // Session blocks use NEGATIVE numbers that DECREASE: -1, -2, -3...
-      // So "between" means: blockNumber < prevBlockNumber AND blockNumber > currentBlockNumber
-      // (because -2 comes after -1 but before -3 in sequence)
-      const toolCalls = completedActionBlocks.filter(block => {
-        if (prevQubeBlockNumber === null) {
-          // No previous qube message - include all actions before current
-          return block.blockNumber > currentBlockNumber;
+        // Find ACTION blocks between previous message and current message timestamps
+        const toolCalls = completedActionBlocks.filter(block => {
+          // ACTION blocks happen during processing, before the message is created
+          if (prevTimestamp > 0) {
+            return block.timestamp > prevTimestamp && block.timestamp <= currentTimestamp;
+          } else {
+            // First message - include all actions before it
+            return block.timestamp <= currentTimestamp;
+          }
+        }).sort((a, b) => a.timestamp - b.timestamp); // Sort chronologically
+
+        if (toolCalls.length > 0) {
+          mapping.set(msgIndex, toolCalls);
         }
-        // Action is between prev and current if: prev > action > current (for negative numbers)
-        // Or for positive: prev < action < current
-        // Generalized: action is between if it's closer to current than prev
-        return (block.blockNumber < prevQubeBlockNumber && block.blockNumber > currentBlockNumber) ||
-               (block.blockNumber > prevQubeBlockNumber && block.blockNumber < currentBlockNumber);
-      }).sort((a, b) => b.blockNumber - a.blockNumber); // Sort by sequence (descending for negative)
-
-      if (toolCalls.length > 0) {
-        mapping.set(msgIndex, toolCalls);
       }
     }
 
@@ -1992,7 +2118,25 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
             {error && (
               <div className="flex justify-center">
                 <div className="bg-accent-danger/10 text-accent-danger rounded-lg p-3 text-sm">
-                  Error: {error}
+                  <div className="mb-2">Error: {error}</div>
+                  {failedMessage && (
+                    <div className="flex gap-2 justify-center mt-2">
+                      <button
+                        onClick={handleRetry}
+                        disabled={isLoading}
+                        className="px-3 py-1 bg-accent-primary hover:bg-accent-primary/80 text-white rounded text-xs font-medium transition-colors disabled:opacity-50"
+                      >
+                        Retry
+                      </button>
+                      <button
+                        onClick={handleDiscard}
+                        disabled={isLoading}
+                        className="px-3 py-1 bg-bg-tertiary hover:bg-bg-secondary text-text-secondary rounded text-xs font-medium transition-colors disabled:opacity-50"
+                      >
+                        Discard
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
             )}

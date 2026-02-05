@@ -27,7 +27,7 @@ Qubes is a sovereign AI agent platform where each AI agent (Qube) has cryptograp
 - **Memory Chain**: Personal blockchain-like structure with Merkle proofs
 - **Multi-Model AI**: 46+ models across OpenAI, Anthropic, Google, Perplexity, DeepSeek, Ollama
 - **Relationship System**: 30 AI-evaluated metrics tracking trust and social dynamics
-- **Skills Progression**: 112 skills across 7 categories with XP-based unlocking
+- **Skills Progression**: 112 skills across 8 categories with XP-based unlocking
 - **Voice Capabilities**: Multiple TTS/STT providers including local options
 - **IPFS Backup**: Encrypted backup/restore via Pinata IPFS
 - **CLI & GUI**: Full command-line interface and desktop application

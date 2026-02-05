@@ -9691,6 +9691,24 @@ async def main():
                 user_bridge = GUIBridge(user_id=user_id)
                 user_bridge.orchestrator.set_master_key(password)
 
+                # Export API keys to environment for fallback models during summary generation
+                api_keys = user_bridge.orchestrator.get_api_keys()
+                if api_keys:
+                    api_dict = api_keys.to_dict()
+                    env_map = {
+                        "openai": "OPENAI_API_KEY",
+                        "anthropic": "ANTHROPIC_API_KEY",
+                        "google": "GOOGLE_API_KEY",
+                        "venice": "VENICE_API_KEY",
+                        "deepseek": "DEEPSEEK_API_KEY",
+                        "perplexity": "PERPLEXITY_API_KEY",
+                        "xai": "XAI_API_KEY",
+                    }
+                    for provider, env_var in env_map.items():
+                        if provider in api_dict and api_dict[provider]:
+                            os.environ[env_var] = api_dict[provider]
+                    debug_log(f"API keys exported to environment: {list(api_dict.keys())}")
+
                 if qube_id not in user_bridge.orchestrator.qubes:
                     debug_log(f"Loading qube {qube_id}...")
                     await user_bridge.orchestrator.load_qube(qube_id)
@@ -9715,6 +9733,12 @@ async def main():
                     blocks_anchored=blocks_anchored
                 )
 
+                # Remove lock file on success
+                lock_file = qube.data_dir / ".anchor_in_progress.lock"
+                if lock_file.exists():
+                    lock_file.unlink()
+                    debug_log(f"Lock file removed")
+
             except Exception as e:
                 import traceback
                 tb = traceback.format_exc()
@@ -9726,6 +9750,15 @@ async def main():
                     qube_id=qube_id,
                     traceback=tb
                 )
+                # Remove lock file on failure too (so retry is possible)
+                try:
+                    if qube:
+                        lock_file = qube.data_dir / ".anchor_in_progress.lock"
+                        if lock_file.exists():
+                            lock_file.unlink()
+                            debug_log(f"Lock file removed after error")
+                except:
+                    pass
                 sys.exit(1)
 
         elif command == "download-qwen-model":
@@ -9928,6 +9961,45 @@ async def main():
                 print(json.dumps({"success": True, "deleted_block_number": block_number, "deleted_timestamp": deleted_block.timestamp}))
             else:
                 print(json.dumps({"success": False, "error": f"Block {block_number} (timestamp={timestamp}) not found"}))
+
+        elif command == "discard-last-block":
+            # Discard the most recent session block (for retry/discard on API errors)
+            if len(sys.argv) < 4:
+                print(json.dumps({"error": "User ID and Qube ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            qube_id = validate_qube_id(sys.argv[3])
+            password = get_secret("password")
+
+            user_bridge = GUIBridge(user_id=user_id)
+            user_bridge.orchestrator.set_master_key(password)
+
+            if qube_id not in user_bridge.orchestrator.qubes:
+                await user_bridge.orchestrator.load_qube(qube_id)
+
+            qube = user_bridge.orchestrator.qubes[qube_id]
+
+            if not qube.current_session:
+                print(json.dumps({"success": False, "error": "No active session"}))
+                sys.exit(0)
+
+            if not qube.current_session.session_blocks:
+                print(json.dumps({"success": False, "error": "No session blocks to discard"}))
+                sys.exit(0)
+
+            # Delete the last session block
+            last_block = qube.current_session.session_blocks[-1]
+            deleted_block = qube.current_session.delete_block(timestamp=last_block.timestamp)
+
+            if deleted_block:
+                print(json.dumps({
+                    "success": True,
+                    "deleted_block_number": deleted_block.block_number,
+                    "deleted_timestamp": deleted_block.timestamp
+                }))
+            else:
+                print(json.dumps({"success": False, "error": "Failed to delete last block"}))
 
         elif command == "get-qube-blocks":
             if len(sys.argv) < 4:
@@ -10526,19 +10598,27 @@ async def main():
             # Set master key
             user_bridge.orchestrator.set_master_key(password)
 
-            # Load all qubes
-            for qube_id in qube_ids:
-                if qube_id not in user_bridge.orchestrator.qubes:
-                    await user_bridge.orchestrator.load_qube(qube_id)
+            try:
+                # Load all qubes
+                for qube_id in qube_ids:
+                    if qube_id not in user_bridge.orchestrator.qubes:
+                        await user_bridge.orchestrator.load_qube(qube_id)
 
-            # Start conversation
-            result = await user_bridge.orchestrator.start_multi_qube_conversation(
-                qube_ids=qube_ids,
-                initial_prompt=initial_prompt,
-                conversation_mode=conversation_mode
-            )
+                # Start conversation
+                result = await user_bridge.orchestrator.start_multi_qube_conversation(
+                    qube_ids=qube_ids,
+                    initial_prompt=initial_prompt,
+                    conversation_mode=conversation_mode
+                )
 
-            print(json.dumps(result))
+                print(json.dumps(result))
+            except Exception as e:
+                import traceback
+                logger.error(f"start_multi_qube_conversation failed: {e}", exc_info=True)
+                print(json.dumps({
+                    "error": str(e),
+                    "traceback": traceback.format_exc()
+                }))
 
         elif command == "get-next-speaker":
             if len(sys.argv) < 4:
@@ -10657,7 +10737,13 @@ async def main():
 
             user_id = sys.argv[2]
             conversation_id = sys.argv[3]
-            password = get_secret("password", argv_index=4)
+            # Optional skip_tools flag (argv[4] if present, before password)
+            skip_tools = False
+            password_index = 4
+            if len(sys.argv) > 4 and sys.argv[4] in ("true", "false"):
+                skip_tools = sys.argv[4] == "true"
+                password_index = 5
+            password = get_secret("password", argv_index=password_index)
 
             # Create bridge with correct user
             user_bridge = GUIBridge(user_id=user_id)
@@ -10757,10 +10843,130 @@ async def main():
                 # Store in active conversations
                 user_bridge.orchestrator.active_conversations[conversation_id] = conversation
 
-            # Continue conversation
+            # Continue conversation (with optional skip_tools for faster prefetch)
             result = await user_bridge.orchestrator.continue_multi_qube_conversation(
-                conversation_id=conversation_id
+                conversation_id=conversation_id,
+                skip_tools=skip_tools
             )
+
+            print(json.dumps(result))
+
+        elif command == "run-background-turns":
+            if len(sys.argv) < 5:
+                print(json.dumps({"error": "User ID, conversation ID, and exclude IDs required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            conversation_id = sys.argv[3]
+            exclude_ids_json = sys.argv[4]
+            password = get_secret("password", argv_index=5)
+
+            # Parse exclude IDs
+            try:
+                exclude_ids = json.loads(exclude_ids_json)
+            except json.JSONDecodeError:
+                print(json.dumps({"error": "Invalid exclude IDs JSON"}), file=sys.stderr)
+                sys.exit(1)
+
+            # Create bridge with correct user
+            user_bridge = GUIBridge(user_id=user_id)
+
+            # Set master key
+            user_bridge.orchestrator.set_master_key(password)
+
+            # Find and load Qubes with this conversation_id in their sessions
+            # (Same reconstruction logic as continue-multi-qube-conversation)
+            qubes_list = await user_bridge.orchestrator.list_qubes()
+            participant_qube_ids = []
+
+            for qube_meta in qubes_list:
+                qube_id = qube_meta["qube_id"]
+
+                # Load the qube
+                if qube_id not in user_bridge.orchestrator.qubes:
+                    await user_bridge.orchestrator.load_qube(qube_id)
+
+                qube = user_bridge.orchestrator.qubes[qube_id]
+
+                # Check if this qube has blocks from this conversation
+                if qube.current_session:
+                    for block in qube.current_session.session_blocks:
+                        if hasattr(block, 'content') and isinstance(block.content, dict):
+                            if block.content.get('conversation_id') == conversation_id:
+                                if qube_id not in participant_qube_ids:
+                                    participant_qube_ids.append(qube_id)
+                                break
+
+            if not participant_qube_ids:
+                print(json.dumps({"error": f"Conversation not found: {conversation_id}"}), file=sys.stderr)
+                sys.exit(1)
+
+            # Recreate the conversation if it doesn't exist
+            if conversation_id not in user_bridge.orchestrator.active_conversations:
+                from core.multi_qube_conversation import MultiQubeConversation
+
+                participating_qubes = [user_bridge.orchestrator.qubes[qid] for qid in participant_qube_ids]
+
+                # Reconstruct conversation object
+                conversation = MultiQubeConversation(
+                    participating_qubes=participating_qubes,
+                    user_id=user_id,
+                    conversation_mode="open_discussion"
+                )
+
+                # Override the conversation_id to match
+                conversation.conversation_id = conversation_id
+
+                # Rebuild conversation history and state from session blocks
+                conversation.turn_number = 0
+                conversation.conversation_history = []
+
+                # Collect all conversation blocks
+                conv_blocks = []
+                for block in participating_qubes[0].current_session.session_blocks:
+                    if hasattr(block, 'content') and isinstance(block.content, dict):
+                        if block.content.get('conversation_id') == conversation_id:
+                            conv_blocks.append(block)
+
+                # Sort by turn number
+                conv_blocks.sort(key=lambda b: b.content.get('turn_number', 0))
+
+                # Rebuild state from blocks
+                for block in conv_blocks:
+                    turn_num = block.content.get('turn_number', 0)
+                    if turn_num > conversation.turn_number:
+                        conversation.turn_number = turn_num
+
+                    # Rebuild conversation history
+                    if turn_num > 0:  # Skip user's initial message (turn 0)
+                        conversation.conversation_history.append({
+                            "speaker_id": block.content.get('speaker_id'),
+                            "speaker_name": block.content.get('speaker_name'),
+                            "message": block.content.get('message_body', ''),
+                            "turn_number": turn_num,
+                            "timestamp": block.timestamp
+                        })
+
+                        # Update turn counts
+                        speaker_id = block.content.get('speaker_id')
+                        if speaker_id and speaker_id in conversation.turn_counts:
+                            conversation.turn_counts[speaker_id] += 1
+
+                # Calculate current speaker index for round-robin
+                conversation.current_speaker_index = conversation.turn_number % len(participating_qubes)
+
+                # Restore last_speaker_id from the most recent conversation block
+                if conv_blocks:
+                    last_block = conv_blocks[-1]
+                    conversation.last_speaker_id = last_block.content.get('speaker_id')
+
+                # Store in active conversations
+                user_bridge.orchestrator.active_conversations[conversation_id] = conversation
+            else:
+                conversation = user_bridge.orchestrator.active_conversations[conversation_id]
+
+            # Run background turns for non-excluded qubes
+            result = await conversation.run_background_turns(exclude_qube_ids=exclude_ids)
 
             print(json.dumps(result))
 

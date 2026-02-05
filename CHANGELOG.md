@@ -99,7 +99,7 @@ First stable release with production-ready features.
 - **Blockchain verification** - Bitcoin Cash CashTokens NFT minting
 - **Memory chain** - Personal blockchain-like structure with Merkle proofs
 - **Relationship system** - 30 AI-evaluated metrics tracking trust and social dynamics
-- **Skills progression** - 112 skills across 7 categories with XP-based unlocking
+- **Skills progression** - 112 skills across 8 categories with XP-based unlocking
 - **Voice capabilities** - Multiple TTS/STT providers including local options
 - **IPFS backup** - Encrypted backup/restore via Pinata
 - **P2P networking** - libp2p-based peer-to-peer communication

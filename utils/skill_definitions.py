@@ -1,7 +1,7 @@
 """
 Skill Definitions - Complete skill tree matching frontend skillDefinitions.ts
 
-Generates all 112 skills across 7 categories matching the TypeScript definitions exactly.
+Generates all 112 skills across 8 categories matching the TypeScript definitions exactly.
 
 This module is imported by SkillsManager to initialize the default skill tree.
 """
@@ -45,7 +45,7 @@ def generate_all_skills() -> List[Dict[str, Any]]:
     Generate complete skill tree matching frontend skillDefinitions.ts
 
     Returns:
-        List of 112 skill dictionaries (7 suns + 35 planets + 70 moons)
+        List of 112 skill dictionaries (8 suns + 35 planets + 70 moons)
     """
     skills = []
 

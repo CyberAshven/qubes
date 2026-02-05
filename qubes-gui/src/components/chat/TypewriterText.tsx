@@ -83,11 +83,11 @@ export const TypewriterText: React.FC<TypewriterTextProps> = React.memo(({ text,
       const charsFromTime = Math.floor(audioElement.currentTime * charsPerSecondThisChunk);
       let charsInThisChunk = Math.min(chunkTextLength, charsFromTime + bufferChars);
 
-      // CRITICAL: Never show 100% of this chunk's text until audio actually ends
-      // Browser-reported duration can be inaccurate, causing typewriter to "finish"
-      // before the TTS voice actually stops speaking. Cap at 98% until ended.
+      // Hold back last few characters until audio ends to prevent typewriter
+      // finishing before TTS voice stops (browser duration can be slightly off).
+      // Use 99.5% cap so the final jump is barely noticeable (just 1-2 chars).
       if (!audioElement.ended && charsInThisChunk >= chunkTextLength) {
-        charsInThisChunk = Math.floor(chunkTextLength * 0.98);
+        charsInThisChunk = Math.floor(chunkTextLength * 0.995);
       }
 
       // Total chars to show = previous chunks + current chunk progress
@@ -103,9 +103,13 @@ export const TypewriterText: React.FC<TypewriterTextProps> = React.memo(({ text,
         animationFrame = requestAnimationFrame(updateText);
       } else if (audioElement.ended) {
         if (isLastChunk) {
-          // Last chunk ended - NOW show all text and mark complete
+          // Last chunk ended - show all text first, then delay before calling complete
+          // This prevents flicker where last few words appear and immediately re-render
           setDisplayedText(text);
-          onCompleteRef.current?.();
+          // Small delay to let the full text render before parent switches away from TypewriterText
+          setTimeout(() => {
+            onCompleteRef.current?.();
+          }, 150);
         } else {
           // More chunks coming - show up to end of current chunk and keep animating
           // The next chunk will start playing automatically

@@ -146,6 +146,12 @@ class UserOrchestrator:
         # Also set master password for secure settings (encrypted API keys)
         self.secure_settings.set_master_password(password)
 
+        # Store password in environment for auto-anchor subprocesses
+        # This allows session.py to spawn detached subprocesses that continue
+        # after the main CLI process exits (for background summary generation)
+        import os
+        os.environ["QUBES_PASSWORD"] = password
+
         logger.info("master_key_set", user_id=self.user_id, iterations=iterations)
 
     async def create_qube(self, config: Dict[str, Any]) -> Qube:
@@ -2655,13 +2661,15 @@ class UserOrchestrator:
 
     async def continue_multi_qube_conversation(
         self,
-        conversation_id: str
+        conversation_id: str,
+        skip_tools: bool = False
     ) -> Dict[str, Any]:
         """
         Continue a multi-Qube conversation (get next turn)
 
         Args:
             conversation_id: Conversation ID to continue
+            skip_tools: If True, disable tool calling for this turn (for faster prefetch)
 
         Returns:
             Next response dict with speaker info and message
@@ -2680,10 +2688,11 @@ class UserOrchestrator:
         logger.info(
             "continuing_conversation",
             conversation_id=conversation_id,
-            turn_number=conversation.turn_number + 1
+            turn_number=conversation.turn_number + 1,
+            skip_tools=skip_tools
         )
 
-        response = await conversation.continue_conversation()
+        response = await conversation.continue_conversation(skip_tools=skip_tools)
 
         return response
 

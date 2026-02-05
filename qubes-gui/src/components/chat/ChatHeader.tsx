@@ -4,6 +4,47 @@ import { GlassCard } from '../glass/GlassCard';
 import { Qube } from '../../types';
 import { formatModelName } from '../../utils/modelFormatter';
 
+// Voice name aliases for display
+const VOICE_NAME_ALIASES: Record<string, string> = {
+  'af_heart': 'Heart',
+  'af_sarah': 'Sarah',
+  'af_nicole': 'Nicole',
+  'af_sky': 'Sky',
+  'af_bella': 'Bella',
+  'af_alloy': 'Alloy',
+  'af_aoede': 'Aoede',
+  'af_jessica': 'Jessica',
+  'af_kore': 'Kore',
+  'af_nova': 'Nova',
+  'af_river': 'River',
+  'af_stella': 'Stella',
+  'am_adam': 'Adam',
+  'am_echo': 'Echo',
+  'am_eric': 'Eric',
+  'am_fenrir': 'Fenrir',
+  'am_liam': 'Liam',
+  'am_michael': 'Michael',
+  'am_onyx': 'Onyx',
+  'am_puck': 'Puck',
+  'am_santa': 'Santa',
+  'bf_emma': 'Emma',
+  'bf_isabella': 'Isabella',
+  'bf_alice': 'Alice',
+  'bf_lily': 'Lily',
+  'bm_george': 'George',
+  'bm_lewis': 'Lewis',
+  'bm_daniel': 'Daniel',
+  'bm_fable': 'Fable',
+};
+
+const formatVoiceDisplay = (voiceModel: string | undefined): string => {
+  if (!voiceModel) return 'Not set';
+  // Extract voice ID (e.g., 'kokoro:af_heart' -> 'af_heart')
+  const voiceId = voiceModel.includes(':') ? voiceModel.split(':')[1] : voiceModel;
+  // Look up friendly name
+  return VOICE_NAME_ALIASES[voiceId] || voiceId.charAt(0).toUpperCase() + voiceId.slice(1);
+};
+
 interface ChatHeaderProps {
   qube: Qube;
   userId: string;
@@ -105,10 +146,7 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({ qube, userId, currentMod
         <div className="flex flex-col">
           <div className="text-xs text-text-tertiary uppercase tracking-wider font-semibold">Voice</div>
           <div className="text-xl font-display font-bold flex items-center gap-2" style={{ color: qube.favorite_color }}>
-            🎤 {(() => {
-              const voiceName = qube.voice_model?.split(':')[1] || qube.voice_model || 'Not set';
-              return voiceName.charAt(0).toUpperCase() + voiceName.slice(1);
-            })()}
+            🎤 {formatVoiceDisplay(qube.voice_model)}
           </div>
         </div>
 

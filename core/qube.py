@@ -988,6 +988,9 @@ class Qube:
         elif "deepseek-chat" in model_name.lower() or "deepseek-reasoner" in model_name.lower():
             # DeepSeek API models (not Ollama local models)
             api_key = api_keys.get("deepseek")
+        elif "venice" in model_name.lower():
+            # Venice AI models
+            api_key = api_keys.get("venice")
         elif "llama" in model_name.lower() or "mistral" in model_name.lower() or "qwen" in model_name.lower() or "deepseek-r1" in model_name.lower() or "phi" in model_name.lower() or "gemma" in model_name.lower() or "codellama" in model_name.lower():
             # Ollama local models (including deepseek-r1:8b local version)
             api_key = "ollama"  # Placeholder for Ollama
@@ -1194,9 +1197,10 @@ class Qube:
             estimated_cost_usd=estimated_cost
         )
 
-        # Check for auto-anchor after creating blocks (spawns as background task)
+        # Check for auto-anchor after creating blocks
+        # await_completion=True ensures summary generation completes before CLI exits
         if self.current_session:
-            await self.current_session.check_and_auto_anchor(await_completion=False)
+            await self.current_session.check_and_auto_anchor(await_completion=True)
 
         return response
 

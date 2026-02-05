@@ -68,7 +68,7 @@ This section documents what currently exists in the codebase and what needs to c
 - **Action**: Add `LEARNING = "LEARNING"` to BlockType enum
 
 #### Skill Categories (`qubes-gui/src/data/skillDefinitions.ts:38-46`)
-- **Current**: 7 categories with these IDs:
+- **Current**: 8 categories with these IDs:
   - `ai_reasoning` → "AI Reasoning"
   - `social_intelligence` → "Social Intelligence"
   - `technical_expertise` → "Technical Expertise" (**rename to "Coding"**)
@@ -129,7 +129,7 @@ This section documents what currently exists in the codebase and what needs to c
 - **Action**: Create new file
 
 #### Python Skill Definitions (`utils/skill_definitions.py`)
-- **Current**: Matches TypeScript (7 categories, 112 skills)
+- **Current**: Matches TypeScript (8 categories, 112 skills)
 - **Target**: 8 categories, 128 skills, renamed categories
 - **Action**: Mirror all TypeScript changes
 
@@ -950,8 +950,7 @@ Add to SKILL_CATEGORIES:
 
 ```typescript
 export const SKILL_CATEGORIES = [
-  // ... existing 7 categories ...
-  { id: 'finance', name: 'Finance', color: '#2ECC71', icon: '💰' },
+  // ... existing 8 categories including Finance ...
 ];
 ```
 

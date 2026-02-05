@@ -7,8 +7,11 @@ From docs/05_Data_Structures.md Section 2.3
 import asyncio
 import json
 import os
+import sys
+import subprocess
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timezone
+from pathlib import Path
 
 from core.block import Block
 from core.exceptions import SessionRecoveryError, MemoryChainError
@@ -74,6 +77,11 @@ class Session:
         self._anchor_in_progress = False
         # Queue for blocks that arrive during anchoring - will be added after anchor completes
         self._pending_during_anchor: List[Block] = []
+
+        # Current turn number for group conversations (so ACTION blocks can include it)
+        self.current_turn_number: Optional[int] = None
+        # Callable to get next turn number (for unique turn numbers per block)
+        self.get_next_turn_number: Optional[callable] = None
 
         # Emit session started event
         from core.events import Events
@@ -255,19 +263,33 @@ class Session:
         # Save individual block file (unencrypted, for crash recovery)
         self._save_session_block(block)
 
+        # Emit BLOCK_ADDED event with full block data for real-time frontend updates
+        block_type = block.block_type if isinstance(block.block_type, str) else block.block_type.value
+        self.qube.events.emit(Events.BLOCK_ADDED, {
+            "block_type": block_type,
+            "block_number": block.block_number,
+            "timestamp": block.timestamp,
+            "content": block.content if isinstance(block.content, dict) else {},
+            "temporary": True,  # This is a session block
+            "session_id": self.session_id
+        })
+
         # Check for auto-anchor (use dynamic threshold based on conversation type)
         # Sets a flag that async callers should check via check_and_auto_anchor()
         active_threshold = self.get_active_threshold()
+        is_group = self.is_group_conversation()
+
+        # Each qube tracks their own total session block count
+        # In group chats, each qube anchors independently when their count reaches threshold
         block_count = len(self.session_blocks)
 
         if self.qube.auto_anchor_enabled and block_count >= active_threshold:
-            is_group = self.is_group_conversation()
-
             logger.info(
                 "auto_anchor_pending",
-                block_count=len(self.session_blocks),
+                block_count=block_count,
                 threshold=active_threshold,
-                is_group_chat=is_group
+                is_group_chat=is_group,
+                qube_id=self.qube.qube_id
             )
             # Set flag for async caller to trigger anchor
             self._auto_anchor_pending = True
@@ -284,25 +306,26 @@ class Session:
 
     async def check_and_auto_anchor(self, await_completion: bool = False) -> Optional[asyncio.Task]:
         """
-        Check if auto-anchor is pending and spawn it in the background if so.
+        Check if auto-anchor is pending and spawn it as a DETACHED SUBPROCESS.
 
-        This async method should be called by async callers after create_block()
-        to handle the auto-anchor that create_block() (sync) cannot await.
+        This spawns a completely independent process that will continue running
+        even after the parent CLI process exits. This is critical for multi-qube
+        conversations where each qube needs its own "pipeline" for anchoring.
 
-        IMPORTANT: Anchoring runs in the BACKGROUND to avoid blocking conversation.
-        The anchor process includes AI calls (skill scanning, relationship/self evaluation)
-        that can take a long time.
+        The subprocess runs gui_bridge.py's auto-anchor-background command which:
+        1. Loads the qube independently
+        2. Runs anchor_session(create_summary=True)
+        3. Creates SUMMARY blocks with AI-generated summaries
+        4. Continues running until completion (no timeout)
 
         Args:
-            await_completion: If True, await the anchor task before returning.
-                              Use this in single-command processes (like gui_bridge)
-                              to ensure the anchor completes before process exit.
+            await_completion: IGNORED - kept for backward compatibility.
+                              Subprocesses always run independently.
 
         Returns:
-            The anchor task if spawned (can be awaited by caller), None otherwise
+            None - subprocess runs independently, no task to await
         """
         # DEBUG: Write to separate file
-        from pathlib import Path
         debug_file = Path(self.qube.data_dir).parent.parent.parent / "logs" / "auto_anchor_debug.log"
         debug_file.parent.mkdir(parents=True, exist_ok=True)
         with open(debug_file, "a", encoding="utf-8") as f:
@@ -322,24 +345,214 @@ class Session:
         is_group = self._auto_anchor_is_group
 
         logger.info(
-            "auto_anchor_spawning_background",
+            "auto_anchor_spawning_detached_subprocess",
             block_count=len(self.session_blocks),
             is_group_chat=is_group,
             qube_id=self.qube.qube_id
         )
 
-        # Spawn anchor in background
-        task = asyncio.create_task(self._run_auto_anchor_background(is_group))
+        # Get password from environment (set by orchestrator.set_master_key)
+        password = os.environ.get("QUBES_PASSWORD", "")
+        if not password:
+            logger.error(
+                "auto_anchor_no_password_in_env",
+                qube_id=self.qube.qube_id,
+                message="Cannot spawn auto-anchor subprocess without QUBES_PASSWORD in environment"
+            )
+            with open(debug_file, "a", encoding="utf-8") as f:
+                f.write(f"{datetime.now(timezone.utc).isoformat()} | [{self.qube.name}] ERROR: No QUBES_PASSWORD in environment, falling back to in-process anchor\n")
+            # Fall back to in-process anchor (will block but at least works)
+            self._anchor_in_progress = True
+            task = asyncio.create_task(self._run_auto_anchor_background(is_group))
+            self._pending_anchor_task = task
+            if await_completion:
+                await task
+                self._pending_anchor_task = None
+            return task
 
-        # Store task reference so it can be awaited later
-        self._pending_anchor_task = task
+        # Get user_id from qube
+        user_id = self.qube.user_name
 
-        # Optionally await completion (for single-command processes like gui_bridge)
-        if await_completion:
-            await task
-            self._pending_anchor_task = None
+        # Check for existing anchor lock file - prevents concurrent anchors for same qube
+        lock_file = Path(self.qube.data_dir) / ".anchor_in_progress.lock"
+        if lock_file.exists():
+            # Check if lock is stale (older than 30 minutes)
+            lock_age = datetime.now(timezone.utc).timestamp() - lock_file.stat().st_mtime
+            if lock_age < 1800:  # 30 minutes
+                with open(debug_file, "a", encoding="utf-8") as f:
+                    f.write(f"{datetime.now(timezone.utc).isoformat()} | [{self.qube.name}] Skipping anchor - lock file exists (age: {lock_age:.0f}s)\n")
+                logger.info(
+                    "auto_anchor_skipped_lock_exists",
+                    qube_id=self.qube.qube_id,
+                    lock_age_seconds=lock_age
+                )
+                return None
+            else:
+                # Stale lock - remove it
+                with open(debug_file, "a", encoding="utf-8") as f:
+                    f.write(f"{datetime.now(timezone.utc).isoformat()} | [{self.qube.name}] Removing stale lock file (age: {lock_age:.0f}s)\n")
+                lock_file.unlink()
 
-        return task
+        # Create lock file before spawning
+        lock_file.write_text(f"{datetime.now(timezone.utc).isoformat()}\n{self.qube.qube_id}")
+
+        # Build command for detached subprocess
+        # In bundled mode (PyInstaller), sys.executable IS the backend exe
+        # In dev mode, we need python + script path
+        if getattr(sys, 'frozen', False):
+            # Bundled PyInstaller exe
+            cmd = [sys.executable, "auto-anchor-background", user_id, self.qube.qube_id]
+        else:
+            # Development mode - find gui_bridge.py
+            # gui_bridge.py is in the project root, session.py is in core/
+            gui_bridge_path = Path(__file__).parent.parent / "gui_bridge.py"
+            cmd = [sys.executable, str(gui_bridge_path), "auto-anchor-background", user_id, self.qube.qube_id]
+
+        # Pass password via environment variable (secure - not in process list)
+        env = os.environ.copy()
+        env["QUBES_PASSWORD"] = password
+
+        # NOTE: We do NOT set _anchor_in_progress for subprocess model!
+        # The subprocess reads block files by timestamp and only deletes those specific files.
+        # New blocks created after spawn get new timestamps, so they won't be deleted.
+        # Setting _anchor_in_progress would cause blocks to be queued, but the CLI process
+        # exits before the queue can be flushed, losing those blocks.
+
+        # Spawn detached subprocess
+        try:
+            if sys.platform == "win32":
+                # Windows: Use DETACHED_PROCESS, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW
+                DETACHED_PROCESS = 0x00000008
+                CREATE_NEW_PROCESS_GROUP = 0x00000200
+                CREATE_NO_WINDOW = 0x08000000
+                subprocess.Popen(
+                    cmd,
+                    env=env,
+                    creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+            else:
+                # Unix: Use start_new_session
+                subprocess.Popen(
+                    cmd,
+                    env=env,
+                    start_new_session=True,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+
+            # SUCCESS: Subprocess spawned
+            # Clear in-memory session_blocks - subprocess will read from disk
+            blocks_handed_off = len(self.session_blocks)
+            self.session_blocks = []
+
+            with open(debug_file, "a", encoding="utf-8") as f:
+                f.write(f"{datetime.now(timezone.utc).isoformat()} | [{self.qube.name}] Spawned detached auto-anchor subprocess: {' '.join(cmd[:3])}...\n")
+                f.write(f"{datetime.now(timezone.utc).isoformat()} | [{self.qube.name}] Cleared {blocks_handed_off} blocks from memory (handed off to subprocess)\n")
+
+            logger.info(
+                "auto_anchor_subprocess_spawned",
+                qube_id=self.qube.qube_id,
+                user_id=user_id,
+                blocks_handed_off=blocks_handed_off
+            )
+
+            # No delayed cleanup needed - subprocess handles everything via timestamp-based file cleanup
+            # New blocks created after spawn get new timestamps and won't be deleted by subprocess
+
+        except Exception as e:
+            logger.error(
+                "auto_anchor_subprocess_spawn_failed",
+                qube_id=self.qube.qube_id,
+                error=str(e)
+            )
+            with open(debug_file, "a", encoding="utf-8") as f:
+                f.write(f"{datetime.now(timezone.utc).isoformat()} | [{self.qube.name}] FAILED to spawn subprocess: {e}\n")
+            # Fall back to in-process anchor
+            self._anchor_in_progress = True
+            task = asyncio.create_task(self._run_auto_anchor_background(is_group))
+            self._pending_anchor_task = task
+            if await_completion:
+                await task
+                self._pending_anchor_task = None
+            return task
+
+        # Clear any stale task reference
+        self._pending_anchor_task = None
+
+        return None
+
+    async def _delayed_anchor_cleanup(self, debug_file) -> None:
+        """
+        Delayed cleanup after subprocess spawn.
+
+        Waits briefly to give subprocess time to load session files from disk,
+        then clears _anchor_in_progress and flushes any pending blocks.
+
+        This allows blocks to be queued during the critical handoff period,
+        then resumes normal block creation once subprocess has its copy.
+        """
+        try:
+            # Wait 2 seconds for subprocess to start and load session files
+            await asyncio.sleep(2.0)
+
+            with open(debug_file, "a", encoding="utf-8") as f:
+                f.write(f"{datetime.now(timezone.utc).isoformat()} | [{self.qube.name}] Delayed cleanup: clearing anchor flag, pending={len(self._pending_during_anchor)}\n")
+
+            # Clear anchor flag - new blocks can now be created normally
+            self._anchor_in_progress = False
+
+            # Flush any blocks that were queued during the 2-second handoff
+            if self._pending_during_anchor:
+                pending_count = len(self._pending_during_anchor)
+                logger.info(
+                    "flushing_blocks_queued_during_subprocess_handoff",
+                    count=pending_count,
+                    qube_id=self.qube.qube_id
+                )
+
+                for pending_block in self._pending_during_anchor:
+                    # Add to session (should be empty or have only new blocks)
+                    self.session_blocks.append(pending_block)
+
+                # Reindex all session blocks
+                self._reindex_session_blocks()
+
+                # Save each pending block to disk
+                from core.events import Events
+                for pending_block in self._pending_during_anchor:
+                    self._save_session_block(pending_block)
+
+                    # Emit session updated event
+                    block_count = len(self.session_blocks)
+                    self.qube.events.emit(Events.SESSION_UPDATED, {
+                        "session_block_count": block_count,
+                        "next_negative_index": -(block_count + 1)
+                    })
+
+                with open(debug_file, "a", encoding="utf-8") as f:
+                    f.write(f"{datetime.now(timezone.utc).isoformat()} | [{self.qube.name}] Flushed {pending_count} pending blocks to new session\n")
+
+                logger.info(
+                    "pending_blocks_flushed_after_subprocess_handoff",
+                    count=pending_count,
+                    qube_id=self.qube.qube_id
+                )
+
+                # Clear the pending queue
+                self._pending_during_anchor = []
+
+        except Exception as e:
+            logger.error(
+                "delayed_anchor_cleanup_failed",
+                error=str(e),
+                qube_id=self.qube.qube_id
+            )
+            # Ensure flag is cleared even on error
+            self._anchor_in_progress = False
 
     async def _run_auto_anchor_background(self, is_group: bool) -> None:
         """
@@ -375,9 +588,24 @@ class Session:
 
             # Use qube.anchor_session() for identical behavior to manual anchor
             # This ensures the same code path is used for both manual and auto anchor
-            debug_log(f"Calling qube.anchor_session(create_summary=True)...")
-            blocks_anchored = await self.qube.anchor_session(create_summary=True)
-            debug_log(f"anchor_session returned: blocks_anchored={blocks_anchored}")
+            # TIMEOUT: 90 seconds (inner summary timeout is 60s, plus buffer for anchor itself)
+            debug_log(f"Calling qube.anchor_session(create_summary=True) with 90s timeout...")
+            try:
+                blocks_anchored = await asyncio.wait_for(
+                    self.qube.anchor_session(create_summary=True),
+                    timeout=90.0
+                )
+                debug_log(f"anchor_session returned: blocks_anchored={blocks_anchored}")
+            except asyncio.TimeoutError:
+                debug_log(f"⚠️ anchor_session TIMEOUT after 90s - summary likely hung")
+                # The anchor itself may have completed, just summary generation hung
+                # We'll continue and let finally block cleanup
+                blocks_anchored = 0
+                logger.warning(
+                    "auto_anchor_timeout",
+                    qube_id=self.qube.qube_id,
+                    timeout_seconds=90
+                )
 
             # Check if auto-sync to IPFS is enabled
             if self.qube.chain_state.is_auto_sync_ipfs_enabled():
@@ -400,6 +628,8 @@ class Session:
             tb = traceback.format_exc()
             debug_log(f"❌ AUTO-ANCHOR FAILED: {type(e).__name__}: {e}")
             debug_log(f"Traceback:\n{tb}")
+            debug_log(f"session_blocks after failure: {len(self.session_blocks)}")
+            debug_log(f"pending_during_anchor after failure: {len(self._pending_during_anchor)}")
             logger.error(
                 "auto_anchor_background_failed",
                 error=str(e),
@@ -408,11 +638,46 @@ class Session:
                 traceback=tb,
                 exc_info=True
             )
-            # Even if anchor failed, clear session to prevent orphaned blocks
-            # (blocks may have been partially converted)
-            logger.info("auto_anchor_cleanup_after_failure", qube_id=self.qube.qube_id)
-            self.session_blocks = []
-            self.cleanup()
+            # NOTE: We do NOT clear session_blocks here anymore.
+            # If anchor succeeded but SUMMARY failed, session_blocks contains
+            # pending blocks that were flushed in anchor_to_chain - we must preserve them.
+            # If anchor failed before converting, session_blocks has original blocks
+            # which is fine - user can retry anchor.
+            logger.info(
+                "auto_anchor_error_preserving_session",
+                qube_id=self.qube.qube_id,
+                session_blocks=len(self.session_blocks),
+                pending_blocks=len(self._pending_during_anchor)
+            )
+        finally:
+            # ALWAYS reset flag - was set in check_and_auto_anchor() before task spawn
+            # anchor_to_chain() has its own finally block, but we need this for cases
+            # where we fail before or after calling anchor_to_chain()
+            self._anchor_in_progress = False
+
+            # FLUSH PENDING BLOCKS: Any blocks that arrived during anchor (success or failure)
+            # must be added to the session. Without this, blocks are lost when anchor fails.
+            if self._pending_during_anchor:
+                pending_count = len(self._pending_during_anchor)
+                logger.info(
+                    "flushing_pending_blocks_after_anchor_task",
+                    count=pending_count,
+                    qube_id=self.qube.qube_id
+                )
+                for pending_block in self._pending_during_anchor:
+                    self.session_blocks.append(pending_block)
+                self._reindex_session_blocks()
+
+                # Save each pending block
+                for pending_block in self._pending_during_anchor:
+                    self._save_session_block(pending_block)
+
+                logger.info(
+                    "pending_blocks_flushed_after_anchor_task",
+                    count=pending_count,
+                    qube_id=self.qube.qube_id
+                )
+                self._pending_during_anchor = []
 
     async def _auto_sync_to_ipfs_after_anchor(self, debug_log) -> None:
         """
@@ -610,21 +875,17 @@ class Session:
         from crypto.signing import sign_block
 
         if len(self.session_blocks) == 0:
+            # Reset flag if set by check_and_auto_anchor() but nothing to anchor
+            self._anchor_in_progress = False
             return []
 
-        # SAFEGUARD: Prevent concurrent/duplicate anchoring
-        if self._anchor_in_progress:
-            logger.warning(
-                "anchor_already_in_progress",
-                qube_id=self.qube.qube_id,
-                session_blocks=len(self.session_blocks)
-            )
-            return []
-
-        # Import before setting flag - if import fails, flag stays False
+        # Import before entering critical section
         from utils.file_lock import qube_session_lock
 
-        # Set flag immediately before try so finally always runs
+        # NOTE: _anchor_in_progress may already be True if set by check_and_auto_anchor()
+        # to enable block queuing between task spawn and task start. We set it here too
+        # to handle direct calls to anchor_to_chain() (e.g., from manual anchor).
+        # The file lock below handles actual concurrency protection.
         self._anchor_in_progress = True
         try:
           with qube_session_lock(self.qube.data_dir):
@@ -762,6 +1023,11 @@ class Session:
                 blocks_anchored=anchored_count,
                 qube_id=self.qube.qube_id
             )
+
+            # CRITICAL: Clear anchor flag NOW, before summary generation
+            # Summary generation can hang for minutes - we don't want to block new blocks
+            # The anchor itself (moving blocks to permanent storage) is complete at this point
+            self._anchor_in_progress = False
 
             # Flush any blocks that arrived during anchoring
             # These start a fresh session at block -1
@@ -1395,15 +1661,29 @@ Summary:"""
         logger.info("ai_summary_starting", prompt_length=len(summary_prompt))
 
         # Helper function to attempt summary with a model
+        # Timeout after 120 seconds - subprocesses run independently, so longer timeout is fine
+        SUMMARY_TIMEOUT_SECONDS = 120
+
         async def try_summary_with_model(model, model_desc: str) -> str | None:
             try:
                 model_name = getattr(model, 'model_name', 'unknown')
                 debug_log(f"Calling model.generate() on {model_desc} ({model_name})...")
-                response = await model.generate(
-                    messages=[{"role": "user", "content": summary_prompt}],
-                    tools=None,
-                    temperature=0.3
-                )
+
+                # Wrap in timeout to prevent hanging forever
+                try:
+                    response = await asyncio.wait_for(
+                        model.generate(
+                            messages=[{"role": "user", "content": summary_prompt}],
+                            tools=None,
+                            temperature=0.3
+                        ),
+                        timeout=SUMMARY_TIMEOUT_SECONDS
+                    )
+                except asyncio.TimeoutError:
+                    debug_log(f"❌ AI summary TIMEOUT after {SUMMARY_TIMEOUT_SECONDS}s with {model_desc}")
+                    logger.warning("ai_summary_timeout", model=model_desc, timeout=SUMMARY_TIMEOUT_SECONDS)
+                    return None
+
                 debug_log(f"model.generate() returned, has_content={response is not None and hasattr(response, 'content')}")
 
                 summary = response.content.strip() if response and response.content else None

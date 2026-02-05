@@ -17,8 +17,8 @@ Storage Structure (within chain_state.json):
 
 Skills System Design:
     - 3 tiers: Sun (major categories), Planet (specific skills), Moon (sub-skills)
-    - 7 categories: AI Reasoning, Social Intelligence, Technical Expertise,
-      Creative Expression, Knowledge Domains, Security & Privacy, Games
+    - 8 categories: AI Reasoning, Social Intelligence, Technical Expertise,
+      Creative Expression, Knowledge Domains, Security & Privacy, Board Games, Finance
     - XP ranges: Sun (0-1000), Planet (0-500), Moon (0-250)
     - Levels: 1-100 with 4 tiers (novice, intermediate, advanced, expert)
     - Skills unlock based on prerequisites

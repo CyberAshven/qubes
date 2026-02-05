@@ -258,6 +258,14 @@ class AnthropicModel(AIModelInterface):
                     context={"model": self.model_name, "error_type": "billing"},
                     cause=e
                 )
+            elif "500" in error_msg or "internal server error" in error_msg or "api_error" in error_msg:
+                # 500 errors are transient server-side issues - should be retried
+                raise ModelAPIError(
+                    f"Anthropic server error (500). This is a temporary issue on Anthropic's side. "
+                    f"Original error: {error_str}",
+                    context={"model": self.model_name, "error_type": "server_error", "retryable": True},
+                    cause=e
+                )
             else:
                 raise ModelAPIError(
                     f"Anthropic API error with model '{self.model_name}': {error_str}",

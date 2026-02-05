@@ -79,6 +79,14 @@ class MultiQubeConversation:
             user_id=user_id
         )
 
+    def _next_turn_number(self) -> int:
+        """Get the next turn number, incrementing the counter.
+
+        Each block (MESSAGE or ACTION) gets its own unique turn number.
+        """
+        self.turn_number += 1
+        return self.turn_number
+
     async def start_conversation(self, initial_prompt: str) -> Dict[str, Any]:
         """
         Start the conversation with user's initial prompt
@@ -107,7 +115,7 @@ class MultiQubeConversation:
         if first_qube.current_session:
             first_qube.current_session.create_block(user_message_block)
             # Check for auto-anchor after block creation
-            await first_qube.current_session.check_and_auto_anchor()
+            await first_qube.current_session.check_and_auto_anchor(await_completion=False)
             logger.debug(
                 "initial_message_created",
                 block_number=user_message_block.block_number,
@@ -269,7 +277,7 @@ class MultiQubeConversation:
                                     timestamp=qube_block_info["timestamp"]
                                 )
 
-    async def continue_conversation(self, max_retries: int = 2, ai_timeout: float = 60.0) -> Dict[str, Any]:
+    async def continue_conversation(self, max_retries: int = 2, ai_timeout: float = 60.0, skip_tools: bool = False) -> Dict[str, Any]:
         """
         Generate next turn in the conversation with error handling and retry logic
 
@@ -288,6 +296,7 @@ class MultiQubeConversation:
         Args:
             max_retries: Maximum number of retries for AI generation (default: 2)
             ai_timeout: Timeout in seconds for AI generation (default: 60.0)
+            skip_tools: If True, disable tool calling for this turn (default: False)
 
         Returns:
             Response dict with speaker info, message, voice model, and status
@@ -308,16 +317,16 @@ class MultiQubeConversation:
         self._processing_turn = True
 
         try:
-            return await self._continue_conversation_impl(max_retries, ai_timeout)
+            return await self._continue_conversation_impl(max_retries, ai_timeout, skip_tools)
         finally:
             self._processing_turn = False
 
-    async def _continue_conversation_impl(self, max_retries: int = 2, ai_timeout: float = 60.0) -> Dict[str, Any]:
+    async def _continue_conversation_impl(self, max_retries: int = 2, ai_timeout: float = 60.0, skip_tools: bool = False) -> Dict[str, Any]:
         """Internal implementation of continue_conversation"""
         import time
 
         turn_start = time.time()
-        self.turn_number += 1
+        # NOTE: turn_number is now incremented per-block by _next_turn_number()
 
         # CLEANUP: Remove any phantom blocks (duplicate block numbers) from previous race conditions
         self._remove_phantom_blocks()
@@ -342,8 +351,12 @@ class MultiQubeConversation:
 
         using_prefetch = False
         if self._next_speaker_prepared is not None and self._next_context_prepared is not None:
-            # Validate prepared speaker is still valid
-            if self._next_speaker_prepared in self.qubes:
+            # Validate prepared speaker is still valid AND not the same as last speaker
+            # The second check prevents back-to-back speaking if background prep ran before
+            # last_speaker_id was updated
+            prepared_id = getattr(self._next_speaker_prepared, 'qube_id', None)
+            if (self._next_speaker_prepared in self.qubes and
+                prepared_id != self.last_speaker_id):
                 next_speaker = self._next_speaker_prepared
                 conversation_context = self._next_context_prepared
                 using_prefetch = True
@@ -356,11 +369,14 @@ class MultiQubeConversation:
                     turn_number=self.turn_number
                 )
             else:
+                # Either speaker not in qubes, or they're the last speaker (would cause back-to-back)
                 logger.warning(
                     "prepared_speaker_invalid",
                     conversation_id=self.conversation_id,
-                    prepared_speaker_id=getattr(self._next_speaker_prepared, 'qube_id', 'unknown'),
-                    prepared_speaker_name=getattr(self._next_speaker_prepared, 'name', 'unknown')
+                    prepared_speaker_id=prepared_id,
+                    prepared_speaker_name=getattr(self._next_speaker_prepared, 'name', 'unknown'),
+                    last_speaker_id=self.last_speaker_id,
+                    reason="same_as_last_speaker" if prepared_id == self.last_speaker_id else "not_in_qubes"
                 )
 
             # Always clear prepared state after checking (whether used or not)
@@ -399,8 +415,9 @@ class MultiQubeConversation:
         ai_time_ms = 0
         last_error = None
 
-        # Capture session blocks before AI generation (to detect new ACTION blocks)
-        session_blocks_before = len(next_speaker.current_session.session_blocks) if next_speaker.current_session else 0
+        # Set callable for unique turn numbers per block
+        if next_speaker.current_session:
+            next_speaker.current_session.get_next_turn_number = self._next_turn_number
 
         for attempt in range(max_retries + 1):
             try:
@@ -415,11 +432,13 @@ class MultiQubeConversation:
                 )
 
                 # Use asyncio.wait_for to enforce timeout
+                # If skip_tools=True, limit to 1 iteration (allows one tool call but not many)
                 response = await asyncio.wait_for(
                     next_speaker.reasoner.process_input(
                         input_message=self._build_turn_prompt(next_speaker, conversation_context),
                         sender_id=self.user_id,
-                        temperature=0.7
+                        temperature=0.7,
+                        max_iterations=1 if skip_tools else 10
                     ),
                     timeout=ai_timeout
                 )
@@ -591,7 +610,7 @@ class MultiQubeConversation:
             # This reindexes all session blocks by timestamp
             next_speaker.current_session.create_block(response_block)
             # Check for auto-anchor after block creation
-            await next_speaker.current_session.check_and_auto_anchor()
+            await next_speaker.current_session.check_and_auto_anchor(await_completion=False)
 
         except Exception as e:
             logger.error(
@@ -608,36 +627,9 @@ class MultiQubeConversation:
         try:
             await self._distribute_block_to_participants(response_block, creator_id=next_speaker.qube_id)
 
-            # Also distribute any ACTION blocks created during tool use
-            # Detect new blocks that were added to the speaker's session during AI generation
-            if next_speaker.current_session:
-                session_blocks_after = len(next_speaker.current_session.session_blocks)
-                if session_blocks_after > session_blocks_before + 1:  # +1 for the response MESSAGE block
-                    # New blocks were created (likely ACTION blocks from tool calls)
-                    new_blocks = next_speaker.current_session.session_blocks[session_blocks_before:-1]  # Exclude the final MESSAGE block
-
-                    logger.info(
-                        "distributing_action_blocks",
-                        conversation_id=self.conversation_id,
-                        speaker=next_speaker.name,
-                        action_block_count=len(new_blocks)
-                    )
-
-                    # Distribute each ACTION block to all participants
-                    for action_block in new_blocks:
-                        if action_block.block_type == "ACTION":
-                            # Mark ACTION block as prefetch=true (part of the current response)
-                            # Will be marked false when GUI calls lock_in_response()
-                            action_block.content["prefetch"] = True
-                            next_speaker.current_session._save_session_block(action_block)
-
-                            await self._distribute_block_to_participants(action_block, creator_id=next_speaker.qube_id)
-                            logger.debug(
-                                "action_block_distributed",
-                                conversation_id=self.conversation_id,
-                                block_number=action_block.block_number,
-                                action_type=action_block.content.get("action_type", "unknown")
-                            )
+            # NOTE: ACTION blocks are NOT distributed to other participants
+            # They stay local to the qube that executed them (only signed by that qube)
+            # Only MESSAGE blocks are distributed and signed by all participants
 
             dist_time_ms = (time.time() - dist_start) * 1000
 
@@ -763,6 +755,7 @@ class MultiQubeConversation:
             "turn_number": self.turn_number,
             "conversation_id": self.conversation_id,
             "timestamp": response_block.timestamp,  # GUI needs this to call lock_in_response()
+            "block_number": response_block.block_number,  # GUI needs this for tool call matching
             "is_final": False,
             # Progress indicators for GUI
             "status": "complete",
@@ -915,12 +908,9 @@ class MultiQubeConversation:
         self._next_context_prepared = None
         self._last_prepared_response_timestamp = None
 
-        # Increment turn number for user message
-        self.turn_number += 1
-        user_turn = self.turn_number
-
-        # Create user MESSAGE block
+        # Create user MESSAGE block with unique turn number
         user_block = self._create_user_message_block(user_message)
+        user_turn = self._next_turn_number()
         user_block.content["turn_number"] = user_turn
 
         # If we removed prefetch blocks, use the minimum removed block number for the user message
@@ -939,7 +929,7 @@ class MultiQubeConversation:
             if first_qube.current_session:
                 first_qube.current_session.create_block(user_block)
                 # Check for auto-anchor after block creation
-                await first_qube.current_session.check_and_auto_anchor()
+                await first_qube.current_session.check_and_auto_anchor(await_completion=False)
                 logger.debug(
                     "user_message_created",
                     block_number=user_block.block_number,
@@ -1083,7 +1073,13 @@ class MultiQubeConversation:
 
     async def get_next_speaker_info(self) -> Dict[str, str]:
         """
-        Public method to get the next speaker information before processing
+        Public method to get the next speaker information before processing.
+
+        NOTE: This method is currently NOT used by the frontend because each CLI
+        invocation is a separate process - the speaker selected here would be lost
+        before continue_conversation() is called in a new process. The frontend
+        now shows a generic "processing response..." indicator until the actual
+        response returns.
 
         Returns:
             Dict with speaker_id and speaker_name
@@ -1339,7 +1335,7 @@ Now respond as {speaker.name}:"""
         # Add multi-Qube conversation metadata
         block.content["conversation_id"] = self.conversation_id
         block.content["participants"] = self.participant_ids
-        block.content["turn_number"] = self.turn_number
+        block.content["turn_number"] = self._next_turn_number()
         block.content["speaker_id"] = speaker.qube_id
         block.content["speaker_name"] = speaker.name
 
@@ -1400,12 +1396,15 @@ Now respond as {speaker.name}:"""
 
         for qube in self.qubes:
             if not qube.current_session:
-                logger.warning(
-                    "qube_has_no_active_session",
+                # Start a new session for this qube (may have been cleared by auto-anchor)
+                # This ensures the qube stays in the group conversation
+                logger.info(
+                    "starting_session_for_qube_during_distribution",
                     qube_id=qube.qube_id,
-                    conversation_id=self.conversation_id
+                    conversation_id=self.conversation_id,
+                    reason="session_was_none_likely_after_anchor"
                 )
-                continue
+                qube.start_session()
 
             # Skip the creator - they already added the block before distribution
             if qube.qube_id == block_creator_id:
@@ -1439,10 +1438,30 @@ Now respond as {speaker.name}:"""
             if not qube_block.relationship_updates:
                 qube_block.relationship_updates = {}
 
+            # DUPLICATE DETECTION: Check if block with same timestamp already exists
+            # This prevents duplicate blocks from retries or race conditions
+            duplicate_found = False
+            for existing_block in qube.current_session.session_blocks:
+                if existing_block.timestamp == block.timestamp and existing_block.qube_id == block.qube_id:
+                    # Block already exists - just update signatures
+                    existing_block.content["participant_signatures"] = participant_signatures.copy()
+                    qube.current_session._save_session_block(existing_block)
+                    logger.info(
+                        "duplicate_block_detected_updating_signatures",
+                        qube_id=qube.qube_id,
+                        block_timestamp=block.timestamp,
+                        block_type=block.block_type
+                    )
+                    duplicate_found = True
+                    break
+
+            if duplicate_found:
+                continue
+
             # Add to session (preserves the shared block number)
             qube.current_session.create_block(qube_block)
             # Check for auto-anchor after block creation
-            await qube.current_session.check_and_auto_anchor()
+            await qube.current_session.check_and_auto_anchor(await_completion=False)
             logger.debug(
                 "block_added_to_qube_session",
                 qube_id=qube.qube_id,
@@ -1611,3 +1630,307 @@ Now respond as {speaker.name}:"""
             "actions_taken": recovery_actions,
             "diagnostics": diagnostics
         }
+
+    # ========== BACKGROUND TURNS (Parallel Tool Execution) ==========
+
+    async def run_background_turns(
+        self,
+        exclude_qube_ids: List[str],
+        timeout: float = 30.0
+    ) -> Dict[str, Any]:
+        """
+        Run background tool turns for non-speaking qubes in parallel.
+
+        While one qube speaks, other qubes can optionally use tools to gather
+        information for their eventual turn. This creates a more dynamic and
+        realistic group conversation.
+
+        Args:
+            exclude_qube_ids: Qubes to skip (typically current speaker + next speaker)
+            timeout: Maximum time per qube's background turn (seconds)
+
+        Returns:
+            Dict with per-qube results (tool calls made or PASS)
+        """
+        from ai.model_registry import ModelRegistry
+
+        # Get eligible qubes (exclude speakers)
+        eligible_qubes = [q for q in self.qubes if q.qube_id not in exclude_qube_ids]
+
+        if not eligible_qubes:
+            logger.info(
+                "no_eligible_qubes_for_background_turns",
+                conversation_id=self.conversation_id,
+                excluded=exclude_qube_ids
+            )
+            return {
+                "conversation_id": self.conversation_id,
+                "turn_number": self.turn_number,
+                "background_results": {}
+            }
+
+        logger.info(
+            "starting_background_turns",
+            conversation_id=self.conversation_id,
+            eligible_qubes=[q.name for q in eligible_qubes],
+            excluded=exclude_qube_ids
+        )
+
+        # Group by (provider, model) for rate limiting
+        groups = self._group_qubes_by_provider(eligible_qubes)
+
+        # Build background prompt with conversation context
+        context = self._build_conversation_context()
+        background_prompt = self._build_background_turn_prompt(context)
+
+        # Execute groups in parallel, qubes within same provider/model staggered
+        results = await self._execute_background_groups(groups, background_prompt, timeout)
+
+        logger.info(
+            "background_turns_complete",
+            conversation_id=self.conversation_id,
+            results_count=len(results),
+            tool_users=[qid for qid, r in results.items() if r.get("tool_used")]
+        )
+
+        return {
+            "conversation_id": self.conversation_id,
+            "turn_number": self.turn_number,
+            "background_results": results
+        }
+
+    def _group_qubes_by_provider(self, qubes: List) -> Dict[str, List]:
+        """
+        Group qubes by (provider, model) tuple for rate limit management.
+
+        Returns:
+            Dict mapping "provider:model" to list of qubes
+        """
+        from ai.model_registry import ModelRegistry
+
+        groups: Dict[str, List] = {}
+
+        for qube in qubes:
+            model_name = qube.current_ai_model
+            model_info = ModelRegistry.get_model_info(model_name)
+            provider = model_info.get("provider", "unknown") if model_info else "unknown"
+
+            # Group key is "provider:model" for fine-grained rate limiting
+            group_key = f"{provider}:{model_name}"
+
+            if group_key not in groups:
+                groups[group_key] = []
+            groups[group_key].append(qube)
+
+        logger.debug(
+            "qubes_grouped_by_provider",
+            groups={k: [q.name for q in v] for k, v in groups.items()}
+        )
+
+        return groups
+
+    def _build_background_turn_prompt(self, context: str) -> str:
+        """
+        Build the prompt for background tool turns.
+
+        This prompt encourages qubes to use tools if relevant, or PASS if not.
+        """
+        return f"""You're listening to this group conversation, but it's NOT your turn to speak yet.
+
+CONVERSATION SO FAR:
+{context}
+
+You have ONE opportunity to prepare for your eventual turn:
+- Use ONE tool if useful (web_search, browse_url, memory_search, etc.)
+- OR respond with exactly: PASS (if nothing to prepare)
+
+Choose wisely - you only get one tool call right now. Pick the most valuable action.
+
+IMPORTANT: Do NOT generate a spoken response. Only use ONE tool or respond with PASS."""
+
+    async def _execute_background_groups(
+        self,
+        groups: Dict[str, List],
+        prompt: str,
+        timeout: float
+    ) -> Dict[str, Any]:
+        """
+        Execute background turns for all groups, handling rate limits.
+
+        Strategy:
+        - Different providers: Run fully in parallel
+        - Same provider, different model: Parallel with 200ms stagger
+        - Same provider, same model: Sequential with 500ms delay
+        """
+        import time
+
+        results: Dict[str, Any] = {}
+
+        # Create tasks for each provider group (these run in parallel)
+        provider_tasks = []
+
+        for group_key, qubes in groups.items():
+            provider = group_key.split(":")[0]
+
+            # Create a task for this provider's qubes
+            task = asyncio.create_task(
+                self._execute_provider_group(qubes, prompt, timeout, group_key)
+            )
+            provider_tasks.append((group_key, task))
+
+        # Wait for all provider groups to complete
+        for group_key, task in provider_tasks:
+            try:
+                group_results = await task
+                results.update(group_results)
+            except Exception as e:
+                logger.error(
+                    "background_group_failed",
+                    group=group_key,
+                    error=str(e),
+                    exc_info=True
+                )
+
+        return results
+
+    async def _execute_provider_group(
+        self,
+        qubes: List,
+        prompt: str,
+        timeout: float,
+        group_key: str
+    ) -> Dict[str, Any]:
+        """
+        Execute background turns for qubes in the same provider group.
+
+        Qubes with the same provider are staggered to avoid rate limits.
+        """
+        results: Dict[str, Any] = {}
+
+        for i, qube in enumerate(qubes):
+            # Stagger requests to same provider (200ms between different models, 500ms for same)
+            if i > 0:
+                # Check if same model as previous
+                prev_model = qubes[i - 1].current_ai_model
+                curr_model = qube.current_ai_model
+                delay = 0.5 if prev_model == curr_model else 0.2
+                await asyncio.sleep(delay)
+
+            try:
+                result = await asyncio.wait_for(
+                    self._execute_single_background_turn(qube, prompt),
+                    timeout=timeout
+                )
+                results[qube.qube_id] = result
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "background_turn_timeout",
+                    qube=qube.name,
+                    timeout=timeout
+                )
+                results[qube.qube_id] = {
+                    "status": "timeout",
+                    "tool_used": None,
+                    "passed": False
+                }
+            except Exception as e:
+                logger.error(
+                    "background_turn_error",
+                    qube=qube.name,
+                    error=str(e),
+                    exc_info=True
+                )
+                results[qube.qube_id] = {
+                    "status": "error",
+                    "error": str(e),
+                    "tool_used": None,
+                    "passed": False
+                }
+
+        return results
+
+    async def _execute_single_background_turn(
+        self,
+        qube,
+        prompt: str
+    ) -> Dict[str, Any]:
+        """
+        Execute a single qube's background turn.
+
+        The qube can either:
+        1. Use one or more tools
+        2. Respond with "PASS" if nothing is relevant
+
+        Returns:
+            Dict with tool_used, passed, and any tool results
+        """
+        logger.info(
+            "executing_background_turn",
+            qube=qube.name,
+            qube_id=qube.qube_id,
+            model=qube.current_ai_model
+        )
+
+        # Ensure qube has an active session
+        if not qube.current_session:
+            qube.start_session()
+
+        # Set callable for unique turn numbers per block
+        if qube.current_session:
+            qube.current_session.get_next_turn_number = self._next_turn_number
+
+        try:
+            # Use the reasoner to process the background prompt
+            # This allows the qube to use tools via the normal tool calling flow
+            # max_iterations=1 limits to ONE tool call per qube per background turn
+            response = await qube.reasoner.process_input(
+                input_message=prompt,
+                sender_id=self.user_id,
+                max_iterations=1,  # ONE tool call max, or PASS
+                temperature=0.5  # Slightly lower temp for more focused responses
+            )
+
+            # Check if qube passed
+            response_lower = response.strip().lower()
+            passed = response_lower == "pass" or response_lower.startswith("pass")
+
+            # Check if any tools were used by looking at recent ACTION blocks
+            tools_used = []
+            if qube.current_session:
+                recent_blocks = qube.current_session.session_blocks[-5:]  # Last 5 blocks
+                for block in recent_blocks:
+                    if hasattr(block, 'block_type') and block.block_type == 'ACTION':
+                        if hasattr(block, 'content') and isinstance(block.content, dict):
+                            action_type = block.content.get('action_type')
+                            if action_type:
+                                tools_used.append(action_type)
+
+            logger.info(
+                "background_turn_complete",
+                qube=qube.name,
+                passed=passed,
+                tools_used=tools_used,
+                response_preview=response[:100] if not passed else "PASS"
+            )
+
+            return {
+                "status": "completed",
+                "passed": passed,
+                "tool_used": tools_used[0] if tools_used else None,
+                "tools_used": tools_used,
+                "response": response if not passed else None
+            }
+
+        except Exception as e:
+            logger.error(
+                "background_turn_execution_error",
+                qube=qube.name,
+                error=str(e),
+                exc_info=True
+            )
+            return {
+                "status": "error",
+                "error": str(e),
+                "passed": False,
+                "tool_used": None
+            }

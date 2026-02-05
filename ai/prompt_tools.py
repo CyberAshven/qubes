@@ -391,6 +391,9 @@ IMPORTANT RULES:
 
             try:
                 arguments = json.loads(args_json)
+                # Ensure arguments is a dict (model might output a list)
+                if not isinstance(arguments, dict):
+                    arguments = {}
                 tool_calls.append(ParsedToolCall(
                     name=function_name,
                     arguments=arguments,
@@ -450,6 +453,9 @@ IMPORTANT RULES:
                 if isinstance(data, dict):
                     name = data.get("name")
                     arguments = data.get("arguments", {})
+                    # Ensure arguments is a dict (model might output a list)
+                    if not isinstance(arguments, dict):
+                        arguments = {}
 
                     if name:
                         raw_text = content[start_pos:end_pos]
@@ -498,6 +504,9 @@ IMPORTANT RULES:
 
                 name = data.get("name")
                 arguments = data.get("arguments", {})
+                # Ensure arguments is a dict (model might output a list)
+                if not isinstance(arguments, dict):
+                    arguments = {}
 
                 if name:
                     tool_calls.append(ParsedToolCall(

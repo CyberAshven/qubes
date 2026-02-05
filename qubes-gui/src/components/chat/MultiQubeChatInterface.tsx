@@ -7,6 +7,7 @@ import { Qube } from '../../types';
 import { useAuth } from '../../hooks/useAuth';
 import { useAudio } from '../../contexts/AudioContext';
 import { TypewriterText } from './TypewriterText';
+import { ToolCallBubble } from './ToolCallBubble';
 import { useChatMessages } from '../../hooks/useChatMessages';
 import EmojiPicker, { EmojiClickData, Theme } from 'emoji-picker-react';
 import { Connection } from '../connections';
@@ -37,6 +38,7 @@ interface ConversationMessage {
   conversation_id: string;
   is_final: boolean;
   timestamp?: number;
+  block_number?: number; // Block number for reliable tool call matching
 }
 
 interface ConversationSummary {
@@ -78,6 +80,14 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
 
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [conversationHistory, setConversationHistory] = useState<ConversationMessage[]>([]);
+  const [actionBlocks, setActionBlocks] = useState<Array<{
+    qube_id: string;
+    action_type: string;
+    timestamp: number;
+    parameters: any;
+    result: any;
+    status: string;
+  }>>([]);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -104,12 +114,7 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
     qubeName?: string;
   }>({ stage: 'idle' });
 
-  // Tool call indicators (shown during processing)
-  const [activeToolCalls, setActiveToolCalls] = useState<Array<{
-    action_type: string;
-    timestamp: number;
-    qube_id?: string;
-  }>>([]);
+
   const [isPauseRequested, setIsPauseRequested] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
@@ -326,6 +331,119 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
   };
 
   // ========== END P2P MODE HELPERS ==========
+
+  // Load ACTION blocks only (messages come from conversationHistory)
+  useEffect(() => {
+    const loadActionBlocks = async () => {
+      if (!userId || !password || selectedQubes.length === 0) {
+        setActionBlocks([]);
+        return;
+      }
+
+      try {
+        const allActions: typeof actionBlocks = [];
+
+        for (const qube of selectedQubes) {
+          const result = await invoke<any>('get_qube_blocks', {
+            userId,
+            qubeId: qube.qube_id,
+            password
+          });
+
+          const sessionBlocks = result.session_blocks || [];
+          const actions = sessionBlocks
+            .filter((b: any) => b.block_type === 'ACTION')
+            .map((b: any) => {
+              // Normalize timestamp to SECONDS (block files use seconds, but some might be in ms)
+              let ts = b.timestamp;
+              if (ts > 10000000000) {
+                // If > 10 billion, it's in milliseconds - convert to seconds
+                ts = Math.floor(ts / 1000);
+              }
+              return {
+                qube_id: qube.qube_id,
+                action_type: b.content?.action_type || 'unknown',
+                timestamp: ts,
+                parameters: b.content?.parameters || {},
+                result: b.content?.result || null,
+                status: b.content?.status || 'completed',
+              };
+            });
+
+          allActions.push(...actions);
+        }
+
+        // Sort actions by timestamp
+        allActions.sort((a, b) => a.timestamp - b.timestamp);
+        console.log('[ACTION LOAD] Loaded', allActions.length, 'action blocks:', allActions.map(a => `${a.action_type}@${a.timestamp}`));
+        setActionBlocks(allActions);
+      } catch (err) {
+        console.error('Failed to load action blocks:', err);
+      }
+    };
+
+    loadActionBlocks();
+  }, [userId, password, selectedQubes, conversationId, conversationHistory.length]);
+
+  // Poll for ACTION blocks while conversation is active
+  useEffect(() => {
+    if (!isConversationActive || !userId || !password || selectedQubes.length === 0) {
+      return;
+    }
+
+    // Don't poll during active typewriter/TTS to avoid interruptions
+    if (activeTypewriterMessageId) {
+      return;
+    }
+
+    const loadAllActionBlocks = async () => {
+      const allActions: typeof actionBlocks = [];
+
+      for (const qube of selectedQubes) {
+        try {
+          const result = await invoke<any>('get_qube_blocks', {
+            userId,
+            qubeId: qube.qube_id,
+            password,
+            limit: 50
+          });
+
+          const sessionBlocks = result.session_blocks || [];
+
+          sessionBlocks
+            .filter((b: any) => b.block_type === 'ACTION')
+            .forEach((b: any) => {
+              // Normalize timestamp to SECONDS
+              let ts = b.timestamp;
+              if (ts > 10000000000) {
+                ts = Math.floor(ts / 1000);
+              }
+              allActions.push({
+                qube_id: qube.qube_id,
+                action_type: b.content?.action_type || 'unknown',
+                timestamp: ts,
+                parameters: b.content?.parameters || {},
+                result: b.content?.result || null,
+                status: b.content?.status || 'completed',
+              });
+            });
+        } catch (err) {
+          console.error(`Failed to load blocks for ${qube.name}:`, err);
+        }
+      }
+
+      allActions.sort((a, b) => a.timestamp - b.timestamp);
+      setActionBlocks(allActions);
+    };
+
+    // Load immediately
+    loadAllActionBlocks();
+
+    // Then poll every second
+    const pollInterval = setInterval(loadAllActionBlocks, 1000);
+
+    return () => clearInterval(pollInterval);
+  }, [isConversationActive, userId, password, selectedQubes, activeTypewriterMessageId]);
 
   // Scroll to bottom helper
   const scrollToBottom = (smooth: boolean = true) => {
@@ -771,6 +889,36 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
     return undefined;
   };
 
+  // Run background turns for non-speaking qubes
+  // They can use tools or PASS while the current speaker's TTS plays
+  const runBackgroundTurns = async (excludeIds: string[]) => {
+    if (!conversationId || !isConversationActive) return;
+
+    try {
+      // Check if there are eligible qubes (not excluded)
+      const eligible = selectedQubes.filter(q => !excludeIds.includes(q.qube_id));
+      if (eligible.length === 0) return;
+
+      // Run background turns on backend (no UI tracking for now)
+      await invoke<{
+        conversation_id: string;
+        turn_number: number;
+        background_results: Record<string, {
+          passed: boolean;
+          tool_used?: string;
+          error?: string;
+        }>;
+      }>('run_background_turns', {
+        userId,
+        conversationId,
+        excludeQubeIds: JSON.stringify(excludeIds),
+        password,
+      });
+    } catch (err) {
+      console.error('Background turns failed:', err);
+    }
+  };
+
   // Get participant display info (works for qubes and connections)
   interface ParticipantInfo {
     name: string;
@@ -923,6 +1071,7 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
       turn_number: 0,
       conversation_id: 'pending', // Will be updated when response arrives
       is_final: false,
+      timestamp: Math.floor(Date.now() / 1000), // Seconds
     };
 
     setConversationHistory([tempUserMessage]);
@@ -996,6 +1145,7 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
           turn_number: 0,
           conversation_id: result.conversation_id || '',
           is_final: false,
+          timestamp: Math.floor(Date.now() / 1000), // Seconds
         };
 
         setConversationHistory([userMessage]);
@@ -1009,6 +1159,7 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
         }
       } else {
         // LOCAL MODE: Standard multi-qube conversation
+        console.log('LOCAL MODE: Starting conversation with:', qubeIds);
         const response = await invoke<{
           conversation_id: string;
           participants: Array<{ qube_id: string; name: string }>;
@@ -1021,6 +1172,16 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
           conversationMode,
         });
 
+        console.log('Got response:', response);
+        console.log('Got response (JSON):', JSON.stringify(response, null, 2));
+        console.log('first_response:', response.first_response);
+        console.log('conversation_id:', response.conversation_id);
+        // Check if this is actually an error response
+        if ((response as any).error) {
+          console.error('Backend error:', (response as any).error);
+          console.error('Backend traceback:', (response as any).traceback);
+          throw new Error((response as any).error);
+        }
         setConversationId(response.conversation_id);
 
         // Update user's message with real conversation ID
@@ -1032,14 +1193,20 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
           turn_number: 0,
           conversation_id: response.conversation_id,
           is_final: false,
+          timestamp: Math.floor(Date.now() / 1000), // Seconds
         };
 
+        console.log('Setting conversationHistory to:', [userMessage]);
         setConversationHistory([userMessage]);
 
         // Clear uploaded files after starting conversation
         clearUploadedFiles(`group_${selectedQubes.map(q => q.qube_id).join('_')}`);
 
         // Play TTS for first response (will be added to history when TTS starts)
+        console.log('Setting pendingTTSMessage to:', response.first_response);
+        if (!response.first_response) {
+          console.error('ERROR: first_response is missing from backend response!');
+        }
         setPendingTTSMessage(response.first_response);
       }
     } catch (err) {
@@ -1204,6 +1371,10 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
       setNextResponsePrefetch(null);
       setNextTTSPrefetch(null);
       setPrefetchedMessageId(null);
+      // Also clear refs for immediate effect
+      nextResponsePrefetchRef.current = null;
+      nextTTSPrefetchRef.current = null;
+      prefetchedMessageIdRef.current = null;
       setNextResponseStatus({ stage: 'idle' });
     }
   };
@@ -1299,6 +1470,16 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
         setNextResponseStatus({ stage: 'idle' });
         processingMessageRef.current = null; // Clear processing flag
 
+        // Clear any stale TTS prefetch state (e.g., 'tts_disabled' sentinel)
+        if (nextTTSPrefetch !== null) {
+          setNextTTSPrefetch(null);
+          nextTTSPrefetchRef.current = null;
+        }
+        if (prefetchedMessageId !== null) {
+          setPrefetchedMessageId(null);
+          prefetchedMessageIdRef.current = null;
+        }
+
         // Auto-continue if conversation is still active
         if (isConversationActive && shouldContinueRef.current) {
           setTimeout(() => continueConversation(), 500);
@@ -1337,7 +1518,11 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
         const wasReady = nextResponseStatus.stage === 'ready';
 
         if (wasReady) {
-          // Prefetched response - smooth transition: add message FIRST, then clear indicator
+          // Prefetched response - smooth transition: set typewriter BEFORE adding message
+          // This prevents flash of full text before typewriter activates
+          setActiveTypewriterMessageId(messageId);
+
+          // Now add message - React will render it with TypewriterText immediately
           setConversationHistory(prev => [...prev, pendingTTSMessage]);
 
           // Wait for React to render the message bubble
@@ -1371,17 +1556,19 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
 
         // TTS is ready! Now add message to history if we didn't already (first response case)
         if (!wasReady) {
+          // Set typewriter ID BEFORE adding message to prevent flash of full text
+          setActiveTypewriterMessageId(messageId);
+
+          // Now add message - React will render it with TypewriterText immediately
           setConversationHistory(prev => [...prev, pendingTTSMessage]);
 
           // Clear the generating indicator
           setNextResponseStatus({ stage: 'idle' });
         }
+        // Note: In wasReady case, typewriter was already activated before adding message
 
-        // Wait for React to render the DOM element for typewriter
-        await new Promise(resolve => setTimeout(resolve, 50));
-
-        // NOW activate typewriter - audio is playing
-        setActiveTypewriterMessageId(messageId);
+        // Small delay to ensure React has rendered
+        await new Promise(resolve => setTimeout(resolve, 20));
 
         // Start prefetching immediately (in parallel with TTS playback)
         // This maximizes the time available for the next qube to prepare their response
@@ -1413,90 +1600,25 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
                 return;
               }
 
-              // Start polling for ACTION blocks during processing
-              // (we'll set processing status after we get the response and know which qube)
-              const pollInterval = setInterval(async () => {
-                try {
-                  // Poll all participating qubes for recent ACTION blocks
-                  const now = Date.now();
-                  const recentActions: Array<{ action_type: string; timestamp: number; qube_id: string }> = [];
-
-                  for (const qube of selectedQubes) {
-                    try {
-                      const result = await invoke<any>('get_qube_blocks', {
-                        userId,
-                        qubeId: qube.qube_id,
-                        password,
-                        limit: 50, // Only check recent blocks
-                      });
-
-                      if (result?.session_blocks && Array.isArray(result.session_blocks)) {
-                        // Find ACTION blocks from the last 5 seconds (but skip prefetch actions)
-                        // Note: b.timestamp is in seconds, now is in milliseconds
-                        const actionBlocks = result.session_blocks.filter((b: any) =>
-                          b.block_type === 'ACTION' &&
-                          b.content?.action_type &&
-                          b.timestamp &&
-                          (now - b.timestamp * 1000) < 5000 && // Within last 5 seconds
-                          b.content?.prefetch !== true // Skip prefetch actions to avoid showing background work
-                        );
-
-                        // Add to recent actions with qube_id
-                        actionBlocks.forEach((b: any) => {
-                          recentActions.push({
-                            action_type: b.content.action_type,
-                            // Convert from seconds (backend) to milliseconds (frontend)
-                            timestamp: b.timestamp * 1000,
-                            qube_id: qube.qube_id
-                          });
-                        });
-                      }
-                    } catch (err) {
-                      // Ignore errors for individual qubes
-                    }
-                  }
-
-                  // Update active tool calls with unique actions
-                  if (recentActions.length > 0) {
-                    // Deduplicate by action_type (show each tool once even if called multiple times)
-                    const uniqueActions = Array.from(
-                      new Map(recentActions.map(a => [a.action_type, a])).values()
-                    );
-                    setActiveToolCalls(uniqueActions);
-                  } else {
-                    setActiveToolCalls([]);
-                  }
-                } catch (err) {
-                  // Silently ignore polling errors
-                }
-              }, 500); // Poll every 500ms
-
-              // STEP 1: Get next speaker info (lightweight call)
-              const speakerInfo = await invoke<{ speaker_id: string; speaker_name: string }>('get_next_speaker', {
-                userId,
-                conversationId,
-                password,
-              });
-
-              // Show "processing response" indicator with the specific qube
+              // Show generic "processing" indicator - we don't know who will speak yet
+              // NOTE: We removed the get_next_speaker call because each CLI invocation is a
+              // separate process, so the speaker selected there was different from the one
+              // selected in continue_multi_qube_conversation (random selection happened twice)
               setNextResponseStatus({
                 stage: 'processing',
-                qubeId: speakerInfo.speaker_id,
-                qubeName: speakerInfo.speaker_name
+                qubeId: undefined,
+                qubeName: undefined
               });
 
-              // STEP 2: Prefetch next response - THIS IS WHERE THE ACTUAL PROCESSING HAPPENS
+              // Prefetch next response - THIS IS WHERE THE ACTUAL PROCESSING HAPPENS
               const nextResponse = await invoke<ConversationMessage>('continue_multi_qube_conversation', {
                 userId,
                 conversationId,
                 password,
               });
 
-              // Stop polling when response is received
-              clearInterval(pollInterval);
-
-              // Clear tool call indicators
-              setActiveToolCalls([]);
+              // NOTE: Don't stop polling yet - keep polling during TTS generation
+              // to catch tool calls from background turns. Will clear at the end.
 
               // Response is now complete - processing is done, will show "generating audio" next
 
@@ -1509,7 +1631,6 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
                 setNextResponseStatus(prev =>
                   prev.qubeId === userId ? prev : { stage: 'idle' }
                 );
-                setActiveToolCalls([]); // Clear tool indicators
 
                 // Delete the prefetched blocks from all participating qubes
                 // The backend created blocks, so we need to query and delete them
@@ -1544,6 +1665,8 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
               }
 
               setNextResponsePrefetch(nextResponse);
+              // Also update ref directly (useEffect sync can be delayed by React batching)
+              nextResponsePrefetchRef.current = nextResponse;
 
               // Get next speaker info
               const nextQube = getQubeById(nextResponse.speaker_id);
@@ -1551,6 +1674,14 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
                 console.error('Next qube not found');
                 setNextResponseStatus({ stage: 'idle' });
                 return;
+              }
+
+              // Run background turns for non-speaking qubes (limited to 1 tool call each)
+              // They can use ONE tool or PASS while the current speaker's TTS plays
+              if (pendingTTSMessage && selectedQubes.length > 2) {
+                const excludeIds = [pendingTTSMessage.speaker_id, nextResponse.speaker_id];
+                // Fire without await - runs in parallel with TTS generation
+                runBackgroundTurns(excludeIds);
               }
 
               // CHECK: Status update
@@ -1616,12 +1747,19 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
                   // Store BOTH the audio and which message it belongs to
                   setNextTTSPrefetch(prefetchedAudio);
                   setPrefetchedMessageId(nextMessageId);
+                  // Also update refs directly (useEffect sync can be delayed by React batching)
+                  nextTTSPrefetchRef.current = prefetchedAudio;
+                  prefetchedMessageIdRef.current = nextMessageId;
 
                   // CHECK ONE MORE TIME before showing "ready"
                   if (prefetchCancelledRef.current) {
                     setNextResponsePrefetch(null);
                     setNextTTSPrefetch(null);
                     setPrefetchedMessageId(null);
+                    // Also clear refs for immediate effect
+                    nextResponsePrefetchRef.current = null;
+                    nextTTSPrefetchRef.current = null;
+                    prefetchedMessageIdRef.current = null;
                     // Only clear status if it's not a user indicator (preserve "bit_faced response ready")
                     setNextResponseStatus(prev =>
                       prev.qubeId === userId ? prev : { stage: 'idle' }
@@ -1657,6 +1795,7 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
                   }
 
                   // Update status: Ready!
+                  console.log('[Prefetch] TTS ready, setting status to ready for:', nextQube.name, 'hasPrefetch:', !!nextResponse);
                   setNextResponseStatus({
                     stage: 'ready',
                     qubeId: nextQube.qube_id,
@@ -1671,7 +1810,14 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
                   );
                 }
               } else {
-                setPrefetchedMessageId(null);
+                // No TTS needed - but still set prefetchedMessageId so auto-continue
+                // knows this message is "complete" (TTS step was skipped, not pending)
+                setPrefetchedMessageId(nextMessageId);
+                prefetchedMessageIdRef.current = nextMessageId;
+                // Set nextTTSPrefetch to a sentinel value to indicate "TTS not needed"
+                // This allows auto-continue's isComplete check to pass
+                setNextTTSPrefetch('tts_disabled');
+                nextTTSPrefetchRef.current = 'tts_disabled';
                 // No TTS needed, mark as ready (if not cancelled)
                 if (nextQube && !prefetchCancelledRef.current) {
                   setNextResponseStatus({
@@ -1779,6 +1925,15 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
     // - Not currently loading
     // - Not currently processing a message (prevents race conditions)
     // - Not waiting for user response from backend
+    console.log('[Auto-continue] Checking conditions:', {
+      activeTypewriter: activeTypewriterMessageId,
+      isActive: isConversationActive,
+      shouldContinue: shouldContinueRef.current,
+      pendingTTS: pendingTTSMessage?.speaker_name,
+      isLoading,
+      processingRef: processingMessageRef.current,
+      waitingForUser: waitingForUserResponseRef.current,
+    });
     if (
       !activeTypewriterMessageId &&
       isConversationActive &&
@@ -1793,8 +1948,9 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
       const hasPrefetchedTTS = nextTTSPrefetch !== null && prefetchedMessageId === nextMessageId;
       const hasCompletePrefetch = nextResponsePrefetch !== null && hasPrefetchedTTS;
 
-      // Fixed 1 second delay between responses for natural conversation pacing
-      const delay = 1000; // 1 second delay for all responses
+      // If prefetch is ready, start immediately. Otherwise, 1 second delay for pacing.
+      const delay = hasCompletePrefetch ? 50 : 1000; // 50ms for render, 1s if waiting
+      console.log('[Auto-continue] All conditions passed, delay:', delay, 'hasCompletePrefetch:', hasCompletePrefetch);
 
       const timer = setTimeout(async () => {
         // First, wait for any in-progress prefetch to complete (max 20 seconds)
@@ -1855,8 +2011,14 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
           // Stop polling after 60 seconds (safety timeout)
           setTimeout(() => {
             clearInterval(pollInterval);
-            // Last resort: fetch fresh if we still don't have anything
-            if (!nextResponsePrefetchRef.current) {
+            // Last resort: use prefetch without TTS or fetch fresh
+            const stalePrefetch = nextResponsePrefetchRef.current;
+            if (stalePrefetch) {
+              console.log('[Auto-continue] Prefetch timeout - using prefetch without TTS');
+              setPendingTTSMessage(stalePrefetch);
+              setNextResponsePrefetch(null);
+            } else {
+              console.log('[Auto-continue] Prefetch timeout - fetching fresh');
               continueConversation();
             }
           }, 60000);
@@ -1902,6 +2064,17 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
           // Stop polling after 30 seconds (safety timeout)
           setTimeout(() => {
             clearInterval(pollInterval);
+            // If we still have a prefetch but TTS never arrived, use it anyway (no audio)
+            const staleCheck = nextResponsePrefetchRef.current;
+            if (staleCheck) {
+              console.log('[Auto-continue] TTS timeout - using prefetch without TTS');
+              setPendingTTSMessage(staleCheck);
+              setNextResponsePrefetch(null);
+            } else {
+              // No prefetch at all - fetch fresh
+              console.log('[Auto-continue] TTS timeout - fetching fresh');
+              continueConversation();
+            }
           }, 30000);
         } else {
           // No prefetch at all - fetch fresh
@@ -1914,6 +2087,62 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
   }, [activeTypewriterMessageId, isConversationActive, pendingTTSMessage, isLoading]);
   // NOTE: nextResponsePrefetch is intentionally NOT in dependencies
   // We only want to trigger when typewriter completes, not when prefetch updates
+
+  // SAFETY NET: When status becomes 'ready' and nothing is playing, start playback immediately
+  // This handles the case where the main auto-continue effect ran before prefetch completed
+  useEffect(() => {
+    // Debug: Log all conditions when the effect runs
+    const conditions = {
+      stageIsReady: nextResponseStatus.stage === 'ready',
+      noActiveTypewriter: !activeTypewriterMessageId,
+      noPendingTTS: !pendingTTSMessage,
+      notProcessing: !processingMessageRef.current,
+      isActive: isConversationActive,
+      shouldContinue: shouldContinueRef.current,
+      notWaitingForUser: !waitingForUserResponseRef.current,
+      hasPrefetch: !!nextResponsePrefetchRef.current,
+    };
+    console.log('[Safety Net] Checking conditions:', conditions);
+
+    // Check which condition failed
+    const failed = Object.entries(conditions).filter(([_, v]) => !v).map(([k, _]) => k);
+    if (failed.length > 0) {
+      console.log('[Safety Net] Failed conditions:', failed);
+    }
+
+    if (
+      nextResponseStatus.stage === 'ready' &&
+      !activeTypewriterMessageId &&
+      !pendingTTSMessage &&
+      !processingMessageRef.current &&
+      isConversationActive &&
+      shouldContinueRef.current &&
+      !waitingForUserResponseRef.current
+    ) {
+      console.log('[Safety Net] All conditions passed!');
+      // Get the prefetched response from refs (most current value)
+      const prefetch = nextResponsePrefetchRef.current;
+      if (prefetch) {
+        console.log('[Safety Net] Prefetch found, scheduling playback with 1s delay');
+        // Use same 1s delay as auto-continue to prevent cutting off previous speaker
+        // This ensures natural pacing between speakers
+        setTimeout(() => {
+          // Double-check refs still hold after delay
+          // (processingMessageRef is a ref so always has latest value)
+          // (nextResponsePrefetchRef being null means auto-continue already grabbed it)
+          if (
+            !processingMessageRef.current &&
+            nextResponsePrefetchRef.current
+          ) {
+            console.log('Safety net: triggering playback for ready response');
+            setPendingTTSMessage(nextResponsePrefetchRef.current);
+            setNextResponsePrefetch(null);
+            nextResponsePrefetchRef.current = null;
+          }
+        }, 1000);
+      }
+    }
+  }, [nextResponseStatus.stage, activeTypewriterMessageId, pendingTTSMessage, isConversationActive]);
 
   // Handle displaying pending user message when speaker finishes
   useEffect(() => {
@@ -2226,157 +2455,146 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
           </div>
         ) : (
           <div className="space-y-4">
-            {conversationHistory.map((msg, index) => {
+
+            {/* Render messages from conversationHistory with actions interleaved by timestamp */}
+            {conversationHistory.map((msg, msgIndex) => {
+              const messageId = `${msg.conversation_id}-${msg.turn_number}`;
               const qube = getQubeById(msg.speaker_id);
               const participantInfo = getParticipantInfo(msg.speaker_id);
               const isUser = msg.speaker_id === userId;
-              const messageId = `${msg.conversation_id}-${msg.turn_number}`;
-
-              // Use participant info for styling (works for qubes and connections)
               const speakerColor = participantInfo?.color || qube?.favorite_color || '#00d4ff';
               const speakerAvatarUrl = participantInfo?.avatarUrl || (qube ? getAvatarPath(qube) : undefined);
 
+              // Find actions that should appear BEFORE this message
+              // Action timestamp must be > previous message timestamp AND <= this message timestamp
+              const prevMsg = msgIndex > 0 ? conversationHistory[msgIndex - 1] : null;
+              const prevMsgIsUser = prevMsg?.speaker_id === userId;
+              const thisTimestamp = msg.timestamp || 0;
+
+              // IMPORTANT: If previous message is from USER, use 0 as prevTimestamp
+              // This is because the frontend creates user messages with Date.now() which may differ
+              // from backend timestamps. Using 0 ensures all actions before this qube message are shown.
+              const prevTimestamp = prevMsgIsUser ? 0 : (prevMsg?.timestamp || 0);
+
+              // DEBUG: Log timestamps for action filtering
+              if (!isUser) {
+                console.log(`[ACTION DEBUG] msgIndex=${msgIndex} speaker=${msg.speaker_name} prevMsgIsUser=${prevMsgIsUser} prevTS=${prevTimestamp} thisTS=${thisTimestamp} actionBlocks.length=${actionBlocks.length}`);
+                if (actionBlocks.length > 0) {
+                  actionBlocks.forEach(a => {
+                    const wouldMatch = a.timestamp > prevTimestamp && a.timestamp <= thisTimestamp;
+                    console.log(`  Action ${a.action_type} ts=${a.timestamp} match=${wouldMatch} (${a.timestamp}>${prevTimestamp}=${a.timestamp > prevTimestamp}, ${a.timestamp}<=${thisTimestamp}=${a.timestamp <= thisTimestamp})`);
+                  });
+                }
+              }
+
+              // For user messages (msgIndex 0), no actions appear before them
+              // For qube messages after user, show all actions with timestamp <= this message
+              const actionsBeforeThisMessage = isUser ? [] : actionBlocks.filter(action =>
+                action.timestamp > prevTimestamp && action.timestamp <= thisTimestamp
+              );
+
               return (
-                <div
-                  key={messageId}
-                  className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}
-                >
-                  <div
-                    className={`max-w-[70%] rounded-lg p-3 border-2 ${
-                      isUser
-                        ? 'bg-accent-primary/20 text-text-primary border-accent-primary'
-                        : 'bg-bg-tertiary text-text-primary'
-                    }`}
-                    style={
-                      !isUser
-                        ? { borderColor: speakerColor }
-                        : undefined
-                    }
-                  >
-                    {/* Speaker Name */}
-                    <div className="flex items-center gap-2 mb-2">
-                      {!isUser && speakerAvatarUrl && (
-                        <img
-                          src={speakerAvatarUrl.startsWith('http') ? speakerAvatarUrl : convertFileSrc(speakerAvatarUrl)}
-                          alt={msg.speaker_name}
-                          className="w-8 h-8 rounded-full object-cover border-2"
-                          style={{
-                            borderColor: speakerColor,
-                            boxShadow: `0 0 8px ${speakerColor}60`
-                          }}
-                          onError={(e) => {
-                            const target = e.target as HTMLImageElement;
-                            target.style.display = 'none';
-                          }}
-                        />
-                      )}
-                      {!isUser && !speakerAvatarUrl && participantInfo && (
-                        <div
-                          className="w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold border-2"
-                          style={{
-                            background: `linear-gradient(135deg, ${speakerColor}60, ${speakerColor}30)`,
-                            borderColor: speakerColor,
-                            color: speakerColor,
-                          }}
-                        >
-                          {msg.speaker_name[0]}
+                <React.Fragment key={messageId}>
+                  {/* Actions that belong before this message */}
+                  {actionsBeforeThisMessage.map((action, actionIdx) => {
+                    const actionQube = selectedQubes.find(q => q.qube_id === action.qube_id);
+                    const actionColor = actionQube?.favorite_color || '#00d4ff';
+                    const actionAvatar = actionQube ? getAvatarPath(actionQube) : undefined;
+                    const actionQubeName = actionQube?.name || 'Unknown';
+
+                    return (
+                      <div key={`action-${action.timestamp}-${actionIdx}`} className="flex justify-start">
+                        <div className="max-w-[70%]">
+                          <ToolCallBubble
+                            toolName={action.action_type}
+                            input={action.parameters}
+                            result={action.result}
+                            status={action.status as 'in_progress' | 'completed' | 'failed'}
+                            accentColor={actionColor}
+                            timestamp={action.timestamp}
+                            label={actionQubeName}
+                            avatarUrl={actionAvatar}
+                          />
                         </div>
-                      )}
-                      <p
-                        className="text-sm font-medium"
-                        style={
-                          !isUser
-                            ? { color: speakerColor }
-                            : { color: 'var(--accent-primary)' }
-                        }
-                      >
-                        {msg.speaker_name}
-                        {participantInfo?.isConnection && (
-                          <span className="ml-1 text-xs text-text-tertiary">(P2P)</span>
+                      </div>
+                    );
+                  })}
+
+                  {/* The message itself */}
+                  <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
+                    <div
+                      className={`max-w-[70%] rounded-lg p-3 border-2 ${
+                        isUser ? 'bg-accent-primary/20 text-text-primary border-accent-primary' : 'bg-bg-tertiary text-text-primary'
+                      }`}
+                      style={!isUser ? { borderColor: speakerColor } : undefined}
+                    >
+                      <div className="flex items-center gap-2 mb-2">
+                        {!isUser && speakerAvatarUrl && (
+                          <img
+                            src={speakerAvatarUrl.startsWith('http') ? speakerAvatarUrl : convertFileSrc(speakerAvatarUrl)}
+                            alt={msg.speaker_name}
+                            className="w-8 h-8 rounded-full object-cover border-2"
+                            style={{ borderColor: speakerColor, boxShadow: `0 0 8px ${speakerColor}60` }}
+                            onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                          />
                         )}
-                      </p>
-                    </div>
-
-                    {/* Message Content */}
-                    <div className="whitespace-pre-wrap break-words">
-                      {!isUser && messageId === activeTypewriterMessageId ? (
-                        <>
-                          {/* Render images first (non-typewriter) - both HTTP URLs and local paths */}
-                          {(() => {
-                            const imageUrlRegex = /(https?:\/\/[^\s\)]+?(?:\.(?:png|jpg|jpeg|gif|webp)|blob\.core\.windows\.net\/[^\s\)]+))/gi;
-                            const localPathRegex = /([A-Za-z]:\\[^\s\)]+\.(?:png|jpg|jpeg|gif|webp)|data[\\\/][^\s\)]+\.(?:png|jpg|jpeg|gif|webp))/gi;
-                            const imageUrls = msg.message.match(imageUrlRegex) || [];
-                            const localPaths = msg.message.match(localPathRegex) || [];
-
-                            // Render HTTP URLs
-                            const httpImages = imageUrls.map((url, index) => (
-                              <img
-                                key={`http-img-${index}`}
-                                src={url}
-                                alt="Generated image"
-                                className="max-w-full rounded-lg mb-3 block"
-                                style={{ maxHeight: '400px', objectFit: 'contain' }}
-                                onLoad={() => {
-                                  saveImageToDisk(url, msg.speaker_id);
-                                  scrollToBottom();
-                                }}
-                              />
-                            ));
-
-                            // Render local paths (convert to asset URLs)
-                            const localImages = localPaths.map((path, index) => {
-                              const assetUrl = convertToAssetUrl(path);
-                              return (
-                                <img
-                                  key={`local-img-${index}`}
-                                  src={assetUrl}
-                                  alt="Generated image"
-                                  className="max-w-full rounded-lg mb-3 block"
-                                  style={{ maxHeight: '400px', objectFit: 'contain' }}
-                                  onLoad={() => scrollToBottom()}
-                                  onError={(e) => {
-                                    console.error(`Image failed to load: ${assetUrl}`, e);
-                                  }}
-                                />
-                              );
-                            });
-
-                            return [...httpImages, ...localImages];
-                          })()}
-                          {/* Then typewriter effect for cleaned text (without URLs) */}
+                        <p className="text-sm font-medium" style={{ color: isUser ? 'var(--accent-primary)' : speakerColor }}>
+                          {msg.speaker_name}
+                        </p>
+                      </div>
+                      <div className="whitespace-pre-wrap break-words">
+                        {!isUser && messageId === activeTypewriterMessageId ? (
                           <TypewriterText
-                            text={cleanContentForDisplay(msg.message)}
+                            text={msg.message}
                             audioElement={audioElement}
                             onComplete={() => {
+                              console.log('[Typewriter] Completed for:', msg.speaker_name, 'Turn:', msg.turn_number);
                               setActiveTypewriterMessageId(null);
-                              processingMessageRef.current = null; // Clear processing flag NOW
-                              setTimeout(scrollToBottom, 200);
+                              processingMessageRef.current = null;
                             }}
                           />
-                        </>
-                      ) : !isUser && msg.turn_number === lastProcessedTurnRef.current && index === conversationHistory.length - 1 && processingMessageRef.current === messageId ? (
-                        // Message just added but typewriter not activated yet - show nothing
-                        <div className="h-4 flex items-center">
-                          <div className="flex gap-1">
-                            <div className="w-1.5 h-1.5 bg-accent-primary rounded-full animate-bounce"></div>
-                            <div className="w-1.5 h-1.5 bg-accent-primary rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
-                            <div className="w-1.5 h-1.5 bg-accent-primary rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
-                          </div>
-                        </div>
-                      ) : (
-                        // Completed message or user message - render with inline images
-                        renderMessageContent(msg.message, msg.speaker_id)
-                      )}
+                        ) : (
+                          renderMessageContent(msg.message, msg.speaker_id)
+                        )}
+                      </div>
+                      <p className="text-text-tertiary text-xs mt-1">Turn {msg.turn_number}</p>
                     </div>
-
-                    {/* Turn number */}
-                    <p className="text-text-tertiary text-xs mt-1">
-                      Turn {msg.turn_number}
-                    </p>
                   </div>
-                </div>
+                </React.Fragment>
               );
             })}
+
+            {/* Actions after the last message (in-progress or pending) */}
+            {actionBlocks
+              .filter(action => {
+                const lastMsgTimestamp = conversationHistory.length > 0
+                  ? (conversationHistory[conversationHistory.length - 1].timestamp || 0)
+                  : 0;
+                return action.timestamp > lastMsgTimestamp;
+              })
+              .map((action, idx) => {
+                const qube = selectedQubes.find(q => q.qube_id === action.qube_id);
+                const qubeColor = qube?.favorite_color || '#00d4ff';
+                const avatarUrl = qube ? getAvatarPath(qube) : undefined;
+                const qubeName = qube?.name || 'Unknown';
+
+                return (
+                  <div key={`trailing-action-${action.timestamp}-${idx}`} className="flex justify-start">
+                    <div className="max-w-[70%]">
+                      <ToolCallBubble
+                        toolName={action.action_type}
+                        input={action.parameters}
+                        result={action.result}
+                        status={action.status as 'in_progress' | 'completed' | 'failed'}
+                        accentColor={qubeColor}
+                        timestamp={action.timestamp}
+                        label={qubeName}
+                        avatarUrl={avatarUrl}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
 
             {/* Generic loading indicator for initial response */}
             {isLoading && conversationHistory.length <= 1 && !pendingTTSMessage && (
@@ -2406,7 +2624,7 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
             )}
 
             {/* Processing response indicator */}
-            {nextResponseStatus.stage === 'processing' && activeToolCalls.length === 0 && (() => {
+            {nextResponseStatus.stage === 'processing' && (() => {
               // Get qube if we know who's responding
               const qube = nextResponseStatus.qubeId ? getQubeById(nextResponseStatus.qubeId) : null;
               const color = qube?.favorite_color || 'var(--accent-primary)';
@@ -2445,135 +2663,20 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
                         <span className="text-xs text-text-secondary">
                           processing response...
                         </span>
-                        <div className="flex gap-1">
-                          <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{
+                        <div className="flex gap-1 ml-1">
+                          <div className="w-2 h-2 rounded-full animate-bounce" style={{
                             backgroundColor: color,
-                            animationDuration: '1s'
+                            animationDuration: '0.6s'
                           }}></div>
-                          <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{
+                          <div className="w-2 h-2 rounded-full animate-bounce" style={{
                             backgroundColor: color,
-                            animationDuration: '1s',
-                            animationDelay: '0.2s'
+                            animationDuration: '0.6s',
+                            animationDelay: '0.15s'
                           }}></div>
-                          <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{
+                          <div className="w-2 h-2 rounded-full animate-bounce" style={{
                             backgroundColor: color,
-                            animationDuration: '1s',
-                            animationDelay: '0.4s'
-                          }}></div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              );
-            })()}
-
-            {/* Tool call indicator - adapts based on tool type */}
-            {activeToolCalls.length > 0 && nextResponseStatus.stage === 'processing' && (() => {
-              const tool = activeToolCalls[activeToolCalls.length - 1];
-              const toolQube = tool.qube_id ? getQubeById(tool.qube_id) : null;
-              if (!toolQube) return null;
-
-              const toolDisplay: Record<string, string> = {
-                // Regular tools
-                'web_search': 'searching the web',
-                'generate_image': 'generating image',
-                'browse_url': 'browsing URL',
-                'memory_search': 'searching memory',
-                'list_files': 'listing files',
-                'read_file': 'reading file',
-                'write_file': 'writing file',
-                'run_command': 'running command',
-                'calculate': 'calculating',
-                'describe_my_avatar': 'looking in the mirror',
-                // AI Reasoning Tools
-                'think_step_by_step': 'thinking step by step',
-                'self_critique': 'self-critiquing',
-                'explore_alternatives': 'exploring alternatives',
-                // Social Intelligence Tools (Social & Emotional Learning)
-                'get_relationship_context': 'getting relationship context',
-                'recall_relationship_history': 'recalling relationship history',
-                'analyze_interaction_patterns': 'analyzing patterns',
-                'get_relationship_timeline': 'getting timeline',
-                'read_emotional_state': 'reading emotional state',
-                'track_emotional_patterns': 'tracking emotions',
-                'detect_mood_shift': 'detecting mood shift',
-                'adapt_communication_style': 'adapting style',
-                'match_communication_style': 'matching style',
-                'calibrate_tone': 'calibrating tone',
-                'steelman': 'steelmanning argument',
-                'devils_advocate': 'playing devil\'s advocate',
-                'spot_fallacy': 'spotting fallacies',
-                'assess_trust_level': 'assessing trust',
-                'detect_social_manipulation': 'detecting manipulation',
-                'evaluate_request': 'evaluating request',
-                // Technical Expertise Tools
-                'debug_systematically': 'debugging',
-                'research_with_synthesis': 'researching deeply',
-                'validate_solution': 'validating solution',
-                // Creative Expression Tools
-                'brainstorm_variants': 'brainstorming ideas',
-                'iterate_design': 'iterating on design',
-                'cross_pollinate_ideas': 'cross-pollinating ideas',
-                // Knowledge Domains Tools
-                'deep_research': 'researching deeply',
-                'synthesize_knowledge': 'synthesizing knowledge',
-                'explain_like_im_five': 'simplifying explanation',
-                // Security & Privacy Tools
-                'assess_security_risks': 'assessing security',
-                'privacy_impact_analysis': 'analyzing privacy',
-                'verify_authenticity': 'verifying authenticity',
-                // Games Tools
-                'analyze_game_state': 'analyzing game',
-                'plan_strategy': 'planning strategy',
-                'learn_from_game': 'learning from game',
-              };
-
-              const displayText = toolDisplay[tool.action_type] || tool.action_type;
-
-              return (
-                <div className="flex justify-start">
-                  <div className="rounded-lg px-4 py-2 border-2" style={{
-                    backgroundColor: 'var(--bg-tertiary)',
-                    borderColor: toolQube.favorite_color,
-                  }}>
-                    <div className="flex items-center gap-3">
-                      <img
-                        src={getAvatarPath(toolQube)}
-                        alt={toolQube.name}
-                        className="w-8 h-8 rounded-full object-cover border-2"
-                        style={{
-                          borderColor: toolQube.favorite_color,
-                          opacity: 0.6
-                        }}
-                        onError={(e) => {
-                          const target = e.target as HTMLImageElement;
-                          target.style.display = 'none';
-                        }}
-                      />
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-medium" style={{
-                          color: toolQube.favorite_color
-                        }}>
-                          {toolQube.name}
-                        </span>
-                        <span className="text-xs text-text-secondary">
-                          {displayText}...
-                        </span>
-                        <div className="flex gap-1">
-                          <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{
-                            backgroundColor: toolQube.favorite_color,
-                            animationDuration: '1s'
-                          }}></div>
-                          <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{
-                            backgroundColor: toolQube.favorite_color,
-                            animationDuration: '1s',
-                            animationDelay: '0.2s'
-                          }}></div>
-                          <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{
-                            backgroundColor: toolQube.favorite_color,
-                            animationDuration: '1s',
-                            animationDelay: '0.4s'
+                            animationDuration: '0.6s',
+                            animationDelay: '0.3s'
                           }}></div>
                         </div>
                       </div>
@@ -2636,20 +2739,20 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
                         <span className="text-xs text-text-secondary">
                           generating audio...
                         </span>
-                        <div className="flex gap-1">
-                          <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{
+                        <div className="flex gap-1 ml-1">
+                          <div className="w-2 h-2 rounded-full animate-bounce" style={{
                             backgroundColor: speakerColor,
-                            animationDuration: '1s'
+                            animationDuration: '0.6s'
                           }}></div>
-                          <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{
+                          <div className="w-2 h-2 rounded-full animate-bounce" style={{
                             backgroundColor: speakerColor,
-                            animationDuration: '1s',
-                            animationDelay: '0.2s'
+                            animationDuration: '0.6s',
+                            animationDelay: '0.15s'
                           }}></div>
-                          <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{
+                          <div className="w-2 h-2 rounded-full animate-bounce" style={{
                             backgroundColor: speakerColor,
-                            animationDuration: '1s',
-                            animationDelay: '0.4s'
+                            animationDuration: '0.6s',
+                            animationDelay: '0.3s'
                           }}></div>
                         </div>
                       </div>
@@ -2742,7 +2845,7 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
                           <span className="text-xs font-medium text-text-primary">
                             ready to respond
                           </span>
-                          <span className="text-lg">✓</span>
+                          <span className="text-lg" style={{ color: speakerColor }}>✓</span>
                         </div>
                       </div>
                     </div>

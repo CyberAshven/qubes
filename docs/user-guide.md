@@ -658,7 +658,7 @@ The main area displays an interactive solar system:
 **Center**: Your Qube's avatar at the heart of the system, surrounded by a cosmic galaxy background
 
 **Skill Nodes**: Orbiting objects representing skills
-- **Suns** (large, glowing): Major skill categories (7 total)
+- **Suns** (large, glowing): Major skill categories (8 total)
 - **Planets** (medium): Specific skills within categories
 - **Moons** (small): Sub-skills and specializations
 
@@ -708,7 +708,7 @@ When you click a skill node, a details panel appears on the right:
 - **Max XP**: Maximum XP for this skill (e.g., "1000")
 - **Status**: "Unlocked" (green) or "Locked"
 
-### Skill Categories (7 Total)
+### Skill Categories (8 Total)
 
 | Category | Icon | Focus Areas |
 |----------|------|-------------|

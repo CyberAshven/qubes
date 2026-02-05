@@ -14,6 +14,91 @@ from monitoring.metrics import MetricsRecorder
 
 logger = get_logger(__name__)
 
+# Dynamic tool selection for small models
+# Maps keywords/phrases in user messages to relevant tools
+# Small models see only tools matching their request (max ~10 tools)
+KEYWORD_TO_TOOLS: Dict[str, List[str]] = {
+    # System/status queries
+    "scan": ["get_system_state"],
+    "system": ["get_system_state"],
+    "status": ["get_system_state"],
+    "state": ["get_system_state"],
+    "about yourself": ["get_system_state"],
+    "tell me about you": ["get_system_state"],
+
+    # Mirror/avatar queries
+    "mirror": ["describe_my_avatar"],
+    "look like": ["describe_my_avatar"],
+    "appearance": ["describe_my_avatar"],
+    "avatar": ["describe_my_avatar"],
+    "see yourself": ["describe_my_avatar"],
+
+    # Model switching
+    "switch": ["switch_model"],
+    "change model": ["switch_model"],
+    "use model": ["switch_model"],
+
+    # Web search
+    "search": ["web_search"],
+    "look up": ["web_search"],
+    "find information": ["web_search"],
+    "google": ["web_search"],
+
+    # Memory operations
+    "remember": ["store_knowledge", "recall_similar"],
+    "recall": ["recall_similar"],
+    "memory": ["recall_similar", "store_knowledge"],
+    "forget": ["store_knowledge"],
+
+    # Mistake analysis
+    "mistake": ["analyze_mistake"],
+    "went wrong": ["analyze_mistake"],
+    "failed": ["analyze_mistake"],
+    "error": ["analyze_mistake", "debug_code"],
+    "failure": ["analyze_mistake"],
+
+    # Finance
+    "send": ["send_bch"],
+    "transfer": ["send_bch"],
+    "bch": ["send_bch"],
+    "crypto": ["send_bch"],
+    "wallet": ["get_system_state", "send_bch"],
+
+    # Image generation
+    "image": ["generate_image"],
+    "picture": ["generate_image"],
+    "draw": ["generate_image"],
+    "create art": ["generate_image"],
+
+    # Coding
+    "code": ["develop_code", "debug_code", "review_code"],
+    "debug": ["debug_code"],
+    "test": ["run_tests"],
+    "review": ["review_code"],
+
+    # Games
+    "chess": ["chess_move", "play_game"],
+    "game": ["play_game"],
+    "play": ["play_game"],
+
+    # Relationships
+    "relationship": ["get_relationship_context", "recall_relationship_history"],
+    "emotion": ["read_emotional_state"],
+    "feeling": ["read_emotional_state"],
+
+    # Security
+    "security": ["security_scan", "verify_chain_integrity"],
+    "verify": ["verify_chain_integrity"],
+    "trust": ["assess_trust_level"],
+}
+
+# Tools that are ALWAYS included for small models (core functionality)
+SMALL_MODEL_CORE_TOOLS: Set[str] = {
+    "get_system_state",      # Always useful for context
+    "switch_model",          # Can always switch models
+    "store_knowledge",       # Can always remember things
+}
+
 # Core tools that are always available regardless of skill level
 # These are essential for basic qube functionality
 ALWAYS_AVAILABLE_TOOLS: Set[str] = {
@@ -215,7 +300,9 @@ class ToolRegistry:
     def get_tools_for_model(
         self,
         model_provider: str,
-        unlocked_tools: Optional[Set[str]] = None
+        unlocked_tools: Optional[Set[str]] = None,
+        model_name: Optional[str] = None,
+        user_message: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
         Get tools in format for specific model provider, filtered by skill unlocks
@@ -223,6 +310,8 @@ class ToolRegistry:
         Args:
             model_provider: Provider name (openai, anthropic, google, perplexity, ollama)
             unlocked_tools: Set of tool names unlocked via maxed skills (from SkillsManager)
+            model_name: Optional model name for small model detection
+            user_message: Optional user message for dynamic tool selection (small models)
 
         Returns:
             List of tools in provider-specific format
@@ -239,8 +328,58 @@ class ToolRegistry:
         if hasattr(self.qube, 'chain_state') and self.qube.chain_state:
             revolver_mode_enabled = self.qube.chain_state.is_revolver_mode_enabled()
 
-        # Filter tools based on skill unlocks
-        if unlocked_tools is not None:
+        # Detect small/local models that need dynamic tool selection
+        # These models get confused with too many tools, so we filter based on user message
+        is_small_model = False
+        if model_name:
+            small_model_patterns = [
+                "llama3.2",      # Llama 3.2 all sizes (1b, 3b, etc.)
+                "llama-3.2",     # Alternative naming
+                "qwen3:4b",      # Small Qwen
+                "qwen2.5:7b",    # Small Qwen
+                "gemma2:9b",     # Gemma 2
+                "phi4:14b",      # Phi 4
+                "mistral:7b",    # Small Mistral
+                "deepseek-r1:8b", # Small DeepSeek
+            ]
+            model_lower = model_name.lower()
+            is_small_model = any(pattern in model_lower for pattern in small_model_patterns)
+
+        # Determine which tools are available
+        if is_small_model:
+            # Dynamic tool selection based on user message keywords
+            # Start with core tools that are always useful
+            selected_tools: Set[str] = set(SMALL_MODEL_CORE_TOOLS)
+
+            # Add tools based on keywords in user message
+            if user_message:
+                message_lower = user_message.lower()
+                for keyword, tools in KEYWORD_TO_TOOLS.items():
+                    if keyword in message_lower:
+                        selected_tools.update(tools)
+
+            # If no keywords matched, add some general-purpose tools
+            if len(selected_tools) == len(SMALL_MODEL_CORE_TOOLS):
+                selected_tools.update(["describe_my_avatar", "web_search", "recall_similar"])
+
+            # Exclude switch_model in revolver mode
+            if revolver_mode_enabled:
+                selected_tools.discard("switch_model")
+
+            # Filter to only registered tools that were selected
+            tools_to_use = [
+                tool for tool in self.tools.values()
+                if tool.name in selected_tools
+            ]
+
+            logger.info(
+                "small_model_dynamic_tool_selection",
+                model=model_name,
+                user_message_preview=user_message[:100] if user_message else None,
+                tool_count=len(tools_to_use),
+                tools=[t.name for t in tools_to_use]
+            )
+        elif unlocked_tools is not None:
             # Tool is available if:
             # 1. It's in ALWAYS_AVAILABLE_TOOLS (core functionality)
             # 2. OR it's been unlocked via a maxed skill
@@ -282,39 +421,34 @@ class ToolRegistry:
 
     def _award_xp_for_action_block(self, block) -> None:
         """
-        Award XP for completed ACTION block.
+        Award XP for completed ACTION block during session.
 
-        Called after tool execution completes and block is updated with result.
+        XP is awarded immediately so users see progress, but is provisional
+        until the session is anchored. If session is discarded, XP rolls back.
+
+        Uses the 5/2/0 formula:
+        - 5 XP for successful tool use
+        - 2 XP for completed with issues
+        - 0 XP for failure
 
         Args:
             block: Completed ACTION block with status and result
         """
-        logger.info(
-            "xp_award_method_called",
-            block_number=block.block_number,
-            block_type=block.block_type
-        )
         try:
-            from ai.skill_scanner import analyze_research_topic, TOOL_TO_SKILL_MAPPING
+            from ai.skill_scanner import analyze_research_topic, TOOL_TO_SKILL_MAPPING, calculate_document_xp
             from utils.skills_manager import SkillsManager
 
             content = block.content if isinstance(block.content, dict) else {}
             action_type = content.get("action_type")
-
-            logger.info(
-                "xp_award_parsing_block",
-                action_type=action_type,
-                has_content=content is not None,
-                content_keys=list(content.keys()) if content else []
-            )
 
             if not action_type:
                 return
 
             # Determine skill_id based on action_type
             skill_id = None
+            xp_amount = 0
 
-            # For research tools, analyze content
+            # For research tools, analyze content to determine skill
             if action_type == "web_search":
                 params = content.get("parameters", {})
                 query = params.get("query", "")
@@ -324,8 +458,8 @@ class ToolRegistry:
                 url = params.get("url", "")
                 skill_id = analyze_research_topic("", url)
             elif action_type == "process_document":
-                # Document processing always goes to knowledge_domains (research)
-                skill_id = "knowledge_domains"
+                # Document processing goes to memory_recall
+                skill_id = "memory_recall"
 
                 # Custom XP calculation based on file size and page count
                 params = content.get("parameters", {})
@@ -336,24 +470,12 @@ class ToolRegistry:
                 page_count = result.get("page_count", 0)
                 success = result.get("success", False)
 
-                # Calculate XP based on document complexity
                 if status == "completed" and success:
-                    # Use custom formula (1-10 XP)
-                    xp_amount = self._calculate_document_xp(file_size_bytes, page_count)
-
-                    logger.info(
-                        "document_xp_calculated",
-                        file_size_bytes=file_size_bytes,
-                        page_count=page_count,
-                        xp_amount=xp_amount
-                    )
+                    xp_amount = calculate_document_xp(file_size_bytes, page_count)
                 elif status == "completed":
-                    # Partial extraction - award minimum XP
-                    xp_amount = 1
+                    xp_amount = 1  # Partial extraction
                 else:
-                    # Failed - no XP for failed document processing
-                    xp_amount = 0
-                    skill_id = None  # Don't award XP for failures
+                    return  # No XP for failures
             elif action_type in TOOL_TO_SKILL_MAPPING:
                 skill_id = TOOL_TO_SKILL_MAPPING[action_type]
 
@@ -362,21 +484,18 @@ class ToolRegistry:
                 status = content.get("status", "unknown")
                 result = content.get("result", {})
 
-                # Determine XP amount based on success
-                # (Skip this section if action_type == "process_document" - already calculated above)
+                # Standard 5/2/0 XP formula (skip for process_document - already calculated)
                 if action_type != "process_document":
                     if status == "completed" and isinstance(result, dict) and result.get("success", False):
-                        xp_amount = 3  # Successful use
+                        xp_amount = 5  # Successful use
                     elif status == "completed":
                         xp_amount = 2  # Completed but may have issues
                     else:
-                        xp_amount = 0  # Failed or error - no XP (prevents gaming)
-                        skill_id = None  # Don't award XP for failures
+                        return  # No XP for failures
 
-                # Award XP immediately (writes to chain_state.skills)
+                # Award XP immediately (provisional until anchored)
                 skills_manager = SkillsManager(self.qube.chain_state)
-
-                xp_result = skills_manager.add_xp(
+                skills_manager.add_xp(
                     skill_id=skill_id,
                     xp_amount=xp_amount,
                     evidence_block_id=f"session_block_{block.block_number}",
@@ -388,15 +507,11 @@ class ToolRegistry:
                     skill_id=skill_id,
                     xp_amount=xp_amount,
                     block_number=block.block_number,
-                    action_type=action_type,
-                    status=status,
-                    result_success=result.get("success") if isinstance(result, dict) else None
+                    action_type=action_type
                 )
         except Exception as e:
             logger.warning(
                 "session_xp_award_failed",
-                qube_id=self.qube.qube_id,
-                block_number=block.block_number,
                 error=str(e)
             )
 
@@ -465,6 +580,16 @@ class ToolRegistry:
         Raises:
             AIError: If tool not found or execution fails
         """
+        # Defensive check: ensure parameters is a dict (model might send a list)
+        if not isinstance(parameters, dict):
+            logger.warning(
+                "execute_tool_parameters_not_dict",
+                tool=tool_name,
+                parameters_type=type(parameters).__name__,
+                parameters=str(parameters)[:200]
+            )
+            parameters = {}
+
         # Validation layer - check if action should be allowed
         if hasattr(self.qube, 'decision_config') and self.qube.decision_config.enable_validation_layer:
             from ai.decision_validator import DecisionValidator
@@ -595,6 +720,12 @@ class ToolRegistry:
         if record_blocks and self.qube.current_session:
             from core.block import create_action_block
             latest = self.qube.memory_chain.get_latest_block()
+            # Use get_next_turn_number() for unique per-block turn numbers
+            session = self.qube.current_session
+            if session.get_next_turn_number:
+                turn_number = session.get_next_turn_number()
+            else:
+                turn_number = getattr(session, 'current_turn_number', None)
             in_progress_block = create_action_block(
                 qube_id=self.qube.qube_id,
                 block_number=-1,
@@ -605,7 +736,8 @@ class ToolRegistry:
                 status="in_progress",
                 result=None,
                 temporary=True,
-                model_used=current_model
+                model_used=current_model,
+                turn_number=turn_number
             )
             self.qube.current_session.create_block(in_progress_block)
 
@@ -668,6 +800,12 @@ class ToolRegistry:
                 else:
                     # No in_progress block (shouldn't happen, but fallback)
                     latest = self.qube.memory_chain.get_latest_block()
+                    # Use get_next_turn_number() for unique per-block turn numbers
+                    session = self.qube.current_session
+                    if session.get_next_turn_number:
+                        turn_number = session.get_next_turn_number()
+                    else:
+                        turn_number = getattr(session, 'current_turn_number', None)
                     action_block_data = create_action_block(
                         qube_id=self.qube.qube_id,
                         block_number=-1,
@@ -678,7 +816,8 @@ class ToolRegistry:
                         status=status,
                         result=result,
                         temporary=True,
-                        model_used=current_model
+                        model_used=current_model,
+                        turn_number=turn_number
                     )
                     created_block = self.qube.current_session.create_block(action_block_data)
 
@@ -692,6 +831,14 @@ class ToolRegistry:
 
                 latest = self.qube.memory_chain.get_latest_block()
                 block_number = self.qube.memory_chain.get_chain_length()
+                # Use get_next_turn_number() for unique per-block turn numbers
+                turn_number = None
+                if self.qube.current_session:
+                    session = self.qube.current_session
+                    if session.get_next_turn_number:
+                        turn_number = session.get_next_turn_number()
+                    else:
+                        turn_number = getattr(session, 'current_turn_number', None)
                 action_block_data = create_action_block(
                     qube_id=self.qube.qube_id,
                     block_number=block_number,
@@ -702,7 +849,8 @@ class ToolRegistry:
                     status=status,
                     result=result,
                     temporary=False,
-                    model_used=current_model
+                    model_used=current_model,
+                    turn_number=turn_number
                 )
 
                 # Encrypt content for permanent storage

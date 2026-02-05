@@ -28,6 +28,74 @@ logger = get_logger(__name__)
 
 
 
+def clean_text_for_speech(text: str) -> str:
+    """
+    Clean text for TTS by removing non-speakable elements.
+
+    Removes:
+    - Asterisk actions (*waves hello*, *sighs deeply*)
+    - Markdown formatting (**, __, `, #)
+    - URLs
+    - Code blocks
+    - Emoji shortcodes (:smile:)
+    - Multiple spaces/newlines
+
+    Args:
+        text: Raw text that may contain markdown/actions
+
+    Returns:
+        Cleaned text suitable for speech synthesis
+    """
+    import re
+
+    if not text:
+        return text
+
+    # Remove code blocks first (```...```)
+    text = re.sub(r'```[\s\S]*?```', '', text)
+
+    # Remove inline code (`code`)
+    text = re.sub(r'`[^`]+`', '', text)
+
+    # Remove markdown headers (# Header)
+    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+
+    # Handle markdown formatting BEFORE action asterisks
+    # Order matters: double markers first, then single
+    text = re.sub(r'\*\*\*([^*]+)\*\*\*', r'\1', text)  # ***bold italic*** -> text
+    text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)      # **bold** -> bold
+    text = re.sub(r'__([^_]+)__', r'\1', text)          # __bold__ -> bold
+
+    # Remove asterisk CHARACTERS but keep the content inside, add comma for natural pause
+    # *waves hello* becomes "waves hello," (speaks action with brief pause after)
+    # Must come after bold removal to avoid matching **bold** incorrectly
+    text = re.sub(r'\*([^*]+)\*', r'\1,', text)
+
+    # Remove underscore italic (but keep content)
+    text = re.sub(r'(?<!_)_([^_]+)_(?!_)', r'\1', text)  # _italic_ -> italic
+
+    # Remove URLs
+    text = re.sub(r'https?://\S+', '', text)
+
+    # Remove markdown links [text](url) -> text
+    text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
+
+    # Remove emoji shortcodes :emoji_name:
+    text = re.sub(r':[a-zA-Z0-9_+-]+:', '', text)
+
+    # Remove bullet points and list markers
+    text = re.sub(r'^[\s]*[-*•]\s+', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^[\s]*\d+\.\s+', '', text, flags=re.MULTILINE)
+
+    # Normalize whitespace (multiple spaces/newlines -> single space)
+    text = re.sub(r'\s+', ' ', text)
+
+    # Strip leading/trailing whitespace
+    text = text.strip()
+
+    return text
+
+
 def chunk_text_for_tts(text: str, max_chars: int = 4000) -> list[str]:
     """
     Split text into chunks at sentence boundaries for TTS generation.
@@ -650,6 +718,21 @@ class AudioManager:
             voice=voice_model,
             block_number=block_number
         )
+
+        # Clean text for speech (remove asterisks, markdown, etc.)
+        original_length = len(text)
+        text = clean_text_for_speech(text)
+        if len(text) != original_length:
+            logger.info(
+                "tts_text_cleaned",
+                original_length=original_length,
+                cleaned_length=len(text)
+            )
+
+        # Handle empty text after cleaning
+        if not text.strip():
+            logger.warning("tts_text_empty_after_cleaning")
+            raise AIError("No speakable text after cleaning (text may have been all actions/markdown)")
 
         # Handle custom voices - look up from voice library and use WSL2/Qwen3
         custom_voice_config = None

@@ -962,9 +962,11 @@ class ChainState:
                             if section in disk_state:
                                 merged_state[section] = disk_state[section]
 
-                        # NOTE: current_model_override is NOT preserved from disk here
-                        # It's explicitly set by set_model_lock (to None) and switch_model tool
-                        # Preserving it would undo those explicit changes
+                        # CRITICAL: Preserve current_model_override from disk
+                        # This is a backend-managed value set by switch_model tool
+                        # GUI must not overwrite it with stale in-memory value
+                        if "current_model_override" in disk_state:
+                            merged_state["current_model_override"] = disk_state["current_model_override"]
 
                     # CRITICAL DEBUG: Log state after merge
                     logger.info(
@@ -3627,10 +3629,10 @@ class ChainState:
             "qube_profile": json.loads(json.dumps(self.state.get("qube_profile", {}))),
             "skills": json.loads(json.dumps(self.state.get("skills", {}))),
             "mood": json.loads(json.dumps(self.state.get("mood", {}))),
-            # Runtime fields that roll back (model switches)
-            "current_model_override": self.state.get("current_model_override"),
-            "runtime_model": runtime.get("current_model"),
-            "runtime_provider": runtime.get("current_provider"),
+            # NOTE: Model switches (current_model_override, runtime_model/provider) are NOT
+            # included in rollback. Model switches are intentional actions that should persist
+            # even if the session is discarded. The qube chose to switch models, and that
+            # preference should be honored.
             # Stats that roll back (message counts from session blocks)
             "stats": {field: stats.get(field, 0) for field in self.ROLLBACK_STATS},
         }
@@ -3743,16 +3745,9 @@ class ChainState:
                 self.state[section] = self._session_snapshot[section]
                 restored_sections.append(section)
 
-        # Restore model override
-        if "current_model_override" in self._session_snapshot:
-            self.state["current_model_override"] = self._session_snapshot["current_model_override"]
-
-        # Restore runtime model/provider
-        runtime = self.state.setdefault("runtime", {})
-        if self._session_snapshot.get("runtime_model"):
-            runtime["current_model"] = self._session_snapshot["runtime_model"]
-        if self._session_snapshot.get("runtime_provider"):
-            runtime["current_provider"] = self._session_snapshot["runtime_provider"]
+        # NOTE: Model switches (current_model_override, runtime model/provider) are NOT
+        # rolled back. Model switches are intentional actions that should persist even
+        # if the session is discarded.
 
         # Restore rollback stats
         if "stats" in self._session_snapshot:

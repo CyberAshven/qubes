@@ -1,11 +1,11 @@
 # Skills System
 
-Qubes have 112 skills across 7 categories, visualized as a solar system.
+Qubes have 112 skills across 8 categories, visualized as a solar system.
 
 ## Overview
 
 The skills system uses a 3-tier hierarchy:
-- **Sun** (7): Major categories, always unlocked
+- **Sun** (8): Major categories, always unlocked
 - **Planets** (35): Specific skills, unlock via prerequisites
 - **Moons** (70): Sub-skills, unlock via parent planet
 

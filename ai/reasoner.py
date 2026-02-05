@@ -297,6 +297,12 @@ class QubeReasoner:
                     if self.qube.current_session:
                         from core.block import create_action_block
                         latest = self.qube.memory_chain.get_latest_block()
+                        # Use get_next_turn_number() for unique per-block turn numbers
+                        session = self.qube.current_session
+                        if session.get_next_turn_number:
+                            turn_number = session.get_next_turn_number()
+                        else:
+                            turn_number = getattr(session, 'current_turn_number', None)
                         revolver_switch_block = create_action_block(
                             qube_id=self.qube.qube_id,
                             block_number=-1,
@@ -313,7 +319,8 @@ class QubeReasoner:
                                 "fallback_used": False,  # Will be updated if fallback occurs
                             },
                             temporary=True,
-                            model_used=model_to_use
+                            model_used=model_to_use,
+                            turn_number=turn_number
                         )
                         self.qube.current_session.create_block(revolver_switch_block)
 
@@ -420,7 +427,9 @@ class QubeReasoner:
 
             tools = self.tool_registry.get_tools_for_model(
                 self.model.get_provider_name(),
-                unlocked_tools=unlocked_tools
+                unlocked_tools=unlocked_tools,
+                model_name=model_to_use,
+                user_message=input_message
             )
 
             # Record input
@@ -519,7 +528,8 @@ class QubeReasoner:
                         temperature=temperature,
                         model_to_use=model_to_use,
                         model_info=model_info,
-                        unlocked_tools=unlocked_tools
+                        unlocked_tools=unlocked_tools,
+                        user_message=input_message
                     )
 
                     # NOW create the ACTION block with the ACTUAL model used
@@ -587,6 +597,12 @@ class QubeReasoner:
                                 # Fallback: create new block if no revolver_block exists
                                 from core.block import create_action_block
                                 latest = self.qube.memory_chain.get_latest_block()
+                                # Use get_next_turn_number() for unique per-block turn numbers
+                                session = self.qube.current_session
+                                if session.get_next_turn_number:
+                                    turn_number = session.get_next_turn_number()
+                                else:
+                                    turn_number = getattr(session, 'current_turn_number', None)
                                 revolver_action = create_action_block(
                                     qube_id=self.qube.qube_id,
                                     block_number=-1,
@@ -606,7 +622,8 @@ class QubeReasoner:
                                         "primary_failure_type": pending.get("primary_failure_type")
                                     },
                                     temporary=True,
-                                    model_used=model_to_use
+                                    model_used=model_to_use,
+                                    turn_number=turn_number
                                 )
                                 self.qube.current_session.create_block(revolver_action)
 
@@ -838,10 +855,12 @@ class QubeReasoner:
                                         # 3. Get tools formatted for new provider
                                         tools = self.tool_registry.get_tools_for_model(
                                             self.model.get_provider_name(),
-                                            unlocked_tools=unlocked_tools
+                                            unlocked_tools=unlocked_tools,
+                                            model_name=model_to_use,
+                                            user_message=input_message
                                         )
 
-                                        # 3. Clean context - remove tool calls and update model name
+                                        # 4. Clean context - remove tool calls and update model name
                                         clean_context = []
                                         for msg in context_messages:
                                             role = msg.get("role")
@@ -1085,7 +1104,11 @@ class QubeReasoner:
 
             # Get ONLY game-related tools (chess_move)
             if self.tool_registry:
-                all_tools = self.tool_registry.get_tools_for_model(self.model.get_provider_name())
+                all_tools = self.tool_registry.get_tools_for_model(
+                    self.model.get_provider_name(),
+                    model_name=model_to_use,
+                    user_message=user_chat
+                )
                 # Filter for chess_move - handle OpenAI, Anthropic, AND Google formats
                 game_tools = ["chess_move"]
 
@@ -1614,6 +1637,12 @@ Use **search_memory** to recall past conversations (not for identity questions).
 - Be expressive, not robotic
 - NEVER output internal thinking, reasoning, or [Thinking:...] blocks - only respond with your actual reply
 
+# Efficient Tool Use:
+- DON'T repeat tool calls if you already have the information from earlier in the conversation
+- Check the conversation history before calling tools - the data may already be there
+- Tools like get_skill_tree, get_system_state, browse_url with the same URL don't need to be called multiple times
+- Only call tools when you need NEW information you don't already have
+
 # Image Generation:
 When using generate_image, **PUT THE IMAGE FIRST** in your response:
 `![description](local_path_from_tool_result)`
@@ -2012,6 +2041,12 @@ Use **search_memory** to recall past conversations (not for identity questions).
 - When using tools, react authentically to results
 - Be expressive, not robotic
 - NEVER output internal thinking, reasoning, or [Thinking:...] blocks - only respond with your actual reply
+
+# Efficient Tool Use:
+- DON'T repeat tool calls if you already have the information from earlier in the conversation
+- Check the conversation history before calling tools - the data may already be there
+- Tools like get_skill_tree, get_system_state, browse_url with the same URL don't need to be called multiple times
+- Only call tools when you need NEW information you don't already have
 
 # Image Generation:
 When using generate_image, **PUT THE IMAGE FIRST** in your response:
@@ -3012,7 +3047,7 @@ Multiple entities present. Be careful about what you share.
             context = "\n# My Skills & Abilities:\n"
 
             # Show category overview (Suns)
-            context += "**Skill Categories** (7 major areas, always unlocked):\n"
+            context += "**Skill Categories** (8 major areas, always unlocked):\n"
             for sun in suns:
                 level = sun['level']
                 xp = sun['xp']
@@ -3331,7 +3366,8 @@ Multiple entities present. Be careful about what you share.
         temperature: float,
         model_to_use: str,
         model_info: dict,
-        unlocked_tools: set = None
+        unlocked_tools: set = None,
+        user_message: str = None
     ) -> tuple[Any, str, dict]:
         """
         Generate response with automatic retry on failure when in revolver mode.
@@ -3345,6 +3381,7 @@ Multiple entities present. Be careful about what you share.
             temperature: Generation temperature
             model_to_use: Initial model to use
             model_info: Model info from registry
+            user_message: Original user message for dynamic tool selection
 
         Returns:
             Tuple of (response, model_used, model_info) - may differ from input if retry occurred
@@ -3474,7 +3511,9 @@ Multiple entities present. Be careful about what you share.
                 # Update tools for this provider (maintain skill-based filtering)
                 current_tools = self.tool_registry.get_tools_for_model(
                     current_model.get_provider_name(),
-                    unlocked_tools=unlocked_tools
+                    unlocked_tools=unlocked_tools,
+                    model_name=model,
+                    user_message=user_message
                 )
 
                 logger.info(

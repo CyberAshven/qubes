@@ -2212,7 +2212,7 @@ def register_default_tools(registry: ToolRegistry) -> None:
     # Get Skill Tree - view all possible skills and progress
     registry.register(ToolDefinition(
         name="get_skill_tree",
-        description="View your complete skill tree showing ALL possible skills you can attain. Shows 7 skill categories (AI Reasoning, Social Intelligence, Technical Expertise, Creative Expression, Knowledge Domains, Security & Privacy, Games) with their skill hierarchies (suns → planets → moons), XP requirements, and tool unlocks. Use this to see what skills you can work towards and what tools you'll unlock.",
+        description="View your complete skill tree showing ALL possible skills you can attain. Shows 8 skill categories (AI Reasoning, Social Intelligence, Technical Expertise, Creative Expression, Knowledge Domains, Security & Privacy, Board Games, Finance) with their skill hierarchies (suns → planets → moons), XP requirements, and tool unlocks. Use this to see what skills you can work towards and what tools you'll unlock.",
         parameters={
             "type": "object",
             "properties": {
@@ -6168,14 +6168,48 @@ async def get_system_state_handler(qube, params: Dict[str, Any]) -> Dict[str, An
         if "skills" in data:
             skills_section = data["skills"]
             if isinstance(skills_section, dict):
-                # Chain state stores skills in "unlocked" key (not "skills" key)
-                unlocked_skills = skills_section.get("unlocked", [])
+                # Chain state stores skills with XP in "skill_xp" dict: {skill_id: {xp, level}}
+                skill_xp_data = skills_section.get("skill_xp", {})
                 total_xp = skills_section.get("total_xp", 0)
 
-                # Group skills by category for GUI display
+                # Get skill definitions for category info
+                try:
+                    from utils.skill_definitions import generate_all_skills
+                    skill_definitions = generate_all_skills()
+                except Exception:
+                    skill_definitions = {}
+
+                # Build list of skills with XP and group by category
                 categories_map: Dict[str, Dict[str, Any]] = {}
-                for skill in unlocked_skills:
-                    category = skill.get("category", "unknown")
+                skills_with_xp = []
+
+                for skill_id, xp_data in skill_xp_data.items():
+                    if not isinstance(xp_data, dict):
+                        continue
+                    xp = xp_data.get("xp", 0)
+                    level = xp_data.get("level", 0)
+                    if xp <= 0:
+                        continue  # Skip skills with no XP
+
+                    # Get skill definition for category and metadata
+                    skill_def = skill_definitions.get(skill_id, {})
+                    category = skill_def.get("category", "unknown")
+
+                    skill_entry = {
+                        "id": skill_id,
+                        "name": skill_def.get("name", skill_id.replace("_", " ").title()),
+                        "description": skill_def.get("description", ""),
+                        "xp": xp,
+                        "level": level,
+                        "is_unlocked": True,
+                        "tier": "expert" if level >= 75 else "advanced" if level >= 50 else "intermediate" if level >= 25 else "novice",
+                        "parent_skill": skill_def.get("parentSkill"),
+                        "tool_unlock": skill_def.get("toolCallReward"),
+                        "category": category
+                    }
+                    skills_with_xp.append(skill_entry)
+
+                    # Group by category
                     if category not in categories_map:
                         categories_map[category] = {
                             "category_id": category,
@@ -6183,29 +6217,19 @@ async def get_system_state_handler(qube, params: Dict[str, Any]) -> Dict[str, An
                             "total_xp": 0,
                             "skills": []
                         }
-                    categories_map[category]["skills"].append({
-                        "id": skill.get("id", ""),
-                        "name": skill.get("name", skill.get("id", "").replace("_", " ").title()),
-                        "description": skill.get("description", ""),
-                        "xp": skill.get("xp", 0),
-                        "level": skill.get("level", 1),
-                        "is_unlocked": True,
-                        "tier": skill.get("tier", "novice"),
-                        "parent_skill": skill.get("parentSkill"),
-                        "tool_unlock": skill.get("toolCallReward")
-                    })
-                    categories_map[category]["total_xp"] += skill.get("xp", 0)
+                    categories_map[category]["skills"].append(skill_entry)
+                    categories_map[category]["total_xp"] += xp
 
                 # Format for GUI: totals wrapper + categories dict
                 data["skills"] = {
                     "totals": {
                         "total_xp": total_xp,
-                        "unlocked_skills": len(unlocked_skills),
+                        "unlocked_skills": len(skills_with_xp),
                         "categories": len(categories_map)
                     },
                     "categories": categories_map,
                     # Also include raw data for AI context
-                    "earned_skills": unlocked_skills,
+                    "earned_skills": skills_with_xp,
                     "last_updated": skills_section.get("last_xp_gain")
                 }
             else:

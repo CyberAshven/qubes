@@ -559,12 +559,22 @@ class SkillScanner:
                             xp_amount = 0
                             continue  # Skip failed extractions
                     elif status == "completed" and isinstance(result, dict) and result.get("success", False):
+                        # Check for "no-op" results where the tool succeeded but didn't actually do anything
+                        # These shouldn't award XP since no real action was taken
+                        if result.get("already_on_model"):
+                            # switch_model called but already on that model - no XP
+                            logger.debug(
+                                f"[SKILL_SCANNER] switch_model no-op (already on model), skipping XP",
+                                tool=action_type,
+                                block=block.block_number
+                            )
+                            continue
                         # Successful use: +5 XP
                         xp_amount = 5
                         evidence = f"Successfully used {action_type} tool"
                     elif status == "completed":
-                        # Completed but may have had issues: +2.5 XP
-                        xp_amount = 2.5
+                        # Completed but may have had issues: +2 XP
+                        xp_amount = 2
                         evidence = f"Used {action_type} tool"
                     else:
                         # Failed or error: no XP (prevents gaming)
@@ -737,14 +747,26 @@ class SkillScanner:
 
     async def apply_skill_xp(self, skill_detections: List[Dict[str, Any]], block_numbers: List[int]) -> int:
         """
-        Apply XP gains from skill detections to the qube's skills
+        NO-OP: XP is now awarded during session by registry.py's _award_xp_for_action_block.
+
+        This method is kept to avoid breaking call sites. XP was already awarded
+        during the session and persists when anchored. If session is discarded,
+        the XP rolls back with the session.
 
         Args:
             skill_detections: List of {"skill_id": str, "xp_amount": float, "evidence": str}
             block_numbers: List of block numbers that were scanned (for evidence)
 
         Returns:
-            Number of skills that gained XP
+            0 (no additional XP awarded at anchor time)
+        """
+        # XP already awarded during session - don't double-count
+        logger.info(f"[SKILL_SCANNER] Skipping anchor-time XP (already awarded during session): {len(skill_detections)} detections")
+        return 0
+
+    async def _apply_skill_xp_DISABLED(self, skill_detections: List[Dict[str, Any]], block_numbers: List[int]) -> int:
+        """
+        DISABLED: Original implementation kept for reference.
         """
         if not skill_detections:
             return 0

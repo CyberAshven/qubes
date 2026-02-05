@@ -2651,6 +2651,24 @@ async fn delete_session_block(user_id: String, qube_id: String, block_number: i3
 }
 
 #[tauri::command]
+async fn discard_last_block(user_id: String, qube_id: String, password: String) -> Result<serde_json::Value, String> {
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("discard-last-block")
+        .arg(&user_id)
+        .arg(&qube_id);
+
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
+
+    let (stdout, _) = execute_with_secrets(cmd, secrets)?;
+
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
 async fn get_audio_base64(file_path: String) -> Result<String, String> {
     use std::fs;
     use std::path::Path;
@@ -3011,11 +3029,42 @@ async fn continue_multi_qube_conversation(
     user_id: String,
     conversation_id: String,
     password: String,
+    skip_tools: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     let mut cmd = prepare_backend_command()?;
     cmd.arg("continue-multi-qube-conversation")
         .arg(&user_id)
         .arg(&conversation_id);
+
+    // Add skip_tools flag if specified (for faster prefetch without tool calls)
+    if let Some(skip) = skip_tools {
+        cmd.arg(if skip { "true" } else { "false" });
+    }
+
+    // Pass password via stdin (security)
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
+
+    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn run_background_turns(
+    user_id: String,
+    conversation_id: String,
+    exclude_qube_ids: String,  // JSON array of qube IDs to exclude
+    password: String,
+) -> Result<serde_json::Value, String> {
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg("run-background-turns")
+        .arg(&user_id)
+        .arg(&conversation_id)
+        .arg(&exclude_qube_ids);
 
     // Pass password via stdin (security)
     let mut secrets = HashMap::new();
@@ -6884,6 +6933,7 @@ pub fn run() {
             anchor_session,
             discard_session,
             delete_session_block,
+            discard_last_block,
             check_sessions,
             force_exit,
             update_qube_config,
@@ -6897,6 +6947,7 @@ pub fn run() {
             start_multi_qube_conversation,
             get_next_speaker,
             continue_multi_qube_conversation,
+            run_background_turns,
             inject_multi_qube_user_message,
             lock_in_multi_qube_response,
             end_multi_qube_conversation,

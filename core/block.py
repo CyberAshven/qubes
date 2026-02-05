@@ -331,7 +331,8 @@ def create_action_block(
     status: str = "pending",
     temporary: bool = False,
     session_id: Optional[str] = None,
-    model_used: Optional[str] = None
+    model_used: Optional[str] = None,
+    turn_number: Optional[int] = None
 ) -> Block:
     """
     Create ACTION block
@@ -360,7 +361,8 @@ def create_action_block(
             "initiated_by": initiated_by,
             "cost_estimate": cost_estimate,
             "status": status,
-            "result": result
+            "result": result,
+            "turn_number": turn_number
         },
         encrypted=True,
         temporary=temporary,

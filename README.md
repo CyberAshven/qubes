@@ -75,7 +75,7 @@ Qubes are **sovereign AI agents** that you truly own:
 Every Qube has a personal blockchain-like memory chain that preserves all interactions with cryptographic integrity. Memories can be searched, shared, and even traded.
 
 ### Skills & Progression
-112 skills across 7 categories with XP-based leveling. Watch your Qube grow from novice to expert through an interactive galaxy visualization.
+112 skills across 8 categories with XP-based leveling. Watch your Qube grow from novice to expert through an interactive galaxy visualization.
 
 ### Social Dynamics
 Qubes can form relationships, build trust, and collaborate. AI-driven evaluation tracks 30 metrics across trust, positive social traits, and negative social behaviors.

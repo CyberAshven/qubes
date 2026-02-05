@@ -307,7 +307,7 @@ class P2PMultiQubeConversation(MultiQubeConversation):
                     qube_block = Block.from_dict(block.to_dict())
                     local_qube.current_session.create_block(qube_block)
                     # Check for auto-anchor after block creation
-                    await local_qube.current_session.check_and_auto_anchor()
+                    await local_qube.current_session.check_and_auto_anchor(await_completion=False)
                     logger.debug(
                         "remote_block_distributed_locally",
                         qube=local_qube.name,

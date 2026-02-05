@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { convertFileSrc } from '@tauri-apps/api/core';
 
 // Simple inline icons (no external library needed)
 const ChevronDownIcon = ({ size = 14, className = '' }: { size?: number; className?: string }) => (
@@ -40,6 +41,9 @@ interface ToolCallBubbleProps {
   status: 'in_progress' | 'completed' | 'failed';
   accentColor: string;
   timestamp?: number;
+  label?: string; // Optional label to show (e.g., "Emma")
+  avatarUrl?: string; // Optional avatar URL for the qube
+  turnNumber?: number; // Turn number this action belongs to
 }
 
 // Friendly display names for tools
@@ -292,10 +296,13 @@ export const ToolCallBubble: React.FC<ToolCallBubbleProps> = React.memo(({
   result,
   status,
   accentColor,
+  label,
+  avatarUrl,
+  turnNumber,
 }) => {
   const [isExpanded, setIsExpanded] = useState(false);
 
-  const displayName = TOOL_DISPLAY_NAMES[toolName] || toolName.replace(/_/g, ' ');
+  const toolDisplayName = TOOL_DISPLAY_NAMES[toolName] || toolName.replace(/_/g, ' ');
   const inputText = formatInput(input, toolName);
   const resultText = formatResult(result);
 
@@ -322,6 +329,19 @@ export const ToolCallBubble: React.FC<ToolCallBubbleProps> = React.memo(({
       {/* Header row */}
       <div className="flex items-center justify-between px-3 py-2">
         <div className="flex items-center gap-2 min-w-0 flex-1">
+          {/* Avatar (if provided) */}
+          {avatarUrl && (
+            <img
+              src={avatarUrl.startsWith('http') ? avatarUrl : convertFileSrc(avatarUrl)}
+              alt={label || 'Qube'}
+              className="w-5 h-5 rounded-full object-cover flex-shrink-0 border"
+              style={{ borderColor: accentColor }}
+              onError={(e) => {
+                (e.target as HTMLImageElement).style.display = 'none';
+              }}
+            />
+          )}
+
           {/* Icon */}
           <span className="flex-shrink-0">
             {isLoading ? (
@@ -333,13 +353,29 @@ export const ToolCallBubble: React.FC<ToolCallBubbleProps> = React.memo(({
             )}
           </span>
 
+          {/* Qube name (if provided) */}
+          {label && (
+            <span
+              className="text-xs font-medium flex-shrink-0"
+              style={{ color: accentColor }}
+            >
+              {label}
+            </span>
+          )}
+
           {/* Tool name */}
           <span
-            className="text-xs font-medium flex-shrink-0"
-            style={{ color: accentColor }}
+            className="text-xs text-text-secondary flex-shrink-0"
           >
-            {displayName}
+            {toolDisplayName}
           </span>
+
+          {/* Turn number (for debugging) */}
+          {turnNumber !== undefined && (
+            <span className="text-xs text-text-tertiary flex-shrink-0 ml-1">
+              (Turn {turnNumber})
+            </span>
+          )}
         </div>
 
         {/* Expand/collapse indicator */}

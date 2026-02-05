@@ -204,7 +204,7 @@ Skills displayed as orbiting planets:
 - Outer orbits: Skills in progress
 - Size indicates XP level
 
-#### Skill Categories (7)
+#### Skill Categories (8)
 - Communication
 - Analysis
 - Creativity
