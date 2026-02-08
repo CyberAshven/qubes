@@ -1581,7 +1581,7 @@ fn execute_with_secrets_streaming(
     secrets: HashMap<&str, &str>,
     app_handle: &AppHandle,
 ) -> Result<(String, String), String> {
-    use std::io::{BufRead, BufReader};
+    use std::io::{BufRead, BufReader, Read};
     use std::thread;
     use std::sync::mpsc;
 
@@ -1608,11 +1608,23 @@ fn execute_with_secrets_streaming(
         // stdin is dropped here, closing the pipe
     }
 
-    // Take stderr and read it in a separate thread to emit tool events
+    // Take stdout and stderr to read in separate threads
+    let stdout_pipe = child.stdout.take();
     let stderr_pipe = child.stderr.take();
+
+    // Read stdout in a thread
+    let (stdout_tx, stdout_rx) = mpsc::channel::<String>();
+    let stdout_thread = thread::spawn(move || {
+        let mut stdout_content = String::new();
+        if let Some(mut stdout) = stdout_pipe {
+            let _ = stdout.read_to_string(&mut stdout_content);
+        }
+        stdout_tx.send(stdout_content).ok();
+    });
+
+    // Read stderr in a thread, emitting tool events as they arrive
     let app_handle_clone = app_handle.clone();
     let (stderr_tx, stderr_rx) = mpsc::channel::<String>();
-
     let stderr_thread = thread::spawn(move || {
         let mut stderr_lines = Vec::new();
         if let Some(stderr) = stderr_pipe {
@@ -1637,17 +1649,18 @@ fn execute_with_secrets_streaming(
     });
 
     // Wait for the process to complete
-    let output = child.wait_with_output().map_err(|e| {
+    let status = child.wait().map_err(|e| {
         format!("Failed to wait for backend process: {}", e)
     })?;
 
-    // Wait for stderr thread to finish
+    // Wait for reader threads to finish
+    let _ = stdout_thread.join();
     let _ = stderr_thread.join();
+
+    let stdout = stdout_rx.recv().unwrap_or_default();
     let stderr = stderr_rx.recv().unwrap_or_default();
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-
-    if !output.status.success() {
+    if !status.success() {
         return Err(sanitize_backend_error(&stderr, "Backend"));
     }
 

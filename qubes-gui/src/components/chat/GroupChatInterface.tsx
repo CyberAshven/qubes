@@ -118,6 +118,9 @@ interface QubePipeline {
 const cleanContentForDisplay = (content: string): string => {
   let cleaned = content;
 
+  // Remove <think>...</think> blocks (reasoning/thinking from models like MiniMax)
+  cleaned = cleaned.replace(/<think>[\s\S]*?<\/think>/gi, '');
+
   // Remove [ACTION]...[/ACTION] blocks
   cleaned = cleaned.replace(/\[ACTION\][\s\S]*?\[\/ACTION\]/g, '');
 
@@ -1044,18 +1047,25 @@ export const GroupChatInterface: React.FC<GroupChatInterfaceProps> = ({
             setStatus({ stage: 'processing' });
 
             try {
-              const participantIds = selectedQubes.map(q => q.qube_id).join(',');
-              const responseStr = await invoke<string>('continue_multi_qube_conversation', {
+              const participantIds = selectedQubes.map(q => q.qube_id);
+              const response = await invoke<ConversationMessage | null>('continue_multi_qube_conversation', {
                 userId,
                 conversationId,
                 password,
                 skipTools: false,
-                participantIds,
+                participantIds: JSON.stringify(participantIds),
               });
 
-              const response = JSON.parse(responseStr) as ConversationMessage;
               isFetchingRef.current = false;
               processingRef.current = false;
+
+              if (!response) {
+                console.log('[AutoContinue] Conversation ended (no response)');
+                setIsLoading(false);
+                setStatus({ stage: 'idle' });
+                return;
+              }
+
               await processResponse(response);
             } catch (err) {
               console.error('[AutoContinue] Error:', err);
