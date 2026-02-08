@@ -291,17 +291,74 @@ class ToolRegistry:
             "update_qube_profile",  # Updates state
         }
 
-        logger.info("tool_registry_initialized", qube_id=qube.qube_id)
+        # Cache loading disabled - always start fresh
+        # self._load_persistent_cache()
+
+        # Log initialization
+        cache_path = self._get_cache_file_path()
+        import os
+        logger.info(
+            "tool_registry_initialized",
+            qube_id=qube.qube_id,
+            cache_file_path=cache_path,
+            cache_file_exists=os.path.exists(cache_path) if cache_path else False,
+            in_memory_cache_size=len(self._tool_cache),
+            data_dir=str(self.qube.data_dir) if hasattr(self.qube, 'data_dir') else 'NOT_SET'
+        )
 
     def _get_cache_key(self, tool_name: str, parameters: Dict[str, Any]) -> str:
         """Generate a unique cache key for a tool call."""
+        # Normalize parameters for better cache hits
+        normalized_params = self._normalize_params_for_cache(tool_name, parameters)
         # Sort parameters for consistent hashing
-        param_str = json.dumps(parameters, sort_keys=True, default=str)
+        param_str = json.dumps(normalized_params, sort_keys=True, default=str)
         key_str = f"{tool_name}:{param_str}"
-        return hashlib.md5(key_str.encode()).hexdigest()
+        cache_key = hashlib.md5(key_str.encode()).hexdigest()
+
+        # Debug logging to help diagnose cache issues
+        if parameters != normalized_params:
+            logger.debug(
+                "cache_key_normalized",
+                tool=tool_name,
+                original_params=parameters,
+                normalized_params=normalized_params,
+                cache_key=cache_key[:16],
+                qube_id=self.qube.qube_id
+            )
+
+        return cache_key
+
+    def _normalize_params_for_cache(self, tool_name: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Normalize parameters to improve cache hit rates.
+        Handles cases where different parameter formats mean the same thing.
+        """
+        params = dict(parameters)  # Copy to avoid mutating original
+
+        if tool_name == "get_system_state":
+            # Normalize sections parameter:
+            # - Missing sections, null sections, or empty sections all mean "get all"
+            # - Sort sections list for consistent ordering
+            sections = params.get("sections")
+            if sections is None or sections == [] or sections == "":
+                # Remove sections key entirely - means "get all"
+                params.pop("sections", None)
+            elif isinstance(sections, list):
+                # Sort for consistent ordering
+                params["sections"] = sorted(sections)
+
+        # Remove None/null values that don't affect the result
+        params = {k: v for k, v in params.items() if v is not None}
+
+        return params
 
     def _get_cached_result(self, cache_key: str) -> Optional[Any]:
         """Get cached result if it exists and hasn't expired."""
+        # If in-memory cache is empty, try loading from persistent storage
+        # This handles the case where the process was restarted
+        if not self._tool_cache:
+            self._load_persistent_cache()
+
         if cache_key in self._tool_cache:
             result, timestamp = self._tool_cache[cache_key]
             if time.time() - timestamp < self._cache_ttl_seconds:
@@ -314,9 +371,17 @@ class ToolRegistry:
     def _cache_result(self, cache_key: str, result: Any) -> None:
         """Store a result in the cache."""
         self._tool_cache[cache_key] = (result, time.time())
+        logger.info(
+            "tool_cache_stored",
+            cache_key=cache_key[:16],
+            cache_size=len(self._tool_cache),
+            qube_id=self.qube.qube_id
+        )
         # Clean up old entries if cache gets too large
         if len(self._tool_cache) > 100:
             self._cleanup_cache()
+        # Persist to disk for cross-process deduplication
+        self._save_persistent_cache()
 
     def _cleanup_cache(self) -> None:
         """Remove expired entries from cache."""
@@ -330,8 +395,132 @@ class ToolRegistry:
 
     def clear_tool_cache(self) -> None:
         """Clear all cached tool results. Call this when starting a new conversation."""
+        cache_size = len(self._tool_cache)
         self._tool_cache.clear()
-        logger.debug("tool_cache_cleared", qube_id=self.qube.qube_id)
+        # Also clear the persistent cache file
+        self._clear_persistent_cache()
+        logger.info("tool_cache_cleared", qube_id=self.qube.qube_id, previous_size=cache_size)
+
+    def _get_cache_file_path(self) -> Optional[str]:
+        """Get the path to the persistent cache file for this qube's session."""
+        import os
+        if not hasattr(self.qube, 'data_dir') or not self.qube.data_dir:
+            logger.warning(
+                "cache_file_path_unavailable",
+                qube_id=self.qube.qube_id,
+                has_data_dir=hasattr(self.qube, 'data_dir'),
+                data_dir_value=getattr(self.qube, 'data_dir', 'NOT_SET')
+            )
+            return None
+        # Session blocks are stored in data_dir/blocks/session/
+        session_dir = os.path.join(self.qube.data_dir, "blocks", "session")
+        return os.path.join(session_dir, "_tool_cache.json")
+
+    def _load_persistent_cache(self) -> None:
+        """Load tool cache from disk if it exists."""
+        import os
+        cache_file = self._get_cache_file_path()
+        if not cache_file:
+            logger.info(
+                "persistent_cache_skip_no_path",
+                qube_id=self.qube.qube_id
+            )
+            return
+
+        if not os.path.exists(cache_file):
+            logger.info(
+                "persistent_cache_file_not_found",
+                qube_id=self.qube.qube_id,
+                cache_file=cache_file
+            )
+            return
+
+        try:
+            with open(cache_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+
+            # Validate and load entries, checking TTL
+            current_time = time.time()
+            loaded_count = 0
+            expired_count = 0
+            for key, entry in data.items():
+                if isinstance(entry, dict) and 'result' in entry and 'timestamp' in entry:
+                    timestamp = entry['timestamp']
+                    age_seconds = current_time - timestamp
+                    if age_seconds < self._cache_ttl_seconds:
+                        self._tool_cache[key] = (entry['result'], timestamp)
+                        loaded_count += 1
+                    else:
+                        expired_count += 1
+
+            logger.info(
+                "persistent_cache_loaded",
+                qube_id=self.qube.qube_id,
+                entries_loaded=loaded_count,
+                entries_expired=expired_count,
+                total_in_file=len(data),
+                cache_file=cache_file
+            )
+        except Exception as e:
+            logger.warning(
+                "persistent_cache_load_failed",
+                qube_id=self.qube.qube_id,
+                cache_file=cache_file,
+                error=str(e)
+            )
+
+    def _save_persistent_cache(self) -> None:
+        """Save tool cache to disk."""
+        import os
+        cache_file = self._get_cache_file_path()
+        if not cache_file:
+            return
+
+        try:
+            # Ensure directory exists
+            os.makedirs(os.path.dirname(cache_file), exist_ok=True)
+
+            # Convert cache to serializable format
+            data = {}
+            for key, (result, timestamp) in self._tool_cache.items():
+                data[key] = {
+                    'result': result,
+                    'timestamp': timestamp
+                }
+
+            with open(cache_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, default=str)
+
+            logger.info(
+                "persistent_cache_saved",
+                qube_id=self.qube.qube_id,
+                entries=len(data),
+                cache_file=cache_file
+            )
+        except Exception as e:
+            logger.warning(
+                "persistent_cache_save_failed",
+                qube_id=self.qube.qube_id,
+                error=str(e)
+            )
+
+    def _clear_persistent_cache(self) -> None:
+        """Delete the persistent cache file."""
+        import os
+        cache_file = self._get_cache_file_path()
+        if cache_file and os.path.exists(cache_file):
+            try:
+                os.remove(cache_file)
+                logger.debug(
+                    "persistent_cache_cleared",
+                    qube_id=self.qube.qube_id
+                )
+            except Exception as e:
+                logger.warning(
+                    "persistent_cache_clear_failed",
+                    qube_id=self.qube.qube_id,
+                    error=str(e)
+                )
 
     def register(self, tool: ToolDefinition) -> None:
         """
@@ -650,23 +839,10 @@ class ToolRegistry:
             )
             parameters = {}
 
-        # ========== TOOL CALL DEDUPLICATION ==========
-        # Check if this exact tool call was made recently
-        if tool_name not in self._uncacheable_tools:
-            cache_key = self._get_cache_key(tool_name, parameters)
-            cached_result = self._get_cached_result(cache_key)
-            if cached_result is not None:
-                logger.info(
-                    "tool_cache_hit",
-                    tool=tool_name,
-                    qube_id=self.qube.qube_id,
-                    message="Returning cached result instead of re-executing"
-                )
-                # Return cached result with a note that it's cached
-                if isinstance(cached_result, dict):
-                    cached_result["_cached"] = True
-                    cached_result["_cache_note"] = "This result was retrieved from cache. The tool was not re-executed because identical parameters were used recently."
-                return cached_result
+        # ========== TOOL CALL DEDUPLICATION - DISABLED ==========
+        # Cache disabled - always execute tools fresh
+        # The cache was causing issues with stale results and complex state management
+        cache_key = None  # For later use if we want to re-enable caching
         # ========== END DEDUPLICATION ==========
 
         # Validation layer - check if action should be allowed
@@ -796,6 +972,7 @@ class ToolRegistry:
 
         # Create in_progress ACTION block BEFORE executing (so frontend can show status)
         in_progress_block = None
+        tool_timestamp = int(time.time() * 1000)  # Millisecond timestamp for uniqueness
         if record_blocks and self.qube.current_session:
             from core.block import create_action_block
             latest = self.qube.memory_chain.get_latest_block()
@@ -819,6 +996,20 @@ class ToolRegistry:
                 turn_number=turn_number
             )
             self.qube.current_session.create_block(in_progress_block)
+            tool_timestamp = in_progress_block.timestamp
+
+            # Emit real-time tool call event to stdout (picked up by Rust/Tauri)
+            import sys
+            tool_event = {
+                "event_type": "tool_call",
+                "action_type": tool_name,
+                "status": "in_progress",
+                "speaker_id": self.qube.qube_id,
+                "speaker_name": self.qube.name,
+                "timestamp": tool_timestamp,
+                "parameters": parameters,
+            }
+            print(f"__TOOL_EVENT__{json.dumps(tool_event)}", file=sys.stderr, flush=True)
 
         # Execute tool
         try:
@@ -865,6 +1056,19 @@ class ToolRegistry:
                     in_progress_block.content["result"] = result
                     # Re-save to disk (overwrites the in_progress file)
                     self.qube.current_session._save_session_block(in_progress_block)
+
+                    # Emit real-time tool completion event to stdout
+                    import sys
+                    tool_event = {
+                        "event_type": "tool_call",
+                        "action_type": tool_name,
+                        "status": status,
+                        "speaker_id": self.qube.qube_id,
+                        "speaker_name": self.qube.name,
+                        "timestamp": tool_timestamp,
+                        "result": result if not isinstance(result, dict) or len(json.dumps(result)) < 500 else {"truncated": True},
+                    }
+                    print(f"__TOOL_EVENT__{json.dumps(tool_event)}", file=sys.stderr, flush=True)
 
                     # Award XP now that we have complete status and result
                     logger.info(
@@ -964,15 +1168,10 @@ class ToolRegistry:
                     "last_block_hash": action_block_data.block_hash
                 })
 
-        # Cache successful results for deduplication
-        if status == "completed" and tool_name not in self._uncacheable_tools:
-            cache_key = self._get_cache_key(tool_name, parameters)
-            self._cache_result(cache_key, result)
-            logger.debug(
-                "tool_result_cached",
-                tool=tool_name,
-                qube_id=self.qube.qube_id
-            )
+        # Cache disabled - don't store results
+        # if status == "completed" and tool_name not in self._uncacheable_tools:
+        #     cache_key = self._get_cache_key(tool_name, parameters)
+        #     self._cache_result(cache_key, result)
 
         return result
 

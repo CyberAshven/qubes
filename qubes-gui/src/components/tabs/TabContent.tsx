@@ -11,6 +11,7 @@ import { CreateQubeModal, CreateQubeData } from './CreateQubeModal';
 import { ChatInterface } from '../chat/ChatInterface';
 import { ModelModeIndicator } from '../chat/ModelModeIndicator';
 import { MultiQubeChatInterface } from '../chat/MultiQubeChatInterface';
+import { GroupChatInterface } from '../chat/GroupChatInterface';
 import { BlocksTab } from './BlocksTab';
 import { RelationshipsTab } from './RelationshipsTab';
 import { SkillsTab } from './SkillsTab';
@@ -329,7 +330,7 @@ export const TabContent: React.FC<TabContentProps> = ({ qubes, setQubes, onQubes
             {/* Chat interfaces always use Dashboard selection, not current tab */}
             <div className="absolute inset-0">
               <div className={`absolute inset-0 p-6 flex flex-col ${selectedQubesForDashboard.length >= 2 ? 'z-10 opacity-100' : 'z-0 opacity-0 pointer-events-none'}`}>
-                <MultiQubeChatInterface key="multi-qube-chat" selectedQubes={selectedQubesForDashboard} />
+                <GroupChatInterface key="group-chat" selectedQubes={selectedQubesForDashboard} allQubes={qubes} />
               </div>
               <div className={`absolute inset-0 p-6 flex flex-col ${selectedQubesForDashboard.length >= 2 ? 'z-0 opacity-0 pointer-events-none' : 'z-10 opacity-100'}`}>
                 <ChatInterface key="single-qube-chat" selectedQubes={selectedQubesForDashboard} onQubeModelChange={handleQubeModelChange} />

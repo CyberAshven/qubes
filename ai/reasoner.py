@@ -425,12 +425,22 @@ class QubeReasoner:
                     qube_id=self.qube.qube_id
                 )
 
-            tools = self.tool_registry.get_tools_for_model(
-                self.model.get_provider_name(),
-                unlocked_tools=unlocked_tools,
-                model_name=model_to_use,
-                user_message=input_message
-            )
+            # Skip tools when max_iterations <= 0 (used for prefetch/quick responses)
+            if max_iterations <= 0:
+                tools = None
+                # Ensure we still do one iteration for text response
+                max_iterations = 1
+                logger.info(
+                    "tools_disabled_for_quick_response",
+                    qube_id=self.qube.qube_id
+                )
+            else:
+                tools = self.tool_registry.get_tools_for_model(
+                    self.model.get_provider_name(),
+                    unlocked_tools=unlocked_tools,
+                    model_name=model_to_use,
+                    user_message=input_message
+                )
 
             # Record input
             MetricsRecorder.record_ai_api_call(provider, model_to_use, "started")

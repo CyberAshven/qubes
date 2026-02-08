@@ -1426,20 +1426,20 @@ class GUIBridge:
 
     async def generate_speech(self, qube_id: str, text: str, password: str = None) -> Dict[str, Any]:
         """Generate speech audio for given text using qube's voice"""
-        try:
-            import time as _t
-            _t0 = _t.time()
-            logger.info(f"TTS_DEBUG: start, text_len={len(text)}")
+        import time
+        start_time = time.time()
 
+        try:
             # Set master key if password provided
             if password:
                 self.orchestrator.set_master_key(password)
-            logger.info(f"TTS_DEBUG: master_key set {_t.time()-_t0:.1f}s")
 
+            load_start = time.time()
             # Load the qube if not already loaded
             if qube_id not in self.orchestrator.qubes:
                 await self.orchestrator.load_qube(qube_id)
-            logger.info(f"TTS_DEBUG: qube loaded {_t.time()-_t0:.1f}s")
+            load_time = time.time() - load_start
+            logger.info(f"TTS: qube load took {load_time*1000:.0f}ms")
 
             qube = self.orchestrator.qubes[qube_id]
 
@@ -1450,68 +1450,14 @@ class GUIBridge:
                     "error": "Audio manager not initialized for this qube"
                 }
 
-            # CRITICAL: Read disk state BEFORE loading to see what was saved
+            # Get voice model from chain_state or genesis_block
+            voice_model = None
             if qube.chain_state:
-                # First, read disk directly with a fresh instance to verify what's actually saved
-                try:
-                    qube_dir = self.orchestrator.data_dir / "qubes"
-                    for dir_entry in qube_dir.iterdir():
-                        if dir_entry.is_dir():
-                            metadata_path = dir_entry / "chain" / "qube_metadata.json"
-                            if metadata_path.exists():
-                                with open(metadata_path, "r") as f:
-                                    data = json.load(f)
-                                    if data.get("qube_id") == qube_id:
-                                        # Found the qube - read chain_state fresh
-                                        from core.chain_state import ChainState
-                                        encryption_key = self._get_qube_encryption_key(dir_entry)
-                                        if encryption_key:
-                                            fresh_cs = ChainState(data_dir=dir_entry / "chain", encryption_key=encryption_key)
-                                            disk_voice = fresh_cs.get_voice_model()
-                                            logger.info(f"TTS_DEBUG: FRESH DISK READ voice_model={disk_voice}")
-                                        break
-                except Exception as e:
-                    logger.warning(f"TTS_DEBUG: Failed to read disk directly: {e}")
-
-                # Now reload the qube's chain_state
-                qube.chain_state._load()
-                # Debug: show what's in settings after reload
-                settings = qube.chain_state.state.get("settings", {})
-                logger.info(f"TTS_DEBUG: chain_state reloaded, settings.voice_model={settings.get('voice_model', 'NOT SET')}")
-            logger.info(f"TTS_DEBUG: chain_state loaded {_t.time()-_t0:.1f}s")
-
-            # Get voice model from chain_state, with fallback to qube_metadata.json
-            # qube_metadata.json is ALWAYS updated by update_qube_config, but chain_state
-            # may fail to update if encryption key is unavailable. So check both.
-            voice_model = qube.chain_state.get_voice_model() if qube.chain_state else getattr(qube.genesis_block, 'voice_model', 'openai:alloy')
-            logger.info(f"TTS_DEBUG: voice_model from chain_state={voice_model}")
-
-            # Check qube_metadata.json for the authoritative voice_model (GUI always saves there)
-            try:
-                qube_dir = self.orchestrator.data_dir / "qubes"
-                for dir_entry in qube_dir.iterdir():
-                    if dir_entry.is_dir():
-                        metadata_path = dir_entry / "chain" / "qube_metadata.json"
-                        if metadata_path.exists():
-                            with open(metadata_path, "r") as f:
-                                metadata = json.load(f)
-                                if metadata.get("qube_id") == qube_id:
-                                    metadata_voice = metadata.get("genesis_block", {}).get("voice_model")
-                                    if metadata_voice and metadata_voice != voice_model:
-                                        logger.warning(f"TTS_DEBUG: Voice mismatch! chain_state={voice_model}, qube_metadata={metadata_voice}. Using metadata.")
-                                        voice_model = metadata_voice
-                                        # Also update chain_state if possible to fix the mismatch
-                                        if qube.chain_state:
-                                            try:
-                                                qube.chain_state.set_voice_model(voice_model)
-                                                logger.info(f"TTS_DEBUG: Fixed chain_state voice_model to {voice_model}")
-                                            except Exception as e:
-                                                logger.warning(f"TTS_DEBUG: Failed to update chain_state: {e}")
-                                    break
-            except Exception as e:
-                logger.warning(f"TTS_DEBUG: Failed to check qube_metadata.json: {e}")
-
-            logger.info(f"TTS_DEBUG: final voice_model={voice_model}")
+                voice_model = qube.chain_state.get_voice_model()
+            if not voice_model:
+                voice_model = getattr(qube.genesis_block, 'voice_model', 'openai:alloy')
+            if not voice_model:
+                voice_model = 'openai:alloy'
 
             # Parse provider and voice from format "provider:voice"
             if ':' in voice_model:
@@ -1534,15 +1480,17 @@ class GUIBridge:
 
             # Generate speech file in qube's audio directory
             # Returns (audio_path, total_chunks) tuple
-            logger.info(f"TTS_DEBUG: calling generate_speech_file {_t.time()-_t0:.1f}s")
+            tts_start = time.time()
+            logger.info(f"TTS: Starting {provider}:{voice_name} for qube {qube_id}, text_length={len(text)}")
             audio_path, total_chunks = await qube.audio_manager.generate_speech_file(
                 text=text,
                 voice_model=voice_name,
                 provider=provider,
                 block_number=block_number
             )
-            logger.info(f"TTS_DEBUG: DONE {_t.time()-_t0:.1f}s")
-            logger.info("tts_generate_speech_complete", provider=provider, voice=voice_name)
+            tts_time = time.time() - tts_start
+            total_time = time.time() - start_time
+            logger.info(f"TTS: {provider}:{voice_name} completed in {tts_time*1000:.0f}ms (total {total_time*1000:.0f}ms)")
 
             return {
                 "success": True,
@@ -9303,50 +9251,66 @@ async def main():
     elif command == "create-user-account":
         # Create a new user account
         if len(sys.argv) < 3:
-            print(json.dumps({"success": False, "error": "User ID required"}), file=sys.stderr)
+            print(json.dumps({"success": False, "error": "User ID required"}))
             sys.exit(1)
 
-        user_id = validate_user_id(sys.argv[2])
-        # Password from stdin (secure) or argv fallback (backwards compat)
-        password = get_secret("password", argv_index=3)
+        try:
+            user_id = validate_user_id(sys.argv[2])
+            # Password from stdin (secure) or argv fallback (backwards compat)
+            password = get_secret("password", argv_index=3)
 
-        # Create data directory for user using platform-aware path
-        # (critical for Linux AppImage - avoids read-only mount)
-        user_data_dir = get_user_data_dir(user_id)
-        if (user_data_dir / "password_verifier.enc").exists():
-            print(json.dumps({"success": False, "error": "User already exists"}))
-        else:
-            # User directory already created by get_user_data_dir
+            if not password:
+                print(json.dumps({"success": False, "error": "Password required"}))
+                return
 
-            # Create orchestrator for user and set master key (generates salt)
-            orchestrator = UserOrchestrator(user_id=user_id)
-            orchestrator.set_master_key(password)
+            # Create data directory for user using platform-aware path
+            # (critical for Linux AppImage - avoids read-only mount)
+            user_data_dir = get_user_data_dir(user_id)
+            if (user_data_dir / "password_verifier.enc").exists():
+                print(json.dumps({"success": False, "error": "User already exists"}))
+            else:
+                # User directory already created by get_user_data_dir
 
-            # Create password verifier for secure authentication
-            # This encrypts a known plaintext so we can verify the password later
-            import secrets
-            from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+                # Create orchestrator for user and set master key (generates salt)
+                # Import locally to avoid UnboundLocalError (other branches in main() import it too)
+                from orchestrator.user_orchestrator import UserOrchestrator
+                orchestrator = UserOrchestrator(user_id=user_id)
+                orchestrator.set_master_key(password)
 
-            verifier_file = user_data_dir / "password_verifier.enc"
-            aesgcm = AESGCM(orchestrator.master_key)
-            nonce = secrets.token_bytes(12)
-            plaintext = b"QUBES_PASSWORD_VERIFIED"
-            ciphertext = aesgcm.encrypt(nonce, plaintext, None)
+                # Create password verifier for secure authentication
+                # This encrypts a known plaintext so we can verify the password later
+                import secrets
+                from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-            verifier_data = {
-                "nonce": nonce.hex(),
-                "ciphertext": ciphertext.hex(),
-                "algorithm": "AES-256-GCM",
-                "version": "1.0"
-            }
+                verifier_file = user_data_dir / "password_verifier.enc"
+                aesgcm = AESGCM(orchestrator.master_key)
+                nonce = secrets.token_bytes(12)
+                plaintext = b"QUBES_PASSWORD_VERIFIED"
+                ciphertext = aesgcm.encrypt(nonce, plaintext, None)
 
-            with open(verifier_file, 'w') as f:
-                json.dump(verifier_data, f, indent=2)
+                verifier_data = {
+                    "nonce": nonce.hex(),
+                    "ciphertext": ciphertext.hex(),
+                    "algorithm": "AES-256-GCM",
+                    "version": "1.0"
+                }
 
+                with open(verifier_file, 'w') as f:
+                    json.dump(verifier_data, f, indent=2)
+
+                print(json.dumps({
+                    "success": True,
+                    "user_id": user_id,
+                    "data_dir": str(user_data_dir.absolute())
+                }))
+        except Exception as e:
+            import traceback
+            error_msg = str(e)
+            # Log full traceback for debugging
+            traceback.print_exc(file=sys.stderr)
             print(json.dumps({
-                "success": True,
-                "user_id": user_id,
-                "data_dir": str(user_data_dir.absolute())
+                "success": False,
+                "error": f"Account creation failed: {error_msg}"
             }))
         return
 
@@ -10749,13 +10713,25 @@ async def main():
 
             user_id = sys.argv[2]
             conversation_id = sys.argv[3]
-            # Optional skip_tools flag (argv[4] if present, before password)
+            # Optional skip_tools flag (argv[4] if present)
             skip_tools = False
-            password_index = 4
             if len(sys.argv) > 4 and sys.argv[4] in ("true", "false"):
                 skip_tools = sys.argv[4] == "true"
-                password_index = 5
-            password = get_secret("password", argv_index=password_index)
+
+            # Optional participant_ids JSON array (argv[5] if present) - OPTIMIZATION
+            # If provided, skip scanning all qubes and only load these
+            provided_participant_ids = None
+            if len(sys.argv) > 5:
+                try:
+                    provided_participant_ids = json.loads(sys.argv[5])
+                    logger.info(f"Using provided participant_ids: {provided_participant_ids}")
+                except json.JSONDecodeError:
+                    pass  # Ignore invalid JSON, fall back to scanning
+
+            password = get_secret("password")
+
+            import time
+            cmd_start = time.time()
 
             # Create bridge with correct user
             user_bridge = GUIBridge(user_id=user_id)
@@ -10763,28 +10739,38 @@ async def main():
             # Set master key
             user_bridge.orchestrator.set_master_key(password)
 
-            # Find and load Qubes with this conversation_id in their sessions
-            # We need to reconstruct the conversation from the Qubes' session blocks
-            qubes_list = await user_bridge.orchestrator.list_qubes()
-            participant_qube_ids = []
+            load_start = time.time()
+            # OPTIMIZATION: If participant_ids provided, skip scanning all qubes
+            if provided_participant_ids:
+                participant_qube_ids = provided_participant_ids
+                # Only load the qubes we need
+                for qube_id in participant_qube_ids:
+                    if qube_id not in user_bridge.orchestrator.qubes:
+                        await user_bridge.orchestrator.load_qube(qube_id)
+                logger.info(f"TIMING: Loaded {len(participant_qube_ids)} qubes in {(time.time()-load_start)*1000:.0f}ms")
+            else:
+                # Fall back to scanning all qubes (slow)
+                logger.warning("No participant_ids provided, scanning all qubes (slow)")
+                qubes_list = await user_bridge.orchestrator.list_qubes()
+                participant_qube_ids = []
 
-            for qube_meta in qubes_list:
-                qube_id = qube_meta["qube_id"]
+                for qube_meta in qubes_list:
+                    qube_id = qube_meta["qube_id"]
 
-                # Load the qube
-                if qube_id not in user_bridge.orchestrator.qubes:
-                    await user_bridge.orchestrator.load_qube(qube_id)
+                    # Load the qube
+                    if qube_id not in user_bridge.orchestrator.qubes:
+                        await user_bridge.orchestrator.load_qube(qube_id)
 
-                qube = user_bridge.orchestrator.qubes[qube_id]
+                    qube = user_bridge.orchestrator.qubes[qube_id]
 
-                # Check if this qube has blocks from this conversation
-                if qube.current_session:
-                    for block in qube.current_session.session_blocks:
-                        if hasattr(block, 'content') and isinstance(block.content, dict):
-                            if block.content.get('conversation_id') == conversation_id:
-                                if qube_id not in participant_qube_ids:
-                                    participant_qube_ids.append(qube_id)
-                                break
+                    # Check if this qube has blocks from this conversation
+                    if qube.current_session:
+                        for block in qube.current_session.session_blocks:
+                            if hasattr(block, 'content') and isinstance(block.content, dict):
+                                if block.content.get('conversation_id') == conversation_id:
+                                    if qube_id not in participant_qube_ids:
+                                        participant_qube_ids.append(qube_id)
+                                    break
 
             if not participant_qube_ids:
                 print(json.dumps({"error": f"Conversation not found: {conversation_id}"}), file=sys.stderr)
@@ -10856,10 +10842,14 @@ async def main():
                 user_bridge.orchestrator.active_conversations[conversation_id] = conversation
 
             # Continue conversation (with optional skip_tools for faster prefetch)
+            api_start = time.time()
             result = await user_bridge.orchestrator.continue_multi_qube_conversation(
                 conversation_id=conversation_id,
                 skip_tools=skip_tools
             )
+            api_time = time.time() - api_start
+            total_time = time.time() - cmd_start
+            logger.info(f"TIMING: API call took {api_time*1000:.0f}ms, total command {total_time*1000:.0f}ms")
 
             print(json.dumps(result))
 
@@ -11113,7 +11103,17 @@ async def main():
             user_id = sys.argv[2]
             conversation_id = sys.argv[3]
             timestamp = int(sys.argv[4])
-            password = get_secret("password", argv_index=5)
+
+            # Parse optional --participant-ids argument
+            participant_ids_json = None
+            password_argv_index = 5
+            for i, arg in enumerate(sys.argv[5:], start=5):
+                if arg == "--participant-ids" and i + 1 < len(sys.argv):
+                    participant_ids_json = sys.argv[i + 1]
+                    password_argv_index = i + 2
+                    break
+
+            password = get_secret("password", argv_index=password_argv_index)
 
             # Create bridge with correct user
             user_bridge = GUIBridge(user_id=user_id)
@@ -11121,31 +11121,42 @@ async def main():
             # Set master key
             user_bridge.orchestrator.set_master_key(password)
 
+            # Use participant_ids if provided (much faster - skips scanning all qubes)
+            if participant_ids_json:
+                import json as json_module
+                participant_qube_ids = json_module.loads(participant_ids_json)
+            else:
+                participant_qube_ids = None
+
             # Reconstruct conversation if not in active_conversations
-            # (Same logic as continue-multi-qube-conversation)
             if conversation_id not in user_bridge.orchestrator.active_conversations:
                 from core.multi_qube_conversation import MultiQubeConversation
 
-                qubes_list = await user_bridge.orchestrator.list_qubes()
-                participant_qube_ids = []
+                # If we have participant_ids, use them directly
+                if participant_qube_ids:
+                    for qube_id in participant_qube_ids:
+                        if qube_id not in user_bridge.orchestrator.qubes:
+                            await user_bridge.orchestrator.load_qube(qube_id)
+                else:
+                    # Fallback: scan all qubes (slow)
+                    qubes_list = await user_bridge.orchestrator.list_qubes()
+                    participant_qube_ids = []
 
-                for qube_meta in qubes_list:
-                    qube_id = qube_meta["qube_id"]
+                    for qube_meta in qubes_list:
+                        qube_id = qube_meta["qube_id"]
 
-                    # Load the qube
-                    if qube_id not in user_bridge.orchestrator.qubes:
-                        await user_bridge.orchestrator.load_qube(qube_id)
+                        if qube_id not in user_bridge.orchestrator.qubes:
+                            await user_bridge.orchestrator.load_qube(qube_id)
 
-                    qube = user_bridge.orchestrator.qubes[qube_id]
+                        qube = user_bridge.orchestrator.qubes[qube_id]
 
-                    # Check if this qube has blocks from this conversation
-                    if qube.current_session:
-                        for block in qube.current_session.session_blocks:
-                            if hasattr(block, 'content') and isinstance(block.content, dict):
-                                if block.content.get('conversation_id') == conversation_id:
-                                    if qube_id not in participant_qube_ids:
-                                        participant_qube_ids.append(qube_id)
-                                    break
+                        if qube.current_session:
+                            for block in qube.current_session.session_blocks:
+                                if hasattr(block, 'content') and isinstance(block.content, dict):
+                                    if block.content.get('conversation_id') == conversation_id:
+                                        if qube_id not in participant_qube_ids:
+                                            participant_qube_ids.append(qube_id)
+                                        break
 
                 if not participant_qube_ids:
                     print(json.dumps({"error": f"Conversation not found: {conversation_id}"}), file=sys.stderr)
@@ -11153,17 +11164,13 @@ async def main():
 
                 participating_qubes = [user_bridge.orchestrator.qubes[qid] for qid in participant_qube_ids]
 
-                # Reconstruct conversation object
                 conversation = MultiQubeConversation(
                     participating_qubes=participating_qubes,
                     user_id=user_id,
                     conversation_mode="open_discussion"
                 )
 
-                # Override the conversation_id to match
                 conversation.conversation_id = conversation_id
-
-                # Store in active conversations
                 user_bridge.orchestrator.active_conversations[conversation_id] = conversation
 
             conversation = user_bridge.orchestrator.active_conversations[conversation_id]

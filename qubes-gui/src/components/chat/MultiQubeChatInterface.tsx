@@ -39,6 +39,9 @@ interface ConversationMessage {
   is_final: boolean;
   timestamp?: number;
   block_number?: number; // Block number for reliable tool call matching
+  // Who will speak next (for UI to show immediately)
+  next_speaker_id?: string;
+  next_speaker_name?: string;
 }
 
 interface ConversationSummary {
@@ -57,6 +60,15 @@ interface ConversationSummary {
     timestamp: string;
   }>;
   anchored: boolean;
+}
+
+// Per-qube pipeline state for prefetch
+interface QubePipeline {
+  qubeId: string;
+  qubeName: string;
+  status: 'idle' | 'processing' | 'generating_tts' | 'ready';
+  pendingResponse: ConversationMessage | null;
+  prefetchedAudio: string | null;
 }
 
 export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
@@ -88,15 +100,86 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
     result: any;
     status: string;
   }>>([]);
+
+  // PERMANENT mapping of actions to the message index they appear before
+  // Key: action unique ID (qube_id-timestamp-action_type)
+  // Value: { action, messageIndex } - once assigned, NEVER removed
+  const [actionAssignments, setActionAssignments] = useState<Map<string, {
+    action: typeof actionBlocks[0];
+    messageIndex: number;
+  }>>(new Map());
+
+  // Ref to always have current action blocks (for async callbacks)
+  const actionBlocksRef = useRef(actionBlocks);
+  useEffect(() => {
+    actionBlocksRef.current = actionBlocks;
+  }, [actionBlocks]);
+
+  // Assign new actions to messages (runs whenever actionBlocks or conversationHistory changes)
+  // Once assigned to a VALID message (index >= 0), an action NEVER moves or disappears
+  // Actions assigned to -1 (trailing) can be reassigned when their message arrives
+  useEffect(() => {
+    if (actionBlocks.length === 0) return;
+
+    setActionAssignments(currentAssignments => {
+      const newAssignments = new Map(currentAssignments);
+      let hasChanges = false;
+
+      actionBlocks.forEach(action => {
+        const actionKey = `${action.qube_id}-${action.timestamp}-${action.action_type}`;
+        const existing = newAssignments.get(actionKey);
+
+        // If already assigned to a valid message (>= 0), just update action data
+        if (existing && existing.messageIndex >= 0) {
+          if (existing.action.status !== action.status || existing.action.result !== action.result) {
+            newAssignments.set(actionKey, { ...existing, action });
+            hasChanges = true;
+          }
+          return;
+        }
+
+        // Find which message this action belongs before (by timestamp)
+        let assignedIndex = -1;
+        for (let i = 0; i < conversationHistory.length; i++) {
+          const msg = conversationHistory[i];
+          const msgTimestamp = msg.timestamp || 0;
+
+          // Action belongs before this message if action.timestamp <= msgTimestamp
+          // and message is from a qube (not user)
+          if (msg.speaker_id !== userId && action.timestamp <= msgTimestamp) {
+            // Check it's after the previous non-user message
+            let prevNonUserTimestamp = 0;
+            for (let j = i - 1; j >= 0; j--) {
+              if (conversationHistory[j].speaker_id !== userId) {
+                prevNonUserTimestamp = conversationHistory[j].timestamp || 0;
+                break;
+              }
+            }
+
+            if (action.timestamp > prevNonUserTimestamp) {
+              assignedIndex = i;
+              break;
+            }
+          }
+        }
+
+        // Only update if different from current assignment (or new)
+        if (!existing || existing.messageIndex !== assignedIndex) {
+          newAssignments.set(actionKey, { action, messageIndex: assignedIndex });
+          hasChanges = true;
+          console.log(`[ACTION ASSIGN] ${action.action_type} assigned to messageIndex=${assignedIndex}`);
+        }
+      });
+
+      return hasChanges ? newAssignments : currentAssignments;
+    });
+  }, [actionBlocks, conversationHistory, userId]);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [conversationMode, setConversationMode] = useState<'open_discussion' | 'round_robin'>('open_discussion');
   const [activeTypewriterMessageId, setActiveTypewriterMessageId] = useState<string | null>(null);
   const [pendingTTSMessage, setPendingTTSMessage] = useState<ConversationMessage | null>(null);
-  const [nextResponsePrefetch, setNextResponsePrefetch] = useState<ConversationMessage | null>(null);
-  const [nextTTSPrefetch, setNextTTSPrefetch] = useState<string | null>(null);
-  const [prefetchedMessageId, setPrefetchedMessageId] = useState<string | null>(null); // Track which message the TTS belongs to
   const [isConversationActive, setIsConversationActive] = useState(false);
   const [expectedTurns, setExpectedTurns] = useState(1); // How many turns each Qube should take initially
 
@@ -114,6 +197,10 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
     qubeName?: string;
   }>({ stage: 'idle' });
 
+  // Per-qube pipeline state for prefetch
+  const [qubePipelines, setQubePipelines] = useState<Map<string, QubePipeline>>(new Map());
+  const [currentSpeakerId, setCurrentSpeakerId] = useState<string | null>(null);
+  const [nextSpeakerId, setNextSpeakerId] = useState<string | null>(null);
 
   const [isPauseRequested, setIsPauseRequested] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
@@ -131,34 +218,45 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
   const shouldContinueRef = useRef(false);
   const isFetchingNextRef = useRef(false);
   const processingMessageRef = useRef<string | null>(null); // Track which message is being processed
-  const typewriterReadyRef = useRef(false); // Track if typewriter is ready to start
   const lastProcessedTurnRef = useRef<number>(0); // Track the last turn number we processed
   const activeTypewriterMessageIdRef = useRef<string | null>(null); // Track active typewriter
-  const prefetchCancelledRef = useRef(false); // Track if prefetch was explicitly cancelled
   const waitingForUserResponseRef = useRef(false); // Track if we're waiting for user's response from backend
   const pauseAfterCurrentMessageRef = useRef(false); // Track if we should pause after current message completes
 
-  // Refs for prefetch state (so timer callbacks see latest values)
-  const nextResponsePrefetchRef = useRef<ConversationMessage | null>(null);
-  const nextTTSPrefetchRef = useRef<string | null>(null);
-  const prefetchedMessageIdRef = useRef<string | null>(null);
-
   // Keep refs in sync with state
-  useEffect(() => {
-    nextResponsePrefetchRef.current = nextResponsePrefetch;
-  }, [nextResponsePrefetch]);
-
-  useEffect(() => {
-    nextTTSPrefetchRef.current = nextTTSPrefetch;
-  }, [nextTTSPrefetch]);
-
-  useEffect(() => {
-    prefetchedMessageIdRef.current = prefetchedMessageId;
-  }, [prefetchedMessageId]);
-
   useEffect(() => {
     activeTypewriterMessageIdRef.current = activeTypewriterMessageId;
   }, [activeTypewriterMessageId]);
+
+  // ========== PIPELINE HELPERS ==========
+
+  // Update a single qube's pipeline state
+  const updatePipeline = useCallback((qubeId: string, updates: Partial<QubePipeline>) => {
+    setQubePipelines(prev => {
+      const newMap = new Map(prev);
+      const current = newMap.get(qubeId) || {
+        qubeId,
+        qubeName: selectedQubes.find(q => q.qube_id === qubeId)?.name || 'Unknown',
+        status: 'idle' as const,
+        pendingResponse: null,
+        prefetchedAudio: null,
+      };
+      newMap.set(qubeId, { ...current, ...updates });
+      return newMap;
+    });
+  }, [selectedQubes]);
+
+  // Get pipeline for a qube
+  const getPipeline = useCallback((qubeId: string): QubePipeline | undefined => {
+    return qubePipelines.get(qubeId);
+  }, [qubePipelines]);
+
+  // Clear all pipelines (on conversation end)
+  const clearAllPipelines = useCallback(() => {
+    setQubePipelines(new Map());
+    setCurrentSpeakerId(null);
+    setNextSpeakerId(null);
+  }, []);
 
   // ========== P2P MODE HELPERS ==========
 
@@ -333,6 +431,9 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
   // ========== END P2P MODE HELPERS ==========
 
   // Load ACTION blocks only (messages come from conversationHistory)
+  // Uses merge logic to ensure actions are never removed once shown
+  const prevConversationIdRef = useRef<string | null>(null);
+
   useEffect(() => {
     const loadActionBlocks = async () => {
       if (!userId || !password || selectedQubes.length === 0) {
@@ -340,8 +441,25 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
         return;
       }
 
+      // Check if this is a NEW conversation (clear old actions and assignments)
+      const isNewConversation = conversationId !== prevConversationIdRef.current;
+      if (isNewConversation) {
+        prevConversationIdRef.current = conversationId;
+        // Clear actions and assignments immediately for new conversation
+        setActionBlocks([]);
+        setActionAssignments(new Map());
+      }
+
       try {
-        const allActions: typeof actionBlocks = [];
+        // Fetch all actions from backend
+        const newActions: Array<{
+          qube_id: string;
+          action_type: string;
+          timestamp: number;
+          parameters: any;
+          result: any;
+          status: string;
+        }> = [];
 
         for (const qube of selectedQubes) {
           const result = await invoke<any>('get_qube_blocks', {
@@ -351,33 +469,55 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
           });
 
           const sessionBlocks = result.session_blocks || [];
-          const actions = sessionBlocks
+          sessionBlocks
             .filter((b: any) => b.block_type === 'ACTION')
-            .map((b: any) => {
+            .forEach((b: any) => {
               // Normalize timestamp to SECONDS (block files use seconds, but some might be in ms)
               let ts = b.timestamp;
               if (ts > 10000000000) {
                 // If > 10 billion, it's in milliseconds - convert to seconds
                 ts = Math.floor(ts / 1000);
               }
-              return {
+              newActions.push({
                 qube_id: qube.qube_id,
                 action_type: b.content?.action_type || 'unknown',
                 timestamp: ts,
                 parameters: b.content?.parameters || {},
                 result: b.content?.result || null,
                 status: b.content?.status || 'completed',
-              };
+              });
             });
-
-          allActions.push(...actions);
         }
 
-        // Sort actions by timestamp
-        allActions.sort((a, b) => a.timestamp - b.timestamp);
-        console.log('[ACTION LOAD] Loaded', allActions.length, 'action blocks:', allActions.map(a => `${a.action_type}@${a.timestamp}`));
-        setActionBlocks(allActions);
+        // Use functional update to MERGE with current state (never lose existing actions)
+        setActionBlocks(currentActions => {
+          // If new conversation, start fresh with just the fetched actions
+          if (isNewConversation) {
+            const sorted = [...newActions].sort((a, b) => a.timestamp - b.timestamp);
+            console.log('[ACTION LOAD] New conversation, loaded', sorted.length, 'action blocks');
+            return sorted;
+          }
+
+          // Otherwise merge: preserve existing, add/update new
+          const actionMap = new Map<string, typeof currentActions[0]>();
+
+          currentActions.forEach(action => {
+            const key = `${action.qube_id}-${action.timestamp}-${action.action_type}`;
+            actionMap.set(key, action);
+          });
+
+          newActions.forEach(action => {
+            const key = `${action.qube_id}-${action.timestamp}-${action.action_type}`;
+            actionMap.set(key, action);
+          });
+
+          const mergedActions = Array.from(actionMap.values());
+          mergedActions.sort((a, b) => a.timestamp - b.timestamp);
+          console.log('[ACTION LOAD] Merged to', mergedActions.length, 'action blocks');
+          return mergedActions;
+        });
       } catch (err) {
+        // On error, keep existing actions - don't clear them
         console.error('Failed to load action blocks:', err);
       }
     };
@@ -386,18 +526,28 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
   }, [userId, password, selectedQubes, conversationId, conversationHistory.length]);
 
   // Poll for ACTION blocks while conversation is active
+  // Also poll during isLoading (backend processing) even if conversation not "active" yet
   useEffect(() => {
-    if (!isConversationActive || !userId || !password || selectedQubes.length === 0) {
+    if (!userId || !password || selectedQubes.length === 0) {
       return;
     }
 
-    // Don't poll during active typewriter/TTS to avoid interruptions
-    if (activeTypewriterMessageId) {
+    // Poll if conversation is active OR if we're loading (AI processing)
+    // This ensures ACTION blocks appear in real-time during tool calls
+    if (!isConversationActive && !isLoading) {
       return;
     }
 
     const loadAllActionBlocks = async () => {
-      const allActions: typeof actionBlocks = [];
+      // Fetch new actions from backend
+      const newActions: Array<{
+        qube_id: string;
+        action_type: string;
+        timestamp: number;
+        parameters: any;
+        result: any;
+        status: string;
+      }> = [];
 
       for (const qube of selectedQubes) {
         try {
@@ -418,7 +568,7 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
               if (ts > 10000000000) {
                 ts = Math.floor(ts / 1000);
               }
-              allActions.push({
+              newActions.push({
                 qube_id: qube.qube_id,
                 action_type: b.content?.action_type || 'unknown',
                 timestamp: ts,
@@ -428,22 +578,42 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
               });
             });
         } catch (err) {
+          // On error, keep existing actions - don't clear them
           console.error(`Failed to load blocks for ${qube.name}:`, err);
         }
       }
 
-      allActions.sort((a, b) => a.timestamp - b.timestamp);
-      setActionBlocks(allActions);
+      // Use functional update to MERGE with current state (never lose existing actions)
+      setActionBlocks(currentActions => {
+        const actionMap = new Map<string, typeof currentActions[0]>();
+
+        // First, preserve ALL existing actions
+        currentActions.forEach(action => {
+          const key = `${action.qube_id}-${action.timestamp}-${action.action_type}`;
+          actionMap.set(key, action);
+        });
+
+        // Then merge in new/updated actions
+        newActions.forEach(action => {
+          const key = `${action.qube_id}-${action.timestamp}-${action.action_type}`;
+          actionMap.set(key, action);
+        });
+
+        // Convert map back to sorted array
+        const mergedActions = Array.from(actionMap.values());
+        mergedActions.sort((a, b) => a.timestamp - b.timestamp);
+        return mergedActions;
+      });
     };
 
     // Load immediately
     loadAllActionBlocks();
 
-    // Then poll every second
-    const pollInterval = setInterval(loadAllActionBlocks, 1000);
+    // Poll frequently (500ms) to catch new actions quickly
+    const pollInterval = setInterval(loadAllActionBlocks, 500);
 
     return () => clearInterval(pollInterval);
-  }, [isConversationActive, userId, password, selectedQubes, activeTypewriterMessageId]);
+  }, [isConversationActive, isLoading, userId, password, selectedQubes]);
 
   // Scroll to bottom helper
   const scrollToBottom = (smooth: boolean = true) => {
@@ -982,6 +1152,13 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
 
     isFetchingNextRef.current = true;
 
+    // Show "processing" indicator (we don't know who will respond yet)
+    setNextResponseStatus({
+      stage: 'processing',
+      qubeId: undefined,
+      qubeName: undefined
+    });
+
     try {
       let response: ConversationMessage;
 
@@ -1009,15 +1186,20 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
         await submitBlockToHub(response);
       } else {
         // Local mode - use standard backend command
+        // Pass participant_ids for optimization (skips scanning all qubes)
+        const participantIds = selectedQubes.map(q => q.qube_id);
         response = await invoke<ConversationMessage>('continue_multi_qube_conversation', {
           userId,
           conversationId,
           password,
+          participant_ids: JSON.stringify(participantIds),
         });
       }
 
-      // Don't add to history yet - wait for TTS to start
-      // setConversationHistory(prev => [...prev, response]);
+      // Set next speaker hint if available
+      if (response.next_speaker_id) {
+        setNextSpeakerId(response.next_speaker_id);
+      }
 
       // Play TTS for this response (will be added to history when TTS starts)
       setPendingTTSMessage(response);
@@ -1026,6 +1208,139 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
       setError(`Failed to continue conversation: ${String(err)}`);
       setIsLoading(false);
       setIsConversationActive(false);
+    } finally {
+      isFetchingNextRef.current = false;
+    }
+  };
+
+  // Start prefetch for next speaker in the background (using pipeline architecture)
+  const startPipelinePrefetch = async (forQubeId: string) => {
+    if (!conversationId || !userId || !password || !isConversationActive) return;
+
+    // Already fetching or this pipeline is already active?
+    const existingPipeline = qubePipelines.get(forQubeId);
+    if (existingPipeline && existingPipeline.status !== 'idle') {
+      console.log(`[Prefetch] Qube ${forQubeId} already active (${existingPipeline.status}), skipping`);
+      return;
+    }
+
+    // Prevent concurrent fetches
+    if (isFetchingNextRef.current) {
+      console.log('[Prefetch] Another fetch in progress, skipping');
+      return;
+    }
+
+    console.log(`[Prefetch] Starting for qube ${forQubeId}`);
+    isFetchingNextRef.current = true;
+
+    // Show generic "processing" status (don't show predicted speaker name - might be wrong)
+    setNextResponseStatus({
+      stage: 'processing',
+      qubeId: undefined,
+      qubeName: undefined
+    });
+
+    try {
+      // Fetch next response
+      const participantIds = selectedQubes.map(q => q.qube_id);
+      const response = await invoke<ConversationMessage>('continue_multi_qube_conversation', {
+        userId,
+        conversationId,
+        password,
+        participant_ids: JSON.stringify(participantIds),
+      });
+
+      if (!response) {
+        console.log(`[Prefetch] No response for qube ${forQubeId}`);
+        updatePipeline(forQubeId, { status: 'idle' });
+        setNextResponseStatus({ stage: 'idle' });
+        isFetchingNextRef.current = false;
+        return;
+      }
+
+      // If actual speaker differs from predicted, clear the wrong pipeline entry
+      if (response.speaker_id !== forQubeId) {
+        console.log(`[Prefetch] Actual speaker ${response.speaker_id} differs from predicted ${forQubeId}`);
+        updatePipeline(forQubeId, { status: 'idle', pendingResponse: null, prefetchedAudio: null });
+      }
+
+      // Update nextSpeakerId to the ACTUAL speaker
+      setNextSpeakerId(response.speaker_id);
+
+      // Check if TTS should be generated BEFORE setting status
+      const qube = selectedQubes.find(q => q.qube_id === response.speaker_id);
+      const shouldGenerateTTS = qube && qube.tts_enabled !== false && qube.voice_model;
+
+      console.log(`[Prefetch] TTS check for ${response.speaker_name}: qube=${!!qube}, tts_enabled=${qube?.tts_enabled}, voice_model=${qube?.voice_model}, shouldGenerate=${shouldGenerateTTS}`);
+
+      if (shouldGenerateTTS && qube) {
+        // Store response in pipeline - generating TTS
+        updatePipeline(response.speaker_id, {
+          status: 'generating_tts',
+          pendingResponse: response,
+          qubeName: response.speaker_name,
+        });
+
+        setNextResponseStatus({
+          stage: 'generating_tts',
+          qubeId: response.speaker_id,
+          qubeName: response.speaker_name
+        });
+
+        try {
+          const cleanedMessage = truncateForTTS(cleanContentForDisplay(response.message));
+          console.log(`[Prefetch] Starting TTS for ${response.speaker_name} (${qube.voice_model})...`);
+          const ttsStartTime = Date.now();
+          const audioUrl = await prefetchTTS(userId, qube.qube_id, cleanedMessage, password);
+          console.log(`[Prefetch] TTS completed in ${Date.now() - ttsStartTime}ms for ${response.speaker_name}`);
+
+          // Mark pipeline as ready
+          updatePipeline(response.speaker_id, {
+            status: 'ready',
+            prefetchedAudio: audioUrl,
+          });
+
+          setNextResponseStatus({
+            stage: 'ready',
+            qubeId: response.speaker_id,
+            qubeName: response.speaker_name
+          });
+
+          console.log(`[Prefetch] Qube ${response.speaker_id} ready with TTS`);
+        } catch (ttsErr) {
+          console.error('[Prefetch] TTS error:', ttsErr);
+          // Still mark as ready even without TTS - it will generate inline
+          updatePipeline(response.speaker_id, { status: 'ready', pendingResponse: response });
+          setNextResponseStatus({
+            stage: 'ready',
+            qubeId: response.speaker_id,
+            qubeName: response.speaker_name
+          });
+        }
+      } else {
+        // No TTS needed - mark as ready immediately
+        console.log(`[Prefetch] Skipping TTS for ${response.speaker_name} (no voice model or TTS disabled)`);
+        updatePipeline(response.speaker_id, {
+          status: 'ready',
+          pendingResponse: response,
+          qubeName: response.speaker_name,
+        });
+        setNextResponseStatus({
+          stage: 'ready',
+          qubeId: response.speaker_id,
+          qubeName: response.speaker_name
+        });
+      }
+
+      // Update next speaker hint
+      if (response.next_speaker_id) {
+        setNextSpeakerId(response.next_speaker_id);
+      }
+
+    } catch (err) {
+      console.error('[Prefetch] Error:', err);
+      updatePipeline(forQubeId, { status: 'idle' });
+      setNextResponseStatus({ stage: 'idle' });
     } finally {
       isFetchingNextRef.current = false;
     }
@@ -1080,6 +1395,14 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
     setError(null);
     setIsConversationActive(true);
     shouldContinueRef.current = true;
+
+    // Don't predict first speaker - in "open_discussion" mode it's random
+    // Just show generic "processing" until backend returns who spoke
+    setNextResponseStatus({
+      stage: 'processing',
+      qubeId: undefined,
+      qubeName: undefined
+    });
 
     try {
       const qubeIds = selectedQubes.map(q => q.qube_id).join(',');
@@ -1155,6 +1478,10 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
         if (result.response) {
           // Submit first response to hub
           await submitBlockToHub(result.response);
+          // Set next speaker hint
+          if (result.response.next_speaker_id) {
+            setNextSpeakerId(result.response.next_speaker_id);
+          }
           setPendingTTSMessage(result.response);
         }
       } else {
@@ -1207,6 +1534,10 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
         if (!response.first_response) {
           console.error('ERROR: first_response is missing from backend response!');
         }
+        // Set next speaker hint
+        if (response.first_response?.next_speaker_id) {
+          setNextSpeakerId(response.first_response.next_speaker_id);
+        }
         setPendingTTSMessage(response.first_response);
       }
     } catch (err) {
@@ -1242,29 +1573,16 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
     clearUploadedFiles(`group_${selectedQubes.map(q => q.qube_id).join('_')}`);
     setError(null);
 
-    // Cancel ALL prefetch work immediately - it's now stale
-    // Set cancellation flag FIRST
-    prefetchCancelledRef.current = true;
-
-    // Clear state immediately
-    setNextResponsePrefetch(null);
-    setNextTTSPrefetch(null);
-    setPrefetchedMessageId(null);
-
-    // Clear refs too (to stop ongoing operations from completing)
-    nextResponsePrefetchRef.current = null;
-    nextTTSPrefetchRef.current = null;
-    prefetchedMessageIdRef.current = null;
-
-    // Stop any ongoing prefetch
+    // Clear all pipelines - user injection invalidates any prefetched responses
+    clearAllPipelines();
     isFetchingNextRef.current = false;
 
     // Set waiting flag to prevent auto-continue from fetching next turn
     waitingForUserResponseRef.current = true;
 
-    // Show "User response ready" indicator
+    // Show "User processing" indicator
     setNextResponseStatus({
-      stage: 'ready',
+      stage: 'processing',
       qubeId: userId,
       qubeName: 'bit_faced'
     });
@@ -1340,41 +1658,32 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
 
   // Pause the conversation
   const handlePauseConversation = () => {
-    // If there's a prefetched response ready, keep it and play it before pausing
-    if (nextResponsePrefetch) {
+    // Check if there's a prefetched response ready in a pipeline
+    const nextPipeline = nextSpeakerId ? qubePipelines.get(nextSpeakerId) : null;
+
+    if (nextPipeline?.status === 'ready' && nextPipeline.pendingResponse) {
       // Set flags to pause after the prefetched message plays
       pauseAfterCurrentMessageRef.current = true;
       setIsPauseRequested(true); // Visual feedback
       shouldContinueRef.current = false;
       isFetchingNextRef.current = false;
-      prefetchCancelledRef.current = false; // We're keeping this prefetch
 
       // If no message is currently playing, trigger the prefetched response now
       if (!pendingTTSMessage && !activeTypewriterMessageId) {
-        setPendingTTSMessage(nextResponsePrefetch);
-        setNextResponsePrefetch(null);
-        // NOTE: Keep nextTTSPrefetch and prefetchedMessageId intact!
-        // The playMessageTTS effect needs them to use the prefetched audio.
-        // It will clear them after successfully playing.
+        setPendingTTSMessage(nextPipeline.pendingResponse);
+        updatePipeline(nextSpeakerId!, { status: 'idle', pendingResponse: null, prefetchedAudio: null });
       }
-      // else: Don't clear the prefetch - let it play after current message finishes
+      // else: Let auto-continue handle it after current message finishes
     } else {
-      // No prefetched response - cancel any ongoing prefetch and pause immediately
+      // No prefetched response ready - pause immediately
       setIsConversationActive(false);
       shouldContinueRef.current = false;
       isFetchingNextRef.current = false;
-      prefetchCancelledRef.current = true; // Mark prefetch as cancelled
       pauseAfterCurrentMessageRef.current = false;
       setIsPauseRequested(false);
 
-      // Clear any prefetch state that might be in progress
-      setNextResponsePrefetch(null);
-      setNextTTSPrefetch(null);
-      setPrefetchedMessageId(null);
-      // Also clear refs for immediate effect
-      nextResponsePrefetchRef.current = null;
-      nextTTSPrefetchRef.current = null;
-      prefetchedMessageIdRef.current = null;
+      // Clear all pipelines
+      clearAllPipelines();
       setNextResponseStatus({ stage: 'idle' });
     }
   };
@@ -1385,13 +1694,15 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
     shouldContinueRef.current = true;
     pauseAfterCurrentMessageRef.current = false; // Clear any pending pause
     setIsPauseRequested(false); // Clear pause requested state
-    prefetchCancelledRef.current = false; // Allow new prefetches
+
     // Trigger next turn
     if (conversationId && !isLoading && !pendingTTSMessage) {
-      // Use prefetched response if available, otherwise fetch
-      if (nextResponsePrefetch) {
-        setPendingTTSMessage(nextResponsePrefetch);
-        setNextResponsePrefetch(null);
+      // Check if there's a prefetched response ready in a pipeline
+      const nextPipeline = nextSpeakerId ? qubePipelines.get(nextSpeakerId) : null;
+
+      if (nextPipeline?.status === 'ready' && nextPipeline.pendingResponse) {
+        setPendingTTSMessage(nextPipeline.pendingResponse);
+        updatePipeline(nextSpeakerId!, { status: 'idle', pendingResponse: null, prefetchedAudio: null });
       } else {
         continueConversation();
       }
@@ -1420,9 +1731,7 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
       setConversationId(null);
       setConversationHistory([]);
       setInputValue('');
-      setNextResponsePrefetch(null); // Clear any prefetched response
-      setNextTTSPrefetch(null); // Clear any prefetched TTS
-      setPrefetchedMessageId(null); // Clear prefetch tracking
+      clearAllPipelines(); // Clear all qube pipelines
 
       alert(`Conversation ended!\nTotal turns: ${summary.total_turns}\nBlocks ${anchor ? 'anchored' : 'not anchored'} to permanent chains.`);
     } catch (err) {
@@ -1433,721 +1742,185 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
     }
   };
 
+  // ========== TTS FLOW WITH PIPELINE PREFETCH ==========
+  // 1. When pendingTTSMessage is set, check if we have prefetched audio
+  // 2. If prefetched, play immediately; otherwise generate TTS
+  // 3. While playing, start prefetch for next speaker in background
+  // 4. When typewriter completes, auto-continue checks pipeline for next response
+
   // Handle TTS playback for pending message
   useEffect(() => {
     const playMessageTTS = async () => {
       if (!pendingTTSMessage || !userId || !password) return;
 
-      // Create unique ID for this message
       const messageId = `${pendingTTSMessage.conversation_id}-${pendingTTSMessage.turn_number}`;
 
-      // Skip if we're already processing this exact message (prevents duplicates)
-      if (processingMessageRef.current === messageId) {
-        return;
-      }
+      // Skip if already processing this message
+      if (processingMessageRef.current === messageId) return;
 
-      // Mark as processing and track turn number
       processingMessageRef.current = messageId;
       lastProcessedTurnRef.current = pendingTTSMessage.turn_number;
+      setCurrentSpeakerId(pendingTTSMessage.speaker_id);
 
-      // Try to find qube from selectedQubes first, then allQubes (for P2P connections)
+      // Find qube
       let qube = getQubeById(pendingTTSMessage.speaker_id);
-
-      // In P2P mode, also try to find by speaker_name in allQubes
       if (!qube && isP2P && allQubes.length > 0) {
         qube = allQubes.find(q => q.name === pendingTTSMessage.speaker_name);
       }
 
-      // Get voice model - prioritize from the response itself, then from qube
       const voiceModel = pendingTTSMessage.voice_model || qube?.voice_model;
-      const ttsEnabled = qube?.tts_enabled !== false; // Default to enabled if not specified
+      const ttsEnabled = qube?.tts_enabled !== false;
 
+      // No TTS - just show message
       if (!voiceModel || !ttsEnabled) {
-        // TTS disabled or no voice model - add message to history and show without TTS
+        setActiveTypewriterMessageId(messageId);
         setConversationHistory(prev => [...prev, pendingTTSMessage]);
         setPendingTTSMessage(null);
         setIsLoading(false);
         setNextResponseStatus({ stage: 'idle' });
-        processingMessageRef.current = null; // Clear processing flag
+        processingMessageRef.current = null;
 
-        // Clear any stale TTS prefetch state (e.g., 'tts_disabled' sentinel)
-        if (nextTTSPrefetch !== null) {
-          setNextTTSPrefetch(null);
-          nextTTSPrefetchRef.current = null;
-        }
-        if (prefetchedMessageId !== null) {
-          setPrefetchedMessageId(null);
-          prefetchedMessageIdRef.current = null;
-        }
-
-        // Auto-continue if conversation is still active
-        if (isConversationActive && shouldContinueRef.current) {
-          setTimeout(() => continueConversation(), 500);
+        // Start prefetch for next speaker
+        if (isConversationActive && shouldContinueRef.current && !isP2P && pendingTTSMessage.next_speaker_id) {
+          startPipelinePrefetch(pendingTTSMessage.next_speaker_id);
         }
         return;
       }
 
       try {
-        // Validate if we have prefetched TTS for THIS EXACT message
-        const hasPrefetchedTTS = nextTTSPrefetch !== null && prefetchedMessageId === messageId;
+        // Check if we have prefetched audio in the pipeline
+        const pipeline = qubePipelines.get(pendingTTSMessage.speaker_id);
+        const hasPrefetchedAudio = pipeline?.prefetchedAudio && pipeline?.status === 'ready';
 
-        if (!hasPrefetchedTTS && nextTTSPrefetch !== null && prefetchedMessageId !== messageId) {
-          console.warn(`⚠ Prefetched TTS mismatch! Expected: ${messageId}, Got: ${prefetchedMessageId}. Discarding and regenerating.`);
-          // Clear mismatched prefetch
-          setNextTTSPrefetch(null);
-          setPrefetchedMessageId(null);
-        }
-
-        // Lock in this response as "spoken" BEFORE starting TTS
-        // This marks it as prefetch=false so it won't be removed if user interjects
-        if (pendingTTSMessage.timestamp && conversationId) {
-          try {
-            await invoke('lock_in_multi_qube_response', {
-              userId,
-              conversationId,
-              timestamp: pendingTTSMessage.timestamp,
-              password
-            });
-          } catch (err) {
-            console.error('Failed to lock in response:', err);
-            // Don't fail - continue with TTS
-          }
-        }
-
-        // Check if this was a "ready to respond" case (smooth transition) or needs indicator
-        const wasReady = nextResponseStatus.stage === 'ready';
-
-        if (wasReady) {
-          // Prefetched response - smooth transition: set typewriter BEFORE adding message
-          // This prevents flash of full text before typewriter activates
-          setActiveTypewriterMessageId(messageId);
-
-          // Now add message - React will render it with TypewriterText immediately
-          setConversationHistory(prev => [...prev, pendingTTSMessage]);
-
-          // Wait for React to render the message bubble
-          await new Promise(resolve => setTimeout(resolve, 50));
-
-          // Clear the "ready to respond" indicator now that message is visible
+        if (hasPrefetchedAudio && pipeline?.prefetchedAudio) {
+          // Play prefetched audio immediately
+          console.log('[TTS] Using prefetched audio for', pendingTTSMessage.speaker_name);
           setNextResponseStatus({ stage: 'idle' });
+          const cleanedMessage = truncateForTTS(cleanContentForDisplay(pendingTTSMessage.message));
+          await playPrefetchedTTS(pipeline.prefetchedAudio, cleanedMessage);
+
+          // Clear the pipeline
+          updatePipeline(pendingTTSMessage.speaker_id, { status: 'idle', pendingResponse: null, prefetchedAudio: null });
         } else {
-          // First response or no prefetch - show "generating audio" indicator
+          // Generate TTS now
+          console.log('[TTS] Generating audio for', pendingTTSMessage.speaker_name);
           setNextResponseStatus({
             stage: 'generating_tts',
             qubeId: pendingTTSMessage.speaker_id,
             qubeName: pendingTTSMessage.speaker_name
           });
+
+          const cleanedMessage = truncateForTTS(cleanContentForDisplay(pendingTTSMessage.message));
+          if (qube) {
+            await playTTS(userId, qube.qube_id, cleanedMessage, password);
+          }
         }
 
-        // Clean the message content to remove image URLs before TTS
-        // Then truncate hex strings (addresses, tx hashes) for better TTS readability
-        const cleanedMessage = truncateForTTS(cleanContentForDisplay(pendingTTSMessage.message));
+        // Show message with typewriter
+        setActiveTypewriterMessageId(messageId);
+        setConversationHistory(prev => [...prev, pendingTTSMessage]);
+        setNextResponseStatus({ stage: 'idle' });
 
-        if (hasPrefetchedTTS && nextTTSPrefetch) {
-          // Use prefetched TTS audio - instant playback!
-          await playPrefetchedTTS(nextTTSPrefetch, cleanedMessage);
-          setNextTTSPrefetch(null);
-          setPrefetchedMessageId(null);
-        } else if (qube) {
-          // Generate TTS normally and WAIT for it to finish
-          await playTTS(userId, qube.qube_id, cleanedMessage, password);
-        }
-        // If qube not found locally (rare case) - skip TTS but continue
-
-        // TTS is ready! Now add message to history if we didn't already (first response case)
-        if (!wasReady) {
-          // Set typewriter ID BEFORE adding message to prevent flash of full text
-          setActiveTypewriterMessageId(messageId);
-
-          // Now add message - React will render it with TypewriterText immediately
-          setConversationHistory(prev => [...prev, pendingTTSMessage]);
-
-          // Clear the generating indicator
-          setNextResponseStatus({ stage: 'idle' });
-        }
-        // Note: In wasReady case, typewriter was already activated before adding message
-
-        // Small delay to ensure React has rendered
-        await new Promise(resolve => setTimeout(resolve, 20));
-
-        // Start prefetching immediately (in parallel with TTS playback)
-        // This maximizes the time available for the next qube to prepare their response
-        // NOTE: PREFETCH IS DISABLED FOR P2P MODE - blocks can't be "un-sent" from hub
-        const prefetchPromise = (async () => {
-          // P2P MODE: Skip prefetch entirely - blocks are immediately sent to hub
-          if (isP2P) {
-            return;
-          }
-
-          // Small delay to ensure current message processing has set its flags
-          await new Promise(resolve => setTimeout(resolve, 50));
-
-          // Check if prefetch was cancelled before we even start
-          if (prefetchCancelledRef.current) {
-            return;
-          }
-
-          if (isConversationActive && shouldContinueRef.current && !isFetchingNextRef.current && !nextResponsePrefetch && conversationId && userId && password) {
-            isFetchingNextRef.current = true;
-
-            // Clear cancellation flag when starting a NEW prefetch
-            prefetchCancelledRef.current = false;
-
-            try {
-              // Check again right before calling backend (race condition check)
-              if (prefetchCancelledRef.current) {
-                isFetchingNextRef.current = false;
-                return;
-              }
-
-              // Show generic "processing" indicator - we don't know who will speak yet
-              // NOTE: We removed the get_next_speaker call because each CLI invocation is a
-              // separate process, so the speaker selected there was different from the one
-              // selected in continue_multi_qube_conversation (random selection happened twice)
-              setNextResponseStatus({
-                stage: 'processing',
-                qubeId: undefined,
-                qubeName: undefined
-              });
-
-              // Prefetch next response - THIS IS WHERE THE ACTUAL PROCESSING HAPPENS
-              const nextResponse = await invoke<ConversationMessage>('continue_multi_qube_conversation', {
-                userId,
-                conversationId,
-                password,
-              });
-
-              // NOTE: Don't stop polling yet - keep polling during TTS generation
-              // to catch tool calls from background turns. Will clear at the end.
-
-              // Response is now complete - processing is done, will show "generating audio" next
-
-              // Create message ID for validation
-              const nextMessageId = `${nextResponse.conversation_id}-${nextResponse.turn_number}`;
-
-              // CHECK: Was prefetch cancelled while we were fetching?
-              if (prefetchCancelledRef.current) {
-                // Only clear status if it's not a user indicator (preserve "bit_faced response ready")
-                setNextResponseStatus(prev =>
-                  prev.qubeId === userId ? prev : { stage: 'idle' }
-                );
-
-                // Delete the prefetched blocks from all participating qubes
-                // The backend created blocks, so we need to query and delete them
-                (async () => {
-                  for (const qube of selectedQubes) {
-                    try {
-                      // Get all blocks for this qube
-                      const blocksResponse = await invoke<any>('get_qube_blocks', {
-                        userId,
-                        qubeId: qube.qube_id,
-                        password
-                      });
-
-                      // Find session blocks matching this turn number
-                      const sessionBlocks = blocksResponse.session_blocks || [];
-                      for (const block of sessionBlocks) {
-                        if (block.content?.turn_number === nextResponse.turn_number) {
-                          await invoke('delete_session_block', {
-                            userId,
-                            qubeId: qube.qube_id,
-                            blockNumber: block.block_number,
-                            password
-                          });
-                        }
-                      }
-                    } catch (err) {
-                      console.error(`Failed to delete cancelled blocks from ${qube.name}:`, err);
-                    }
-                  }
-                })();
-                return;
-              }
-
-              setNextResponsePrefetch(nextResponse);
-              // Also update ref directly (useEffect sync can be delayed by React batching)
-              nextResponsePrefetchRef.current = nextResponse;
-
-              // Get next speaker info
-              const nextQube = getQubeById(nextResponse.speaker_id);
-              if (!nextQube) {
-                console.error('Next qube not found');
-                setNextResponseStatus({ stage: 'idle' });
-                return;
-              }
-
-              // Run background turns for non-speaking qubes (limited to 1 tool call each)
-              // They can use ONE tool or PASS while the current speaker's TTS plays
-              if (pendingTTSMessage && selectedQubes.length > 2) {
-                const excludeIds = [pendingTTSMessage.speaker_id, nextResponse.speaker_id];
-                // Fire without await - runs in parallel with TTS generation
-                runBackgroundTurns(excludeIds);
-              }
-
-              // CHECK: Status update
-              if (prefetchCancelledRef.current) {
-                // Only clear status if it's not a user indicator (preserve "bit_faced response ready")
-                setNextResponseStatus(prev =>
-                  prev.qubeId === userId ? prev : { stage: 'idle' }
-                );
-                return;
-              }
-
-              // Also prefetch the TTS for this next response
-              if (nextQube && nextQube.tts_enabled) {
-                try {
-                  // Now update status: Generating TTS for next response
-                  setNextResponseStatus({
-                    stage: 'generating_tts',
-                    qubeId: nextQube.qube_id,
-                    qubeName: nextQube.name
-                  });
-
-                  // Clean the message content to remove image URLs before TTS
-                  // Then truncate hex strings (addresses, tx hashes) for better TTS readability
-                  const cleanedMessage = truncateForTTS(cleanContentForDisplay(nextResponse.message));
-                  const prefetchedAudio = await prefetchTTS(userId, nextQube.qube_id, cleanedMessage, password);
-
-                  // CHECK AGAIN: Was prefetch cancelled while we were generating TTS?
-                  if (prefetchCancelledRef.current) {
-                    // Only clear status if it's not a user indicator (preserve "bit_faced response ready")
-                    setNextResponseStatus(prev =>
-                      prev.qubeId === userId ? prev : { stage: 'idle' }
-                    );
-
-                    // Delete blocks from all qubes
-                    (async () => {
-                      for (const qube of selectedQubes) {
-                        try {
-                          const blocksResponse = await invoke<any>('get_qube_blocks', {
-                            userId,
-                            qubeId: qube.qube_id,
-                            password
-                          });
-
-                          const sessionBlocks = blocksResponse.session_blocks || [];
-                          for (const block of sessionBlocks) {
-                            if (block.content?.turn_number === nextResponse.turn_number) {
-                              await invoke('delete_session_block', {
-                                userId,
-                                qubeId: qube.qube_id,
-                                blockNumber: block.block_number,
-                                password
-                              });
-                            }
-                          }
-                        } catch (err) {
-                          console.error(`Failed to delete cancelled blocks from ${qube.name}:`, err);
-                        }
-                      }
-                    })();
-                    return;
-                  }
-
-                  // Store BOTH the audio and which message it belongs to
-                  setNextTTSPrefetch(prefetchedAudio);
-                  setPrefetchedMessageId(nextMessageId);
-                  // Also update refs directly (useEffect sync can be delayed by React batching)
-                  nextTTSPrefetchRef.current = prefetchedAudio;
-                  prefetchedMessageIdRef.current = nextMessageId;
-
-                  // CHECK ONE MORE TIME before showing "ready"
-                  if (prefetchCancelledRef.current) {
-                    setNextResponsePrefetch(null);
-                    setNextTTSPrefetch(null);
-                    setPrefetchedMessageId(null);
-                    // Also clear refs for immediate effect
-                    nextResponsePrefetchRef.current = null;
-                    nextTTSPrefetchRef.current = null;
-                    prefetchedMessageIdRef.current = null;
-                    // Only clear status if it's not a user indicator (preserve "bit_faced response ready")
-                    setNextResponseStatus(prev =>
-                      prev.qubeId === userId ? prev : { stage: 'idle' }
-                    );
-
-                    // Delete blocks from all qubes
-                    (async () => {
-                      for (const qube of selectedQubes) {
-                        try {
-                          const blocksResponse = await invoke<any>('get_qube_blocks', {
-                            userId,
-                            qubeId: qube.qube_id,
-                            password
-                          });
-
-                          const sessionBlocks = blocksResponse.session_blocks || [];
-                          for (const block of sessionBlocks) {
-                            if (block.content?.turn_number === nextResponse.turn_number) {
-                              await invoke('delete_session_block', {
-                                userId,
-                                qubeId: qube.qube_id,
-                                blockNumber: block.block_number,
-                                password
-                              });
-                            }
-                          }
-                        } catch (err) {
-                          console.error(`Failed to delete cancelled blocks from ${qube.name}:`, err);
-                        }
-                      }
-                    })();
-                    return;
-                  }
-
-                  // Update status: Ready!
-                  console.log('[Prefetch] TTS ready, setting status to ready for:', nextQube.name, 'hasPrefetch:', !!nextResponse);
-                  setNextResponseStatus({
-                    stage: 'ready',
-                    qubeId: nextQube.qube_id,
-                    qubeName: nextQube.name
-                  });
-                } catch (err) {
-                  console.error('Failed to prefetch TTS:', err);
-                  setPrefetchedMessageId(null);
-                  // Only clear status if it's not a user indicator (preserve "bit_faced response ready")
-                  setNextResponseStatus(prev =>
-                    prev.qubeId === userId ? prev : { stage: 'idle' }
-                  );
-                }
-              } else {
-                // No TTS needed - but still set prefetchedMessageId so auto-continue
-                // knows this message is "complete" (TTS step was skipped, not pending)
-                setPrefetchedMessageId(nextMessageId);
-                prefetchedMessageIdRef.current = nextMessageId;
-                // Set nextTTSPrefetch to a sentinel value to indicate "TTS not needed"
-                // This allows auto-continue's isComplete check to pass
-                setNextTTSPrefetch('tts_disabled');
-                nextTTSPrefetchRef.current = 'tts_disabled';
-                // No TTS needed, mark as ready (if not cancelled)
-                if (nextQube && !prefetchCancelledRef.current) {
-                  setNextResponseStatus({
-                    stage: 'ready',
-                    qubeId: nextQube.qube_id,
-                    qubeName: nextQube.name
-                  });
-                } else if (prefetchCancelledRef.current) {
-                  // Only clear status if it's not a user indicator (preserve "bit_faced response ready")
-                  setNextResponseStatus(prev =>
-                    prev.qubeId === userId ? prev : { stage: 'idle' }
-                  );
-
-                  // Delete blocks from all qubes
-                  (async () => {
-                    for (const qube of selectedQubes) {
-                      try {
-                        const blocksResponse = await invoke<any>('get_qube_blocks', {
-                          userId,
-                          qubeId: qube.qube_id,
-                          password
-                        });
-
-                        const sessionBlocks = blocksResponse.session_blocks || [];
-                        for (const block of sessionBlocks) {
-                          if (block.content?.turn_number === nextResponse.turn_number) {
-                            await invoke('delete_session_block', {
-                              userId,
-                              qubeId: qube.qube_id,
-                              blockNumber: block.block_number,
-                              password
-                            });
-                          }
-                        }
-                      } catch (err) {
-                        console.error(`Failed to delete cancelled blocks from ${qube.name}:`, err);
-                      }
-                    }
-                  })();
-                }
-              }
-            } catch (err) {
-              console.error('Failed to prefetch next response:', err);
-              setPrefetchedMessageId(null);
-              // Only clear status if it's not a user indicator (preserve "bit_faced response ready")
-              setNextResponseStatus(prev =>
-                prev.qubeId === userId ? prev : { stage: 'idle' }
-              );
-            } finally {
-              isFetchingNextRef.current = false;
-            }
-          }
-        })();
-
-        // TTS is already awaited above, prefetch continues in background
-        // Clear pending and stop loading
         setPendingTTSMessage(null);
         setIsLoading(false);
-        // NOTE: We do NOT clear processingMessageRef here!
-        // It will be cleared when the typewriter completes (in the onComplete callback)
+
+        // Start prefetch for next speaker while typewriter runs
+        if (isConversationActive && shouldContinueRef.current && !isP2P && pendingTTSMessage.next_speaker_id) {
+          setNextSpeakerId(pendingTTSMessage.next_speaker_id);
+          startPipelinePrefetch(pendingTTSMessage.next_speaker_id);
+        }
       } catch (err) {
         console.error('TTS error:', err);
         setError(`TTS error: ${String(err)}`);
         setPendingTTSMessage(null);
         setIsLoading(false);
-        processingMessageRef.current = null; // Clear processing flag
+        processingMessageRef.current = null;
       }
     };
 
     playMessageTTS();
-  }, [pendingTTSMessage]); // Only trigger when pendingTTSMessage changes
+  }, [pendingTTSMessage, qubePipelines, updatePipeline]);
 
-  // Auto-continue conversation when typewriter completes
+  // Auto-continue when typewriter completes
   useEffect(() => {
-    // Check if we should pause after current message completes
-    // BUT: if there's a prefetched response, play it first before pausing
+    // Handle pause request
     if (
       !activeTypewriterMessageId &&
       !pendingTTSMessage &&
       !processingMessageRef.current &&
       pauseAfterCurrentMessageRef.current
     ) {
-      // If there's a prefetched response, play it before pausing
-      if (nextResponsePrefetch) {
-        setPendingTTSMessage(nextResponsePrefetch);
-        setNextResponsePrefetch(null);
-        // NOTE: Keep nextTTSPrefetch and prefetchedMessageId intact!
-        // The playMessageTTS effect needs them to use the prefetched audio.
+      // Check if next speaker's pipeline has a ready response
+      const nextPipeline = nextSpeakerId ? qubePipelines.get(nextSpeakerId) : null;
+      if (nextPipeline?.status === 'ready' && nextPipeline.pendingResponse && nextPipeline.prefetchedAudio) {
+        // Play prefetched response before pausing
+        setPendingTTSMessage(nextPipeline.pendingResponse);
+        updatePipeline(nextSpeakerId!, { status: 'idle', pendingResponse: null, prefetchedAudio: null });
         setNextResponseStatus({ stage: 'idle' });
-        // Keep pauseAfterCurrentMessageRef.current = true so it pauses after THIS message
         return;
       }
-
-      // No prefetch, pause now
       setIsConversationActive(false);
       pauseAfterCurrentMessageRef.current = false;
-      setIsPauseRequested(false); // Clear pause requested state
+      setIsPauseRequested(false);
+      clearAllPipelines();
       return;
     }
 
-    // Only continue if:
-    // - No active typewriter (typewriter finished)
-    // - Conversation is active
-    // - No pending message being processed
-    // - Not currently loading
-    // - Not currently processing a message (prevents race conditions)
-    // - Not waiting for user response from backend
-    console.log('[Auto-continue] Checking conditions:', {
-      activeTypewriter: activeTypewriterMessageId,
-      isActive: isConversationActive,
-      shouldContinue: shouldContinueRef.current,
-      pendingTTS: pendingTTSMessage?.speaker_name,
-      isLoading,
-      processingRef: processingMessageRef.current,
-      waitingForUser: waitingForUserResponseRef.current,
-    });
+    // Auto-continue conditions
     if (
       !activeTypewriterMessageId &&
       isConversationActive &&
       shouldContinueRef.current &&
       !pendingTTSMessage &&
       !isLoading &&
-      !processingMessageRef.current && // Make sure we're not in the middle of processing
-      !waitingForUserResponseRef.current // Don't fetch next turn if waiting for user's message
-    ) {
-      // Check if we have a COMPLETE prefetch ready (both response AND TTS)
-      const nextMessageId = nextResponsePrefetch ? `${nextResponsePrefetch.conversation_id}-${nextResponsePrefetch.turn_number}` : null;
-      const hasPrefetchedTTS = nextTTSPrefetch !== null && prefetchedMessageId === nextMessageId;
-      const hasCompletePrefetch = nextResponsePrefetch !== null && hasPrefetchedTTS;
-
-      // If prefetch is ready, start immediately. Otherwise, 1 second delay for pacing.
-      const delay = hasCompletePrefetch ? 50 : 1000; // 50ms for render, 1s if waiting
-      console.log('[Auto-continue] All conditions passed, delay:', delay, 'hasCompletePrefetch:', hasCompletePrefetch);
-
-      const timer = setTimeout(async () => {
-        // First, wait for any in-progress prefetch to complete (max 20 seconds)
-        if (isFetchingNextRef.current) {
-          const maxWait = 20000; // 20 seconds for very long TTS generation
-          const checkInterval = 100;
-          let waited = 0;
-
-          while (isFetchingNextRef.current && waited < maxWait) {
-            await new Promise(resolve => setTimeout(resolve, checkInterval));
-            waited += checkInterval;
-          }
-
-          // If still fetching, we'll set up polling to wait for it
-        }
-
-        // Use REFS to get the LATEST values (not stale closure values)
-        let currentPrefetch = nextResponsePrefetchRef.current;
-        let currentTTSPrefetch = nextTTSPrefetchRef.current;
-        let currentPrefetchedId = prefetchedMessageIdRef.current;
-
-        // Double-check we haven't already processed the next turn
-        const nextTurn = currentPrefetch?.turn_number || (lastProcessedTurnRef.current + 1);
-
-        if (nextTurn <= lastProcessedTurnRef.current) {
-          return;
-        }
-
-        // If prefetch is STILL in progress (even after 20s wait), set up polling instead of fetching
-        if (isFetchingNextRef.current) {
-          // Poll every 500ms to check if prefetch completes
-          const pollInterval = setInterval(() => {
-            const latestPrefetch = nextResponsePrefetchRef.current;
-            const latestTTS = nextTTSPrefetchRef.current;
-            const latestPrefetchedId = prefetchedMessageIdRef.current;
-            const stillFetching = isFetchingNextRef.current;
-
-            if (!latestPrefetch && !stillFetching) {
-              // Prefetch failed or was cleared, fetch fresh
-              clearInterval(pollInterval);
-              continueConversation();
-              return;
-            }
-
-            if (latestPrefetch) {
-              const latestMessageId = `${latestPrefetch.conversation_id}-${latestPrefetch.turn_number}`;
-              const latestHasTTS = latestTTS !== null && latestPrefetchedId === latestMessageId;
-
-              if (latestHasTTS) {
-                // Prefetch completed!
-                clearInterval(pollInterval);
-                setPendingTTSMessage(latestPrefetch);
-                setNextResponsePrefetch(null);
-              }
-            }
-          }, 500);
-
-          // Stop polling after 60 seconds (safety timeout)
-          setTimeout(() => {
-            clearInterval(pollInterval);
-            // Last resort: use prefetch without TTS or fetch fresh
-            const stalePrefetch = nextResponsePrefetchRef.current;
-            if (stalePrefetch) {
-              console.log('[Auto-continue] Prefetch timeout - using prefetch without TTS');
-              setPendingTTSMessage(stalePrefetch);
-              setNextResponsePrefetch(null);
-            } else {
-              console.log('[Auto-continue] Prefetch timeout - fetching fresh');
-              continueConversation();
-            }
-          }, 60000);
-
-          return; // Exit early - polling will handle it
-        }
-
-        // Check if prefetch is COMPLETE (both response AND TTS ready)
-        let nextMessageId = currentPrefetch ? `${currentPrefetch.conversation_id}-${currentPrefetch.turn_number}` : null;
-        let hasTTS = currentTTSPrefetch !== null && currentPrefetchedId === nextMessageId;
-        let isComplete = currentPrefetch !== null && hasTTS;
-
-        if (isComplete && currentPrefetch) {
-          // Use the COMPLETE prefetched response (response + TTS ready!)
-          setPendingTTSMessage(currentPrefetch);
-          setNextResponsePrefetch(null);
-          // NOTE: We do NOT clear nextTTSPrefetch/prefetchedMessageId here!
-          // They will be cleared when the message actually uses the TTS
-        } else if (currentPrefetch && !hasTTS) {
-          // Prefetch has response but TTS isn't ready yet - poll for completion
-          const pollInterval = setInterval(() => {
-            const latestPrefetch = nextResponsePrefetchRef.current;
-            const latestTTS = nextTTSPrefetchRef.current;
-            const latestPrefetchedId = prefetchedMessageIdRef.current;
-
-            if (!latestPrefetch) {
-              // Prefetch was cleared, stop polling
-              clearInterval(pollInterval);
-              return;
-            }
-
-            const latestMessageId = `${latestPrefetch.conversation_id}-${latestPrefetch.turn_number}`;
-            const latestHasTTS = latestTTS !== null && latestPrefetchedId === latestMessageId;
-
-            if (latestHasTTS && latestPrefetch) {
-              // Prefetch completed!
-              clearInterval(pollInterval);
-              setPendingTTSMessage(latestPrefetch);
-              setNextResponsePrefetch(null);
-            }
-          }, 500);
-
-          // Stop polling after 30 seconds (safety timeout)
-          setTimeout(() => {
-            clearInterval(pollInterval);
-            // If we still have a prefetch but TTS never arrived, use it anyway (no audio)
-            const staleCheck = nextResponsePrefetchRef.current;
-            if (staleCheck) {
-              console.log('[Auto-continue] TTS timeout - using prefetch without TTS');
-              setPendingTTSMessage(staleCheck);
-              setNextResponsePrefetch(null);
-            } else {
-              // No prefetch at all - fetch fresh
-              console.log('[Auto-continue] TTS timeout - fetching fresh');
-              continueConversation();
-            }
-          }, 30000);
-        } else {
-          // No prefetch at all - fetch fresh
-          continueConversation();
-        }
-      }, delay);
-
-      return () => clearTimeout(timer);
-    }
-  }, [activeTypewriterMessageId, isConversationActive, pendingTTSMessage, isLoading]);
-  // NOTE: nextResponsePrefetch is intentionally NOT in dependencies
-  // We only want to trigger when typewriter completes, not when prefetch updates
-
-  // SAFETY NET: When status becomes 'ready' and nothing is playing, start playback immediately
-  // This handles the case where the main auto-continue effect ran before prefetch completed
-  useEffect(() => {
-    // Debug: Log all conditions when the effect runs
-    const conditions = {
-      stageIsReady: nextResponseStatus.stage === 'ready',
-      noActiveTypewriter: !activeTypewriterMessageId,
-      noPendingTTS: !pendingTTSMessage,
-      notProcessing: !processingMessageRef.current,
-      isActive: isConversationActive,
-      shouldContinue: shouldContinueRef.current,
-      notWaitingForUser: !waitingForUserResponseRef.current,
-      hasPrefetch: !!nextResponsePrefetchRef.current,
-    };
-    console.log('[Safety Net] Checking conditions:', conditions);
-
-    // Check which condition failed
-    const failed = Object.entries(conditions).filter(([_, v]) => !v).map(([k, _]) => k);
-    if (failed.length > 0) {
-      console.log('[Safety Net] Failed conditions:', failed);
-    }
-
-    if (
-      nextResponseStatus.stage === 'ready' &&
-      !activeTypewriterMessageId &&
-      !pendingTTSMessage &&
       !processingMessageRef.current &&
-      isConversationActive &&
-      shouldContinueRef.current &&
       !waitingForUserResponseRef.current
     ) {
-      console.log('[Safety Net] All conditions passed!');
-      // Get the prefetched response from refs (most current value)
-      const prefetch = nextResponsePrefetchRef.current;
-      if (prefetch) {
-        console.log('[Safety Net] Prefetch found, scheduling playback with 1s delay');
-        // Use same 1s delay as auto-continue to prevent cutting off previous speaker
-        // This ensures natural pacing between speakers
-        setTimeout(() => {
-          // Double-check refs still hold after delay
-          // (processingMessageRef is a ref so always has latest value)
-          // (nextResponsePrefetchRef being null means auto-continue already grabbed it)
-          if (
-            !processingMessageRef.current &&
-            nextResponsePrefetchRef.current
-          ) {
-            console.log('Safety net: triggering playback for ready response');
-            setPendingTTSMessage(nextResponsePrefetchRef.current);
-            setNextResponsePrefetch(null);
-            nextResponsePrefetchRef.current = null;
+      // Check if ANY pipeline is active (not just nextSpeakerId)
+      let activePipeline: QubePipeline | null = null;
+      let activePipelineQubeId: string | null = null;
+
+      // First check nextSpeakerId's pipeline
+      if (nextSpeakerId) {
+        const nextPipeline = qubePipelines.get(nextSpeakerId);
+        if (nextPipeline && nextPipeline.status !== 'idle') {
+          activePipeline = nextPipeline;
+          activePipelineQubeId = nextSpeakerId;
+        }
+      }
+
+      // If no pipeline for nextSpeakerId, check all pipelines
+      if (!activePipeline) {
+        for (const [qubeId, pipeline] of qubePipelines.entries()) {
+          if (pipeline.status !== 'idle') {
+            activePipeline = pipeline;
+            activePipelineQubeId = qubeId;
+            break;
           }
-        }, 1000);
+        }
+      }
+
+      if (activePipeline?.status === 'ready' && activePipeline.pendingResponse) {
+        // Immediate playback from prefetch!
+        console.log('[Auto-continue] Using prefetched response from pipeline for', activePipelineQubeId);
+        setPendingTTSMessage(activePipeline.pendingResponse);
+        updatePipeline(activePipelineQubeId!, { status: 'idle', pendingResponse: null, prefetchedAudio: null });
+      } else if (activePipeline?.status === 'processing' || activePipeline?.status === 'generating_tts') {
+        // Still preparing - status indicator already shows this, just wait
+        // The pipeline will update and trigger this effect again
+        console.log('[Auto-continue] Waiting for pipeline:', activePipeline?.status, 'for', activePipelineQubeId);
+      } else if (!isFetchingNextRef.current) {
+        // No pipeline active - fetch fresh
+        const timer = setTimeout(() => {
+          continueConversation();
+        }, 500);
+        return () => clearTimeout(timer);
       }
     }
-  }, [nextResponseStatus.stage, activeTypewriterMessageId, pendingTTSMessage, isConversationActive]);
+  }, [activeTypewriterMessageId, isConversationActive, pendingTTSMessage, isLoading, nextSpeakerId, qubePipelines, updatePipeline, clearAllPipelines]);
 
-  // Handle displaying pending user message when speaker finishes
+  // Handle user message injection
   useEffect(() => {
-    // Check if we have a pending user message with backend response
-    // AND the speaker has finished (no active typewriter, no pending TTS)
     if (
       pendingUserMessage?.userMessageResponse &&
       pendingUserMessage?.qubeResponse &&
@@ -2156,62 +1929,34 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
       !processingMessageRef.current
     ) {
       (async () => {
-        // Capture qubeResponse early to satisfy TypeScript
         const qubeResponse = pendingUserMessage.qubeResponse;
         if (!qubeResponse) return;
 
-        // Add user message to history
         setConversationHistory(prev => [...prev, pendingUserMessage.userMessageResponse!]);
 
-        // Wait for the browser to actually paint the user message before clearing indicator
-        // Use multiple animation frames to ensure the message is fully rendered and visible
         await new Promise(resolve => requestAnimationFrame(() => {
-          requestAnimationFrame(() => {
-            requestAnimationFrame(resolve);
-          });
+          requestAnimationFrame(() => requestAnimationFrame(resolve));
         }));
 
-        // NOW clear the "bit_faced response ready" indicator (after message is painted)
         setNextResponseStatus({ stage: 'idle' });
-
-        // Brief moment before showing qube indicator
         await new Promise(resolve => setTimeout(resolve, 50));
 
-        // Now show the qube's "ready to respond" indicator
-        setNextResponseStatus({
-          stage: 'ready',
-          qubeId: qubeResponse.speaker_id,
-          qubeName: qubeResponse.speaker_name
-        });
-
-        // Update last processed turn
         lastProcessedTurnRef.current = qubeResponse.turn_number;
-
-        // Clear waiting flag
         waitingForUserResponseRef.current = false;
-
-        // CRITICAL: Clear prefetch cancelled flag to allow prefetch to resume
-        prefetchCancelledRef.current = false;
-
-        // Clear pending user message
+        // Set next speaker hint if available
+        if (qubeResponse.next_speaker_id) {
+          setNextSpeakerId(qubeResponse.next_speaker_id);
+        }
         setPendingUserMessage(null);
 
-        // CRITICAL: Wait for audio element to fully reset before starting new TTS
-        // After the previous speaker finishes, the audio element is in "ended" state
-        // We need to ensure it's fully paused and reset before the new TypewriterText mounts
-        // Otherwise TypewriterText sees stale audio state and doesn't wait for 'play' event
         if (audioElement) {
-          // Reset the audio element completely
           audioElement.pause();
           audioElement.currentTime = 0;
           audioElement.removeAttribute('src');
           audioElement.load();
-
-          // Wait for load() to complete (it's async)
           await new Promise(resolve => setTimeout(resolve, 100));
         }
 
-        // Now it's safe to start the new TTS/typewriter
         setPendingTTSMessage(qubeResponse);
       })();
     }
@@ -2456,178 +2201,152 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
         ) : (
           <div className="space-y-4">
 
-            {/* Render messages from conversationHistory with actions interleaved by timestamp */}
-            {conversationHistory.map((msg, msgIndex) => {
-              const messageId = `${msg.conversation_id}-${msg.turn_number}`;
-              const qube = getQubeById(msg.speaker_id);
-              const participantInfo = getParticipantInfo(msg.speaker_id);
-              const isUser = msg.speaker_id === userId;
-              const speakerColor = participantInfo?.color || qube?.favorite_color || '#00d4ff';
-              const speakerAvatarUrl = participantInfo?.avatarUrl || (qube ? getAvatarPath(qube) : undefined);
+            {/* UNIFIED TIMELINE: Render messages and actions together */}
+            {(() => {
+              // Build unified timeline of messages and actions
+              type TimelineItem =
+                | { type: 'message'; data: ConversationMessage; turnNumber: number; timestamp: number }
+                | { type: 'action'; data: typeof actionBlocks[0]; turnNumber: number; timestamp: number };
 
-              // Find actions that should appear BEFORE this message
-              // Action timestamp must be > previous message timestamp AND <= this message timestamp
-              const prevMsg = msgIndex > 0 ? conversationHistory[msgIndex - 1] : null;
-              const prevMsgIsUser = prevMsg?.speaker_id === userId;
-              const thisTimestamp = msg.timestamp || 0;
+              const timeline: TimelineItem[] = [];
 
-              // IMPORTANT: If previous message is from USER, use 0 as prevTimestamp
-              // This is because the frontend creates user messages with Date.now() which may differ
-              // from backend timestamps. Using 0 ensures all actions before this qube message are shown.
-              const prevTimestamp = prevMsgIsUser ? 0 : (prevMsg?.timestamp || 0);
+              // Add all messages with their turn numbers
+              conversationHistory.forEach(msg => {
+                timeline.push({
+                  type: 'message',
+                  data: msg,
+                  turnNumber: msg.turn_number,
+                  timestamp: msg.timestamp || 0
+                });
+              });
 
-              // DEBUG: Log timestamps for action filtering
-              if (!isUser) {
-                console.log(`[ACTION DEBUG] msgIndex=${msgIndex} speaker=${msg.speaker_name} prevMsgIsUser=${prevMsgIsUser} prevTS=${prevTimestamp} thisTS=${thisTimestamp} actionBlocks.length=${actionBlocks.length}`);
-                if (actionBlocks.length > 0) {
-                  actionBlocks.forEach(a => {
-                    const wouldMatch = a.timestamp > prevTimestamp && a.timestamp <= thisTimestamp;
-                    console.log(`  Action ${a.action_type} ts=${a.timestamp} match=${wouldMatch} (${a.timestamp}>${prevTimestamp}=${a.timestamp > prevTimestamp}, ${a.timestamp}<=${thisTimestamp}=${a.timestamp <= thisTimestamp})`);
-                  });
-                }
-              }
-
-              // For user messages (msgIndex 0), no actions appear before them
-              // For qube messages after user, show all actions with timestamp <= this message
-              const actionsBeforeThisMessage = isUser ? [] : actionBlocks.filter(action =>
-                action.timestamp > prevTimestamp && action.timestamp <= thisTimestamp
-              );
-
-              return (
-                <React.Fragment key={messageId}>
-                  {/* Actions that belong before this message */}
-                  {actionsBeforeThisMessage.map((action, actionIdx) => {
-                    const actionQube = selectedQubes.find(q => q.qube_id === action.qube_id);
-                    const actionColor = actionQube?.favorite_color || '#00d4ff';
-                    const actionAvatar = actionQube ? getAvatarPath(actionQube) : undefined;
-                    const actionQubeName = actionQube?.name || 'Unknown';
-
-                    return (
-                      <div key={`action-${action.timestamp}-${actionIdx}`} className="flex justify-start">
-                        <div className="max-w-[70%]">
-                          <ToolCallBubble
-                            toolName={action.action_type}
-                            input={action.parameters}
-                            result={action.result}
-                            status={action.status as 'in_progress' | 'completed' | 'failed'}
-                            accentColor={actionColor}
-                            timestamp={action.timestamp}
-                            label={actionQubeName}
-                            avatarUrl={actionAvatar}
-                          />
-                        </div>
-                      </div>
-                    );
-                  })}
-
-                  {/* The message itself */}
-                  <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-                    <div
-                      className={`max-w-[70%] rounded-lg p-3 border-2 ${
-                        isUser ? 'bg-accent-primary/20 text-text-primary border-accent-primary' : 'bg-bg-tertiary text-text-primary'
-                      }`}
-                      style={!isUser ? { borderColor: speakerColor } : undefined}
-                    >
-                      <div className="flex items-center gap-2 mb-2">
-                        {!isUser && speakerAvatarUrl && (
-                          <img
-                            src={speakerAvatarUrl.startsWith('http') ? speakerAvatarUrl : convertFileSrc(speakerAvatarUrl)}
-                            alt={msg.speaker_name}
-                            className="w-8 h-8 rounded-full object-cover border-2"
-                            style={{ borderColor: speakerColor, boxShadow: `0 0 8px ${speakerColor}60` }}
-                            onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
-                          />
-                        )}
-                        <p className="text-sm font-medium" style={{ color: isUser ? 'var(--accent-primary)' : speakerColor }}>
-                          {msg.speaker_name}
-                        </p>
-                      </div>
-                      <div className="whitespace-pre-wrap break-words">
-                        {!isUser && messageId === activeTypewriterMessageId ? (
-                          <TypewriterText
-                            text={msg.message}
-                            audioElement={audioElement}
-                            onComplete={() => {
-                              console.log('[Typewriter] Completed for:', msg.speaker_name, 'Turn:', msg.turn_number);
-                              setActiveTypewriterMessageId(null);
-                              processingMessageRef.current = null;
-                            }}
-                          />
-                        ) : (
-                          renderMessageContent(msg.message, msg.speaker_id)
-                        )}
-                      </div>
-                      <p className="text-text-tertiary text-xs mt-1">Turn {msg.turn_number}</p>
-                    </div>
-                  </div>
-                </React.Fragment>
-              );
-            })}
-
-            {/* Actions after the last message (in-progress or pending) */}
-            {actionBlocks
-              .filter(action => {
-                const lastMsgTimestamp = conversationHistory.length > 0
-                  ? (conversationHistory[conversationHistory.length - 1].timestamp || 0)
-                  : 0;
-                return action.timestamp > lastMsgTimestamp;
-              })
-              .map((action, idx) => {
-                const qube = selectedQubes.find(q => q.qube_id === action.qube_id);
-                const qubeColor = qube?.favorite_color || '#00d4ff';
-                const avatarUrl = qube ? getAvatarPath(qube) : undefined;
-                const qubeName = qube?.name || 'Unknown';
-
-                return (
-                  <div key={`trailing-action-${action.timestamp}-${idx}`} className="flex justify-start">
-                    <div className="max-w-[70%]">
-                      <ToolCallBubble
-                        toolName={action.action_type}
-                        input={action.parameters}
-                        result={action.result}
-                        status={action.status as 'in_progress' | 'completed' | 'failed'}
-                        accentColor={qubeColor}
-                        timestamp={action.timestamp}
-                        label={qubeName}
-                        avatarUrl={avatarUrl}
-                      />
-                    </div>
-                  </div>
+              // For actions, figure out which turn they belong to based on timestamp
+              // Actions appear BEFORE the qube's message (since tool calls happen before response)
+              actionBlocks.forEach(action => {
+                // Find which message this action precedes (same qube, action timestamp <= message timestamp)
+                // Both timestamps are in seconds
+                const relatedMsg = conversationHistory.find(msg =>
+                  msg.speaker_id === action.qube_id &&
+                  (msg.timestamp || 0) >= action.timestamp
                 );
-              })}
 
-            {/* Generic loading indicator for initial response */}
-            {isLoading && conversationHistory.length <= 1 && !pendingTTSMessage && (
-              <div className="flex justify-start">
-                <div className="rounded-lg px-4 py-3 border-2" style={{
-                  backgroundColor: 'var(--bg-tertiary)',
-                  borderColor: '#00d9ff',
-                }}>
-                  <div className="flex items-center gap-2">
-                    <div className="w-2 h-2 rounded-full animate-pulse" style={{
-                      backgroundColor: '#00d9ff',
-                      animationDuration: '1s'
-                    }}></div>
-                    <div className="w-2 h-2 rounded-full animate-pulse" style={{
-                      backgroundColor: '#00d9ff',
-                      animationDuration: '1s',
-                      animationDelay: '0.2s'
-                    }}></div>
-                    <div className="w-2 h-2 rounded-full animate-pulse" style={{
-                      backgroundColor: '#00d9ff',
-                      animationDuration: '1s',
-                      animationDelay: '0.4s'
-                    }}></div>
-                  </div>
-                </div>
-              </div>
-            )}
+                // If found, action belongs to that turn (but renders before the message)
+                // If not found, it's a trailing action for the next turn
+                const turnNumber = relatedMsg
+                  ? relatedMsg.turn_number - 0.5  // Sort before the message
+                  : (conversationHistory.length > 0 ? Math.max(...conversationHistory.map(m => m.turn_number)) + 0.5 : 0.5);
 
-            {/* Processing response indicator */}
-            {nextResponseStatus.stage === 'processing' && (() => {
+                timeline.push({
+                  type: 'action',
+                  data: action,
+                  turnNumber: turnNumber,
+                  timestamp: action.timestamp
+                });
+              });
+
+              // Sort by turn number (primary), then timestamp (secondary for actions within same turn)
+              timeline.sort((a, b) => {
+                if (a.turnNumber !== b.turnNumber) {
+                  return a.turnNumber - b.turnNumber;
+                }
+                // Same turn - sort by timestamp
+                return a.timestamp - b.timestamp;
+              });
+
+              return timeline.map((item, idx) => {
+                if (item.type === 'action') {
+                  const action = item.data;
+                  const actionQube = selectedQubes.find(q => q.qube_id === action.qube_id);
+                  const actionColor = actionQube?.favorite_color || '#00d4ff';
+                  const actionAvatar = actionQube ? getAvatarPath(actionQube) : undefined;
+                  const actionQubeName = actionQube?.name || 'Unknown';
+
+                  return (
+                    <div key={`action-${action.qube_id}-${action.timestamp}-${idx}`} className="flex justify-start">
+                      <div className="max-w-[70%]">
+                        <ToolCallBubble
+                          toolName={action.action_type}
+                          input={action.parameters}
+                          result={action.result}
+                          status={action.status as 'in_progress' | 'completed' | 'failed'}
+                          accentColor={actionColor}
+                          timestamp={action.timestamp}
+                          label={actionQubeName}
+                          avatarUrl={actionAvatar}
+                        />
+                      </div>
+                    </div>
+                  );
+                } else {
+                  const msg = item.data;
+                  const messageId = `${msg.conversation_id}-${msg.turn_number}`;
+                  const qube = getQubeById(msg.speaker_id);
+                  const participantInfo = getParticipantInfo(msg.speaker_id);
+                  const isUser = msg.speaker_id === userId;
+                  const speakerColor = participantInfo?.color || qube?.favorite_color || '#00d4ff';
+                  const speakerAvatarUrl = participantInfo?.avatarUrl || (qube ? getAvatarPath(qube) : undefined);
+
+                  return (
+                    <div key={`msg-${messageId}-${idx}`} className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
+                      <div
+                        className={`max-w-[70%] rounded-lg p-3 border-2 ${
+                          isUser ? 'bg-accent-primary/20 text-text-primary border-accent-primary' : 'bg-bg-tertiary text-text-primary'
+                        }`}
+                        style={!isUser ? { borderColor: speakerColor } : undefined}
+                      >
+                        <div className="flex items-center gap-2 mb-2">
+                          {!isUser && speakerAvatarUrl && (
+                            <img
+                              src={speakerAvatarUrl.startsWith('http') ? speakerAvatarUrl : convertFileSrc(speakerAvatarUrl)}
+                              alt={msg.speaker_name}
+                              className="w-8 h-8 rounded-full object-cover border-2"
+                              style={{ borderColor: speakerColor, boxShadow: `0 0 8px ${speakerColor}60` }}
+                              onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                            />
+                          )}
+                          <p className="text-sm font-medium" style={{ color: isUser ? 'var(--accent-primary)' : speakerColor }}>
+                            {msg.speaker_name}
+                          </p>
+                        </div>
+                        <div className="whitespace-pre-wrap break-words">
+                          {!isUser && messageId === activeTypewriterMessageId ? (
+                            <TypewriterText
+                              text={msg.message}
+                              audioElement={audioElement}
+                              onComplete={() => {
+                                console.log('[Typewriter] Completed for:', msg.speaker_name, 'Turn:', msg.turn_number);
+                                setActiveTypewriterMessageId(null);
+                                processingMessageRef.current = null;
+                              }}
+                            />
+                          ) : (
+                            renderMessageContent(msg.message, msg.speaker_id)
+                          )}
+                        </div>
+                        <p className="text-text-tertiary text-xs mt-1">Turn {msg.turn_number}</p>
+                      </div>
+                    </div>
+                  );
+                }
+              });
+            })()}
+
+            {/* Loading/Processing response indicator - shows when backend is processing */}
+            {/* Show when: isLoading OR stage is 'processing' OR (conversation active but nothing happening) */}
+            {/* Hide when: generating_tts (TTS indicator shows) */}
+            {(isLoading ||
+              nextResponseStatus.stage === 'processing' ||
+              (isConversationActive && shouldContinueRef.current && !activeTypewriterMessageId && !pendingTTSMessage && nextResponseStatus.stage === 'idle')
+            ) &&
+             nextResponseStatus.stage !== 'generating_tts' && (() => {
               // Get qube if we know who's responding
               const qube = nextResponseStatus.qubeId ? getQubeById(nextResponseStatus.qubeId) : null;
-              const color = qube?.favorite_color || 'var(--accent-primary)';
+              const participantInfo = nextResponseStatus.qubeId ? getParticipantInfo(nextResponseStatus.qubeId) : null;
+
+              // Use qube color if known, otherwise default cyan
+              const color = participantInfo?.color || qube?.favorite_color || '#00d9ff';
+              const speakerName = nextResponseStatus.qubeName || participantInfo?.name || qube?.name;
+              const speakerAvatarUrl = participantInfo?.avatarUrl || (qube ? getAvatarPath(qube) : undefined);
 
               return (
                 <div className="flex justify-start">
@@ -2636,11 +2355,11 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
                     borderColor: color,
                   }}>
                     <div className="flex items-center gap-3">
-                      {/* Only show avatar if we know which qube */}
-                      {qube && (
+                      {/* Show avatar if we know which qube */}
+                      {speakerAvatarUrl && (
                         <img
-                          src={getAvatarPath(qube)}
-                          alt={qube.name}
+                          src={speakerAvatarUrl.startsWith('http') ? speakerAvatarUrl : convertFileSrc(speakerAvatarUrl)}
+                          alt={speakerName || 'Processing'}
                           className="w-8 h-8 rounded-full object-cover border-2"
                           style={{
                             borderColor: color,
@@ -2653,11 +2372,11 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
                         />
                       )}
                       <div className="flex items-center gap-2">
-                        {qube && (
+                        {speakerName && (
                           <span className="text-sm font-medium" style={{
                             color: color
                           }}>
-                            {qube.name}
+                            {speakerName}
                           </span>
                         )}
                         <span className="text-xs text-text-secondary">
@@ -2764,94 +2483,59 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
 
             {/* Ready to respond indicator */}
             {nextResponseStatus.stage === 'ready' && nextResponseStatus.qubeId && (() => {
-              // Check if this is the user
-              const isUser = nextResponseStatus.qubeId === userId;
+              const qube = getQubeById(nextResponseStatus.qubeId);
+              const participantInfo = getParticipantInfo(nextResponseStatus.qubeId);
 
-              if (isUser) {
-                // User indicator - on the RIGHT side
-                return (
-                  <div className="flex justify-end">
-                    <div className="rounded-lg px-4 py-2 border-2" style={{
-                      backgroundColor: '#00d9ff20',
-                      borderColor: '#00d9ff',
-                      boxShadow: '0 0 15px #00d9ff60'
-                    }}>
-                      <div className="flex items-center gap-3">
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm font-bold" style={{
-                            color: '#00d9ff'
-                          }}>
-                            bit_faced
-                          </span>
-                          <span className="text-xs font-medium text-text-primary">
-                            response ready
-                          </span>
-                          <span className="text-lg">✓</span>
+              const speakerColor = participantInfo?.color || qube?.favorite_color || '#00d4ff';
+              const speakerName = nextResponseStatus.qubeName || participantInfo?.name || qube?.name || 'Unknown';
+              const speakerAvatarUrl = participantInfo?.avatarUrl || (qube ? getAvatarPath(qube) : undefined);
+
+              return (
+                <div className="flex justify-start">
+                  <div className="rounded-lg px-4 py-2 border-2" style={{
+                    backgroundColor: 'var(--bg-tertiary)',
+                    borderColor: speakerColor,
+                  }}>
+                    <div className="flex items-center gap-3">
+                      {speakerAvatarUrl ? (
+                        <img
+                          src={speakerAvatarUrl.startsWith('http') ? speakerAvatarUrl : convertFileSrc(speakerAvatarUrl)}
+                          alt={speakerName}
+                          className="w-8 h-8 rounded-full object-cover border-2"
+                          style={{
+                            borderColor: speakerColor,
+                          }}
+                          onError={(e) => {
+                            const target = e.target as HTMLImageElement;
+                            target.style.display = 'none';
+                          }}
+                        />
+                      ) : (
+                        <div
+                          className="w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold border-2"
+                          style={{
+                            background: `linear-gradient(135deg, ${speakerColor}60, ${speakerColor}30)`,
+                            borderColor: speakerColor,
+                            color: speakerColor,
+                          }}
+                        >
+                          {speakerName[0]}
                         </div>
+                      )}
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-medium" style={{
+                          color: speakerColor
+                        }}>
+                          {speakerName}
+                        </span>
+                        <span className="text-xs" style={{ color: speakerColor }}>
+                          ready to respond ✓
+                        </span>
                       </div>
                     </div>
                   </div>
-                );
-              } else {
-                // Qube/participant indicator
-                const qube = getQubeById(nextResponseStatus.qubeId);
-                const participantInfo = getParticipantInfo(nextResponseStatus.qubeId);
-
-                // Fall back to participant info for P2P connections
-                const speakerColor = participantInfo?.color || qube?.favorite_color || '#00d4ff';
-                const speakerName = nextResponseStatus.qubeName || participantInfo?.name || qube?.name || 'Unknown';
-                const speakerAvatarUrl = participantInfo?.avatarUrl || (qube ? getAvatarPath(qube) : undefined);
-
-                return (
-                  <div className="flex justify-start">
-                    <div className="rounded-lg px-4 py-2 border-2" style={{
-                      backgroundColor: `${speakerColor}20`,
-                      borderColor: speakerColor,
-                      boxShadow: `0 0 15px ${speakerColor}60`
-                    }}>
-                      <div className="flex items-center gap-3">
-                        {speakerAvatarUrl ? (
-                          <img
-                            src={speakerAvatarUrl.startsWith('http') ? speakerAvatarUrl : convertFileSrc(speakerAvatarUrl)}
-                            alt={speakerName}
-                            className="w-8 h-8 rounded-full object-cover border-2"
-                            style={{
-                              borderColor: speakerColor,
-                              opacity: 1
-                            }}
-                            onError={(e) => {
-                              const target = e.target as HTMLImageElement;
-                              target.style.display = 'none';
-                            }}
-                          />
-                        ) : (
-                          <div
-                            className="w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold border-2"
-                            style={{
-                              background: `linear-gradient(135deg, ${speakerColor}60, ${speakerColor}30)`,
-                              borderColor: speakerColor,
-                              color: speakerColor,
-                            }}
-                          >
-                            {speakerName[0]}
-                          </div>
-                        )}
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm font-bold" style={{
-                            color: speakerColor
-                          }}>
-                            {speakerName}
-                          </span>
-                          <span className="text-xs font-medium text-text-primary">
-                            ready to respond
-                          </span>
-                          <span className="text-lg" style={{ color: speakerColor }}>✓</span>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                );
-              }
+                </div>
+              );
             })()}
 
             {/* Error display */}

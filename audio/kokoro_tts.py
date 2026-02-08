@@ -110,7 +110,9 @@ class KokoroTTSProvider(TTSProvider):
         """Initialize Kokoro TTS provider (lazy loads model on first use)."""
         self._pipeline = None
         self._current_lang = None
-        self._lock = asyncio.Lock()
+        self._async_lock = asyncio.Lock()
+        import threading
+        self._thread_lock = threading.Lock()  # Thread-safe lock for _generate_sync
         logger.info("kokoro_tts_provider_initialized")
 
     def _get_lang_code(self, voice_config: VoiceConfig) -> str:
@@ -230,15 +232,18 @@ class KokoroTTSProvider(TTSProvider):
         Returns:
             WAV audio bytes
         """
+        import time
         import numpy as np
         import soundfile as sf
+
+        start_time = time.time()
 
         # Determine language and voice
         lang_code = self._get_lang_code(voice_config)
         voice = self._get_voice(voice_config, lang_code)
         speed = voice_config.speed if voice_config.speed else 1.0
 
-        logger.debug(
+        logger.info(
             "kokoro_generating",
             text_length=len(text),
             lang_code=lang_code,
@@ -246,38 +251,43 @@ class KokoroTTSProvider(TTSProvider):
             speed=speed
         )
 
-        # Initialize or switch pipeline if language changed
-        if self._pipeline is None or self._current_lang != lang_code:
-            logger.info("kokoro_loading_pipeline", lang_code=lang_code)
+        # Use thread lock to prevent concurrent access to shared pipeline
+        with self._thread_lock:
+            # Initialize or switch pipeline if language changed
+            if self._pipeline is None or self._current_lang != lang_code:
+                logger.info("kokoro_loading_pipeline", lang_code=lang_code)
 
-            # Suppress stdout/stderr during Kokoro initialization
-            # (it prints warnings and may run pip install on first use)
-            import warnings
-            from contextlib import redirect_stdout, redirect_stderr
-            from io import StringIO
+                # Suppress stdout/stderr during Kokoro initialization
+                # (it prints warnings and may run pip install on first use)
+                import warnings
+                from contextlib import redirect_stdout, redirect_stderr
+                from io import StringIO
 
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                # Redirect stdout/stderr to suppress pip install output
-                devnull = StringIO()
-                with redirect_stdout(devnull), redirect_stderr(devnull):
-                    from kokoro import KPipeline
-                    self._pipeline = KPipeline(lang_code=lang_code, repo_id='hexgrad/Kokoro-82M')
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    # Redirect stdout/stderr to suppress pip install output
+                    devnull = StringIO()
+                    with redirect_stdout(devnull), redirect_stderr(devnull):
+                        from kokoro import KPipeline
+                        self._pipeline = KPipeline(lang_code=lang_code, repo_id='hexgrad/Kokoro-82M')
 
-            self._current_lang = lang_code
+                self._current_lang = lang_code
+                logger.info("kokoro_pipeline_loaded", load_time_ms=int((time.time() - start_time) * 1000))
 
-        # Generate audio
-        generator = self._pipeline(
-            text,
-            voice=voice,
-            speed=speed,
-        )
+            # Generate audio
+            gen_start = time.time()
+            generator = self._pipeline(
+                text,
+                voice=voice,
+                speed=speed,
+            )
 
-        # Collect all audio chunks
-        audio_chunks = []
-        for gs, ps, audio in generator:
-            audio_chunks.append(audio)
+            # Collect all audio chunks
+            audio_chunks = []
+            for gs, ps, audio in generator:
+                audio_chunks.append(audio)
 
+        # Release lock before post-processing
         if not audio_chunks:
             logger.warning("kokoro_no_audio_generated")
             return b''
@@ -291,11 +301,15 @@ class KokoroTTSProvider(TTSProvider):
         buffer.seek(0)
         audio_bytes = buffer.read()
 
+        total_time = int((time.time() - start_time) * 1000)
+        gen_time = int((time.time() - gen_start) * 1000)
         logger.info(
             "kokoro_audio_generated",
             text_length=len(text),
             audio_size=len(audio_bytes),
-            voice=voice
+            voice=voice,
+            gen_time_ms=gen_time,
+            total_time_ms=total_time
         )
 
         return audio_bytes

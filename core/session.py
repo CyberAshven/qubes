@@ -1141,42 +1141,32 @@ class Session:
                 if total_unsummarized >= SUMMARY_THRESHOLD:
                     debug_log(f"Creating summary block for {total_unsummarized} blocks...")
                     import time as _time
-                    step_start = _time.time()
+                    parallel_start = _time.time()
 
-                    # Create SUMMARY covering ALL unsummarized blocks
+                    # Run summary generation and evaluations in PARALLEL
+                    # This significantly reduces total time from sum(all) to max(all)
+                    debug_log(f"Starting parallel: generate_summary_block, relationship_eval, self_eval...")
+                    logger.info("starting_parallel_summary_generation", block_count=total_unsummarized)
+
                     try:
-                        debug_log(f"Calling generate_summary_block...")
-                        summary_block = await self.generate_summary_block(unsummarized_blocks)
-                        summary_duration = _time.time() - step_start
-                        debug_log(f"generate_summary_block returned: block_number={summary_block.block_number if summary_block else 'None'} (took {summary_duration:.1f}s)")
+                        summary_block, relationships_affected, self_evaluation = await asyncio.gather(
+                            self.generate_summary_block(unsummarized_blocks),
+                            self._evaluate_relationships_with_ai(unsummarized_blocks),
+                            self._evaluate_self_with_ai(unsummarized_blocks)
+                        )
+                        parallel_duration = _time.time() - parallel_start
+                        debug_log(f"Parallel tasks completed in {parallel_duration:.1f}s (summary={summary_block.block_number if summary_block else 'None'}, relationships={len(relationships_affected)}, self_eval={'success' if self_evaluation else 'None'})")
+                        logger.info("parallel_summary_generation_completed", duration_seconds=parallel_duration)
                     except Exception as e:
                         import traceback
-                        debug_log(f"❌ generate_summary_block FAILED: {type(e).__name__}: {e}")
+                        debug_log(f"❌ Parallel summary generation FAILED: {type(e).__name__}: {e}")
                         debug_log(f"Traceback:\n{traceback.format_exc()}")
                         raise
 
-                    # AI-DRIVEN RELATIONSHIP EVALUATION
-                    # Evaluate relationships with AI before encrypting
-                    step_start = _time.time()
-                    logger.info("evaluating_relationships_with_ai", block_count=total_unsummarized)
-                    debug_log(f"Calling _evaluate_relationships_with_ai...")
-                    relationships_affected = await self._evaluate_relationships_with_ai(unsummarized_blocks)
-                    rel_duration = _time.time() - step_start
-                    debug_log(f"_evaluate_relationships_with_ai returned: {len(relationships_affected)} relationships (took {rel_duration:.1f}s)")
-
-                    # Store AI evaluation in SUMMARY block content
+                    # Store relationship evaluation in SUMMARY block content
                     if summary_block.content:
                         summary_block.content["relationships_affected"] = relationships_affected
                         logger.debug("relationships_stored_in_summary", participants=len(relationships_affected))
-
-                    # AI-DRIVEN SELF-EVALUATION
-                    # Evaluate own performance with AI before encrypting
-                    step_start = _time.time()
-                    logger.info("evaluating_self_with_ai", block_count=total_unsummarized)
-                    debug_log(f"Calling _evaluate_self_with_ai...")
-                    self_evaluation = await self._evaluate_self_with_ai(unsummarized_blocks)
-                    self_duration = _time.time() - step_start
-                    debug_log(f"_evaluate_self_with_ai returned: {'success' if self_evaluation else 'None'} (took {self_duration:.1f}s)")
 
                     # Store self-evaluation in SUMMARY block content
                     if summary_block.content and self_evaluation:
@@ -3110,7 +3100,11 @@ IMPORTANT: Return ONLY valid JSON, no other text."""
 
         try:
             # Load all block files from session directory
-            block_files = sorted(session_dir.glob("*.json"))
+            # Skip files starting with _ (system files like _tool_cache.json)
+            block_files = sorted([
+                f for f in session_dir.glob("*.json")
+                if not f.name.startswith("_")
+            ])
 
             if not block_files:
                 return None  # No session to recover

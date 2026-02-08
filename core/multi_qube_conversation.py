@@ -435,13 +435,13 @@ class MultiQubeConversation:
                 )
 
                 # Use asyncio.wait_for to enforce timeout
-                # If skip_tools=True, limit to 1 iteration (allows one tool call but not many)
+                # If skip_tools=True, pass max_iterations=0 to completely disable tool calling
                 response = await asyncio.wait_for(
                     next_speaker.reasoner.process_input(
                         input_message=self._build_turn_prompt(next_speaker, conversation_context),
                         sender_id=self.user_id,
                         temperature=0.7,
-                        max_iterations=1 if skip_tools else 10
+                        max_iterations=0 if skip_tools else 10
                     ),
                     timeout=ai_timeout
                 )
@@ -749,6 +749,26 @@ class MultiQubeConversation:
             # No existing task, start fresh
             self._preparation_task = asyncio.create_task(self._prepare_next_turn())
 
+        # Peek at who will speak next (for UI to show immediately)
+        # Pass current speaker's ID to exclude them from consideration
+        next_next_speaker = await self._peek_next_speaker(exclude_speaker_id=next_speaker.qube_id)
+
+        # Extract tool calls from this turn's ACTION blocks
+        tool_calls = []
+        if next_speaker.current_session:
+            for block in next_speaker.current_session.session_blocks:
+                if block.block_type == "ACTION" and block.content:
+                    # Include ACTION blocks from this turn (or recent ones without turn_number)
+                    block_turn = block.content.get("turn_number")
+                    if block_turn == self.turn_number or block_turn is None:
+                        tool_calls.append({
+                            "action_type": block.content.get("action_type"),
+                            "parameters": block.content.get("parameters"),
+                            "status": block.content.get("status", "completed"),
+                            "result": block.content.get("result"),
+                            "timestamp": block.timestamp,
+                        })
+
         # PHASE 1: Return response with progress status
         return {
             "speaker_id": next_speaker.qube_id,
@@ -766,7 +786,12 @@ class MultiQubeConversation:
                 "total_ms": total_time_ms,
                 "ai_generation_ms": ai_time_ms,
                 "distribution_ms": dist_time_ms
-            }
+            },
+            # Who will speak next (for UI to show immediately during prefetch)
+            "next_speaker_id": next_next_speaker.qube_id if next_next_speaker else None,
+            "next_speaker_name": next_next_speaker.name if next_next_speaker else None,
+            # Tool calls that happened during this turn (real-time display)
+            "tool_calls": tool_calls,
         }
 
     def lock_in_response(self, response_timestamp: int) -> None:
@@ -1092,6 +1117,45 @@ class MultiQubeConversation:
             "speaker_id": next_speaker.qube_id,
             "speaker_name": next_speaker.name
         }
+
+    async def _peek_next_speaker(self, exclude_speaker_id: str = None):
+        """
+        Peek at who will likely speak next WITHOUT changing state.
+        Used to inform the UI who's coming up during prefetch.
+
+        Args:
+            exclude_speaker_id: The current speaker's ID to exclude from consideration
+                               (since last_speaker_id might not be updated yet)
+
+        For round_robin: deterministic based on current_speaker_index
+        For open_discussion: best guess based on turn balance (no randomness)
+
+        Returns:
+            Likely next Qube to speak (may differ from actual if open_discussion)
+        """
+        # Use provided exclude_speaker_id, fall back to last_speaker_id
+        exclude_id = exclude_speaker_id or self.last_speaker_id
+
+        if self.conversation_mode == "round_robin":
+            # Deterministic - just peek at next index
+            return self.qubes[self.current_speaker_index]
+
+        elif self.conversation_mode == "open_discussion":
+            # Best guess: who has spoken least (excluding current speaker)
+            eligible = [q for q in self.qubes if q.qube_id != exclude_id]
+            if not eligible:
+                eligible = self.qubes.copy()
+
+            # Find who has spoken least
+            turn_counts = [(q, self.turn_counts.get(q.qube_id, 0)) for q in eligible]
+            min_turns = min(count for _, count in turn_counts)
+            least_spoken = [q for q, count in turn_counts if count == min_turns]
+
+            # Return first one (deterministic peek, actual selection may differ)
+            return least_spoken[0] if least_spoken else eligible[0]
+
+        else:
+            return self.qubes[self.current_speaker_index]
 
     async def _determine_next_speaker(self):
         """

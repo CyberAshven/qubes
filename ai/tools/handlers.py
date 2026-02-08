@@ -5912,7 +5912,26 @@ async def get_system_state_handler(qube, params: Dict[str, Any]) -> Dict[str, An
         get_system_state(sections=["relationships"])
     """
     try:
+        # Defensive check: ensure params is a dict (model might send malformed data)
+        if not isinstance(params, dict):
+            logger.warning(
+                "get_system_state_params_not_dict",
+                qube_id=qube.qube_id,
+                params_type=type(params).__name__,
+                params=str(params)[:200]
+            )
+            params = {}
+
         sections = params.get("sections", [])
+
+        # Ensure sections is a list
+        if not isinstance(sections, list):
+            logger.warning(
+                "get_system_state_sections_not_list",
+                qube_id=qube.qube_id,
+                sections_type=type(sections).__name__
+            )
+            sections = []
 
         # Handle "identity" as a virtual section (built from genesis block)
         include_identity = "identity" in sections if sections else True

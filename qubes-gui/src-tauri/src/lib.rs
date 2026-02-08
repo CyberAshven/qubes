@@ -21,7 +21,7 @@ static RATE_LIMITER: Mutex<Option<HashMap<String, Instant>>> = Mutex::new(None);
 fn get_rate_limit_ms(command: &str) -> Option<u64> {
     match command {
         "send_message" => Some(500),
-        "generate_speech" => Some(1000),
+        "generate_speech" => Some(100),  // Reduced from 1000ms to allow faster TTS prefetch
         "create_qube" => Some(5000),
         "anchor_session" => Some(2000),
         "analyze_image" => Some(1000),
@@ -1492,6 +1492,168 @@ fn execute_with_secrets(
     Ok((stdout, stderr))
 }
 
+/// Execute a command with secrets passed via stdin, with a timeout.
+/// Returns an error if the command doesn't complete within the timeout.
+fn execute_with_secrets_timeout(
+    mut cmd: Command,
+    secrets: HashMap<&str, &str>,
+    timeout_secs: u64,
+) -> Result<(String, String), String> {
+    use std::time::{Duration, Instant};
+    use std::thread;
+
+    // Configure stdin as piped so we can write secrets
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    // Spawn the process
+    let mut child = cmd.spawn().map_err(|e| {
+        format!("Failed to spawn backend process: {}", e)
+    })?;
+
+    // Write secrets as JSON to stdin
+    if let Some(mut stdin) = child.stdin.take() {
+        let secrets_json = serde_json::to_string(&secrets)
+            .map_err(|e| format!("Failed to serialize secrets: {}", e))?;
+        stdin
+            .write_all(secrets_json.as_bytes())
+            .map_err(|e| format!("Failed to write secrets to stdin: {}", e))?;
+        stdin
+            .write_all(b"\n")
+            .map_err(|e| format!("Failed to write newline to stdin: {}", e))?;
+        // stdin is dropped here, closing the pipe
+    }
+
+    // Poll for completion with timeout
+    let start = Instant::now();
+    let timeout = Duration::from_secs(timeout_secs);
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                // Process finished
+                let mut stdout_bytes = Vec::new();
+                let mut stderr_bytes = Vec::new();
+
+                if let Some(mut stdout) = child.stdout.take() {
+                    use std::io::Read;
+                    let _ = stdout.read_to_end(&mut stdout_bytes);
+                }
+                if let Some(mut stderr) = child.stderr.take() {
+                    use std::io::Read;
+                    let _ = stderr.read_to_end(&mut stderr_bytes);
+                }
+
+                let stdout = String::from_utf8_lossy(&stdout_bytes).to_string();
+                let stderr = String::from_utf8_lossy(&stderr_bytes).to_string();
+
+                if !status.success() {
+                    return Err(sanitize_backend_error(&stderr, "Backend"));
+                }
+
+                return Ok((stdout, stderr));
+            }
+            Ok(None) => {
+                // Still running, check timeout
+                if start.elapsed() > timeout {
+                    // Kill the process
+                    let _ = child.kill();
+                    return Err(format!(
+                        "Operation timed out after {} seconds. The backend process was terminated.",
+                        timeout_secs
+                    ));
+                }
+                // Sleep a bit before checking again
+                thread::sleep(Duration::from_millis(100));
+            }
+            Err(e) => {
+                return Err(format!("Error waiting for process: {}", e));
+            }
+        }
+    }
+}
+
+/// Execute a command with secrets, streaming stderr for tool events.
+/// Emits Tauri events for lines matching __TOOL_EVENT__ prefix.
+fn execute_with_secrets_streaming(
+    mut cmd: Command,
+    secrets: HashMap<&str, &str>,
+    app_handle: &AppHandle,
+) -> Result<(String, String), String> {
+    use std::io::{BufRead, BufReader};
+    use std::thread;
+    use std::sync::mpsc;
+
+    // Configure stdin/stdout/stderr as piped
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    // Spawn the process
+    let mut child = cmd.spawn().map_err(|e| {
+        format!("Failed to spawn backend process: {}", e)
+    })?;
+
+    // Write secrets as JSON to stdin
+    if let Some(mut stdin) = child.stdin.take() {
+        let secrets_json = serde_json::to_string(&secrets)
+            .map_err(|e| format!("Failed to serialize secrets: {}", e))?;
+        stdin
+            .write_all(secrets_json.as_bytes())
+            .map_err(|e| format!("Failed to write secrets to stdin: {}", e))?;
+        stdin
+            .write_all(b"\n")
+            .map_err(|e| format!("Failed to write newline to stdin: {}", e))?;
+        // stdin is dropped here, closing the pipe
+    }
+
+    // Take stderr and read it in a separate thread to emit tool events
+    let stderr_pipe = child.stderr.take();
+    let app_handle_clone = app_handle.clone();
+    let (stderr_tx, stderr_rx) = mpsc::channel::<String>();
+
+    let stderr_thread = thread::spawn(move || {
+        let mut stderr_lines = Vec::new();
+        if let Some(stderr) = stderr_pipe {
+            let reader = BufReader::new(stderr);
+            for line in reader.lines() {
+                if let Ok(line) = line {
+                    // Check for tool event prefix
+                    if line.starts_with("__TOOL_EVENT__") {
+                        let json_str = &line[14..]; // Skip "__TOOL_EVENT__" prefix
+                        if let Ok(event_data) = serde_json::from_str::<serde_json::Value>(json_str) {
+                            // Emit Tauri event to frontend
+                            let _ = app_handle_clone.emit("tool-call-event", &event_data);
+                        }
+                    } else {
+                        // Regular stderr line
+                        stderr_lines.push(line);
+                    }
+                }
+            }
+        }
+        stderr_tx.send(stderr_lines.join("\n")).ok();
+    });
+
+    // Wait for the process to complete
+    let output = child.wait_with_output().map_err(|e| {
+        format!("Failed to wait for backend process: {}", e)
+    })?;
+
+    // Wait for stderr thread to finish
+    let _ = stderr_thread.join();
+    let stderr = stderr_rx.recv().unwrap_or_default();
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+
+    if !output.status.success() {
+        return Err(sanitize_backend_error(&stderr, "Backend"));
+    }
+
+    Ok((stdout, stderr))
+}
+
 // =============================================================================
 // EVENT WATCHER COMMANDS
 // =============================================================================
@@ -2880,7 +3042,8 @@ async fn reset_qube(user_id: String, qube_id: String, password: String) -> Resul
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    // Use timeout version (30 seconds) to prevent indefinite hangs
+    let (stdout, _stderr) = execute_with_secrets_timeout(cmd, secrets, 30)?;
 
     let reset_response: DeleteResponse = serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
@@ -2973,6 +3136,7 @@ async fn analyze_image(user_id: String, qube_id: String, image_base64: String, u
 
 #[tauri::command]
 async fn start_multi_qube_conversation(
+    app_handle: AppHandle,
     user_id: String,
     qube_ids_str: String,
     initial_prompt: String,
@@ -2993,7 +3157,8 @@ async fn start_multi_qube_conversation(
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    // Use streaming execution to emit tool call events in real-time
+    let (stdout, _stderr) = execute_with_secrets_streaming(cmd, secrets, &app_handle)?;
 
     let response: serde_json::Value = serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
@@ -3026,10 +3191,12 @@ async fn get_next_speaker(
 
 #[tauri::command]
 async fn continue_multi_qube_conversation(
+    app_handle: AppHandle,
     user_id: String,
     conversation_id: String,
     password: String,
     skip_tools: Option<bool>,
+    participant_ids: Option<String>,  // JSON array of participant qube IDs (optimization to skip scanning all qubes)
 ) -> Result<serde_json::Value, String> {
     let mut cmd = prepare_backend_command()?;
     cmd.arg("continue-multi-qube-conversation")
@@ -3039,13 +3206,21 @@ async fn continue_multi_qube_conversation(
     // Add skip_tools flag if specified (for faster prefetch without tool calls)
     if let Some(skip) = skip_tools {
         cmd.arg(if skip { "true" } else { "false" });
+    } else {
+        cmd.arg("false");  // Need placeholder so participant_ids is in right position
+    }
+
+    // Add participant_ids if provided (skips scanning all qubes)
+    if let Some(ref ids) = participant_ids {
+        cmd.arg(ids);
     }
 
     // Pass password via stdin (security)
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    // Use streaming execution to emit tool call events in real-time
+    let (stdout, _stderr) = execute_with_secrets_streaming(cmd, secrets, &app_handle)?;
 
     let response: serde_json::Value = serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
@@ -3080,6 +3255,7 @@ async fn run_background_turns(
 
 #[tauri::command]
 async fn inject_multi_qube_user_message(
+    app_handle: AppHandle,
     user_id: String,
     conversation_id: String,
     message: String,
@@ -3105,7 +3281,8 @@ async fn inject_multi_qube_user_message(
             .arg(&conversation_id)
             .arg(format!("@file:{}", temp_file.to_str().unwrap()));
 
-        let result = execute_with_secrets(cmd, secrets);
+        // Use streaming execution to emit tool call events in real-time
+        let result = execute_with_secrets_streaming(cmd, secrets, &app_handle);
 
         // Always clean up temp file, even on error
         let _ = fs::remove_file(&temp_file);
@@ -3124,7 +3301,8 @@ async fn inject_multi_qube_user_message(
             .arg(&conversation_id)
             .arg(&message);
 
-        let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+        // Use streaming execution to emit tool call events in real-time
+        let (stdout, _stderr) = execute_with_secrets_streaming(cmd, secrets, &app_handle)?;
 
         let response: serde_json::Value = serde_json::from_str(&stdout)
             .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
@@ -3139,12 +3317,18 @@ async fn lock_in_multi_qube_response(
     conversation_id: String,
     timestamp: i64,
     password: String,
+    participant_ids: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let mut cmd = prepare_backend_command()?;
     cmd.arg("lock-in-multi-qube-response")
         .arg(&user_id)
         .arg(&conversation_id)
         .arg(timestamp.to_string());
+
+    // Add participant_ids if provided (optimization to skip scanning all qubes)
+    if let Some(ids) = participant_ids {
+        cmd.arg("--participant-ids").arg(&ids);
+    }
 
     // Pass password via stdin (security)
     let mut secrets = HashMap::new();

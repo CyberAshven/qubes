@@ -286,15 +286,16 @@ class GeminiTTS(TTSProvider):
         import aiohttp
         import asyncio
         import base64
+        import time
 
         max_retries = 3
         retry_delays = [1, 2, 4]  # Exponential backoff: 1s, 2s, 4s
+        start_time = time.time()
 
-        logger.debug(
-            "tts_synthesizing",
-            provider="gemini",
+        logger.info(
+            "gemini_tts_starting",
             voice=voice_config.voice_id,
-            length=len(text)
+            text_length=len(text)
         )
 
         # Build request
@@ -333,7 +334,9 @@ class GeminiTTS(TTSProvider):
                 # Record start
                 MetricsRecorder.record_ai_api_call("gemini_tts", "gemini-2.5-flash-preview-tts", "started")
 
-                async with aiohttp.ClientSession() as session:
+                # Add timeout to prevent hanging (30 seconds should be plenty for TTS)
+                timeout = aiohttp.ClientTimeout(total=30)
+                async with aiohttp.ClientSession(timeout=timeout) as session:
                     async with session.post(url, headers=headers, json=payload) as response:
                         if response.status != 200:
                             error_text = await response.text()
@@ -371,12 +374,13 @@ class GeminiTTS(TTSProvider):
 
                 # Record success
                 MetricsRecorder.record_ai_api_call("gemini_tts", "gemini-2.5-flash-preview-tts", "success")
+                elapsed_ms = (time.time() - start_time) * 1000
 
                 logger.info(
-                    "tts_completed",
-                    provider="gemini",
+                    "gemini_tts_completed",
                     voice=voice_name,
-                    chars=len(text)
+                    text_length=len(text),
+                    elapsed_ms=int(elapsed_ms)
                 )
                 return  # Success - exit the retry loop
 
