@@ -253,7 +253,7 @@ function App() {
         perplexity: 'perplexity',
         venice: 'venice',
         nanogpt: 'nanogpt',
-        pinata: 'pinata',
+        pinata: 'pinata_jwt',  // Backend field is pinata_jwt
       };
 
       for (const [key, provider] of Object.entries(keyMapping)) {
