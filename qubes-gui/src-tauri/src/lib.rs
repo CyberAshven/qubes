@@ -5791,10 +5791,19 @@ async fn check_first_run() -> Result<FirstRunResponse, String> {
         cmd.arg(&bridge_path);
     }
 
-    let output = cmd
+    let output = match cmd
         .arg("check-first-run")
-        .output()
-        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+        .output() {
+        Ok(output) => output,
+        Err(e) => {
+            eprintln!("[check_first_run] Failed to execute backend: {}", e);
+            // If backend can't run, assume first run so user sees setup wizard
+            return Ok(FirstRunResponse {
+                is_first_run: true,
+                users: vec![],
+            });
+        }
+    };
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
 

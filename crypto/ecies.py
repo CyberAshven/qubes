@@ -359,9 +359,12 @@ def public_key_to_cashaddr(public_key: ec.EllipticCurvePublicKey, network: str =
 
     # SHA256 then RIPEMD160
     sha256_hash = hashlib.sha256(pubkey_bytes).digest()
-    ripemd160 = hashlib.new('ripemd160')
-    ripemd160.update(sha256_hash)
-    pubkey_hash = ripemd160.digest()
+    try:
+        ripemd160_hash = hashlib.new('ripemd160', sha256_hash, usedforsecurity=False).digest()
+    except (ValueError, TypeError):
+        from bitcash._ripemd160 import ripemd160 as _ripemd160
+        ripemd160_hash = _ripemd160(sha256_hash)
+    pubkey_hash = ripemd160_hash
 
     # Convert to cashaddr format
     # Using simple base32 encoding (full cashaddr implementation is more complex)

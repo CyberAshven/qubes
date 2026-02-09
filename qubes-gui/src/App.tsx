@@ -73,8 +73,9 @@ function App() {
         setIsFirstRun(response.is_first_run);
       } catch (err) {
         console.error('Failed to check first run:', err);
-        // If check fails, assume not first run (show login)
-        setIsFirstRun(false);
+        // If check fails, assume first run (show wizard) - better to let user
+        // create an account than to show login for a nonexistent account
+        setIsFirstRun(true);
       } finally {
         setCheckingFirstRun(false);
       }

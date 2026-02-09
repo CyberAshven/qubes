@@ -80,7 +80,12 @@ def double_sha256(data: bytes) -> bytes:
 def hash160(data: bytes) -> bytes:
     """HASH160 = RIPEMD160(SHA256(data)) - used for P2SH address"""
     sha = hashlib.sha256(data).digest()
-    ripemd = hashlib.new('ripemd160', sha).digest()
+    try:
+        ripemd = hashlib.new('ripemd160', sha, usedforsecurity=False).digest()
+    except (ValueError, TypeError):
+        # Fallback: pure Python RIPEMD-160 (for Linux with OpenSSL 3.0+ legacy disabled)
+        from bitcash._ripemd160 import ripemd160
+        ripemd = ripemd160(sha)
     return ripemd
 
 
