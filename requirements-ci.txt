@@ -1,14 +1,20 @@
-# Minimal requirements for CI builds (gui_bridge.py dependencies only)
-# Full requirements.txt has packages that don't build cleanly in CI
+# Requirements for CI/PyInstaller builds
+# Heavy optional packages (torch, kokoro, faiss, sentence-transformers) are excluded
+# since they're too large to bundle and only needed for optional local AI features.
 
 # Core
 pydantic>=2.0.0
 pyyaml>=6.0
 python-dotenv>=1.0.0
+colorama>=0.4.6             # Terminal colors (transitive dep, explicitly needed for PyInstaller)
 
-# Cryptography
+# Cryptography & Blockchain
 cryptography>=41.0.0
 ecdsa>=0.18.0
+bitcash>=0.6.0              # Bitcoin Cash transactions (NFT minting, wallet)
+
+# Games
+chess>=1.9.0                # Chess game engine
 
 # Logging
 structlog>=24.1.0
@@ -24,8 +30,10 @@ openai>=1.0.0
 anthropic>=0.8.0
 httpx>=0.27.0
 
-# Async
+# Networking
 aiohttp>=3.8.0
+requests>=2.31.0            # HTTP requests (balance checking, BCMR registry)
+websockets>=12.0            # WebSocket connections (P2P networking, Electrum)
 
 # CLI
 typer>=0.9.0
@@ -35,14 +43,23 @@ rich>=13.0.0
 beautifulsoup4>=4.12.0
 
 # Audio/TTS
-sounddevice>=0.4.6          # Cross-platform audio playback (more reliable than pyaudio)
+sounddevice>=0.4.6          # Cross-platform audio playback
+numpy>=1.24.0               # Audio data processing (sounddevice/pydub dependency)
 pydub>=0.25.1               # Audio format conversion
+pyaudio>=0.2.13             # Microphone recording
 elevenlabs>=1.0.0           # ElevenLabs TTS (cloud)
 google-cloud-texttospeech>=2.14.0  # Google Cloud TTS
+
+# Document processing
+Pillow>=10.0.0              # Image processing (document handler)
+PyMuPDF>=1.23.0             # PDF text extraction
 
 # Google AI
 google-genai>=1.0.0         # Gemini models
 
-# Monitoring & Resilience (needed for tests)
+# Timezone
+pytz>=2023.3                # Timezone fallback (zoneinfo fails in PyInstaller bundles)
+
+# Monitoring & Resilience
 prometheus_client>=0.17.0   # Metrics
 pybreaker>=1.0.0            # Circuit breaker

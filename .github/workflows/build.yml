@@ -161,7 +161,23 @@ jobs:
         run: |
           cd qubes-gui/src-tauri
           New-Item -ItemType Directory -Force -Path binaries
-          pyinstaller --onefile --noconsole --name qubes-backend --distpath binaries ../../gui_bridge.py
+          pyinstaller --onefile --noconsole --name qubes-backend `
+            --hidden-import chess `
+            --hidden-import bitcash `
+            --hidden-import bitcash._ripemd160 `
+            --hidden-import requests `
+            --hidden-import websockets `
+            --hidden-import numpy `
+            --hidden-import PIL `
+            --hidden-import fitz `
+            --hidden-import pyaudio `
+            --hidden-import pytz `
+            --hidden-import colorama `
+            --hidden-import bs4 `
+            --hidden-import sounddevice `
+            --hidden-import pydub `
+            --hidden-import elevenlabs `
+            --distpath binaries ../../gui_bridge.py
           # Rename to target-triple format for Tauri sidecar
           Move-Item -Force "binaries/qubes-backend.exe" "binaries/qubes-backend-${{ matrix.target }}.exe"
 
@@ -170,7 +186,23 @@ jobs:
         run: |
           cd qubes-gui/src-tauri
           mkdir -p binaries
-          pyinstaller --onefile --noconsole --name qubes-backend --distpath binaries ../../gui_bridge.py
+          pyinstaller --onefile --noconsole --name qubes-backend \
+            --hidden-import chess \
+            --hidden-import bitcash \
+            --hidden-import bitcash._ripemd160 \
+            --hidden-import requests \
+            --hidden-import websockets \
+            --hidden-import numpy \
+            --hidden-import PIL \
+            --hidden-import fitz \
+            --hidden-import pyaudio \
+            --hidden-import pytz \
+            --hidden-import colorama \
+            --hidden-import bs4 \
+            --hidden-import sounddevice \
+            --hidden-import pydub \
+            --hidden-import elevenlabs \
+            --distpath binaries ../../gui_bridge.py
           # Rename to target-triple format for Tauri sidecar
           mv binaries/qubes-backend "binaries/qubes-backend-${{ matrix.target }}"
 

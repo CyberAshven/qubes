@@ -6,7 +6,12 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[],
-    hiddenimports=['chess', 'bitcash._ripemd160'],
+    hiddenimports=[
+        'chess', 'bitcash', 'bitcash._ripemd160',
+        'requests', 'websockets', 'numpy', 'PIL', 'fitz',
+        'pyaudio', 'pytz', 'colorama', 'bs4', 'sounddevice',
+        'pydub', 'elevenlabs',
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
