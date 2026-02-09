@@ -12,6 +12,7 @@ import { useChainState } from '../../contexts/ChainStateContext';
 
 // Helper to get skill name from ID
 const getSkillName = (skillId: string): string => {
+  if (!skillId) return 'Unknown Skill';
   for (const skills of Object.values(SKILL_DEFINITIONS)) {
     const skill = skills.find(s => s.id === skillId);
     if (skill?.name) return skill.name;
@@ -66,7 +67,7 @@ const ExpandableSkillCategory: React.FC<{ category: any }> = ({ category }) => {
   // Get skills that have XP > 0 for the preview
   const skillsWithXP = (category.skills || []).filter((s: any) => s.xp > 0);
   const xpPreview = skillsWithXP.length > 0
-    ? skillsWithXP.slice(0, 3).map((s: any) => `${getSkillName(s.skill_id) || s.name}: ${s.xp}`).join(', ')
+    ? skillsWithXP.slice(0, 3).map((s: any) => `${getSkillName(s.skill_id || s.id) || s.name}: ${s.xp}`).join(', ')
     : null;
 
   return (
@@ -100,7 +101,7 @@ const ExpandableSkillCategory: React.FC<{ category: any }> = ({ category }) => {
         <div className="border-t border-glass-border">
           {category.skills.map((skill: any, idx: number) => (
             <div
-              key={skill.skill_id || idx}
+              key={skill.skill_id || skill.id || idx}
               className={`flex items-center justify-between px-4 py-2 text-sm ${
                 idx % 2 === 0 ? 'bg-glass-bg/10' : ''
               } ${!skill.unlocked ? 'opacity-50' : ''}`}
@@ -108,7 +109,7 @@ const ExpandableSkillCategory: React.FC<{ category: any }> = ({ category }) => {
               <span className="flex items-center gap-2">
                 <span className="text-xs">{TIER_ICONS[skill.tier] || '🌙'}</span>
                 <span className={skill.unlocked ? 'text-text-primary' : 'text-text-tertiary'}>
-                  {getSkillName(skill.skill_id) || skill.name}
+                  {getSkillName(skill.skill_id || skill.id) || skill.name}
                 </span>
                 {skill.tool_unlock && (
                   <span className="text-xs px-1.5 py-0.5 bg-purple-500/20 text-purple-400 rounded" title={`Unlocks: ${skill.tool_unlock}`}>

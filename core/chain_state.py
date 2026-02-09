@@ -3843,12 +3843,18 @@ class ChainState:
                 result["qube_profile"] = self.get_qube_profile_summary()
             elif section == "relationships":
                 # Include clearance_settings with relationships
-                rel_data = self.state.get("relationships", {}).copy()
-                result["relationships"] = rel_data
+                rel_data = self.state.get("relationships", {})
+                result["relationships"] = rel_data.copy() if isinstance(rel_data, dict) else {}
             else:
                 data = self.state.get(section)
                 if data is not None:
-                    result[section] = data.copy() if isinstance(data, dict) else data
+                    if isinstance(data, dict):
+                        result[section] = data.copy()
+                    elif isinstance(data, list):
+                        # Corrupted data - wrap list in dict to prevent .get() errors
+                        result[section] = {"data": data}
+                    else:
+                        result[section] = data
 
         return result
 

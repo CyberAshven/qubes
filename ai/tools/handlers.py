@@ -348,20 +348,28 @@ async def get_skill_tree_handler(qube, params: Dict[str, Any]) -> Dict[str, Any]
     """
     try:
         # Get current skill progress from chain_state
-        unlocked_skills = []
+        unlocked_skill_ids = []
         skill_xp = {}
 
         if hasattr(qube, 'chain_state') and qube.chain_state:
             skills_data = qube.chain_state.state.get("skills", {})
-            unlocked_skills = skills_data.get("unlocked", [])
-            # Build XP map from any stored XP data
-            for skill_id in unlocked_skills:
-                skill_xp[skill_id] = skills_data.get("xp", {}).get(skill_id, 0)
+            unlocked_list = skills_data.get("unlocked", [])
+            # unlocked is a list of dicts: [{id, xp, level, ...}, ...]
+            for skill_entry in unlocked_list:
+                if isinstance(skill_entry, dict):
+                    sid = skill_entry.get("id", "")
+                    if sid:
+                        unlocked_skill_ids.append(sid)
+                        skill_xp[sid] = skill_entry.get("xp", 0)
+                elif isinstance(skill_entry, str):
+                    # Legacy: list of skill ID strings
+                    unlocked_skill_ids.append(skill_entry)
+                    skill_xp[skill_entry] = skills_data.get("xp", {}).get(skill_entry, 0)
 
         # Build the response with progress info
         categories_with_progress = []
         total_skills = 0
-        unlocked_count = len(unlocked_skills)
+        unlocked_count = len(unlocked_skill_ids)
 
         for category in SKILL_CATEGORIES:
             category_skills = SKILL_TREE.get(category["id"], [])
@@ -376,7 +384,7 @@ async def get_skill_tree_handler(qube, params: Dict[str, Any]) -> Dict[str, Any]
                     "icon": skill.get("icon", "⭐"),
                     "xp_required": skill["xp_required"],
                     "current_xp": skill_xp.get(skill["id"], 0),
-                    "unlocked": skill["id"] in unlocked_skills or skill["node_type"] == "sun",
+                    "unlocked": skill["id"] in unlocked_skill_ids or skill["node_type"] == "sun",
                     "parent": skill.get("parent"),
                     "tool_unlock": skill.get("tool_unlock"),
                 }
@@ -2178,17 +2186,44 @@ def register_default_tools(registry: ToolRegistry) -> None:
         handler=lambda params: get_system_state_handler(qube, params)
     ))
 
-    # Update System State - unified write access to Qube state
+    # Update System State - unified write access to Qube state (supports batch)
     registry.register(ToolDefinition(
         name="update_system_state",
-        description="Update your state data. Use this to remember things about your owner, update your mood, track skills, or modify settings. Replaces remember_about_owner for storing owner information.",
+        description="Update your state data. Use this to remember things about your owner, update your mood, track skills, or modify settings. Supports BATCH updates - use the 'updates' array to store multiple things in a single call instead of calling this tool repeatedly.",
         parameters={
             "type": "object",
             "properties": {
+                "updates": {
+                    "type": "array",
+                    "description": "Array of updates to apply in batch. Each item has section, path, value, and optional operation. PREFERRED over single-update params when storing multiple things.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "section": {
+                                "type": "string",
+                                "enum": ["owner_info", "relationships", "mood", "skills", "settings"],
+                                "description": "Section to update"
+                            },
+                            "path": {
+                                "type": "string",
+                                "description": "Path within section (e.g., 'personal.interests', 'current_mood')"
+                            },
+                            "value": {
+                                "description": "Value to set"
+                            },
+                            "operation": {
+                                "type": "string",
+                                "enum": ["set", "delete"],
+                                "default": "set"
+                            }
+                        },
+                        "required": ["section", "path", "value"]
+                    }
+                },
                 "section": {
                     "type": "string",
                     "enum": ["owner_info", "relationships", "mood", "skills", "settings"],
-                    "description": "Section to update"
+                    "description": "Section to update (for single update)"
                 },
                 "path": {
                     "type": "string",
@@ -2204,7 +2239,7 @@ def register_default_tools(registry: ToolRegistry) -> None:
                     "description": "Operation: 'set' to add/update, 'delete' to remove"
                 }
             },
-            "required": ["section", "path", "value"]
+            "required": []
         },
         handler=lambda params: update_system_state_handler(qube, params)
     ))
@@ -6003,6 +6038,12 @@ async def get_system_state_handler(qube, params: Dict[str, Any]) -> Dict[str, An
             # Also provide as 'identity' for AI tool compatibility
             data["identity"] = data["genesis_identity"]
 
+        # Defensive: ensure all sections are dicts (corrupted data may have lists)
+        for key in list(data.keys()):
+            if data[key] is not None and not isinstance(data[key], dict):
+                logger.warning("get_system_state_section_not_dict", section=key, type=type(data[key]).__name__)
+                data[key] = {}
+
         # Post-process settings section
         if "settings" in data:
             # Convert model lock flags to a single model_mode field
@@ -6187,14 +6228,17 @@ async def get_system_state_handler(qube, params: Dict[str, Any]) -> Dict[str, An
         if "skills" in data:
             skills_section = data["skills"]
             if isinstance(skills_section, dict):
-                # Chain state stores skills with XP in "skill_xp" dict: {skill_id: {xp, level}}
+                # Chain state stores skills in "unlocked" list: [{id, xp, level, ...}, ...]
+                # Also check legacy "skill_xp" dict format: {skill_id: {xp, level}}
+                unlocked_list = skills_section.get("unlocked", [])
                 skill_xp_data = skills_section.get("skill_xp", {})
                 total_xp = skills_section.get("total_xp", 0)
 
-                # Get skill definitions for category info
+                # Get skill definitions for category info (keyed by skill ID)
                 try:
                     from utils.skill_definitions import generate_all_skills
-                    skill_definitions = generate_all_skills()
+                    all_skills = generate_all_skills()
+                    skill_definitions = {s["id"]: s for s in all_skills if isinstance(s, dict) and "id" in s}
                 except Exception:
                     skill_definitions = {}
 
@@ -6202,42 +6246,82 @@ async def get_system_state_handler(qube, params: Dict[str, Any]) -> Dict[str, An
                 categories_map: Dict[str, Dict[str, Any]] = {}
                 skills_with_xp = []
 
-                for skill_id, xp_data in skill_xp_data.items():
-                    if not isinstance(xp_data, dict):
-                        continue
-                    xp = xp_data.get("xp", 0)
-                    level = xp_data.get("level", 0)
-                    if xp <= 0:
-                        continue  # Skip skills with no XP
+                # Primary format: "unlocked" list of skill dicts
+                if isinstance(unlocked_list, list) and len(unlocked_list) > 0:
+                    for skill_data in unlocked_list:
+                        if not isinstance(skill_data, dict):
+                            continue
+                        skill_id = skill_data.get("id", "")
+                        if not skill_id:
+                            continue
+                        xp = skill_data.get("xp", 0)
+                        level = skill_data.get("level", 0)
+                        if xp <= 0:
+                            continue
 
-                    # Get skill definition for category and metadata
-                    skill_def = skill_definitions.get(skill_id, {})
-                    category = skill_def.get("category", "unknown")
+                        skill_def = skill_definitions.get(skill_id, {})
+                        category = skill_def.get("category", "unknown")
 
-                    skill_entry = {
-                        "id": skill_id,
-                        "name": skill_def.get("name", skill_id.replace("_", " ").title()),
-                        "description": skill_def.get("description", ""),
-                        "xp": xp,
-                        "level": level,
-                        "is_unlocked": True,
-                        "tier": "expert" if level >= 75 else "advanced" if level >= 50 else "intermediate" if level >= 25 else "novice",
-                        "parent_skill": skill_def.get("parentSkill"),
-                        "tool_unlock": skill_def.get("toolCallReward"),
-                        "category": category
-                    }
-                    skills_with_xp.append(skill_entry)
-
-                    # Group by category
-                    if category not in categories_map:
-                        categories_map[category] = {
-                            "category_id": category,
-                            "category_name": category.replace("_", " ").title(),
-                            "total_xp": 0,
-                            "skills": []
+                        skill_entry = {
+                            "id": skill_id,
+                            "name": skill_def.get("name", skill_id.replace("_", " ").title()),
+                            "description": skill_def.get("description", ""),
+                            "xp": xp,
+                            "level": level,
+                            "is_unlocked": True,
+                            "tier": "expert" if level >= 75 else "advanced" if level >= 50 else "intermediate" if level >= 25 else "novice",
+                            "parent_skill": skill_def.get("parentSkill"),
+                            "tool_unlock": skill_def.get("toolCallReward"),
+                            "category": category
                         }
-                    categories_map[category]["skills"].append(skill_entry)
-                    categories_map[category]["total_xp"] += xp
+                        skills_with_xp.append(skill_entry)
+
+                        if category not in categories_map:
+                            categories_map[category] = {
+                                "category_id": category,
+                                "category_name": category.replace("_", " ").title(),
+                                "total_xp": 0,
+                                "skills": []
+                            }
+                        categories_map[category]["skills"].append(skill_entry)
+                        categories_map[category]["total_xp"] += xp
+
+                # Fallback: legacy "skill_xp" dict format
+                elif isinstance(skill_xp_data, dict) and len(skill_xp_data) > 0:
+                    for skill_id, xp_data in skill_xp_data.items():
+                        if not isinstance(xp_data, dict):
+                            continue
+                        xp = xp_data.get("xp", 0)
+                        level = xp_data.get("level", 0)
+                        if xp <= 0:
+                            continue
+
+                        skill_def = skill_definitions.get(skill_id, {})
+                        category = skill_def.get("category", "unknown")
+
+                        skill_entry = {
+                            "id": skill_id,
+                            "name": skill_def.get("name", skill_id.replace("_", " ").title()),
+                            "description": skill_def.get("description", ""),
+                            "xp": xp,
+                            "level": level,
+                            "is_unlocked": True,
+                            "tier": "expert" if level >= 75 else "advanced" if level >= 50 else "intermediate" if level >= 25 else "novice",
+                            "parent_skill": skill_def.get("parentSkill"),
+                            "tool_unlock": skill_def.get("toolCallReward"),
+                            "category": category
+                        }
+                        skills_with_xp.append(skill_entry)
+
+                        if category not in categories_map:
+                            categories_map[category] = {
+                                "category_id": category,
+                                "category_name": category.replace("_", " ").title(),
+                                "total_xp": 0,
+                                "skills": []
+                            }
+                        categories_map[category]["skills"].append(skill_entry)
+                        categories_map[category]["total_xp"] += xp
 
                 # Format for GUI: totals wrapper + categories dict
                 data["skills"] = {
@@ -6316,69 +6400,67 @@ async def get_system_state_handler(qube, params: Dict[str, Any]) -> Dict[str, An
 async def update_system_state_handler(qube, params: Dict[str, Any]) -> Dict[str, Any]:
     """
     Update chain_state data - modify the single source of truth for Qube information.
-
-    This unified tool replaces individual tools like remember_about_owner, etc.
-    Use this to update owner info, relationships, mood, skills, and settings.
+    Supports both single updates and batch updates.
 
     Args:
-        params: {
-            "section": str - Section to update. Valid sections:
-                - "owner_info" - Information about owner
-                - "qube_profile" - Your personality, traits, preferences, goals
-                - "relationships" - Relationship data and clearance settings
-                - "mood" - Mood, energy, stress levels
-                - "skills" - Skill unlocks and XP
-                - "settings" - Qube settings
-
-            "path": str - Dot-notation path within section. Examples:
-                - owner_info: "standard.name", "preferences.favorite_color", "work_projects.current_task"
-                - qube_profile: "preferences.favorite_song", "traits.personality_type", "goals.current_goal"
-                - relationships: "entities.{entity_id}", "clearance_settings.custom_profiles.trusted"
-                - mood: "current_mood", "energy_level", "stress_level"
-                - skills: "{skill_id}"
-                - settings: "{setting_key}"
-
-            "value": any - Value to set. For owner_info/qube_profile, can be:
-                - string: Just the value (uses default sensitivity)
-                - dict: {"value": "...", "sensitivity": "public|private|secret"}
-
-            "operation": str (optional) - "set" (default) or "delete"
-        }
+        params: Either single update or batch:
+            Single: {"section": str, "path": str, "value": any, "operation": str}
+            Batch:  {"updates": [{"section": str, "path": str, "value": any, "operation": str}, ...]}
 
     Returns:
-        {"success": bool, "message": str}
-
-    Examples:
-        # Remember owner's name
-        {"section": "owner_info", "path": "standard.name", "value": "John"}
-
-        # Remember owner's favorite color (with custom sensitivity)
-        {"section": "owner_info", "path": "preferences.favorite_color",
-         "value": {"value": "blue", "sensitivity": "public"}}
-
-        # Create custom section for work projects
-        {"section": "owner_info", "path": "work_projects.current_task",
-         "value": "Building the metaverse"}
-
-        # Set my favorite song (qube profile)
-        {"section": "qube_profile", "path": "preferences.favorite_song",
-         "value": "Master of Puppets by Metallica"}
-
-        # Set my personality type
-        {"section": "qube_profile", "path": "traits.personality_type",
-         "value": "Curious and analytical with dry humor"}
-
-        # Create custom category in my profile
-        {"section": "qube_profile", "path": "custom_sections.music_opinions.metal",
-         "value": "I find progressive metal's complexity fascinating"}
-
-        # Update mood
-        {"section": "mood", "path": "current_mood", "value": "happy"}
-
-        # Unlock a skill
-        {"section": "skills", "path": "creative_writing", "value": 100}
+        Single: {"success": bool, "message": str}
+        Batch:  {"success": bool, "results": [...], "summary": str}
     """
     try:
+        updates = params.get("updates")
+
+        # Batch mode
+        if updates and isinstance(updates, list):
+            results = []
+            succeeded = 0
+            failed = 0
+
+            for update in updates:
+                section = update.get("section")
+                path = update.get("path")
+                value = update.get("value")
+                operation = update.get("operation", "set")
+
+                if not section or not path:
+                    results.append({"success": False, "error": f"Missing section or path"})
+                    failed += 1
+                    continue
+
+                try:
+                    result = qube.chain_state.update_section(
+                        section=section,
+                        path=path,
+                        value=value,
+                        operation=operation
+                    )
+                    results.append(result)
+                    if result.get("success"):
+                        succeeded += 1
+                        logger.info(
+                            "chain_state_updated",
+                            qube_id=qube.qube_id,
+                            section=section,
+                            path=path,
+                            operation=operation
+                        )
+                    else:
+                        failed += 1
+                except Exception as e:
+                    results.append({"success": False, "error": str(e)})
+                    failed += 1
+
+            return {
+                "success": failed == 0,
+                "summary": f"Batch update: {succeeded} succeeded, {failed} failed out of {len(updates)} total",
+                "results": results
+            }
+
+        # Single update mode (backward compatible)
         section = params.get("section")
         path = params.get("path")
         value = params.get("value")
@@ -6386,11 +6468,10 @@ async def update_system_state_handler(qube, params: Dict[str, Any]) -> Dict[str,
 
         if not section:
             return {
-                "error": "Section is required",
+                "error": "Section is required. Use 'updates' array for batch or provide 'section', 'path', 'value' for single update.",
                 "success": False
             }
 
-        # Use chain_state's unified update method
         result = qube.chain_state.update_section(
             section=section,
             path=path,

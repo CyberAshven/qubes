@@ -73,6 +73,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
     result: any;
     status: string;
   }>>([]);
+  const chatClearedAtRef = useRef<number>(0);  // Timestamp when chat was last cleared (Escape)
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);  // Scroll container for smart scroll
   const isUserAtBottomRef = useRef<boolean>(true);  // Track if user is at bottom (use ref to avoid re-renders)
@@ -802,6 +803,9 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
     const handleEscapeKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && selectedQubes.length > 0) {
         clearMessages(selectedQubes[0].qube_id);
+        setCompletedActionBlocks([]);
+        setActiveToolCalls([]);
+        chatClearedAtRef.current = Date.now();
         setError(null);
         setLastResponseText('');
       }
@@ -1471,11 +1475,14 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
           const permanentBlocks = result.permanent_blocks || [];
           const combinedBlocks = [...sessionBlocks, ...permanentBlocks];
 
+          const pollClearedAt = chatClearedAtRef.current;
           const allActionBlocks = combinedBlocks
             .filter((b: any) =>
               b.block_type === 'ACTION' &&
               b.content?.action_type &&
-              b.content?.action_type !== 'process_document'
+              b.content?.action_type !== 'process_document' &&
+              // Skip blocks from before chat was cleared
+              (pollClearedAt === 0 || (b.timestamp * 1000) > pollClearedAt)
             )
             .map((b: any) => ({
               action_type: b.content.action_type,
@@ -1538,11 +1545,14 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
         const permanentBlocks = result?.permanent_blocks || [];
         const allBlocks = [...sessionBlocks, ...permanentBlocks];
 
+        const clearedAt = chatClearedAtRef.current;
         const allActionBlocks = allBlocks
           .filter((b: any) =>
             b.block_type === 'ACTION' &&
             b.content?.action_type &&
-            b.content?.action_type !== 'process_document'
+            b.content?.action_type !== 'process_document' &&
+            // Skip blocks from before chat was cleared
+            (clearedAt === 0 || (b.timestamp * 1000) > clearedAt)
           )
           .map((b: any) => ({
             action_type: b.content.action_type,
