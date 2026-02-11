@@ -8,6 +8,8 @@ a = Analysis(
     datas=[],
     hiddenimports=[
         'chess', 'bitcash', 'bitcash._ripemd160',
+        'coincurve', 'coincurve._cffi_backend',
+        'cffi', '_cffi_backend',
         'requests', 'websockets', 'numpy', 'PIL', 'fitz',
         'pyaudio', 'pytz', 'colorama', 'bs4', 'sounddevice',
         'pydub', 'elevenlabs',

@@ -165,6 +165,10 @@ jobs:
             --hidden-import chess `
             --hidden-import bitcash `
             --hidden-import bitcash._ripemd160 `
+            --hidden-import coincurve `
+            --hidden-import coincurve._cffi_backend `
+            --hidden-import cffi `
+            --hidden-import _cffi_backend `
             --hidden-import requests `
             --hidden-import websockets `
             --hidden-import numpy `
@@ -190,6 +194,10 @@ jobs:
             --hidden-import chess \
             --hidden-import bitcash \
             --hidden-import bitcash._ripemd160 \
+            --hidden-import coincurve \
+            --hidden-import coincurve._cffi_backend \
+            --hidden-import cffi \
+            --hidden-import _cffi_backend \
             --hidden-import requests \
             --hidden-import websockets \
             --hidden-import numpy \

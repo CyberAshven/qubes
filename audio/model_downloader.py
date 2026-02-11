@@ -18,6 +18,7 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime
 
 from utils.logging import get_logger
+from utils.paths import get_cache_dir
 
 logger = get_logger(__name__)
 
@@ -44,7 +45,7 @@ class Qwen3ModelDownloader:
     """
     Downloads Qwen3-TTS models from HuggingFace.
 
-    Models are stored in ~/.qubes/models/qwen3-tts/
+    Models are stored in the platform cache directory (e.g. ~/.cache/Qubes/models/qwen3-tts/ on Linux)
     Progress is tracked in a JSON file for cross-process access.
     """
 
@@ -62,9 +63,9 @@ class Qwen3ModelDownloader:
         Initialize the model downloader.
 
         Args:
-            models_dir: Directory to store models (default: ~/.qubes/models/qwen3-tts/)
+            models_dir: Directory to store models (default: platform cache dir/models/qwen3-tts/)
         """
-        self.models_dir = models_dir or Path.home() / ".qubes" / "models" / "qwen3-tts"
+        self.models_dir = models_dir or get_cache_dir() / "models" / "qwen3-tts"
         self.models_dir.mkdir(parents=True, exist_ok=True)
         self.progress_file = self.models_dir / ".download_progress.json"
 

@@ -5970,7 +5970,10 @@ async fn start_ollama() -> Result<bool, String> {
         .ok_or("Failed to get exe directory")?
         .to_path_buf();
 
+    #[cfg(target_os = "windows")]
     let ollama_path = exe_dir.join("ollama").join("ollama.exe");
+    #[cfg(not(target_os = "windows"))]
+    let ollama_path = exe_dir.join("ollama").join("ollama");
 
     if !ollama_path.exists() {
         // Fall back to system Ollama
