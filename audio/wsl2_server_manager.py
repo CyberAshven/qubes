@@ -25,6 +25,9 @@ from utils.logging import get_logger
 
 logger = get_logger(__name__)
 
+# On Windows, hide console windows for subprocess calls
+_NO_WINDOW = {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}
+
 # Server configuration
 WSL2_TTS_SERVER_URL = "http://localhost:19532"
 WSL2_DISTRO = "Ubuntu-22.04"
@@ -178,6 +181,7 @@ async def check_wsl2_available() -> bool:
             "wsl", "-l", "-v",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            **_NO_WINDOW,
         )
         stdout, _ = await process.communicate()
         output = stdout.decode('utf-8', errors='replace').replace('\x00', '')
@@ -195,6 +199,7 @@ async def check_wsl2_tts_setup() -> bool:
             "bash", "-c", f"test -f {WSL2_VENV_PATH}/bin/python && echo 'exists'",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            **_NO_WINDOW,
         )
         stdout, _ = await process.communicate()
         return "exists" in stdout.decode()
@@ -506,6 +511,7 @@ async def stop_server(manual: bool = True) -> bool:
                 "pkill", "-f", "tts_server.py",
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
+                **_NO_WINDOW,
             )
             await asyncio.wait_for(process.wait(), timeout=10)
         except Exception:

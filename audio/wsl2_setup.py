@@ -18,6 +18,7 @@ The TTS server runs at http://localhost:19533 in WSL2.
 
 import asyncio
 import subprocess
+import sys
 import json
 import os
 import re
@@ -29,6 +30,9 @@ from datetime import datetime
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+# On Windows, hide console windows for subprocess calls
+_NO_WINDOW = {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}
 
 # WSL2 configuration
 WSL2_DISTRO = "Ubuntu-22.04"
@@ -115,6 +119,7 @@ async def _run_wsl_command(command: str, timeout: int = 300) -> tuple[int, str, 
             full_cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            **_NO_WINDOW,
         )
 
         stdout, stderr = await asyncio.wait_for(
@@ -141,7 +146,7 @@ async def _run_windows_command(command: str, timeout: int = 60) -> tuple[int, st
             command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            shell=True,
+            **_NO_WINDOW,
         )
 
         stdout, stderr = await asyncio.wait_for(
@@ -752,6 +757,7 @@ async def start_wsl2_tts_server() -> Dict[str, Any]:
             start_cmd,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
+            **_NO_WINDOW,
         )
         await process.wait()
 
@@ -812,6 +818,7 @@ async def stop_wsl2_tts_server() -> Dict[str, Any]:
             cmd,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
+            **_NO_WINDOW,
         )
         await process.wait()
 
@@ -902,6 +909,7 @@ async def install_wsl2() -> Dict[str, Any]:
             f'powershell -Command "{powershell_cmd}"',
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            **_NO_WINDOW,
         )
 
         stdout, stderr = await asyncio.wait_for(
