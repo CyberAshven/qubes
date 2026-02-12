@@ -2327,6 +2327,44 @@ class GUIBridge:
                 "error": str(e)
             }
 
+    async def check_gpu_acceleration(self, user_id: str) -> Dict[str, Any]:
+        """Check GPU hardware and CUDA PyTorch status."""
+        try:
+            from audio.gpu_acceleration import check_gpu_acceleration
+            return check_gpu_acceleration()
+        except Exception as e:
+            logger.error(f"Failed to check GPU acceleration: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def install_gpu_acceleration(self, user_id: str) -> Dict[str, Any]:
+        """Start installing CUDA PyTorch for GPU acceleration."""
+        try:
+            from audio.gpu_acceleration import start_install
+            install_id = start_install()
+            return {"success": True, "install_id": install_id}
+        except Exception as e:
+            logger.error(f"Failed to start GPU install: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def get_gpu_install_progress(self, user_id: str, install_id: str) -> Dict[str, Any]:
+        """Get GPU acceleration install progress."""
+        try:
+            from audio.gpu_acceleration import get_install_progress
+            progress = get_install_progress(install_id)
+            return {"success": True, **progress}
+        except Exception as e:
+            logger.error(f"Failed to get GPU install progress: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def uninstall_gpu_acceleration(self, user_id: str) -> Dict[str, Any]:
+        """Revert to CPU-only PyTorch."""
+        try:
+            from audio.gpu_acceleration import uninstall_gpu_acceleration
+            return uninstall_gpu_acceleration()
+        except Exception as e:
+            logger.error(f"Failed to uninstall GPU acceleration: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
     async def update_qwen3_preferences(
         self,
         user_id: str,
@@ -10249,6 +10287,51 @@ async def main():
 
             user_bridge = GUIBridge(user_id=user_id)
             result = await user_bridge.delete_qwen3_model(user_id, model_name)
+            print(json.dumps(result))
+
+        elif command == "check-gpu-acceleration":
+            if len(sys.argv) < 3:
+                print(json.dumps({"error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.check_gpu_acceleration(user_id)
+            print(json.dumps(result))
+
+        elif command == "install-gpu-acceleration":
+            if len(sys.argv) < 3:
+                print(json.dumps({"error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.install_gpu_acceleration(user_id)
+            print(json.dumps(result))
+
+        elif command == "get-gpu-install-progress":
+            if len(sys.argv) < 4:
+                print(json.dumps({"error": "User ID and install_id required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            install_id = sys.argv[3]
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.get_gpu_install_progress(user_id, install_id)
+            print(json.dumps(result))
+
+        elif command == "uninstall-gpu-acceleration":
+            if len(sys.argv) < 3:
+                print(json.dumps({"error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.uninstall_gpu_acceleration(user_id)
             print(json.dumps(result))
 
         elif command == "update-qwen3-preferences":

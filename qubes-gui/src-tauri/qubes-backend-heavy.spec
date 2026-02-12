@@ -80,7 +80,7 @@ a = Analysis(
         # Transformers ecosystem
         'transformers', 'transformers.models',
         'accelerate', 'safetensors', 'tokenizers',
-        # Qwen3-TTS
+        # Qwen3-TTS (voice design + cloning; models download on demand via UI)
         'qwen_tts',
     ],
     hookspath=[],

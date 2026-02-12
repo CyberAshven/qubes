@@ -1,9 +1,11 @@
 # Requirements for Heavy Bundle (includes ALL AI features)
 # This is requirements-ci.txt + torch, kokoro, sentence-transformers, etc.
-# Used by scripts/build-heavy-linux.sh and .github/workflows/build-heavy.yml
+# Used by scripts/build-heavy-linux.sh and .github/workflows/build.yml
+#
+# For CUDA torch (GPU acceleration), install with:
+#   pip install torch torchaudio --extra-index-url https://download.pytorch.org/whl/cu124
+# CI uses CPU-only torch to keep bundle under 2GB GitHub release limit.
 
-# PyTorch with CUDA 12.4 support (falls back to CPU if no NVIDIA GPU)
---extra-index-url https://download.pytorch.org/whl/cu124
 torch>=2.2.0
 torchaudio>=2.2.0
 
@@ -93,7 +95,7 @@ accelerate>=0.25.0
 safetensors>=0.4.0
 tokenizers>=0.15.0
 
-# Qwen3-TTS (high-quality local TTS with voice cloning)
+# Qwen3-TTS (voice design + cloning; models download on demand via UI)
 qwen-tts>=0.0.5
 
 # PyInstaller (build tool)

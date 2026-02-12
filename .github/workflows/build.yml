@@ -254,10 +254,23 @@ jobs:
           cp -r ollama-temp/bin/* dist-bundle/ollama/ || cp ollama-temp/ollama dist-bundle/ollama/
           chmod +x dist-bundle/ollama/*
 
-      # NOTE: HuggingFace models (Kokoro-82M, all-MiniLM-L6-v2) are NOT pre-downloaded
-      # in CI to keep the ZIP under GitHub's 2GB release asset limit. The app auto-downloads
-      # them on first use. The local build script (scripts/build-heavy-linux.sh) pre-downloads
-      # models for fully offline bundles.
+      # ========== Download HuggingFace Models ==========
+      - name: Download HuggingFace models
+        shell: bash
+        run: |
+          mkdir -p dist-bundle/models/huggingface
+          python -c "
+          from huggingface_hub import snapshot_download
+          import os
+          hf_dir = os.path.join('dist-bundle', 'models', 'huggingface')
+          os.environ['HF_HOME'] = hf_dir
+          hub_dir = os.path.join(hf_dir, 'hub')
+          print('Downloading Kokoro-82M...')
+          snapshot_download('hexgrad/Kokoro-82M', cache_dir=hub_dir)
+          print('Downloading all-MiniLM-L6-v2...')
+          snapshot_download('sentence-transformers/all-MiniLM-L6-v2', cache_dir=hub_dir)
+          print('Models downloaded.')
+          "
 
       # ========== Create Distribution Bundle ==========
       - name: Create distribution bundle (Windows)
@@ -276,6 +289,11 @@ jobs:
 
           # Copy Ollama
           Copy-Item "dist-bundle/ollama" "$distDir/ollama" -Recurse
+
+          # Copy HuggingFace models (Kokoro TTS, sentence-transformers)
+          if (Test-Path "dist-bundle/models") {
+            Copy-Item "dist-bundle/models" "$distDir/models" -Recurse
+          }
 
           # Copy resources
           if (Test-Path "qubes-gui/src-tauri/resources") {
@@ -339,6 +357,11 @@ jobs:
           mkdir -p "$APP_MACOS/ollama"
           cp -r dist-bundle/ollama/* "$APP_MACOS/ollama/"
 
+          # Copy HuggingFace models (Kokoro TTS, sentence-transformers)
+          if [ -d "dist-bundle/models" ]; then
+            cp -r dist-bundle/models "$APP_MACOS/models"
+          fi
+
           # Create config
           cat > "$DIST_DIR/qubes-config.json" << 'CEOF'
           {
@@ -388,6 +411,11 @@ jobs:
 
           # Copy Ollama
           cp -r dist-bundle/ollama/* "$DIST_DIR/ollama/"
+
+          # Copy HuggingFace models (Kokoro TTS, sentence-transformers)
+          if [ -d "dist-bundle/models" ]; then
+            cp -r dist-bundle/models "$DIST_DIR/models"
+          fi
 
           # Copy resources
           if [ -d "qubes-gui/src-tauri/resources" ]; then

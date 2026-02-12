@@ -28,6 +28,20 @@ interface Qwen3Status {
 }
 
 
+interface GpuAccelerationStatus {
+  success: boolean;
+  gpu_detected: boolean;
+  gpu_name?: string;
+  gpu_vram_gb?: number;
+  driver_version?: string;
+  cuda_available: boolean;
+  torch_version?: string;
+  torch_cuda_version?: string;
+  torch_device: string;
+  upgrade_available: boolean;
+  is_frozen: boolean;
+}
+
 interface VoiceSettingsPanelProps {
   selectedQubeId: string | null;
   selectedQubeName?: string;
@@ -109,6 +123,21 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
   const [downloadedBytes, setDownloadedBytes] = useState(0);
   const [totalBytes, setTotalBytes] = useState(0);
 
+  // GPU Acceleration state
+  const [gpuStatus, setGpuStatus] = useState<GpuAccelerationStatus | null>(null);
+  const [showGpuSection, setShowGpuSection] = useState(false);
+  const [gpuInstalling, setGpuInstalling] = useState(false);
+  const [gpuInstallProgress, setGpuInstallProgress] = useState<{
+    phase?: string;
+    total_bytes?: number;
+    downloaded_bytes?: number;
+    speed_mbps?: number;
+    eta_seconds?: number;
+    status?: string;
+    error?: string;
+  }>({});
+  const [gpuUninstalling, setGpuUninstalling] = useState(false);
+
   // Format bytes to human readable
   const formatBytes = (bytes: number): string => {
     if (bytes === 0) return '0 B';
@@ -118,10 +147,11 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
     return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
   };
 
-  // Check Qwen3 status on mount
+  // Check Qwen3 and GPU status on mount
   useEffect(() => {
     if (userId) {
       checkQwen3Status();
+      checkGpuAcceleration();
     }
   }, [userId]);
 
@@ -182,6 +212,98 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
     }
   };
 
+
+  const checkGpuAcceleration = async () => {
+    try {
+      const result = await invoke<GpuAccelerationStatus>('check_gpu_acceleration', {
+        userId,
+      });
+      if (result.success) {
+        setGpuStatus(result);
+      }
+    } catch (err) {
+      console.error('Failed to check GPU acceleration:', err);
+    }
+  };
+
+  const handleInstallGpu = async () => {
+    setGpuInstalling(true);
+    setGpuInstallProgress({});
+    setError(null);
+
+    try {
+      const result = await invoke<{ success: boolean; install_id?: string; error?: string }>('install_gpu_acceleration', {
+        userId,
+      });
+
+      if (result.success && result.install_id) {
+        // Poll for progress
+        const pollProgress = async () => {
+          try {
+            const progress = await invoke<{
+              success: boolean;
+              status?: string;
+              phase?: string;
+              total_bytes?: number;
+              downloaded_bytes?: number;
+              speed_mbps?: number;
+              eta_seconds?: number;
+              error?: string;
+            }>('get_gpu_install_progress', {
+              userId,
+              installId: result.install_id,
+            });
+
+            if (progress.success) {
+              setGpuInstallProgress(progress);
+
+              if (progress.status === 'completed') {
+                setGpuInstalling(false);
+                await checkGpuAcceleration();
+              } else if (progress.status === 'failed') {
+                setError(progress.error || 'GPU installation failed');
+                setGpuInstalling(false);
+              } else {
+                setTimeout(pollProgress, 1000);
+              }
+            }
+          } catch {
+            setGpuInstalling(false);
+          }
+        };
+        pollProgress();
+      } else {
+        setError(result.error || 'Failed to start GPU installation');
+        setGpuInstalling(false);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to install GPU acceleration');
+      setGpuInstalling(false);
+    }
+  };
+
+  const handleUninstallGpu = async () => {
+    if (!confirm('Revert to CPU-only PyTorch? You can re-install GPU acceleration later.')) {
+      return;
+    }
+
+    setGpuUninstalling(true);
+    try {
+      const result = await invoke<{ success: boolean; error?: string }>('uninstall_gpu_acceleration', {
+        userId,
+      });
+
+      if (result.success) {
+        await checkGpuAcceleration();
+      } else {
+        setError(result.error || 'Failed to uninstall GPU acceleration');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to uninstall');
+    } finally {
+      setGpuUninstalling(false);
+    }
+  };
 
   const handleTtsToggle = async (enabled: boolean) => {
     if (!selectedQubeId || !password) return;
@@ -1149,6 +1271,193 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
               )}
             </GlassCard>
           )}
+
+      {/* GPU Acceleration Section */}
+      {gpuStatus && (
+        <GlassCard className="p-3 space-y-3">
+          <div
+            className="flex items-center justify-between cursor-pointer"
+            onClick={() => setShowGpuSection(!showGpuSection)}
+          >
+            <div>
+              <h4 className="text-sm font-medium text-text-primary">
+                {gpuStatus.cuda_available ? '⚡ GPU Acceleration Active' : '🖥️ GPU Acceleration'}
+              </h4>
+              <p className="text-[10px] text-text-tertiary mt-0.5">
+                {gpuStatus.cuda_available
+                  ? `CUDA ${gpuStatus.torch_cuda_version} • ${gpuStatus.gpu_name}`
+                  : gpuStatus.gpu_detected
+                    ? `${gpuStatus.gpu_name} detected • CPU mode`
+                    : 'No NVIDIA GPU detected • CPU mode'
+                }
+              </p>
+            </div>
+            <span className={`text-text-tertiary transition-transform ${showGpuSection ? 'rotate-180' : ''}`}>
+              ▼
+            </span>
+          </div>
+
+          {showGpuSection && (
+            <div className="space-y-3 pt-2 border-t border-white/10">
+              {/* GPU Hardware Info */}
+              <div className="bg-white/5 rounded p-2.5 space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-text-secondary text-[10px]">GPU Hardware</span>
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded ${
+                    gpuStatus.gpu_detected
+                      ? 'bg-green-500/20 text-green-400'
+                      : 'bg-white/10 text-text-tertiary'
+                  }`}>
+                    {gpuStatus.gpu_detected ? 'Detected' : 'Not Found'}
+                  </span>
+                </div>
+                {gpuStatus.gpu_detected && (
+                  <>
+                    <div className="flex items-center justify-between">
+                      <span className="text-text-tertiary text-[10px]">Name</span>
+                      <span className="text-text-primary text-[10px]">{gpuStatus.gpu_name}</span>
+                    </div>
+                    {gpuStatus.gpu_vram_gb && (
+                      <div className="flex items-center justify-between">
+                        <span className="text-text-tertiary text-[10px]">VRAM</span>
+                        <span className="text-text-primary text-[10px]">{gpuStatus.gpu_vram_gb} GB</span>
+                      </div>
+                    )}
+                    {gpuStatus.driver_version && (
+                      <div className="flex items-center justify-between">
+                        <span className="text-text-tertiary text-[10px]">Driver</span>
+                        <span className="text-text-primary text-[10px]">v{gpuStatus.driver_version}</span>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+
+              {/* PyTorch Status */}
+              <div className="bg-white/5 rounded p-2.5 space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-text-secondary text-[10px]">PyTorch</span>
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded ${
+                    gpuStatus.cuda_available
+                      ? 'bg-green-500/20 text-green-400'
+                      : 'bg-yellow-500/20 text-yellow-400'
+                  }`}>
+                    {gpuStatus.cuda_available ? 'GPU (CUDA)' : 'CPU Only'}
+                  </span>
+                </div>
+                {gpuStatus.torch_version && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-text-tertiary text-[10px]">Version</span>
+                    <span className="text-text-primary text-[10px]">{gpuStatus.torch_version}</span>
+                  </div>
+                )}
+                {gpuStatus.torch_cuda_version && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-text-tertiary text-[10px]">CUDA Version</span>
+                    <span className="text-text-primary text-[10px]">{gpuStatus.torch_cuda_version}</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Actions */}
+              {gpuStatus.upgrade_available && !gpuInstalling && (
+                <div className="space-y-2">
+                  <p className="text-text-tertiary text-[10px]">
+                    Your NVIDIA GPU can accelerate Kokoro TTS and Qwen3 voice generation.
+                    Download CUDA PyTorch (~2 GB) to enable GPU acceleration.
+                  </p>
+                  <button
+                    onClick={handleInstallGpu}
+                    className="w-full py-2 rounded bg-accent-primary/20 border border-accent-primary/40 text-accent-primary hover:bg-accent-primary/30 text-xs font-medium"
+                  >
+                    Download GPU Acceleration (~2 GB)
+                  </button>
+                </div>
+              )}
+
+              {/* Install Progress */}
+              {gpuInstalling && (
+                <div className="bg-white/5 rounded p-2 space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <p className="text-[10px] text-text-secondary">
+                      {gpuInstallProgress.phase === 'torch' && 'Downloading CUDA PyTorch...'}
+                      {gpuInstallProgress.phase === 'torchaudio' && 'Downloading CUDA torchaudio...'}
+                      {gpuInstallProgress.phase === 'extracting' && 'Extracting files...'}
+                      {gpuInstallProgress.phase === 'verifying' && 'Verifying installation...'}
+                      {gpuInstallProgress.phase === 'pip install' && 'Installing via pip...'}
+                      {!gpuInstallProgress.phase && 'Preparing...'}
+                    </p>
+                  </div>
+                  <div className="w-full bg-white/10 rounded-full h-2">
+                    <div
+                      className={`h-2 rounded-full transition-all duration-300 ${
+                        !gpuInstallProgress.total_bytes ? 'bg-accent-primary/50 animate-pulse w-full' : 'bg-accent-primary'
+                      }`}
+                      style={gpuInstallProgress.total_bytes
+                        ? { width: `${Math.round(((gpuInstallProgress.downloaded_bytes || 0) / gpuInstallProgress.total_bytes) * 100)}%` }
+                        : undefined
+                      }
+                    />
+                  </div>
+                  <div className="flex items-center justify-between text-[10px] text-text-tertiary">
+                    <span>
+                      {gpuInstallProgress.total_bytes
+                        ? `${formatBytes(gpuInstallProgress.downloaded_bytes || 0)} / ${formatBytes(gpuInstallProgress.total_bytes)}`
+                        : gpuInstallProgress.phase === 'extracting' ? 'Extracting...' : 'Calculating size...'
+                      }
+                    </span>
+                    <span>
+                      {(gpuInstallProgress.speed_mbps || 0) > 0 && `${gpuInstallProgress.speed_mbps} MB/s`}
+                      {(gpuInstallProgress.eta_seconds || 0) > 0 && (gpuInstallProgress.speed_mbps || 0) > 0 && ' • '}
+                      {(gpuInstallProgress.eta_seconds || 0) > 0 && (
+                        (gpuInstallProgress.eta_seconds || 0) > 60
+                          ? `${Math.floor((gpuInstallProgress.eta_seconds || 0) / 60)}m ${Math.round((gpuInstallProgress.eta_seconds || 0) % 60)}s left`
+                          : `${Math.round(gpuInstallProgress.eta_seconds || 0)}s left`
+                      )}
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {/* GPU Active - show uninstall option */}
+              {gpuStatus.cuda_available && !gpuInstalling && (
+                <div className="space-y-2">
+                  <p className="text-green-400/70 text-[10px]">
+                    GPU acceleration is active. Kokoro TTS and Qwen3 voice generation
+                    will use your {gpuStatus.gpu_name} for faster processing.
+                  </p>
+                  {gpuStatus.is_frozen && (
+                    <button
+                      onClick={handleUninstallGpu}
+                      disabled={gpuUninstalling}
+                      className="py-1.5 px-3 rounded bg-white/5 border border-white/10 text-text-tertiary hover:text-red-400 hover:border-red-400/30 text-[10px] disabled:opacity-50"
+                    >
+                      {gpuUninstalling ? 'Reverting...' : 'Revert to CPU Only'}
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {/* No GPU detected info */}
+              {!gpuStatus.gpu_detected && (
+                <p className="text-text-tertiary text-[10px]">
+                  No NVIDIA GPU detected. TTS runs on CPU which works well for
+                  Kokoro's lightweight 82M model. An NVIDIA GPU with 4+ GB VRAM
+                  is recommended for Qwen3 voice design and cloning.
+                </p>
+              )}
+
+              {/* Restart reminder */}
+              {gpuInstallProgress.status === 'completed' && (
+                <div className="p-2 rounded-lg bg-green-500/10 border border-green-500/30">
+                  <p className="text-green-400 text-xs font-medium">GPU acceleration installed!</p>
+                  <p className="text-green-400/70 text-[10px]">Please restart Qubes to activate GPU acceleration.</p>
+                </div>
+              )}
+            </div>
+          )}
+        </GlassCard>
+      )}
 
       {/* Local TTS Setup Section (Qwen3 via WSL2) - Windows only */}
       {navigator.platform === 'Win32' && (

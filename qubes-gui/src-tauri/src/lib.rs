@@ -2455,6 +2455,93 @@ async fn delete_qwen3_model(user_id: String, model_name: String) -> Result<serde
     Ok(response)
 }
 
+// ========== GPU Acceleration Commands ==========
+
+#[tauri::command]
+async fn check_gpu_acceleration(user_id: String) -> Result<serde_json::Value, String> {
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("check-gpu-acceleration")
+        .arg(&user_id)
+        .output()
+        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Check GPU acceleration"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn install_gpu_acceleration(user_id: String) -> Result<serde_json::Value, String> {
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("install-gpu-acceleration")
+        .arg(&user_id)
+        .output()
+        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Install GPU acceleration"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn get_gpu_install_progress(user_id: String, install_id: String) -> Result<serde_json::Value, String> {
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("get-gpu-install-progress")
+        .arg(&user_id)
+        .arg(&install_id)
+        .output()
+        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Get GPU install progress"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn uninstall_gpu_acceleration(user_id: String) -> Result<serde_json::Value, String> {
+    let mut cmd = prepare_backend_command()?;
+    let output = cmd
+        .arg("uninstall-gpu-acceleration")
+        .arg(&user_id)
+        .output()
+        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        return Err(sanitize_backend_error(&error, "Uninstall GPU acceleration"));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let response: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+
+    Ok(response)
+}
+
 #[tauri::command]
 async fn update_qwen3_preferences(
     user_id: String,
@@ -7455,6 +7542,11 @@ pub fn run() {
             get_qwen3_download_progress,
             cancel_qwen3_download,
             delete_qwen3_model,
+            // GPU Acceleration Commands
+            check_gpu_acceleration,
+            install_gpu_acceleration,
+            get_gpu_install_progress,
+            uninstall_gpu_acceleration,
             update_qwen3_preferences,
             record_voice_clone_audio,
             save_recorded_audio,

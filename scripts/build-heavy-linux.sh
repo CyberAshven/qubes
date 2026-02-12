@@ -71,6 +71,8 @@ echo ">>> Step 1/8: Installing Python heavy dependencies..."
 python3 -m venv "$HEAVY_VENV"
 source "$HEAVY_VENV/bin/activate"
 pip install --upgrade pip wheel setuptools 2>&1 | tail -1
+# Install CUDA torch for GPU acceleration (local heavy build)
+pip install torch torchaudio --extra-index-url https://download.pytorch.org/whl/cu124 2>&1 | tail -3
 pip install -r "$PROJECT_ROOT/requirements-heavy.txt" 2>&1 | tail -5
 echo "    Python deps installed."
 
