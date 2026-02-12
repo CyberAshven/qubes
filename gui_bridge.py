@@ -59,17 +59,26 @@ from typing import Dict, Any, List, Optional
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-# Load environment variables from .env file
+# Load environment variables from .env file (searches from script dir, not CWD)
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv(Path(__file__).parent / ".env")
 
 # CRITICAL: Disable all logging to stdout/stderr before importing anything
 # Set environment variable to disable structlog output
 os.environ['QUBES_LOG_LEVEL'] = 'ERROR'
 
-# Create logs directory if it doesn't exist
+# Create logs directory - use script parent in dev, writable fallback for AppImage
 log_dir = Path(__file__).parent / "logs"
-log_dir.mkdir(exist_ok=True)
+try:
+    log_dir.mkdir(exist_ok=True)
+except OSError:
+    # Read-only filesystem (e.g., AppImage mount) - use platform writable location
+    if sys.platform == 'win32':
+        _base = Path(os.environ.get('LOCALAPPDATA', str(Path.home() / 'AppData' / 'Local'))) / 'Qubes'
+    else:
+        _base = Path(os.environ.get('XDG_DATA_HOME', str(Path.home() / '.local' / 'share'))) / 'Qubes'
+    log_dir = _base / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
 
 # Configure Python logging to write ONLY to file (not to stdout/stderr)
 # This prevents logs from interfering with JSON output
@@ -419,7 +428,7 @@ class GUIBridge:
                     # Try to decrypt the first qube's private key to verify password
                     try:
                         first_qube_id = qubes_list[0]["qube_id"]
-                        qube_data = await orchestrator._load_qube_data(first_qube_id)
+                        qube_data, _ = await orchestrator._load_qube_data(first_qube_id)
                         orchestrator._decrypt_private_key(
                             qube_data["encrypted_private_key"],
                             orchestrator.master_key
@@ -13972,9 +13981,7 @@ async def main():
 
             # Create bridge and load qube
             bridge = GUIBridge(user_id)
-            if not bridge.orchestrator.unlock(password):
-                print(json.dumps({"error": "Invalid password"}), file=sys.stderr)
-                sys.exit(1)
+            bridge.orchestrator.set_master_key(password)
 
             qube = await bridge.orchestrator.load_qube(qube_id)
             if not qube:

@@ -110,6 +110,57 @@ class MintingAPIClient:
             await self._session.close()
             self._session = None
 
+    @staticmethod
+    def _compress_avatar(
+        avatar_base64: str,
+        avatar_format: str,
+        max_size: int = 512,
+        max_bytes: int = 500_000,
+    ) -> tuple:
+        """Resize and compress avatar to keep API payload small.
+
+        Args:
+            avatar_base64: Base64-encoded image data
+            avatar_format: Original format (png, jpeg, etc.)
+            max_size: Max width/height in pixels
+            max_bytes: Skip compression if base64 is already under this size
+
+        Returns:
+            (compressed_base64, format) tuple
+        """
+        raw_len = len(avatar_base64)
+        if raw_len <= max_bytes:
+            return avatar_base64, avatar_format
+
+        try:
+            from PIL import Image
+            import io
+
+            img_bytes = base64.b64decode(avatar_base64)
+            img = Image.open(io.BytesIO(img_bytes))
+
+            # Resize if larger than max_size
+            if img.width > max_size or img.height > max_size:
+                img.thumbnail((max_size, max_size), Image.LANCZOS)
+
+            # Convert RGBA/P to RGB for JPEG
+            if img.mode in ("RGBA", "P"):
+                img = img.convert("RGB")
+
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=85, optimize=True)
+            compressed = base64.b64encode(buf.getvalue()).decode("utf-8")
+
+            logger.info(
+                "avatar_compressed",
+                original_kb=round(raw_len / 1024),
+                compressed_kb=round(len(compressed) / 1024),
+            )
+            return compressed, "jpeg"
+        except Exception as e:
+            logger.warning("avatar_compression_failed", error=str(e))
+            return avatar_base64, avatar_format
+
     async def _request(
         self,
         method: str,
@@ -253,6 +304,10 @@ class MintingAPIClient:
                 avatar_format = "jpeg"
 
         if avatar_base64:
+            # Compress avatar to keep payload under nginx body limit (10MB)
+            avatar_base64, avatar_format = self._compress_avatar(
+                avatar_base64, avatar_format
+            )
             data["avatar_data"] = {
                 "base64_data": avatar_base64,
                 "file_format": avatar_format,

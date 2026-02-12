@@ -265,7 +265,8 @@ async def check_storage() -> bool:
     try:
         # Try to access storage directory
         import os
-        storage_dir = "data/qubes"
+        from utils.paths import get_app_data_dir
+        storage_dir = str(get_app_data_dir() / "users")
         return os.path.exists(storage_dir) and os.access(storage_dir, os.W_OK)
     except Exception as e:
         logger.error("storage_health_check_failed", error=str(e))

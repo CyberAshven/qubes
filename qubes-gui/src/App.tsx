@@ -88,12 +88,10 @@ function App() {
     if (isAuthenticated && userId) {
       loadQubes();
 
-      // Start WSL2 TTS server in background (fire and forget)
-      // Server will be stopped automatically when app closes (via on_window_event in lib.rs)
-      invoke('start_wsl2_tts_server', { userId }).catch((err) => {
-        console.log('WSL2 TTS server start (background):', err);
-        // Don't show error - server start is optional, TTS will work without pre-start
-      });
+      // Start WSL2 TTS server in background (Windows only - WSL2 doesn't exist on Linux/macOS)
+      if (navigator.platform === 'Win32') {
+        invoke('start_wsl2_tts_server', { userId }).catch(() => {});
+      }
     }
   }, [isAuthenticated, userId]);
 

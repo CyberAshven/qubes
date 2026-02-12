@@ -102,7 +102,10 @@ class SettingsManager:
         Args:
             config_dir: Optional custom config directory (defaults to data/config)
         """
-        self.config_dir = config_dir or Path("data/config")
+        if config_dir is None:
+            from utils.paths import get_config_dir
+            config_dir = get_config_dir()
+        self.config_dir = config_dir
         self.config_dir.mkdir(parents=True, exist_ok=True)
 
         self.global_settings_file = self.config_dir / "settings.yaml"

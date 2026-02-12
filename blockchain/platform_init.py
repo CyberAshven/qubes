@@ -145,7 +145,8 @@ class PlatformInitializer:
         }
 
         # Create data directory if it doesn't exist
-        data_dir = Path("data/platform")
+        from utils.paths import get_app_data_dir
+        data_dir = get_app_data_dir() / "platform"
         data_dir.mkdir(parents=True, exist_ok=True)
 
         config_path = data_dir / "minting_token.json"
@@ -176,6 +177,12 @@ class PlatformInitializer:
         return config
 
 
+def _get_minting_token_path() -> Path:
+    """Get the platform minting token config path."""
+    from utils.paths import get_app_data_dir
+    return get_app_data_dir() / "platform" / "minting_token.json"
+
+
 def check_minting_token_exists() -> bool:
     """
     Check if platform minting token has been initialized
@@ -183,7 +190,7 @@ def check_minting_token_exists() -> bool:
     Returns:
         True if minting token config exists
     """
-    config_path = Path("data/platform/minting_token.json")
+    config_path = _get_minting_token_path()
     return config_path.exists()
 
 
@@ -197,7 +204,7 @@ def load_minting_token_config() -> Dict[str, Any]:
     Raises:
         FileNotFoundError: If minting token hasn't been initialized
     """
-    config_path = Path("data/platform/minting_token.json")
+    config_path = _get_minting_token_path()
 
     if not config_path.exists():
         raise FileNotFoundError(

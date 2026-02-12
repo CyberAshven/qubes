@@ -38,6 +38,7 @@ secrets/
 *.key
 *.pem
 *.wif
+*.enc
 
 # Testing
 .pytest_cache/

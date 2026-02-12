@@ -1150,10 +1150,12 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
             </GlassCard>
           )}
 
-      {/* Local TTS Setup Section (Qwen3 via WSL2) */}
-      <GlassCard className="p-4">
-        <LocalTTSSetupPanel />
-      </GlassCard>
+      {/* Local TTS Setup Section (Qwen3 via WSL2) - Windows only */}
+      {navigator.platform === 'Win32' && (
+        <GlassCard className="p-4">
+          <LocalTTSSetupPanel />
+        </GlassCard>
+      )}
     </div>
   );
 };

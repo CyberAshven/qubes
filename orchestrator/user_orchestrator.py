@@ -75,7 +75,8 @@ class UserOrchestrator:
 
         self.user_id = validated_user_id
         # Use platform-aware data directory (critical for Linux AppImage)
-        self.data_dir = data_dir or get_user_data_dir(validated_user_id)
+        # Always resolve to absolute path to prevent relative path issues in metadata
+        self.data_dir = (data_dir or get_user_data_dir(validated_user_id)).resolve()
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
         self.qubes: Dict[str, Qube] = {}  # qube_id -> Qube instance
@@ -767,7 +768,7 @@ class UserOrchestrator:
 
         # Re-save the qube with updated NFT info
         # Need to get private key from storage
-        qube_data = await self._load_qube_data(qube.qube_id)
+        qube_data, _ = await self._load_qube_data(qube.qube_id)
         if self.master_key:
             private_key = self._decrypt_private_key(
                 qube_data["encrypted_private_key"],
@@ -939,8 +940,8 @@ class UserOrchestrator:
                 # Remove from cache to force fresh load
                 del self.qubes[qube_id]
 
-            # Load Qube data
-            qube_data = await self._load_qube_data(qube_id)
+            # Load Qube data and its actual directory on disk
+            qube_data, qube_dir = await self._load_qube_data(qube_id)
 
             # Decrypt private key with master key
             if not self.master_key:
@@ -954,11 +955,6 @@ class UserOrchestrator:
                 self.master_key
             )
 
-            # Get qube_dir from memory_chain_path
-            # memory_chain_path is like: data/users/{user}/qubes/{name_id}/memory
-            memory_chain_path = Path(qube_data["memory_chain_path"])
-            qube_dir = memory_chain_path.parent  # Go up one level: memory -> {name_id}
-
             # Get encryption key for chain_state
             encryption_key = self._get_encryption_key(qube_dir)
 
@@ -968,13 +964,15 @@ class UserOrchestrator:
             if not key_file.exists() and encryption_key:
                 self._save_encryption_key(qube_dir, encryption_key)
 
-            # Create Qube from storage
+            # Create Qube from storage - pass qube_dir directly to avoid
+            # cross-platform path issues with stored memory_chain_path
             qube = Qube.from_storage(
                 qube_data=qube_data,
                 private_key=private_key,
                 user_name=self.user_id,
                 encryption_key=encryption_key,
-                orchestrator=self
+                orchestrator=self,
+                qube_dir=qube_dir
             )
 
             # Defense-in-depth: Validate official Qubes category
@@ -2363,8 +2361,8 @@ class UserOrchestrator:
             "encrypted_private_key": encrypted_private_key.hex(),
             "public_key": serialize_public_key(qube.public_key),
             "genesis_block": qube.genesis_block.to_dict(),
-            "memory_chain_path": str(qube_dir / "memory"),
-            "relationships_path": str(qube_dir / "relationships.json"),
+            "memory_chain_path": str(qube_dir / "memory").replace("\\", "/"),
+            "relationships_path": str(qube_dir / "relationships.json").replace("\\", "/"),
             "settings": {}
         }
 
@@ -2403,7 +2401,7 @@ class UserOrchestrator:
             logger.warning(f"Failed to verify skills initialization for qube: {e}")
             # Don't fail qube creation if skills verification fails
 
-    async def _load_qube_data(self, qube_id: str) -> Dict[str, Any]:
+    async def _load_qube_data(self, qube_id: str) -> tuple:
         """
         Load Qube data from storage
 
@@ -2411,7 +2409,7 @@ class UserOrchestrator:
             qube_id: Qube ID to load
 
         Returns:
-            Qube data dictionary
+            Tuple of (qube_data dict, qube_dir Path)
 
         Raises:
             QubesError: If Qube not found
@@ -2431,7 +2429,7 @@ class UserOrchestrator:
                     with open(qube_metadata, "r", encoding="utf-8") as f:
                         qube_data = json.load(f)
                         if qube_data["qube_id"] == qube_id:
-                            return qube_data
+                            return qube_data, qube_dir
 
         raise QubesError(
             f"Qube not found: {qube_id}",

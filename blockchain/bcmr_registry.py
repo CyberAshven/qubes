@@ -48,7 +48,10 @@ class BCMRRegistryManager:
         self.registry_url = registry_url
 
         # Setup directories
-        self.web_dir = web_dir or Path("data/web")
+        if web_dir is None:
+            from utils.paths import get_app_data_dir
+            web_dir = get_app_data_dir() / "web"
+        self.web_dir = web_dir
         self.wellknown_dir = self.web_dir / ".well-known"
         self.wellknown_dir.mkdir(parents=True, exist_ok=True)
 

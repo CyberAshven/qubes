@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useAudio } from '../../contexts/AudioContext';
+import { useAudio, AudioPlaybackElement } from '../../contexts/AudioContext';
 
 interface TypewriterTextProps {
   text: string;
-  audioElement: HTMLAudioElement | null;
+  audioElement: AudioPlaybackElement | null;
   onComplete?: () => void;
   onTextUpdate?: () => void;
 }
@@ -28,17 +28,38 @@ export const TypewriterText: React.FC<TypewriterTextProps> = React.memo(({ text,
 
   useEffect(() => {
     if (!audioElement) {
-      // If no audio, show all text immediately
+      // If no audio element at all, show all text immediately
       setDisplayedText(text);
       onCompleteRef.current?.();
       return;
     }
 
     let animationFrame: number;
-    let isComponentVisible = true;
+    let completed = false;
+    let fallbackMode = false;
+    let fallbackStartTime = 0;
+    const CHARS_PER_SECOND = 40; // Fallback typing speed (natural reading pace)
+    const AUDIO_WAIT_MS = 800; // Wait for audio before falling back
+    const mountTime = performance.now();
+
+    const forceComplete = () => {
+      if (completed) return;
+      completed = true;
+      setDisplayedText(text);
+      onCompleteRef.current?.();
+    };
+
+    // Safety timeout: absolute last resort if nothing else works.
+    // Set to 120s - this should NEVER fire in normal operation.
+    // Normal exits: audio 'ended' event, fallback animation completing, or visibility change.
+    const safetyTimeout = setTimeout(() => {
+      if (!completed) {
+        console.warn('[TypewriterText] Safety timeout reached (120s), forcing complete');
+        forceComplete();
+      }
+    }, 120000);
 
     // Track cumulative progress across chunks
-    // Each chunk handles a portion of the text
     let lastKnownDuration = 0;
     let charsPerSecondThisChunk = 0;
 
@@ -47,23 +68,83 @@ export const TypewriterText: React.FC<TypewriterTextProps> = React.memo(({ text,
       if (totalChunks <= 1) {
         return { start: 0, end: text.length };
       }
-      // Divide text evenly among chunks
       const charsPerChunk = Math.ceil(text.length / totalChunks);
       const start = (currentChunk - 1) * charsPerChunk;
       const end = Math.min(currentChunk * charsPerChunk, text.length);
       return { start, end };
     };
 
+    const startFallbackMode = () => {
+      if (fallbackMode || completed) return;
+      fallbackMode = true;
+      fallbackStartTime = performance.now();
+      // Cancel the safety timeout - fallback mode has its own completion logic
+      // (the timeout was meant for audio-sync mode getting stuck, not for fallback)
+      clearTimeout(safetyTimeout);
+    };
+
     const updateText = () => {
-      // If component became hidden, force complete immediately
-      if (!isComponentVisible) {
-        setDisplayedText(text);
-        onCompleteRef.current?.();
+      if (completed) return;
+
+      // Check if we should switch to fallback mode
+      if (!fallbackMode) {
+        const elapsed = performance.now() - mountTime;
+        const audioNotProgressing = audioElement.currentTime < 0.1;
+        const audioHasError = !!audioElement.error;
+        const audioStale = audioElement.ended && audioElement.currentTime === 0;
+
+        // Switch to fallback if:
+        // 1. Audio has an error
+        // 2. Audio is in a stale ended state (from previous playback, never loaded new audio)
+        // 3. Audio currentTime hasn't advanced past 0.1s after the wait period
+        //    (covers: audio "playing" but corrupt, audio paused, audio not loaded, etc.)
+        if (audioHasError || audioStale || (elapsed > AUDIO_WAIT_MS && audioNotProgressing)) {
+          startFallbackMode();
+        }
+      }
+
+      // === FALLBACK MODE: Time-based typewriter ===
+      if (fallbackMode) {
+        const elapsed = (performance.now() - fallbackStartTime) / 1000;
+        const charsToShow = Math.min(text.length, Math.floor(elapsed * CHARS_PER_SECOND));
+
+        if (charsToShow >= text.length) {
+          clearTimeout(safetyTimeout);
+          setDisplayedText(text);
+          completed = true;
+          setTimeout(() => onCompleteRef.current?.(), 150);
+          return;
+        }
+
+        setDisplayedText(text.slice(0, Math.max(1, charsToShow)));
+        onTextUpdateRef.current?.();
+        animationFrame = requestAnimationFrame(updateText);
         return;
       }
 
-      // Wait for valid duration
+      // === AUDIO-SYNC MODE ===
+
+      // Audio ended - show remaining text
+      if (audioElement.ended) {
+        if (isLastChunk) {
+          clearTimeout(safetyTimeout);
+          setDisplayedText(text);
+          completed = true;
+          setTimeout(() => onCompleteRef.current?.(), 150);
+        } else {
+          const { end } = getChunkTextRange();
+          setDisplayedText(text.slice(0, end));
+          animationFrame = requestAnimationFrame(updateText);
+        }
+        return;
+      }
+
+      // Wait for valid duration - but show at least some text while waiting
       if (!audioElement.duration || audioElement.duration === 0 || !isFinite(audioElement.duration)) {
+        // Show first char while waiting for duration (better than empty)
+        if (text.length > 0) {
+          setDisplayedText(text.slice(0, 1));
+        }
         animationFrame = requestAnimationFrame(updateText);
         return;
       }
@@ -78,58 +159,52 @@ export const TypewriterText: React.FC<TypewriterTextProps> = React.memo(({ text,
       }
 
       // Calculate characters to show for this chunk
-      // Add a tiny buffer (50ms worth) to stay slightly ahead for smoother feel
       const bufferChars = Math.ceil(charsPerSecondThisChunk * 0.05);
       const charsFromTime = Math.floor(audioElement.currentTime * charsPerSecondThisChunk);
       let charsInThisChunk = Math.min(chunkTextLength, charsFromTime + bufferChars);
 
-      // Hold back last few characters until audio ends to prevent typewriter
-      // finishing before TTS voice stops (browser duration can be slightly off).
-      // Use 99.5% cap so the final jump is barely noticeable (just 1-2 chars).
-      if (!audioElement.ended && charsInThisChunk >= chunkTextLength) {
-        charsInThisChunk = Math.floor(chunkTextLength * 0.995);
-      }
-
-      // Total chars to show = previous chunks + current chunk progress
       const totalCharsToShow = Math.min(text.length, start + charsInThisChunk);
-
       const newText = text.slice(0, Math.max(1, totalCharsToShow));
       setDisplayedText(newText);
-      onTextUpdateRef.current?.(); // Notify parent to scroll
+      onTextUpdateRef.current?.();
 
-      // Continue updating until audio ends
+      // Continue animation based on audio state
       if (!audioElement.ended && !audioElement.paused) {
-        // Audio still playing - continue animation
         animationFrame = requestAnimationFrame(updateText);
       } else if (audioElement.ended) {
         if (isLastChunk) {
-          // Last chunk ended - show all text first, then delay before calling complete
-          // This prevents flicker where last few words appear and immediately re-render
+          clearTimeout(safetyTimeout);
           setDisplayedText(text);
-          // Small delay to let the full text render before parent switches away from TypewriterText
-          setTimeout(() => {
-            onCompleteRef.current?.();
-          }, 150);
+          completed = true;
+          setTimeout(() => onCompleteRef.current?.(), 150);
         } else {
-          // More chunks coming - show up to end of current chunk and keep animating
-          // The next chunk will start playing automatically
           setDisplayedText(text.slice(0, end));
           animationFrame = requestAnimationFrame(updateText);
         }
+      } else if (audioElement.error) {
+        startFallbackMode();
+        animationFrame = requestAnimationFrame(updateText);
       } else {
-        // Audio paused - keep updating until it resumes or ends
+        // Audio paused - keep polling
         animationFrame = requestAnimationFrame(updateText);
       }
     };
 
     const handlePlay = () => {
-      // Reset rate calculation on new play (new chunk)
+      if (completed) return;
+      // If we were in fallback mode and audio starts, stay in fallback
+      // (don't switch back mid-animation, it would be jarring)
+      if (fallbackMode) return;
       charsPerSecondThisChunk = 0;
       lastKnownDuration = 0;
       animationFrame = requestAnimationFrame(updateText);
     };
 
-    // Handle duration changes (some browsers update duration as audio loads)
+    const handleEnded = () => {
+      if (completed) return;
+      animationFrame = requestAnimationFrame(updateText);
+    };
+
     const handleDurationChange = () => {
       if (audioElement.duration && isFinite(audioElement.duration)) {
         const { start, end } = getChunkTextRange();
@@ -139,32 +214,47 @@ export const TypewriterText: React.FC<TypewriterTextProps> = React.memo(({ text,
       }
     };
 
-    // Handle visibility changes - force complete when hidden
     const handleVisibilityChange = () => {
       if (document.hidden) {
-        isComponentVisible = false;
-        if (animationFrame) {
-          cancelAnimationFrame(animationFrame);
-        }
-        setDisplayedText(text);
-        onCompleteRef.current?.();
+        if (animationFrame) cancelAnimationFrame(animationFrame);
+        clearTimeout(safetyTimeout);
+        forceComplete();
       }
     };
 
+    const handleError = () => {
+      if (completed) return;
+      startFallbackMode();
+      animationFrame = requestAnimationFrame(updateText);
+    };
+
     audioElement.addEventListener('play', handlePlay);
+    audioElement.addEventListener('ended', handleEnded);
+    audioElement.addEventListener('error', handleError);
     audioElement.addEventListener('durationchange', handleDurationChange);
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
-    // Start animation if audio is NOT paused AND has enough data loaded
-    if (!audioElement.paused && audioElement.readyState >= 2) {
-      // Audio is actually playing with data, start animation immediately
+    // Check current audio state and start accordingly
+    if (audioElement.error) {
+      startFallbackMode();
+      animationFrame = requestAnimationFrame(updateText);
+    } else if (audioElement.ended && audioElement.currentTime === 0) {
+      startFallbackMode();
+      animationFrame = requestAnimationFrame(updateText);
+    } else if (audioElement.ended) {
+      clearTimeout(safetyTimeout);
+      forceComplete();
+    } else {
       animationFrame = requestAnimationFrame(updateText);
     }
 
     return () => {
       audioElement.removeEventListener('play', handlePlay);
+      audioElement.removeEventListener('ended', handleEnded);
+      audioElement.removeEventListener('error', handleError);
       audioElement.removeEventListener('durationchange', handleDurationChange);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
+      clearTimeout(safetyTimeout);
       if (animationFrame) {
         cancelAnimationFrame(animationFrame);
       }

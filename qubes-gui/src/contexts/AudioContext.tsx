@@ -1,14 +1,28 @@
 import React, { createContext, useContext, useRef, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+
+// Minimal interface matching the HTMLAudioElement properties that TypewriterText uses.
+// Implemented by NativeAudioPlayer (Linux/macOS) and WebAudioPlayer (Windows fallback).
+export interface AudioPlaybackElement {
+  readonly currentTime: number;
+  readonly duration: number;
+  readonly paused: boolean;
+  readonly ended: boolean;
+  readonly readyState: number;
+  readonly error: { code: number; message: string } | null;
+  src: string;
+  addEventListener(event: string, handler: EventListenerOrEventListenerObject): void;
+  removeEventListener(event: string, handler: EventListenerOrEventListenerObject): void;
+}
 
 interface AudioContextType {
   playTTS: (userId: string, qubeId: string, text: string, password: string) => Promise<void>;
   prefetchTTS: (userId: string, qubeId: string, text: string, password: string) => Promise<string>;
-  playPrefetchedTTS: (base64Audio: string, text: string) => Promise<void>;
+  playPrefetchedTTS: (blobUrl: string, text: string) => Promise<void>;
   stopAudio: () => void;
   isPlaying: boolean;
-  audioElement: HTMLAudioElement | null;
-  // Multi-chunk playback info for TypewriterText sync
+  audioElement: AudioPlaybackElement | null;
   totalChunks: number;
   currentChunk: number;
   isLastChunk: boolean;
@@ -32,91 +46,176 @@ interface SpeechResponse {
   error?: string;
 }
 
+interface NativePlayResult {
+  duration: number;
+  player: string;
+}
+
+// Timer-based player for native audio playback (pw-play/aplay/afplay).
+// Doesn't play audio itself - that's done by the Rust side via system commands.
+// Tracks timing so TypewriterText can sync text animation to the audio.
+class NativeAudioPlayer extends EventTarget implements AudioPlaybackElement {
+  // Text leads audio by this many seconds (typewriter shows text before you hear it)
+  private static readonly TEXT_LEAD_SECS = 0.75;
+
+  private _duration: number = 0;
+  private _startTime: number = 0;
+  private _paused: boolean = true;
+  private _ended: boolean = false;
+  private _error: { code: number; message: string } | null = null;
+  src: string = '';
+
+  get currentTime(): number {
+    if (this._paused || this._ended) return this._ended ? this._duration : 0;
+    const elapsed = (performance.now() - this._startTime) / 1000;
+    return Math.min(elapsed + NativeAudioPlayer.TEXT_LEAD_SECS, this._duration);
+  }
+
+  get duration(): number { return this._duration || NaN; }
+  get paused(): boolean { return this._paused; }
+  get ended(): boolean { return this._ended; }
+  get readyState(): number { return this._duration > 0 ? 4 : 0; }
+  get error(): { code: number; message: string } | null { return this._error; }
+
+  // Set duration from WAV header (parsed by Rust)
+  setDuration(duration: number): void {
+    this._duration = duration;
+    this._ended = false;
+    this._paused = true;
+    this._error = null;
+    this.dispatchEvent(new Event('durationchange'));
+  }
+
+  // Start the timer (call after native playback is confirmed started)
+  startPlayback(): void {
+    this._startTime = performance.now();
+    this._paused = false;
+    this._ended = false;
+    this._error = null;
+    this.dispatchEvent(new Event('play'));
+  }
+
+  // Called when the Rust side signals playback ended
+  markEnded(): void {
+    this._ended = true;
+    this._paused = true;
+    this.dispatchEvent(new Event('ended'));
+  }
+
+  // Stop tracking
+  stop(): void {
+    this._paused = true;
+    this.dispatchEvent(new Event('pause'));
+  }
+
+  // Reset for new audio
+  reset(): void {
+    this._duration = 0;
+    this._startTime = 0;
+    this._paused = true;
+    this._ended = false;
+    this._error = null;
+    this.src = '';
+  }
+}
+
 export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const playerRef = useRef<NativeAudioPlayer | null>(null);
   const [isPlaying, setIsPlaying] = React.useState(false);
-  const [audioElement, setAudioElement] = React.useState<HTMLAudioElement | null>(null);
+  const [audioElement, setAudioElement] = React.useState<AudioPlaybackElement | null>(null);
   const lastPlayedTextRef = useRef<string>('');
+  const unlistenRef = useRef<UnlistenFn | null>(null);
 
   // Multi-chunk playback state
-  const chunkQueueRef = useRef<string[]>([]);
+  const chunkPathsRef = useRef<string[]>([]);
   const currentChunkIndexRef = useRef<number>(0);
 
-  // Expose chunk info for TypewriterText sync
   const [totalChunks, setTotalChunks] = React.useState(1);
   const [currentChunk, setCurrentChunk] = React.useState(1);
   const [isLastChunk, setIsLastChunk] = React.useState(true);
 
-  // Initialize audio element if it doesn't exist
+  const resetChunkState = () => {
+    chunkPathsRef.current = [];
+    currentChunkIndexRef.current = 0;
+    setTotalChunks(1);
+    setCurrentChunk(1);
+    setIsLastChunk(true);
+  };
+
+  // Play a single audio file natively and set up the timer
+  const playFileNative = async (filePath: string): Promise<number> => {
+    const player = playerRef.current;
+    if (!player) throw new Error('Player not initialized');
+
+    const result = await invoke<NativePlayResult>('play_audio_native', { filePath });
+    player.setDuration(result.duration);
+    player.startPlayback();
+    return result.duration;
+  };
+
+  // Initialize NativeAudioPlayer and listen for playback-ended events
   React.useEffect(() => {
-    if (!audioRef.current) {
-      audioRef.current = new Audio();
+    if (!playerRef.current) {
+      const player = new NativeAudioPlayer();
 
-      // Handle audio ended - play next chunk if available
-      audioRef.current.addEventListener('ended', () => {
-        const nextChunkIndex = currentChunkIndexRef.current + 1;
+      player.addEventListener('play', () => setIsPlaying(true));
+      player.addEventListener('pause', () => setIsPlaying(false));
 
-        // Check if there are more chunks to play
-        if (nextChunkIndex < chunkQueueRef.current.length) {
-          currentChunkIndexRef.current = nextChunkIndex;
-          const nextChunkPath = chunkQueueRef.current[nextChunkIndex];
-
-          console.log(`Playing chunk ${nextChunkIndex + 1} of ${chunkQueueRef.current.length}`);
-
-          // Update chunk state for TypewriterText
-          setCurrentChunk(nextChunkIndex + 1);
-          setIsLastChunk(nextChunkIndex + 1 >= chunkQueueRef.current.length);
-
-          // Load and play next chunk
-          audioRef.current!.src = nextChunkPath;
-          audioRef.current!.play().catch(err => {
-            console.error('Failed to play next chunk:', err);
-            setIsPlaying(false);
-            // Clear chunk queue on error
-            chunkQueueRef.current = [];
-            currentChunkIndexRef.current = 0;
-            setTotalChunks(1);
-            setCurrentChunk(1);
-            setIsLastChunk(true);
-          });
-        } else {
-          // No more chunks, playback complete
-          setIsPlaying(false);
-          chunkQueueRef.current = [];
-          currentChunkIndexRef.current = 0;
-          setTotalChunks(1);
-          setCurrentChunk(1);
-          setIsLastChunk(true);
-        }
-      });
-
-      audioRef.current.addEventListener('pause', () => {
-        setIsPlaying(false);
-      });
-      audioRef.current.addEventListener('play', () => {
-        setIsPlaying(true);
-      });
-
-      // Make audio element available in state so context consumers get notified
-      setAudioElement(audioRef.current);
+      playerRef.current = player;
+      setAudioElement(player);
     }
 
-    return () => {
-      if (audioRef.current) {
-        audioRef.current.pause();
-        audioRef.current.src = '';
+    // Listen for native audio playback ending
+    let mounted = true;
+    listen('audio-playback-ended', () => {
+      if (!mounted) return;
+      const player = playerRef.current;
+      if (!player) return;
+
+      const nextChunkIndex = currentChunkIndexRef.current + 1;
+      if (nextChunkIndex < chunkPathsRef.current.length) {
+        // Play next chunk
+        currentChunkIndexRef.current = nextChunkIndex;
+        const nextPath = chunkPathsRef.current[nextChunkIndex];
+
+        setCurrentChunk(nextChunkIndex + 1);
+        setIsLastChunk(nextChunkIndex + 1 >= chunkPathsRef.current.length);
+
+        player.reset();
+        invoke<NativePlayResult>('play_audio_native', { filePath: nextPath }).then(result => {
+          player.setDuration(result.duration);
+          player.startPlayback();
+        }).catch(err => {
+          console.error('[AudioContext] Failed to play next chunk:', err);
+          setIsPlaying(false);
+          resetChunkState();
+        });
+      } else {
+        // All chunks done
+        player.markEnded();
+        setIsPlaying(false);
+        resetChunkState();
       }
-      // Clear chunk queue on unmount
-      chunkQueueRef.current = [];
-      currentChunkIndexRef.current = 0;
+    }).then(unlisten => {
+      unlistenRef.current = unlisten;
+    });
+
+    return () => {
+      mounted = false;
+      if (unlistenRef.current) {
+        unlistenRef.current();
+      }
+      resetChunkState();
     };
   }, []);
 
   const playTTS = useCallback(async (userId: string, qubeId: string, text: string, password: string) => {
-    // Skip if we've already played this exact text
     if (lastPlayedTextRef.current === text) {
-      return;
+      throw new Error('TTS skipped: duplicate text');
     }
+
+    const player = playerRef.current;
+    if (!player) throw new Error('Audio player not initialized');
 
     try {
       const speechResponse = await invoke<SpeechResponse>('generate_speech', {
@@ -129,85 +228,42 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       if (speechResponse.success && speechResponse.audio_path) {
         const numChunks = speechResponse.total_chunks || 1;
 
-        // Build array of all chunk paths
+        // Build chunk file paths
         const chunkPaths: string[] = [];
-
         for (let i = 1; i <= numChunks; i++) {
           let chunkFilePath = speechResponse.audio_path;
-
-          // For multi-chunk audio, replace or append chunk suffix
           if (numChunks > 1) {
-            // Replace _chunk_1 with _chunk_N, or append _chunk_N if not present
             if (chunkFilePath.includes('_chunk_1')) {
               chunkFilePath = chunkFilePath.replace('_chunk_1', `_chunk_${i}`);
             } else {
-              // Shouldn't happen with new backend, but handle legacy case
               const extension = chunkFilePath.substring(chunkFilePath.lastIndexOf('.'));
               const basePath = chunkFilePath.substring(0, chunkFilePath.lastIndexOf('.'));
               chunkFilePath = `${basePath}_chunk_${i}${extension}`;
             }
           }
-
-          // Get base64 data for this chunk
-          const base64Audio = await invoke<string>('get_audio_base64', {
-            filePath: chunkFilePath
-          });
-
-          chunkPaths.push(base64Audio);
+          chunkPaths.push(chunkFilePath);
         }
 
-        if (numChunks > 1) {
-          console.log(`Multi-chunk audio: ${numChunks} chunks`);
-        }
-
-        // Set up chunk queue for sequential playback
-        chunkQueueRef.current = chunkPaths;
+        // Set up chunk queue
+        chunkPathsRef.current = chunkPaths;
         currentChunkIndexRef.current = 0;
 
-        // Update chunk state for TypewriterText sync
         setTotalChunks(numChunks);
         setCurrentChunk(1);
         setIsLastChunk(numChunks <= 1);
 
-        if (audioRef.current) {
-          // Reset audio element to clear any stale state (ended, error, etc.)
-          audioRef.current.pause();
-          audioRef.current.currentTime = 0;
-          audioRef.current.removeAttribute('src');
-          audioRef.current.load(); // This resets the audio element state
+        // Reset and play first chunk
+        player.reset();
+        await playFileNative(chunkPaths[0]);
 
-          // Set the first chunk
-          audioRef.current.src = chunkPaths[0];
-
-          audioRef.current.addEventListener('error', (e) => {
-            console.error('Audio element error:', e);
-            console.error('Audio error details:', audioRef.current?.error);
-            // Clear chunk queue on error
-            chunkQueueRef.current = [];
-            currentChunkIndexRef.current = 0;
-            setTotalChunks(1);
-            setCurrentChunk(1);
-            setIsLastChunk(true);
-          }, { once: true });
-
-          // Start playing first chunk immediately
-          await audioRef.current.play();
-
-          // Mark this text as played
-          lastPlayedTextRef.current = text;
-        }
+        lastPlayedTextRef.current = text;
       } else {
-        console.error('TTS generation failed:', speechResponse.error);
+        console.error('[AudioContext] TTS generation failed:', speechResponse.error);
         throw new Error(`TTS generation failed: ${speechResponse.error}`);
       }
     } catch (err) {
-      console.error('TTS error:', err);
-      // Clear chunk queue on error
-      chunkQueueRef.current = [];
-      currentChunkIndexRef.current = 0;
-      setTotalChunks(1);
-      setCurrentChunk(1);
-      setIsLastChunk(true);
+      console.error('[AudioContext] TTS error:', err);
+      resetChunkState();
       throw err;
     }
   }, []);
@@ -222,14 +278,8 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       });
 
       if (speechResponse.success && speechResponse.audio_path) {
-        // Get audio as base64 data URL from Tauri backend
-        const base64Audio = await invoke<string>('get_audio_base64', {
-          filePath: speechResponse.audio_path
-        });
-
-        return base64Audio;
+        return speechResponse.audio_path;
       } else {
-        console.error('TTS prefetch failed:', speechResponse.error);
         throw new Error(`TTS prefetch failed: ${speechResponse.error}`);
       }
     } catch (err) {
@@ -238,41 +288,25 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   }, []);
 
-  const playPrefetchedTTS = useCallback(async (base64Audio: string, text: string): Promise<void> => {
-    // Skip if we've already played this exact text
+  const playPrefetchedTTS = useCallback(async (audioPath: string, text: string): Promise<void> => {
     if (lastPlayedTextRef.current === text) {
-      return;
+      throw new Error('TTS skipped: duplicate text');
     }
 
+    const player = playerRef.current;
+    if (!player) throw new Error('Audio player not initialized');
+
     try {
-      // Reset chunk state for single-chunk prefetched audio
       setTotalChunks(1);
       setCurrentChunk(1);
       setIsLastChunk(true);
-      chunkQueueRef.current = [];
+      chunkPathsRef.current = [audioPath];
       currentChunkIndexRef.current = 0;
 
-      if (audioRef.current) {
-        // Reset audio element to clear any stale state (ended, error, etc.)
-        audioRef.current.pause();
-        audioRef.current.currentTime = 0;
-        audioRef.current.removeAttribute('src');
-        audioRef.current.load(); // This resets the audio element state
+      player.reset();
+      await playFileNative(audioPath);
 
-        // Now set the new src
-        audioRef.current.src = base64Audio;
-
-        audioRef.current.addEventListener('error', (e) => {
-          console.error('Prefetched audio element error:', e);
-          console.error('Audio error details:', audioRef.current?.error);
-        }, { once: true });
-
-        // Start playing prefetched audio immediately
-        await audioRef.current.play();
-
-        // Mark this text as played
-        lastPlayedTextRef.current = text;
-      }
+      lastPlayedTextRef.current = text;
     } catch (err) {
       console.error('Prefetched TTS playback error:', err);
       throw err;
@@ -280,17 +314,13 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   }, []);
 
   const stopAudio = useCallback(() => {
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current.currentTime = 0;
-      setIsPlaying(false);
+    if (playerRef.current) {
+      playerRef.current.stop();
     }
-    // Clear chunk queue when manually stopping
-    chunkQueueRef.current = [];
-    currentChunkIndexRef.current = 0;
-    setTotalChunks(1);
-    setCurrentChunk(1);
-    setIsLastChunk(true);
+    // Kill native playback process
+    invoke('stop_audio_native').catch(() => {});
+    setIsPlaying(false);
+    resetChunkState();
   }, []);
 
   const value = {

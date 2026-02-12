@@ -289,7 +289,7 @@ class GeminiTTS(TTSProvider):
         import time
 
         max_retries = 3
-        retry_delays = [1, 2, 4]  # Exponential backoff: 1s, 2s, 4s
+        retry_delays = [2, 4, 8]  # Exponential backoff
         start_time = time.time()
 
         logger.info(
@@ -334,8 +334,8 @@ class GeminiTTS(TTSProvider):
                 # Record start
                 MetricsRecorder.record_ai_api_call("gemini_tts", "gemini-2.5-flash-preview-tts", "started")
 
-                # Add timeout to prevent hanging (30 seconds should be plenty for TTS)
-                timeout = aiohttp.ClientTimeout(total=30)
+                # Generous timeout: Gemini TTS for long text can take 30-60s
+                timeout = aiohttp.ClientTimeout(total=90)
                 async with aiohttp.ClientSession(timeout=timeout) as session:
                     async with session.post(url, headers=headers, json=payload) as response:
                         if response.status != 200:
@@ -386,13 +386,21 @@ class GeminiTTS(TTSProvider):
 
             except Exception as e:
                 last_error = e
+                # Build a descriptive error string (TimeoutError has empty str())
+                error_desc = str(e) if str(e) else type(e).__name__
+                elapsed = time.time() - start_time
+
                 # Check if this is a retryable error (connection issues, timeouts)
-                if attempt < max_retries - 1 and not str(e).startswith("Gemini TTS API error 4"):
+                is_client_error = error_desc.startswith("Gemini TTS API error 4")
+                if attempt < max_retries - 1 and not is_client_error:
                     # Don't retry 4xx errors (client errors), but retry others
                     logger.warning(
                         "gemini_tts_retrying",
                         attempt=attempt + 1,
-                        error=str(e),
+                        max_retries=max_retries,
+                        error=error_desc,
+                        error_type=type(e).__name__,
+                        elapsed_s=round(elapsed, 1),
                         delay=retry_delays[attempt]
                     )
                     await asyncio.sleep(retry_delays[attempt])
@@ -400,12 +408,14 @@ class GeminiTTS(TTSProvider):
 
                 # Final failure
                 MetricsRecorder.record_ai_api_call("gemini_tts", "gemini-2.5-flash-preview-tts", "error")
-                logger.error("gemini_tts_failed", error=str(e), exc_info=True)
-                raise AIError(f"Gemini TTS failed: {e}", cause=e)
+                logger.error("gemini_tts_failed", error=error_desc, error_type=type(e).__name__,
+                           attempts=attempt + 1, elapsed_s=round(elapsed, 1), exc_info=True)
+                raise AIError(f"Gemini TTS failed after {attempt + 1} attempts ({error_desc})", cause=e)
 
         # Should not reach here, but just in case
         if last_error:
-            raise AIError(f"Gemini TTS failed after {max_retries} retries: {last_error}", cause=last_error)
+            error_desc = str(last_error) if str(last_error) else type(last_error).__name__
+            raise AIError(f"Gemini TTS failed after {max_retries} retries: {error_desc}", cause=last_error)
 
     async def synthesize_file(
         self, text: str, voice_config: VoiceConfig, output_path: Path
@@ -463,8 +473,9 @@ class GeminiTTS(TTSProvider):
             return output_path
 
         except Exception as e:
-            logger.error("gemini_tts_file_failed", error=str(e), exc_info=True)
-            raise AIError(f"Gemini TTS file generation failed: {e}", cause=e)
+            error_desc = str(e) if str(e) else type(e).__name__
+            logger.error("gemini_tts_file_failed", error=error_desc, error_type=type(e).__name__, exc_info=True)
+            raise AIError(f"Gemini TTS file generation failed: {error_desc}", cause=e)
 
     def _create_wav_file(self, pcm_data: bytes) -> bytes:
         """

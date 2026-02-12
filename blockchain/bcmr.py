@@ -57,7 +57,8 @@ class BCMRGenerator:
             self.use_qube_storage = True
         else:
             # Legacy shared BCMR storage
-            self.bcmr_dir = Path("data/blockchain/bcmr")
+            from utils.paths import get_app_data_dir
+            self.bcmr_dir = get_app_data_dir() / "blockchain" / "bcmr"
             self.bcmr_file = None  # Will use category_id as filename
             self.use_qube_storage = False
 

@@ -40,10 +40,17 @@ class SemanticSearch:
         self.model_name = model_name
 
         # Initialize sentence transformer model
+        # NOTE: SentenceTransformer uses accelerate's init_empty_weights() which
+        # monkey-patches torch.nn.Module.__init__ GLOBALLY (not thread-locally).
+        # While this context is active, ANY nn.Module creation in ANY thread gets
+        # meta tensors instead of real ones. We acquire _model_init_lock to prevent
+        # overlap with Kokoro TTS model construction (see audio/kokoro_tts.py).
         try:
             from sentence_transformers import SentenceTransformer
+            from ai._model_init_lock import model_init_lock
 
-            self.model = SentenceTransformer(model_name)
+            with model_init_lock:
+                self.model = SentenceTransformer(model_name)
             self.embedding_dim = self.model.get_sentence_embedding_dimension()
 
             logger.info(

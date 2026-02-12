@@ -687,7 +687,7 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
 
       {/* Reset Confirmation Modal */}
       {qubeToReset && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50">
+        <div className="fixed inset-0 bg-black/95 backdrop-blur-sm flex items-center justify-center z-50">
           <div className="glass-card p-6 max-w-md w-full mx-4">
             <h2 className="text-xl font-bold text-text-primary mb-2">Reset {qubeToReset.name}?</h2>
             <p className="text-accent-warning text-sm mb-4 font-semibold">
@@ -729,7 +729,7 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
 
       {/* Transfer Modal */}
       {showTransferModal && selectedQubeForSync && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50">
+        <div className="fixed inset-0 bg-black/95 backdrop-blur-sm flex items-center justify-center z-50">
           <div className="glass-card p-6 max-w-lg w-full mx-4 max-h-[90vh] overflow-y-auto">
             <h2 className="text-xl font-bold text-text-primary mb-2">Transfer {selectedQubeForSync.name}</h2>
             <p className="text-red-400 text-sm mb-4 font-semibold">
@@ -833,7 +833,7 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
 
       {/* Import from Wallet Modal */}
       {showImportFromWalletModal && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50">
+        <div className="fixed inset-0 bg-black/95 backdrop-blur-sm flex items-center justify-center z-50">
           <div className="glass-card p-6 max-w-lg w-full mx-4 max-h-[90vh] overflow-y-auto">
             <h2 className="text-xl font-bold text-text-primary mb-4">Import from Wallet</h2>
 

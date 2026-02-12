@@ -6,6 +6,7 @@ From docs/27_Audio_TTS_STT_Integration.md Section 5.1
 """
 
 import os
+import sys
 from pathlib import Path
 from typing import Dict, Optional, Any, Tuple
 import asyncio
@@ -283,13 +284,13 @@ class AudioManager:
             self.tts_providers["qwen3"] = None  # Lazy load marker
             logger.info("tts_provider_registered", provider="qwen3", status="lazy")
 
-        # WSL2 TTS (Qwen3 via WSL2 server) - preferred for near real-time TTS
-        # Server must be running: wsl -d Ubuntu-22.04 ~/qubes-tts/start_server.sh
-        try:
-            self.tts_providers["wsl2"] = WSL2TTSProvider()
-            logger.info("tts_provider_registered", provider="wsl2")
-        except Exception as e:
-            logger.debug("wsl2_tts_not_available", error=str(e))
+        # WSL2 TTS (Qwen3 via WSL2 server) - Windows only
+        if sys.platform == "win32":
+            try:
+                self.tts_providers["wsl2"] = WSL2TTSProvider()
+                logger.info("tts_provider_registered", provider="wsl2")
+            except Exception as e:
+                logger.debug("wsl2_tts_not_available", error=str(e))
 
         # Kokoro TTS (local, no GPU required) - fast 82M param model
         # Supports 54 voices across 8 languages, runs on CPU or GPU
@@ -774,7 +775,8 @@ class AudioManager:
         if self.qube_data_dir:
             audio_dir = self.qube_data_dir / "audio"
         else:
-            audio_dir = Path("data/audio")
+            from utils.paths import get_app_data_dir
+            audio_dir = get_app_data_dir() / "audio"
 
         audio_dir.mkdir(parents=True, exist_ok=True)
 

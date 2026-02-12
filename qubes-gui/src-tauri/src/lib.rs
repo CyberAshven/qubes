@@ -252,7 +252,14 @@ fn find_python_path() -> Result<String, String> {
 
     #[cfg(not(target_os = "windows"))]
     {
-        // Try python3 first, then python
+        // Try venv python first (ensures correct packages are available)
+        let project_root = get_python_project_path();
+        let venv_python = project_root.join("venv").join("bin").join("python3");
+        if venv_python.exists() {
+            return Ok(venv_python.to_string_lossy().to_string());
+        }
+
+        // Try python3 from PATH, then python
         if Command::new("python3").arg("--version").output().is_ok() {
             return Ok("python3".to_string());
         }
@@ -473,6 +480,7 @@ struct ChatResponse {
 struct SpeechResponse {
     success: bool,
     audio_path: Option<String>,
+    total_chunks: Option<i32>,
     qube_id: Option<String>,
     error: Option<String>,
 }
@@ -1376,7 +1384,8 @@ fn create_backend_command() -> (Command, bool) {
     }
 
     // Development mode - use Python
-    let mut cmd = Command::new("python");
+    let python = find_python_path().unwrap_or_else(|_| "python".to_string());
+    let mut cmd = Command::new(&python);
 
     // Hide console window on Windows
     #[cfg(target_os = "windows")]
@@ -2873,21 +2882,6 @@ async fn get_audio_base64(file_path: String) -> Result<String, String> {
         return Err(format!("Audio file is empty: {:?}", absolute_path));
     }
 
-    // Log file info for debugging
-    let file_size = audio_data.len();
-    let first_bytes: Vec<u8> = audio_data.iter().take(4).cloned().collect();
-    eprintln!("[TTS Debug] Audio file: {:?}, size: {} bytes, first 4 bytes: {:?}",
-              absolute_path, file_size, first_bytes);
-
-    // Validate MP3 magic bytes (ID3 tag or MP3 frame sync)
-    let is_valid_mp3 = (audio_data.len() >= 3 && &audio_data[0..3] == b"ID3") ||
-                       (audio_data.len() >= 2 && audio_data[0] == 0xFF && (audio_data[1] & 0xE0) == 0xE0);
-    let is_valid_wav = audio_data.len() >= 4 && &audio_data[0..4] == b"RIFF";
-
-    if !is_valid_mp3 && !is_valid_wav {
-        eprintln!("[TTS Debug] WARNING: Audio file may be corrupt - doesn't start with expected magic bytes");
-    }
-
     // Convert to base64
     let base64_data = general_purpose::STANDARD.encode(&audio_data);
 
@@ -2900,10 +2894,156 @@ async fn get_audio_base64(file_path: String) -> Result<String, String> {
         "audio/mpeg"  // Default fallback
     };
 
-    eprintln!("[TTS Debug] Returning data URL with mime: {}, base64 length: {}", mime_type, base64_data.len());
-
     // Return as data URL with correct MIME type
     Ok(format!("data:{};base64,{}", mime_type, base64_data))
+}
+
+/// Play audio file natively using system audio (bypasses WebKitGTK).
+/// On Linux, uses pw-play (PipeWire) or aplay as fallback.
+/// Returns duration in seconds parsed from WAV header.
+/// Emits "audio-playback-ended" event when playback finishes.
+#[tauri::command]
+async fn play_audio_native(
+    app_handle: tauri::AppHandle,
+    file_path: String,
+) -> Result<serde_json::Value, String> {
+    use std::path::Path;
+
+    let path = Path::new(&file_path);
+    let absolute_path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        get_python_project_path().join(&file_path)
+    };
+
+    if !absolute_path.exists() {
+        return Err(format!("Audio file does not exist: {:?}", absolute_path));
+    }
+
+    // Parse audio duration from file header (WAV or MP3)
+    let duration_secs = {
+        let data = std::fs::read(&absolute_path)
+            .map_err(|e| format!("Failed to read audio file: {}", e))?;
+
+        if data.len() >= 44 && &data[0..4] == b"RIFF" {
+            // WAV: parse from header
+            let channels = u16::from_le_bytes([data[22], data[23]]) as f64;
+            let sample_rate = u32::from_le_bytes([data[24], data[25], data[26], data[27]]) as f64;
+            let bits_per_sample = u16::from_le_bytes([data[34], data[35]]) as f64;
+            let data_size = u32::from_le_bytes([data[40], data[41], data[42], data[43]]) as f64;
+            if sample_rate > 0.0 && channels > 0.0 && bits_per_sample > 0.0 {
+                data_size / (sample_rate * channels * bits_per_sample / 8.0)
+            } else {
+                0.0
+            }
+        } else if data.len() >= 4 && (data[0] == 0xFF && (data[1] & 0xE0) == 0xE0
+                                       || &data[0..3] == b"ID3") {
+            // MP3: parse MPEG frame header for bitrate, then calculate duration
+            let file_size = data.len() as f64;
+
+            // Skip ID3v2 tag if present
+            let mut offset: usize = 0;
+            if data.len() >= 10 && &data[0..3] == b"ID3" {
+                let id3_size = ((data[6] as usize & 0x7F) << 21)
+                    | ((data[7] as usize & 0x7F) << 14)
+                    | ((data[8] as usize & 0x7F) << 7)
+                    | (data[9] as usize & 0x7F);
+                offset = 10 + id3_size;
+            }
+
+            // Find first MPEG sync frame and parse bitrate
+            let mut bitrate_kbps: u32 = 0;
+            while offset + 4 <= data.len() {
+                if data[offset] == 0xFF && (data[offset + 1] & 0xE0) == 0xE0 {
+                    let b1 = data[offset + 1];
+                    let b2 = data[offset + 2];
+                    let version = (b1 >> 3) & 3;   // 0=2.5, 2=2, 3=1
+                    let layer = (b1 >> 1) & 3;     // 1=III, 2=II, 3=I
+                    let br_idx = (b2 >> 4) as usize;
+
+                    // Bitrate lookup tables (kbps)
+                    const MPEG1_L3: [u32; 16] = [0,32,40,48,56,64,80,96,112,128,160,192,224,256,320,0];
+                    const MPEG2_L3: [u32; 16] = [0,8,16,24,32,40,48,56,64,80,96,112,128,144,160,0];
+
+                    bitrate_kbps = match (version, layer) {
+                        (3, 1) => MPEG1_L3[br_idx],        // MPEG1 Layer III
+                        (2, 1) | (0, 1) => MPEG2_L3[br_idx], // MPEG2/2.5 Layer III
+                        _ => 0,
+                    };
+                    break;
+                }
+                offset += 1;
+            }
+
+            if bitrate_kbps > 0 {
+                file_size * 8.0 / (bitrate_kbps as f64 * 1000.0)
+            } else {
+                // Fallback: assume 128kbps
+                file_size * 8.0 / 128000.0
+            }
+        } else {
+            // Unknown format - let the player try anyway, estimate 30s
+            eprintln!("[play_audio_native] Unknown audio format, estimating 30s duration");
+            30.0
+        }
+    };
+
+    eprintln!("[play_audio_native] Playing {:?}, duration: {:.1}s", absolute_path, duration_secs);
+
+    // Find the best available audio player
+    let (player_cmd, player_args): (&str, Vec<&str>) = if cfg!(target_os = "linux") {
+        // Try pw-play first (PipeWire), then aplay (ALSA)
+        if std::process::Command::new("pw-play").arg("--help").output().is_ok() {
+            ("pw-play", vec![])
+        } else {
+            ("aplay", vec![])
+        }
+    } else if cfg!(target_os = "macos") {
+        ("afplay", vec![])
+    } else {
+        return Err("Native audio playback not supported on this platform".to_string());
+    };
+
+    let path_str = absolute_path.to_string_lossy().to_string();
+
+    // Spawn playback in background thread
+    std::thread::spawn(move || {
+        let result = std::process::Command::new(player_cmd)
+            .args(&player_args)
+            .arg(&path_str)
+            .output();
+
+        match result {
+            Ok(output) => {
+                if !output.status.success() {
+                    eprintln!("[play_audio_native] Player exited with error: {}",
+                        String::from_utf8_lossy(&output.stderr));
+                }
+            }
+            Err(e) => {
+                eprintln!("[play_audio_native] Failed to spawn player: {}", e);
+            }
+        }
+
+        // Emit event when playback ends
+        let _ = app_handle.emit("audio-playback-ended", ());
+    });
+
+    Ok(serde_json::json!({
+        "duration": duration_secs,
+        "player": player_cmd,
+    }))
+}
+
+/// Stop any native audio playback by killing pw-play/aplay processes
+#[tauri::command]
+async fn stop_audio_native() -> Result<(), String> {
+    if cfg!(target_os = "linux") {
+        // Kill any running pw-play or aplay processes spawned by us
+        let _ = std::process::Command::new("pkill").arg("-f").arg("pw-play").output();
+        let _ = std::process::Command::new("pkill").arg("-f").arg("aplay").output();
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -7139,6 +7279,8 @@ pub fn run() {
             send_message,
             generate_speech,
             get_audio_base64,
+            play_audio_native,
+            stop_audio_native,
             anchor_session,
             discard_session,
             delete_session_block,

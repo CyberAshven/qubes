@@ -72,6 +72,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
     parameters: any;
     result: any;
     status: string;
+    fromSession: boolean;  // true = current session, false = anchored/permanent
   }>>([]);
   const chatClearedAtRef = useRef<number>(0);  // Timestamp when chat was last cleared (Escape)
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -907,7 +908,6 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
    * TODO: Fix temp file permissions or implement alternative solution.
    */
   const prepareMessageForIPC = async (message: string): Promise<string> => {
-    console.log('[IPC] Sending message directly (length:', message.length, 'chars). WARNING: Will be truncated if >8KB');
     return message;
   };
 
@@ -965,15 +965,11 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
     try {
       // Process files
       if (filesToProcess.length > 0) {
-        console.log('[PDF Debug] Files to process:', filesToProcess.map(f => ({name: f.name, type: f.type})));
-
         // Separate images, text files, PDFs, and other binaries
         const images = filesToProcess.filter(f => f.type === 'image');
         const textFiles = filesToProcess.filter(f => f.type === 'text');
         const pdfFiles = filesToProcess.filter(f => f.type === 'pdf');
         const binaryFiles = filesToProcess.filter(f => f.type === 'binary');
-
-        console.log('[PDF Debug] Filtered - images:', images.length, 'text:', textFiles.length, 'pdfs:', pdfFiles.length, 'binary:', binaryFiles.length);
 
         // Check for unsupported binary files (PDFs are now supported)
         if (binaryFiles.length > 0) {
@@ -991,11 +987,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
 
         // Add PDF files to message (backend will handle extraction)
         for (const file of pdfFiles) {
-          console.log('[PDF Debug] Adding PDF to message:', file.name, 'data length:', file.data?.length || 0);
           fullMessage += `\n\n[Attached PDF: ${file.name}]\n<pdf_base64 filename="${file.name}">${file.data}</pdf_base64>`;
         }
-
-        console.log('[PDF Debug] fullMessage length after PDFs:', fullMessage.length, 'has pdf tag:', fullMessage.includes('<pdf_base64'));
 
         // Set processing stage based on whether documents need processing
         if (pdfFiles.length > 0 || images.length > 0) {
@@ -1034,13 +1027,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
 
         // If we have text files or PDFs after images, send them as a follow-up
         if (textFiles.length > 0 || pdfFiles.length > 0) {
-          console.log('[PDF Debug] About to send message, fullMessage length:', fullMessage.length, 'has pdf tag:', fullMessage.includes('<pdf_base64'));
-
           // Prepare message for IPC (writes to temp file if >100KB)
           const preparedMessage = await prepareMessageForIPC(fullMessage);
-
-          console.log('[PDF Debug] Prepared message length:', preparedMessage.length, 'has pdf tag:', preparedMessage.includes('<pdf_base64'));
-          console.log('[IPC] Calling send_message with preparedMessage:', preparedMessage.substring(0, 100));
 
           const textResponse = await invoke<ChatResponse>('send_message', {
             userId: userId,
@@ -1049,7 +1037,6 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
             password: password
           });
 
-          console.log('[IPC] send_message returned:', textResponse.success ? 'SUCCESS' : 'FAILED');
 
           if (textResponse.success && textResponse.response) {
             // Combine image responses with text response
@@ -1131,8 +1118,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
         }
       }
     } catch (err) {
-      console.error('[ERROR] Failed to process message:', err);
-      console.error('[ERROR] Error type:', typeof err, 'Error object:', err);
+      console.error('Failed to process message:', err);
       setError(`Backend failed. Please try again or check the logs for details.`);
       setFailedMessage(messageToSend); // Store for retry
       setIsLoading(false);
@@ -1318,7 +1304,6 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
 
           // Truncate text for TTS if needed (OpenAI limit: 4096 chars)
           const ttsText = truncateForTTS(lastResponseText);
-
           // Generate TTS and wait for it to be ready and start playing
           await playTTS(userId, currentQube.qube_id, ttsText, password);
 
@@ -1342,19 +1327,24 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
           // Clear pending response and stop loading
           setPendingResponse(null);
           setIsLoading(false);
-      setProcessingStage(null);
+          setProcessingStage(null);
           processingResponseRef.current = null;
         } catch (err) {
-          console.error('TTS error:', err);
-          setError(`TTS error: ${String(err)}`);
+          console.error('[ChatInterface] TTS error:', err);
           setIsGeneratingTTS(false);
           setTtsProgress({ stage: 'idle', progress: 0, message: '' });
+
+          // Don't show error banner for expected skip cases (duplicate text)
+          const errMsg = String(err);
+          if (!errMsg.includes('TTS skipped')) {
+            setError(`TTS error: ${errMsg}`);
+          }
 
           // Even if TTS fails, show the message immediately (no typewriter)
           addMessage(currentQube.qube_id, qubeResponse);
           setPendingResponse(null);
           setIsLoading(false);
-      setProcessingStage(null);
+          setProcessingStage(null);
           processingResponseRef.current = null;
         }
       } else {
@@ -1410,7 +1400,6 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
           );
 
           if (hasProcessDocumentAction && processingStage === 'document') {
-            console.log('[Document Processing] Detected process_document ACTION, switching to response processing');
             setProcessingStage('response');
           }
 
@@ -1471,9 +1460,9 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
 
           // Store all ACTION blocks (completed or not) for display with messages
           // Include both session and permanent blocks (permanent has post-anchor ACTION blocks)
-          const sessionBlocks = result.session_blocks || [];
-          const permanentBlocks = result.permanent_blocks || [];
-          const combinedBlocks = [...sessionBlocks, ...permanentBlocks];
+          const sessionBlocksAll = (result.session_blocks || []).map((b: any) => ({ ...b, _fromSession: true }));
+          const permanentBlocksAll = (result.permanent_blocks || []).map((b: any) => ({ ...b, _fromSession: false }));
+          const combinedBlocks = [...sessionBlocksAll, ...permanentBlocksAll];
 
           const pollClearedAt = chatClearedAtRef.current;
           const allActionBlocks = combinedBlocks
@@ -1491,6 +1480,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
               parameters: b.content.parameters || {},
               result: b.content.result || null,
               status: b.content.status || 'completed',
+              fromSession: b._fromSession,
             }))
             .sort((a, b) => a.blockNumber - b.blockNumber);  // Sort by sequence
 
@@ -1541,8 +1531,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
 
         // Combine session blocks and permanent blocks to get all ACTION blocks
         // After auto-anchor, ACTION blocks move from session to permanent
-        const sessionBlocks = result?.session_blocks || [];
-        const permanentBlocks = result?.permanent_blocks || [];
+        const sessionBlocks = (result?.session_blocks || []).map((b: any) => ({ ...b, _fromSession: true }));
+        const permanentBlocks = (result?.permanent_blocks || []).map((b: any) => ({ ...b, _fromSession: false }));
         const allBlocks = [...sessionBlocks, ...permanentBlocks];
 
         const clearedAt = chatClearedAtRef.current;
@@ -1561,6 +1551,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
             parameters: b.content.parameters || {},
             result: b.content.result || null,
             status: b.content.status || 'completed',
+            fromSession: b._fromSession,  // Track origin for current-turn filtering
           }))
           .sort((a, b) => a.blockNumber - b.blockNumber);  // Sort by sequence
 
@@ -1596,7 +1587,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
 
       // Strategy 1: Use blockNumber if available (most reliable)
       if (currentBlockNumber !== undefined && currentBlockNumber !== null) {
-        // Find the previous QUBE message's block number
+        // Find the previous qube message's block number for inter-qube bounding
         let prevQubeBlockNumber: number | null = null;
         for (let i = msgIndex - 1; i >= 0; i--) {
           if (messages[i].sender === 'qube' && messages[i].blockNumber !== undefined) {
@@ -1605,20 +1596,28 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
           }
         }
 
-        // Find ACTION blocks between previous qube message and current qube message
-        // Session blocks use NEGATIVE numbers that DECREASE: -1, -2, -3...
-        // So "between" means: blockNumber < prevBlockNumber AND blockNumber > currentBlockNumber
-        // (because -2 comes after -1 but before -3 in sequence)
+        // Also find preceding message timestamp (any sender) for timestamp-based bounding
+        // User messages don't have blockNumbers, so we use their timestamp instead
+        let prevMessageTimestamp = 0;
+        for (let i = msgIndex - 1; i >= 0; i--) {
+          prevMessageTimestamp = messages[i].timestamp.getTime();
+          break;
+        }
+
+        // Find ACTION blocks between previous context and current qube message
         const toolCalls = completedActionBlocks.filter(block => {
-          if (prevQubeBlockNumber === null) {
-            // No previous qube message - include all actions before current
-            return block.blockNumber > currentBlockNumber;
+          if (prevQubeBlockNumber !== null) {
+            // Between two qube messages: use block number range
+            return (block.blockNumber < prevQubeBlockNumber && block.blockNumber > currentBlockNumber) ||
+                   (block.blockNumber > prevQubeBlockNumber && block.blockNumber < currentBlockNumber);
           }
-          // Action is between prev and current if: prev > action > current (for negative numbers)
-          // Or for positive: prev < action < current
-          // Generalized: action is between if it's closer to current than prev
-          return (block.blockNumber < prevQubeBlockNumber && block.blockNumber > currentBlockNumber) ||
-                 (block.blockNumber > prevQubeBlockNumber && block.blockNumber < currentBlockNumber);
+          if (prevMessageTimestamp > 0) {
+            // First qube response but has a preceding user message:
+            // use timestamp to only include tool calls from THIS interaction
+            return block.timestamp > prevMessageTimestamp && block.timestamp <= currentTimestamp;
+          }
+          // No previous message at all - only include current-session blocks
+          return block.fromSession && block.blockNumber > currentBlockNumber;
         }).sort((a, b) => b.blockNumber - a.blockNumber); // Sort by sequence (descending for negative)
 
         if (toolCalls.length > 0) {
@@ -1639,8 +1638,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
           if (prevTimestamp > 0) {
             return block.timestamp > prevTimestamp && block.timestamp <= currentTimestamp;
           } else {
-            // First message - include all actions before it
-            return block.timestamp <= currentTimestamp;
+            // First message - only include current-session blocks before it
+            return block.fromSession && block.timestamp <= currentTimestamp;
           }
         }).sort((a, b) => a.timestamp - b.timestamp); // Sort chronologically
 
@@ -1834,9 +1833,11 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
               }
 
               // Find tool calls from the current turn (after last qube message)
+              // Only show session blocks (not permanent/historical) to avoid showing old session tool calls
               // Session blocks use negative numbers: -1, -2, -3 (more negative = later)
               // So "after" the last qube means: blockNumber < lastQubeBlockNumber
               const currentTurnTools = completedActionBlocks.filter(block => {
+                if (!block.fromSession) return false;  // Skip permanent/historical blocks
                 if (lastQubeBlockNumber === null) return true;
                 return block.blockNumber < lastQubeBlockNumber;
               }).sort((a, b) => b.blockNumber - a.blockNumber); // Sort newest first

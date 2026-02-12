@@ -436,8 +436,26 @@ class Qube:
         This loads the sentence-transformers model and FAISS index without
         blocking Qube startup. If initialization fails, semantic search
         gracefully falls back to keyword-only search.
+
+        NOTE: The sentence-transformers import (which imports the transformers
+        package) is done in the main thread BEFORE starting the background thread.
+        This avoids a race condition where the transformers package's lazy module
+        replacement (plain module → _LazyModule at end of __init__.py) is still
+        in-flight when another thread tries 'from transformers import AlbertModel',
+        seeing a half-initialized plain module without __getattr__.
         """
         import threading
+
+        # Pre-import transformers in the main thread to ensure the package is
+        # fully initialized (including its _LazyModule replacement of sys.modules)
+        # before the background thread starts. Without this, the background thread's
+        # sentence_transformers import triggers transformers.__init__.py, and other
+        # threads (e.g., Kokoro TTS) see a half-initialized plain module in
+        # sys.modules that lacks __getattr__ for lazy imports like AlbertModel.
+        try:
+            import transformers  # noqa: F401 - ensures _LazyModule is in sys.modules
+        except ImportError:
+            pass
 
         def init_search():
             try:
@@ -678,7 +696,8 @@ class Qube:
             private_key: Decrypted private key
             user_name: Username owning this Qube
             encryption_key: Optional encryption key for chain_state
-            **kwargs: Additional args (ignored for compatibility)
+            **kwargs: Additional args, notably:
+                - qube_dir: Path to the qube's actual directory on disk (preferred)
 
         Returns:
             Qube instance
@@ -688,11 +707,16 @@ class Qube:
         # Deserialize public key
         public_key = deserialize_public_key(qube_data["public_key"])
 
-        # Get data directory from memory_chain_path
-        # memory_chain_path is like: data/users/{user}/qubes/{name_id}/memory
-        # We want: data/users/{user}/qubes (the parent of {name_id})
-        memory_chain_path = Path(qube_data["memory_chain_path"])
-        data_dir = memory_chain_path.parent.parent  # Go up two levels: memory -> {name_id} -> qubes
+        # Prefer qube_dir passed directly (avoids cross-platform path issues)
+        qube_dir = kwargs.get("qube_dir")
+        if qube_dir:
+            # qube_dir is like: data/users/{user}/qubes/{name_id}
+            # We want: data/users/{user}/qubes (the parent)
+            data_dir = qube_dir.parent
+        else:
+            # Fallback: parse from metadata (normalize backslashes for cross-platform compat)
+            memory_chain_path = Path(qube_data["memory_chain_path"].replace("\\", "/"))
+            data_dir = memory_chain_path.parent.parent  # memory -> {name_id} -> qubes
 
         # Create Qube instance
         qube = cls(

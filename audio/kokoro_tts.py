@@ -263,13 +263,24 @@ class KokoroTTSProvider(TTSProvider):
                 from contextlib import redirect_stdout, redirect_stderr
                 from io import StringIO
 
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore")
-                    # Redirect stdout/stderr to suppress pip install output
-                    devnull = StringIO()
-                    with redirect_stdout(devnull), redirect_stderr(devnull):
-                        from kokoro import KPipeline
-                        self._pipeline = KPipeline(lang_code=lang_code, repo_id='hexgrad/Kokoro-82M')
+                # Acquire model_init_lock to prevent overlap with
+                # SentenceTransformer loading, which uses accelerate's
+                # init_empty_weights() — a process-global monkey-patch of
+                # torch.nn.Module.__init__ that would make our tensors meta.
+                from ai._model_init_lock import model_init_lock
+
+                with model_init_lock:
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore")
+                        # Redirect stdout/stderr to suppress pip install output
+                        devnull = StringIO()
+                        with redirect_stdout(devnull), redirect_stderr(devnull):
+                            from kokoro import KPipeline
+                            # Use GPU if available, fall back to CPU
+                            import torch
+                            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+                            logger.info("kokoro_device", device=device)
+                            self._pipeline = KPipeline(lang_code=lang_code, repo_id='hexgrad/Kokoro-82M', device=device)
 
                 self._current_lang = lang_code
                 logger.info("kokoro_pipeline_loaded", load_time_ms=int((time.time() - start_time) * 1000))
