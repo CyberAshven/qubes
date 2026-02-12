@@ -460,14 +460,22 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           APPIMAGE_DIR="qubes-gui/src-tauri/target/${{ matrix.target }}/release/bundle/appimage"
-          APPIMAGE=$(find "$APPIMAGE_DIR" -name "*.AppImage" 2>/dev/null | head -1)
-          if [ -n "$APPIMAGE" ] && [ -f "$APPIMAGE" ]; then
-            cp "$APPIMAGE" "Qubes-Linux.AppImage"
-            tar -czf "Qubes-Linux.AppImage.tar.gz" "Qubes-Linux.AppImage"
+          # Use Tauri's generated tar.gz + sig directly (signature matches the archive)
+          TARGZ=$(find "$APPIMAGE_DIR" -name "*.AppImage.tar.gz" ! -name "*.sig" 2>/dev/null | head -1)
+          if [ -n "$TARGZ" ] && [ -f "$TARGZ" ]; then
+            cp "$TARGZ" "Qubes-Linux.AppImage.tar.gz"
             gh release upload "${{ needs.create-release.outputs.tag }}" "Qubes-Linux.AppImage.tar.gz" --clobber
-            if [ -f "$APPIMAGE.tar.gz.sig" ]; then
-              cp "$APPIMAGE.tar.gz.sig" "Qubes-Linux.AppImage.tar.gz.sig"
+            if [ -f "$TARGZ.sig" ]; then
+              cp "$TARGZ.sig" "Qubes-Linux.AppImage.tar.gz.sig"
               gh release upload "${{ needs.create-release.outputs.tag }}" "Qubes-Linux.AppImage.tar.gz.sig" --clobber
+            fi
+          else
+            # Fallback: create tar.gz from AppImage if Tauri didn't generate one
+            APPIMAGE=$(find "$APPIMAGE_DIR" -name "*.AppImage" 2>/dev/null | head -1)
+            if [ -n "$APPIMAGE" ] && [ -f "$APPIMAGE" ]; then
+              cp "$APPIMAGE" "Qubes-Linux.AppImage"
+              tar -czf "Qubes-Linux.AppImage.tar.gz" "Qubes-Linux.AppImage"
+              gh release upload "${{ needs.create-release.outputs.tag }}" "Qubes-Linux.AppImage.tar.gz" --clobber
             fi
           fi
 
