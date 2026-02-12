@@ -204,6 +204,73 @@ jobs:
           echo '#!/bin/sh' > "binaries/qubes-backend-${{ matrix.target }}"
           chmod +x "binaries/qubes-backend-${{ matrix.target }}"
 
+      # ========== Strip PyInstaller Bundle Bloat ==========
+      # Removes ~500-800MB of torch/transformers files not needed for inference
+      - name: Strip bundle bloat (Unix)
+        if: matrix.platform != 'windows-latest'
+        run: |
+          INTERNAL="qubes-gui/src-tauri/dist/qubes-backend/_internal"
+          echo "Backend size before strip: $(du -sh "qubes-gui/src-tauri/dist/qubes-backend" | cut -f1)"
+          # Torch: remove test binaries, compiler, training, distributed (~300-500MB)
+          rm -rf "$INTERNAL/torch/test" \
+                 "$INTERNAL/torch/_inductor" \
+                 "$INTERNAL/torch/_dynamo" \
+                 "$INTERNAL/torch/_functorch" \
+                 "$INTERNAL/torch/_export" \
+                 "$INTERNAL/torch/distributed" \
+                 "$INTERNAL/torch/ao" \
+                 "$INTERNAL/torch/profiler" \
+                 "$INTERNAL/torch/onnx" \
+                 "$INTERNAL/torch/optim" \
+                 "$INTERNAL/torch/include" \
+                 "$INTERNAL/torch/share" \
+                 "$INTERNAL/torch/contrib" \
+                 "$INTERNAL/torch/futures" \
+                 "$INTERNAL/torch/multiprocessing" \
+                 "$INTERNAL/torch/autograd/profiler"* \
+                 "$INTERNAL/torch/package" 2>/dev/null || true
+          # Torch C++ headers and static libs (not needed at runtime)
+          find "$INTERNAL" -name "*.a" -delete 2>/dev/null || true
+          find "$INTERNAL" -name "*.h" -path "*/torch/*" -delete 2>/dev/null || true
+          # Transformers: remove unused model implementations (~100MB)
+          rm -rf "$INTERNAL/transformers/testing_utils"* \
+                 "$INTERNAL/transformers/models/deprecated" 2>/dev/null || true
+          # Tkinter/Tcl/Tk (GUI toolkit - not needed in headless backend)
+          rm -rf "$INTERNAL/test" "$INTERNAL/tests" \
+                 "$INTERNAL/unittest" "$INTERNAL/tkinter" \
+                 "$INTERNAL/_tkinter"* "$INTERNAL/_tk_data" \
+                 "$INTERNAL/tcl"* "$INTERNAL/tk"* 2>/dev/null || true
+          # Remove __pycache__ dirs and .pyc files (saves ~50MB)
+          find "$INTERNAL" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+          find "$INTERNAL" -name "*.pyc" -delete 2>/dev/null || true
+          # Strip debug symbols from .so files
+          find "$INTERNAL" -name "*.so" -exec strip --strip-debug {} + 2>/dev/null || true
+          echo "Backend size after strip: $(du -sh "qubes-gui/src-tauri/dist/qubes-backend" | cut -f1)"
+
+      - name: Strip bundle bloat (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          $internal = "qubes-gui/src-tauri/dist/qubes-backend/_internal"
+          $sizeBefore = (Get-ChildItem -Recurse "qubes-gui/src-tauri/dist/qubes-backend" | Measure-Object -Property Length -Sum).Sum / 1MB
+          Write-Host "Backend size before strip: $([math]::Round($sizeBefore))MB"
+          $dirs = @(
+            "torch/test", "torch/_inductor", "torch/_dynamo", "torch/_functorch",
+            "torch/_export", "torch/distributed", "torch/ao", "torch/profiler",
+            "torch/onnx", "torch/optim", "torch/include", "torch/share",
+            "torch/contrib", "torch/futures", "torch/multiprocessing", "torch/package",
+            "transformers/testing_utils", "transformers/models/deprecated",
+            "test", "tests", "unittest", "tkinter", "_tk_data", "tcl"
+          )
+          foreach ($d in $dirs) {
+            $path = Join-Path $internal $d
+            if (Test-Path $path) { Remove-Item -Recurse -Force $path }
+          }
+          # Remove __pycache__ and .pyc
+          Get-ChildItem -Path $internal -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+          $sizeAfter = (Get-ChildItem -Recurse "qubes-gui/src-tauri/dist/qubes-backend" | Measure-Object -Property Length -Sum).Sum / 1MB
+          Write-Host "Backend size after strip: $([math]::Round($sizeAfter))MB (saved $([math]::Round($sizeBefore - $sizeAfter))MB)"
+
       # ========== Install Frontend Dependencies ==========
       - name: Install frontend dependencies
         working-directory: qubes-gui
@@ -526,6 +593,32 @@ jobs:
 
           Support: https://github.com/BitFaced2/Qubes
           REOF
+
+      # ========== Check Bundle Size ==========
+      - name: Check bundle size (Unix)
+        if: matrix.platform != 'windows-latest'
+        run: |
+          echo "=== Bundle size breakdown ==="
+          du -sh dist-bundle/Qubes/
+          du -sh dist-bundle/Qubes/*/ 2>/dev/null || true
+          if [ -d "dist-bundle/Qubes/qubes-backend/_internal" ]; then
+            echo "=== Top 10 largest dirs in _internal ==="
+            du -sh dist-bundle/Qubes/qubes-backend/_internal/*/ 2>/dev/null | sort -rh | head -10
+          fi
+          # Fail early if uncompressed size suggests ZIP will exceed 2GB
+          SIZE_BYTES=$(du -sb dist-bundle/Qubes/ | cut -f1)
+          SIZE_MB=$((SIZE_BYTES / 1048576))
+          echo "Total uncompressed: ${SIZE_MB}MB"
+          if [ "$SIZE_MB" -gt 4000 ]; then
+            echo "::warning::Bundle is ${SIZE_MB}MB uncompressed - ZIP may exceed 2GB GitHub limit"
+          fi
+
+      - name: Check bundle size (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          $size = (Get-ChildItem -Recurse "dist-bundle/Qubes" | Measure-Object -Property Length -Sum).Sum / 1MB
+          Write-Host "Total uncompressed: $([math]::Round($size))MB"
 
       # ========== Create Archive ==========
       - name: Create ZIP archive (Windows)
