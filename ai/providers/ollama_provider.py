@@ -12,7 +12,7 @@ from ai.providers.base import AIModelInterface, ModelResponse
 from ai.retry_decorators import ollama_retry
 from ai.prompt_tools import get_prompt_tool_handler
 from ai.circuit_breakers import with_circuit_breaker
-from core.exceptions import ModelAPIError
+from core.exceptions import ModelAPIError, ModelNotAvailableError
 from utils.logging import get_logger
 from monitoring.metrics import MetricsRecorder
 

@@ -1406,6 +1406,18 @@ fn prepare_backend_command() -> Result<Command, String> {
 
     cmd.current_dir(&project_root);
 
+    // Set HF_HOME for bundled HuggingFace models (heavy bundle)
+    if is_bundled {
+        if let Ok(exe_path) = std::env::current_exe() {
+            if let Some(exe_dir) = exe_path.parent() {
+                let hf_models = exe_dir.join("models").join("huggingface");
+                if hf_models.exists() {
+                    cmd.env("HF_HOME", &hf_models);
+                }
+            }
+        }
+    }
+
     // In development mode, add the bridge script path
     if !is_bundled {
         let bridge_path = get_python_bridge_path();
@@ -6115,40 +6127,35 @@ async fn start_ollama() -> Result<bool, String> {
     #[cfg(not(target_os = "windows"))]
     let ollama_path = exe_dir.join("ollama").join("ollama");
 
+    // Check for bundled models directory (heavy bundle)
+    let models_dir = exe_dir.join("models").join("ollama");
+
     if !ollama_path.exists() {
         // Fall back to system Ollama
+        let mut cmd = Command::new("ollama");
+        cmd.arg("serve");
+        if models_dir.exists() {
+            cmd.env("OLLAMA_MODELS", &models_dir);
+        }
         #[cfg(target_os = "windows")]
         {
-            Command::new("ollama")
-                .arg("serve")
-                .creation_flags(0x08000000) // CREATE_NO_WINDOW
-                .spawn()
-                .map_err(|e| format!("Failed to start Ollama: {}", e))?;
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
         }
-        #[cfg(not(target_os = "windows"))]
-        {
-            Command::new("ollama")
-                .arg("serve")
-                .spawn()
-                .map_err(|e| format!("Failed to start Ollama: {}", e))?;
-        }
+        cmd.spawn()
+            .map_err(|e| format!("Failed to start Ollama: {}", e))?;
     } else {
         // Use bundled Ollama
+        let mut cmd = Command::new(&ollama_path);
+        cmd.arg("serve");
+        if models_dir.exists() {
+            cmd.env("OLLAMA_MODELS", &models_dir);
+        }
         #[cfg(target_os = "windows")]
         {
-            Command::new(&ollama_path)
-                .arg("serve")
-                .creation_flags(0x08000000) // CREATE_NO_WINDOW
-                .spawn()
-                .map_err(|e| format!("Failed to start bundled Ollama: {}", e))?;
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
         }
-        #[cfg(not(target_os = "windows"))]
-        {
-            Command::new(&ollama_path)
-                .arg("serve")
-                .spawn()
-                .map_err(|e| format!("Failed to start bundled Ollama: {}", e))?;
-        }
+        cmd.spawn()
+            .map_err(|e| format!("Failed to start bundled Ollama: {}", e))?;
     }
 
     Ok(true)

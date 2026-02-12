@@ -63,6 +63,19 @@ sys.path.insert(0, str(Path(__file__).parent))
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")
 
+# Auto-detect bundled HuggingFace models (heavy bundle)
+# Sets HF_HOME so kokoro, sentence-transformers find pre-downloaded models
+if not os.environ.get('HF_HOME') and getattr(sys, 'frozen', False):
+    _exe_dir = Path(sys.executable).parent
+    # --onedir layout: exe is at Qubes/qubes-backend/qubes-backend
+    # models are at Qubes/models/huggingface (one level up)
+    _hf_models = _exe_dir.parent / "models" / "huggingface"
+    if not _hf_models.exists():
+        # Flat layout: models next to exe
+        _hf_models = _exe_dir / "models" / "huggingface"
+    if _hf_models.exists():
+        os.environ['HF_HOME'] = str(_hf_models)
+
 # CRITICAL: Disable all logging to stdout/stderr before importing anything
 # Set environment variable to disable structlog output
 os.environ['QUBES_LOG_LEVEL'] = 'ERROR'

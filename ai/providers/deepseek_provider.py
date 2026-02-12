@@ -10,7 +10,7 @@ from typing import List, Dict, Any, Optional, AsyncIterator
 from ai.providers.base import AIModelInterface, ModelResponse
 from ai.retry_decorators import ai_api_retry
 from ai.circuit_breakers import with_circuit_breaker
-from core.exceptions import ModelAPIError
+from core.exceptions import ModelAPIError, ModelNotAvailableError
 from utils.logging import get_logger
 from monitoring.metrics import MetricsRecorder
 

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { open } from '@tauri-apps/plugin-dialog';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { QRCodeSVG } from 'qrcode.react';
@@ -291,6 +292,8 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
   const [submittingTxid, setSubmittingTxid] = useState<boolean>(false);
   const [voiceDropdownOpen, setVoiceDropdownOpen] = useState(false);
   const voiceDropdownRef = useRef<HTMLDivElement>(null);
+  const voiceButtonRef = useRef<HTMLButtonElement>(null);
+  const [voiceDropdownPos, setVoiceDropdownPos] = useState({ top: 0, left: 0, width: 0 });
   // customVoices now comes from VoiceLibraryContext (see useVoiceLibrary hook above)
 
   const [formData, setFormData] = useState<CreateQubeData>({
@@ -370,13 +373,23 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
   // Close voice dropdown when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      if (voiceDropdownRef.current && !voiceDropdownRef.current.contains(event.target as Node)) {
+      const target = event.target as Node;
+      if (voiceDropdownRef.current && !voiceDropdownRef.current.contains(target) &&
+          voiceButtonRef.current && !voiceButtonRef.current.contains(target)) {
         setVoiceDropdownOpen(false);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
+
+  // Position voice dropdown portal
+  useEffect(() => {
+    if (voiceDropdownOpen && voiceButtonRef.current) {
+      const rect = voiceButtonRef.current.getBoundingClientRect();
+      setVoiceDropdownPos({ top: rect.bottom + 4, left: rect.left, width: rect.width });
+    }
+  }, [voiceDropdownOpen]);
 
   // Custom voices now come from VoiceLibraryContext - no need for local loading
 
@@ -876,9 +889,10 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
               <label className="block text-sm font-medium text-text-secondary mb-2">
                 Voice
               </label>
-              <div className="relative" ref={voiceDropdownRef}>
+              <div>
                 <button
                   type="button"
+                  ref={voiceButtonRef}
                   onClick={() => setVoiceDropdownOpen(!voiceDropdownOpen)}
                   className="w-full px-4 py-2 bg-glass-bg backdrop-blur-glass border border-glass-border rounded-lg text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-primary/50 text-left flex justify-between items-center"
                 >
@@ -889,8 +903,12 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                   </svg>
                 </button>
-                {voiceDropdownOpen && (
-                  <div className="absolute z-50 w-full mt-1 bg-[#2a3441] border border-glass-border rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                {voiceDropdownOpen && createPortal(
+                  <div
+                    ref={voiceDropdownRef}
+                    className="fixed z-[9999] bg-[#2a3441] border border-glass-border rounded-lg shadow-lg max-h-48 overflow-y-auto"
+                    style={{ top: voiceDropdownPos.top, left: voiceDropdownPos.left, width: voiceDropdownPos.width }}
+                  >
                     {voiceProvider === 'custom' && (
                       <>
                         {Object.entries(customVoices).map(([id, voice]) => (
@@ -1090,7 +1108,8 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
                         Default
                       </div>
                     )}
-                  </div>
+                  </div>,
+                  document.body
                 )}
               </div>
               <p className="text-xs text-text-tertiary mt-1">

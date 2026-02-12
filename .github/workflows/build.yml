@@ -46,19 +46,23 @@ jobs:
           body: |
             ## Qubes - Sovereign AI Agents
 
+            Everything included out of the box: Kokoro TTS (54 voices), semantic search, and Ollama for local LLM.
+
             ### Downloads
-            - **Windows**: `Qubes-Windows-setup.exe` - Windows 10/11 64-bit installer
+            - **Windows**: `Qubes-Windows.zip` - Windows 10/11 64-bit
             - **macOS (Apple Silicon)**: `Qubes-macOS-ARM.zip` - M1/M2/M3/M4 Macs
             - **Linux**: `Qubes-Linux.zip` - Ubuntu/Debian/Fedora
 
             ### Installation
-            **Windows**: Download and run the installer
-            **macOS/Linux**: Download, extract the ZIP, and run the executable
+            1. Download and extract the ZIP for your platform
+            2. **Windows**: Double-click `Qubes.exe`
+            3. **macOS**: Double-click `Qubes.app` (right-click → Open if blocked)
+            4. **Linux**: Run `./install.sh` then `./launch.sh`
 
             ### Requirements
-            - 8GB RAM minimum (16GB recommended for local AI models)
-            - Internet connection (for cloud AI providers)
-            - Ollama is bundled for local AI
+            - 16 GB RAM minimum (32 GB recommended for local LLM)
+            - Internet connection for initial Ollama model download
+            - NVIDIA GPU optional (improves TTS performance)
           draft: false
           prerelease: false
         env:
@@ -101,6 +105,21 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      # ========== Free Disk Space (needed for heavy deps + models) ==========
+      - name: Free disk space (Linux)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          sudo apt-get clean || true
+          echo "Free space: $(df -h / | tail -1 | awk '{print $4}')"
+
+      - name: Free disk space (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          Remove-Item -Recurse -Force "C:\hostedtoolcache\*" -ErrorAction SilentlyContinue
+          Write-Host "Free space: $((Get-PSDrive C).Free / 1GB) GB"
 
       # ========== System Dependencies ==========
       - name: Install Linux dependencies
@@ -148,71 +167,42 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
+      - name: Install CPU-only PyTorch (Linux/Windows)
+        if: "!startsWith(matrix.platform, 'macos')"
+        shell: bash
+        run: |
+          # CPU torch keeps PyInstaller bundle under 2GB GitHub release limit
+          # GPU inference (LLM) runs through bundled Ollama, not Python's torch
+          # Kokoro TTS 82M and sentence-transformers run fine on CPU
+          python -m pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pyinstaller
-          pip install -r requirements-ci.txt
+          pip install -r requirements-heavy.txt
 
-      # ========== Build Python Backend (as Tauri sidecar) ==========
+      # ========== Build Python Backend (--onedir for full bundle) ==========
       - name: Build Python backend (Windows)
         if: matrix.platform == 'windows-latest'
         shell: pwsh
         run: |
           cd qubes-gui/src-tauri
           New-Item -ItemType Directory -Force -Path binaries
-          pyinstaller --onefile --noconsole --name qubes-backend `
-            --hidden-import chess `
-            --hidden-import bitcash `
-            --hidden-import bitcash._ripemd160 `
-            --hidden-import coincurve `
-            --hidden-import coincurve._cffi_backend `
-            --hidden-import cffi `
-            --hidden-import _cffi_backend `
-            --hidden-import requests `
-            --hidden-import websockets `
-            --hidden-import numpy `
-            --hidden-import PIL `
-            --hidden-import fitz `
-            --hidden-import pyaudio `
-            --hidden-import pytz `
-            --hidden-import colorama `
-            --hidden-import bs4 `
-            --hidden-import sounddevice `
-            --hidden-import pydub `
-            --hidden-import elevenlabs `
-            --distpath binaries ../../gui_bridge.py
-          # Rename to target-triple format for Tauri sidecar
-          Move-Item -Force "binaries/qubes-backend.exe" "binaries/qubes-backend-${{ matrix.target }}.exe"
+          pyinstaller qubes-backend-heavy.spec --noconfirm
+          # --onedir output: dist/qubes-backend/qubes-backend.exe + dist/qubes-backend/_internal/
+          # Create dummy sidecar for Tauri build check
+          "#!/bin/sh" | Out-File -Encoding ASCII "binaries/qubes-backend-${{ matrix.target }}.exe"
 
       - name: Build Python backend (Unix)
         if: matrix.platform != 'windows-latest'
         run: |
           cd qubes-gui/src-tauri
           mkdir -p binaries
-          pyinstaller --onefile --noconsole --name qubes-backend \
-            --hidden-import chess \
-            --hidden-import bitcash \
-            --hidden-import bitcash._ripemd160 \
-            --hidden-import coincurve \
-            --hidden-import coincurve._cffi_backend \
-            --hidden-import cffi \
-            --hidden-import _cffi_backend \
-            --hidden-import requests \
-            --hidden-import websockets \
-            --hidden-import numpy \
-            --hidden-import PIL \
-            --hidden-import fitz \
-            --hidden-import pyaudio \
-            --hidden-import pytz \
-            --hidden-import colorama \
-            --hidden-import bs4 \
-            --hidden-import sounddevice \
-            --hidden-import pydub \
-            --hidden-import elevenlabs \
-            --distpath binaries ../../gui_bridge.py
-          # Rename to target-triple format for Tauri sidecar
-          mv binaries/qubes-backend "binaries/qubes-backend-${{ matrix.target }}"
+          pyinstaller qubes-backend-heavy.spec --noconfirm
+          # --onedir output: dist/qubes-backend/qubes-backend + dist/qubes-backend/_internal/
+          # Create dummy sidecar for Tauri build check
+          echo '#!/bin/sh' > "binaries/qubes-backend-${{ matrix.target }}"
+          chmod +x "binaries/qubes-backend-${{ matrix.target }}"
 
       # ========== Install Frontend Dependencies ==========
       - name: Install frontend dependencies
@@ -264,6 +254,24 @@ jobs:
           cp -r ollama-temp/bin/* dist-bundle/ollama/ || cp ollama-temp/ollama dist-bundle/ollama/
           chmod +x dist-bundle/ollama/*
 
+      # ========== Download HuggingFace Models ==========
+      - name: Download HuggingFace models
+        shell: bash
+        run: |
+          mkdir -p dist-bundle/models/huggingface
+          python -c "
+          from huggingface_hub import snapshot_download
+          import os
+          hf_dir = os.path.join('dist-bundle', 'models', 'huggingface')
+          os.environ['HF_HOME'] = hf_dir
+          hub_dir = os.path.join(hf_dir, 'hub')
+          print('Downloading Kokoro-82M...')
+          snapshot_download('hexgrad/Kokoro-82M', cache_dir=hub_dir)
+          print('Downloading all-MiniLM-L6-v2...')
+          snapshot_download('sentence-transformers/all-MiniLM-L6-v2', cache_dir=hub_dir)
+          print('Models downloaded.')
+          "
+
       # ========== Create Distribution Bundle ==========
       - name: Create distribution bundle (Windows)
         if: matrix.platform == 'windows-latest'
@@ -271,17 +279,21 @@ jobs:
         run: |
           $distDir = "dist-bundle/Qubes"
           New-Item -ItemType Directory -Force -Path $distDir
-          New-Item -ItemType Directory -Force -Path "$distDir/data"
           New-Item -ItemType Directory -Force -Path "$distDir/resources"
 
           # Copy Tauri executable
           Copy-Item "qubes-gui/src-tauri/target/${{ matrix.target }}/release/qubes-gui.exe" "$distDir/Qubes.exe"
 
-          # Copy Python backend sidecar (bundled with Tauri, located next to exe)
-          Copy-Item "qubes-gui/src-tauri/target/${{ matrix.target }}/release/qubes-backend.exe" "$distDir/"
+          # Copy Python backend (--onedir output with all deps)
+          Copy-Item "qubes-gui/src-tauri/dist/qubes-backend" "$distDir/qubes-backend" -Recurse
 
           # Copy Ollama
-          Copy-Item "dist-bundle/ollama" "$distDir/" -Recurse
+          Copy-Item "dist-bundle/ollama" "$distDir/ollama" -Recurse
+
+          # Copy HuggingFace models
+          if (Test-Path "dist-bundle/models") {
+            Copy-Item "dist-bundle/models" "$distDir/models" -Recurse
+          }
 
           # Copy resources
           if (Test-Path "qubes-gui/src-tauri/resources") {
@@ -289,15 +301,25 @@ jobs:
           }
 
           # Create config
-          @{
-            version = "1.0.0"
-            bundled = $true
-          } | ConvertTo-Json | Out-File "$distDir/qubes-config.json" -Encoding UTF8
+          @"
+          {
+            "version": "1.0.0",
+            "variant": "standard",
+            "bundled_models": {
+              "huggingface": ["hexgrad/Kokoro-82M", "sentence-transformers/all-MiniLM-L6-v2"]
+            }
+          }
+          "@ | Out-File "$distDir/qubes-config.json" -Encoding UTF8
 
           # Create README
           @"
           Qubes - Sovereign AI Agents
           ===========================
+
+          Everything included out of the box:
+            - Kokoro TTS (local text-to-speech, 54 voices)
+            - Semantic search (all-MiniLM-L6-v2 embeddings)
+            - Ollama for local LLM chat (downloads model on first use)
 
           Getting Started:
           1. Double-click Qubes.exe to launch
@@ -306,67 +328,95 @@ jobs:
 
           Requirements:
           - Windows 10/11 64-bit
-          - 8GB RAM minimum (16GB recommended for local AI)
-          - Internet connection for cloud AI providers
+          - 16 GB RAM minimum (32 GB recommended for local LLM)
+          - Internet connection for initial model download and cloud AI
+          - NVIDIA GPU optional (improves TTS performance)
 
-          Support: https://github.com/yourusername/qubes
+          Support: https://github.com/BitFaced2/Qubes
           "@ | Out-File "$distDir/README.txt" -Encoding UTF8
 
       - name: Create distribution bundle (macOS)
         if: startsWith(matrix.platform, 'macos')
         run: |
           DIST_DIR="dist-bundle/Qubes"
-          mkdir -p "$DIST_DIR"/{data,resources,ollama}
+          mkdir -p "$DIST_DIR"
 
-          # Copy Tauri app bundle (includes sidecar inside)
+          # Copy Tauri app bundle
           cp -r "qubes-gui/src-tauri/target/${{ matrix.target }}/release/bundle/macos/Qubes.app" "$DIST_DIR/Qubes.app"
 
-          # Copy Ollama
-          cp -r dist-bundle/ollama/* "$DIST_DIR/ollama/"
+          # Put backend, ollama, models INSIDE .app so Rust exe_dir resolution works
+          # exe_dir on macOS = Qubes.app/Contents/MacOS/
+          APP_MACOS="$DIST_DIR/Qubes.app/Contents/MacOS"
 
-          # Copy resources
-          if [ -d "qubes-gui/src-tauri/resources" ]; then
-            cp -r qubes-gui/src-tauri/resources/* "$DIST_DIR/resources/"
+          # Copy Python backend (--onedir output with all deps)
+          cp -r "qubes-gui/src-tauri/dist/qubes-backend" "$APP_MACOS/qubes-backend"
+          chmod +x "$APP_MACOS/qubes-backend/qubes-backend"
+
+          # Copy Ollama
+          mkdir -p "$APP_MACOS/ollama"
+          cp -r dist-bundle/ollama/* "$APP_MACOS/ollama/"
+
+          # Copy HuggingFace models
+          if [ -d "dist-bundle/models" ]; then
+            cp -r dist-bundle/models "$APP_MACOS/models"
           fi
 
           # Create config
-          echo '{"version": "1.0.0", "bundled": true}' > "$DIST_DIR/qubes-config.json"
+          cat > "$DIST_DIR/qubes-config.json" << 'CEOF'
+          {
+            "version": "1.0.0",
+            "variant": "standard",
+            "bundled_models": {
+              "huggingface": ["hexgrad/Kokoro-82M", "sentence-transformers/all-MiniLM-L6-v2"]
+            }
+          }
+          CEOF
 
           # Create README
-          cat > "$DIST_DIR/README.txt" << 'EOF'
+          cat > "$DIST_DIR/README.txt" << 'REOF'
           Qubes - Sovereign AI Agents
           ===========================
 
+          Everything included out of the box:
+            - Kokoro TTS (local text-to-speech, 54 voices)
+            - Semantic search (all-MiniLM-L6-v2 embeddings)
+            - Ollama for local LLM chat (downloads model on first use)
+
           Getting Started:
           1. Double-click Qubes.app to launch
-          2. If blocked, right-click and select "Open"
+          2. If blocked by Gatekeeper, right-click and select "Open"
           3. Follow the setup wizard to create your account
           4. Create your first Qube!
 
           Requirements:
-          - macOS 11 (Big Sur) or later
-          - 8GB RAM minimum (16GB recommended for local AI)
-          - Internet connection for cloud AI providers
+          - macOS 12 (Monterey) or later, Apple Silicon
+          - 16 GB RAM minimum (32 GB recommended for local LLM)
+          - Internet connection for initial model download and cloud AI
 
-          Support: https://github.com/yourusername/qubes
-          EOF
+          Support: https://github.com/BitFaced2/Qubes
+          REOF
 
       - name: Create distribution bundle (Linux)
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           DIST_DIR="dist-bundle/Qubes"
-          mkdir -p "$DIST_DIR"/{data,resources,ollama}
+          mkdir -p "$DIST_DIR"/{resources,ollama}
 
           # Copy Tauri executable
           cp "qubes-gui/src-tauri/target/${{ matrix.target }}/release/qubes-gui" "$DIST_DIR/Qubes"
           chmod +x "$DIST_DIR/Qubes"
 
-          # Copy Python backend sidecar (bundled with Tauri, located next to exe)
-          cp "qubes-gui/src-tauri/target/${{ matrix.target }}/release/qubes-backend" "$DIST_DIR/"
-          chmod +x "$DIST_DIR/qubes-backend"
+          # Copy Python backend (--onedir output with all deps)
+          cp -r "qubes-gui/src-tauri/dist/qubes-backend" "$DIST_DIR/qubes-backend"
+          chmod +x "$DIST_DIR/qubes-backend/qubes-backend"
 
           # Copy Ollama
           cp -r dist-bundle/ollama/* "$DIST_DIR/ollama/"
+
+          # Copy HuggingFace models
+          if [ -d "dist-bundle/models" ]; then
+            cp -r dist-bundle/models "$DIST_DIR/models"
+          fi
 
           # Copy resources
           if [ -d "qubes-gui/src-tauri/resources" ]; then
@@ -374,46 +424,131 @@ jobs:
           fi
 
           # Create config
-          echo '{"version": "1.0.0", "bundled": true}' > "$DIST_DIR/qubes-config.json"
+          cat > "$DIST_DIR/qubes-config.json" << 'CEOF'
+          {
+            "version": "1.0.0",
+            "variant": "standard",
+            "bundled_models": {
+              "huggingface": ["hexgrad/Kokoro-82M", "sentence-transformers/all-MiniLM-L6-v2"]
+            }
+          }
+          CEOF
+
+          # Create launcher script (sets env vars for bundled models + CUDA libs)
+          cat > "$DIST_DIR/launch.sh" << 'LAUNCHER'
+          #!/bin/bash
+          SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+          # Point HuggingFace to bundled models
+          if [ -d "$SCRIPT_DIR/models/huggingface" ]; then
+            export HF_HOME="$SCRIPT_DIR/models/huggingface"
+          fi
+
+          # Point Ollama to bundled models
+          if [ -d "$SCRIPT_DIR/models/ollama" ]; then
+            export OLLAMA_MODELS="$SCRIPT_DIR/models/ollama"
+          fi
+
+          # Add bundled CUDA/NVIDIA libraries to LD_LIBRARY_PATH
+          INTERNAL_DIR="$SCRIPT_DIR/qubes-backend/_internal"
+          if [ -d "$INTERNAL_DIR" ]; then
+            NVIDIA_PATHS=$(find "$INTERNAL_DIR" -path "*/nvidia/*/lib" -type d 2>/dev/null | tr '\n' ':')
+            if [ -n "$NVIDIA_PATHS" ]; then
+              export LD_LIBRARY_PATH="${NVIDIA_PATHS}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            fi
+            export LD_LIBRARY_PATH="$INTERNAL_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          fi
+
+          exec "$SCRIPT_DIR/Qubes" "$@"
+          LAUNCHER
+          chmod +x "$DIST_DIR/launch.sh"
+
+          # Create install script (desktop entry + optional PATH symlink)
+          cat > "$DIST_DIR/install.sh" << 'INSTALLER'
+          #!/bin/bash
+          set -e
+          SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+          DESKTOP_FILE="$HOME/.local/share/applications/qubes.desktop"
+
+          echo "=== Qubes Installation ==="
+          echo "Location: $SCRIPT_DIR"
+          echo ""
+
+          mkdir -p "$HOME/.local/share/applications"
+          cat > "$DESKTOP_FILE" << EOF
+          [Desktop Entry]
+          Name=Qubes
+          Comment=Sovereign AI Agents
+          Exec=$SCRIPT_DIR/launch.sh
+          Icon=$SCRIPT_DIR/resources/icon.png
+          Terminal=false
+          Type=Application
+          Categories=Utility;
+          StartupWMClass=qubes
+          EOF
+          echo "Desktop entry created: $DESKTOP_FILE"
+
+          read -p "Add 'qubes' command to PATH (~/.local/bin)? [y/N] " -n 1 -r
+          echo
+          if [[ $REPLY =~ ^[Yy]$ ]]; then
+            mkdir -p "$HOME/.local/bin"
+            ln -sf "$SCRIPT_DIR/launch.sh" "$HOME/.local/bin/qubes"
+            echo "Symlink: ~/.local/bin/qubes"
+          fi
+
+          echo ""
+          echo "Done! Launch from app menu or: $SCRIPT_DIR/launch.sh"
+          INSTALLER
+          chmod +x "$DIST_DIR/install.sh"
+
+          # Copy icon for desktop entry
+          if [ -f "qubes-gui/src-tauri/icons/128x128.png" ]; then
+            cp "qubes-gui/src-tauri/icons/128x128.png" "$DIST_DIR/resources/icon.png"
+          fi
 
           # Create README
-          cat > "$DIST_DIR/README.txt" << 'EOF'
+          cat > "$DIST_DIR/README.txt" << 'REOF'
           Qubes - Sovereign AI Agents
           ===========================
 
+          Everything included out of the box:
+            - Kokoro TTS (local text-to-speech, 54 voices)
+            - Semantic search (all-MiniLM-L6-v2 embeddings)
+            - Ollama for local LLM chat (downloads model on first use)
+
           Getting Started:
-          1. Run ./Qubes from terminal or double-click
-          2. Follow the setup wizard to create your account
-          3. Create your first Qube!
+          1. Extract: tar -xzf Qubes-Linux.tar.gz  (or unzip Qubes-Linux.zip)
+          2. Install: cd Qubes && ./install.sh
+          3. Launch: ./launch.sh
 
           Requirements:
           - Ubuntu 20.04+ / Debian 11+ / Fedora 35+
-          - 8GB RAM minimum (16GB recommended for local AI)
-          - Internet connection for cloud AI providers
+          - 16 GB RAM minimum (32 GB recommended for local LLM)
+          - Internet connection for initial model download and cloud AI
+          - NVIDIA GPU optional (improves TTS performance)
 
-          Support: https://github.com/yourusername/qubes
-          EOF
+          Support: https://github.com/BitFaced2/Qubes
+          REOF
 
-          # Create launcher script
-          cat > "$DIST_DIR/launch.sh" << 'EOF'
-          #!/bin/bash
-          cd "$(dirname "$0")"
-          ./Qubes
-          EOF
-          chmod +x "$DIST_DIR/launch.sh"
+      # ========== Create Archive ==========
+      - name: Create ZIP archive (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "dist-bundle/Qubes" -DestinationPath "${{ matrix.artifact_name }}.zip"
 
-      # ========== Create Archive (macOS and Linux only) ==========
       - name: Create ZIP archive (Unix)
         if: matrix.platform != 'windows-latest'
         run: |
           cd dist-bundle
           zip -r "../${{ matrix.artifact_name }}.zip" Qubes
 
-      # ========== Upload directly to Release (bypasses artifact storage) ==========
-      - name: Upload to Release
-        if: needs.create-release.result == 'success' && matrix.platform != 'windows-latest'
+      # ========== Upload ZIP to Release ==========
+      - name: Upload ZIP to Release
+        if: needs.create-release.result == 'success'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
         run: |
           gh release upload "${{ needs.create-release.outputs.tag }}" "${{ matrix.artifact_name }}.zip" --clobber
 

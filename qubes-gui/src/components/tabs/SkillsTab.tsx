@@ -1,4 +1,5 @@
-import React, { useState, useCallback, useEffect, useMemo } from 'react';
+import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import {
   ReactFlow,
   Node,
@@ -270,6 +271,34 @@ export const SkillsTab: React.FC<SkillsTabProps> = ({ qubes }) => {
   const [typeDropdownOpen, setTypeDropdownOpen] = useState(false);
   const [sortDropdownOpen, setSortDropdownOpen] = useState(false);
 
+  // Dropdown refs for portal positioning
+  const statusBtnRef = useRef<HTMLButtonElement>(null);
+  const statusPanelRef = useRef<HTMLDivElement>(null);
+  const categoryBtnRef = useRef<HTMLButtonElement>(null);
+  const categoryPanelRef = useRef<HTMLDivElement>(null);
+  const typeBtnRef = useRef<HTMLButtonElement>(null);
+  const typePanelRef = useRef<HTMLDivElement>(null);
+  const sortBtnRef = useRef<HTMLButtonElement>(null);
+  const sortPanelRef = useRef<HTMLDivElement>(null);
+  const [ddPos, setDdPos] = useState<Record<string, { top: number; left: number; minWidth: number }>>({});
+
+  const openDropdown = useCallback((
+    name: string,
+    btnRef: React.RefObject<HTMLButtonElement | null>,
+    isOpen: boolean,
+    setOpen: (v: boolean) => void,
+  ) => {
+    setStatusDropdownOpen(false);
+    setCategoryDropdownOpen(false);
+    setTypeDropdownOpen(false);
+    setSortDropdownOpen(false);
+    if (!isOpen && btnRef.current) {
+      const rect = btnRef.current.getBoundingClientRect();
+      setDdPos(prev => ({ ...prev, [name]: { top: rect.bottom + 4, left: rect.left, minWidth: rect.width } }));
+      setOpen(true);
+    }
+  }, []);
+
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
 
@@ -483,8 +512,14 @@ export const SkillsTab: React.FC<SkillsTabProps> = ({ qubes }) => {
   // Close dropdowns when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      const target = event.target as HTMLElement;
-      if (!target.closest('.relative')) {
+      const t = event.target as HTMLElement | null;
+      if (!t) return;
+      const inside =
+        statusPanelRef.current?.contains(t) || statusBtnRef.current?.contains(t) ||
+        categoryPanelRef.current?.contains(t) || categoryBtnRef.current?.contains(t) ||
+        typePanelRef.current?.contains(t) || typeBtnRef.current?.contains(t) ||
+        sortPanelRef.current?.contains(t) || sortBtnRef.current?.contains(t);
+      if (!inside) {
         setStatusDropdownOpen(false);
         setCategoryDropdownOpen(false);
         setTypeDropdownOpen(false);
@@ -763,16 +798,17 @@ export const SkillsTab: React.FC<SkillsTabProps> = ({ qubes }) => {
                 {/* Filters */}
                 <div className="flex flex-wrap gap-2">
                   {/* Status Filter */}
-                  <div className="relative">
+                  <div>
                     <button
-                      onClick={() => setStatusDropdownOpen(!statusDropdownOpen)}
+                      ref={statusBtnRef}
+                      onClick={() => openDropdown('status', statusBtnRef, statusDropdownOpen, setStatusDropdownOpen)}
                       className="px-3 py-1.5 bg-glass-light border border-glass-border rounded-lg text-sm text-text-primary hover:border-accent-primary transition-colors cursor-pointer flex items-center gap-2"
                     >
                       <span>{filterStatus === 'all' ? 'All Status' : filterStatus === 'unlocked' ? '🔓 Unlocked' : '🔒 Locked'}</span>
                       <span className="text-xs">▼</span>
                     </button>
-                    {statusDropdownOpen && (
-                      <div className="absolute top-full left-0 mt-1 bg-bg-secondary border border-glass-border rounded-lg shadow-lg z-50 min-w-full">
+                    {statusDropdownOpen && createPortal(
+                      <div ref={statusPanelRef} className="fixed z-[9999] bg-bg-secondary border border-glass-border rounded-lg shadow-lg" style={{ top: ddPos.status?.top ?? 0, left: ddPos.status?.left ?? 0, minWidth: ddPos.status?.minWidth ?? 0 }}>
                         <button
                           onClick={() => { setFilterStatus('all'); setStatusDropdownOpen(false); }}
                           className="w-full px-3 py-2 text-left text-sm text-text-primary hover:bg-glass-light transition-colors"
@@ -791,21 +827,23 @@ export const SkillsTab: React.FC<SkillsTabProps> = ({ qubes }) => {
                         >
                           🔒 Locked
                         </button>
-                      </div>
+                      </div>,
+                      document.body
                     )}
                   </div>
 
                   {/* Category Filter */}
-                  <div className="relative">
+                  <div>
                     <button
-                      onClick={() => setCategoryDropdownOpen(!categoryDropdownOpen)}
+                      ref={categoryBtnRef}
+                      onClick={() => openDropdown('category', categoryBtnRef, categoryDropdownOpen, setCategoryDropdownOpen)}
                       className="px-3 py-1.5 bg-glass-light border border-glass-border rounded-lg text-sm text-text-primary hover:border-accent-primary transition-colors cursor-pointer flex items-center gap-2"
                     >
                       <span>{filterCategory === 'all' ? 'All Branches' : SKILL_CATEGORIES.find(c => c.id === filterCategory)?.name || 'All Branches'}</span>
                       <span className="text-xs">▼</span>
                     </button>
-                    {categoryDropdownOpen && (
-                      <div className="absolute top-full left-0 mt-1 bg-bg-secondary border border-glass-border rounded-lg shadow-lg z-50 min-w-full max-h-64 overflow-y-auto custom-scrollbar">
+                    {categoryDropdownOpen && createPortal(
+                      <div ref={categoryPanelRef} className="fixed z-[9999] bg-bg-secondary border border-glass-border rounded-lg shadow-lg max-h-64 overflow-y-auto custom-scrollbar" style={{ top: ddPos.category?.top ?? 0, left: ddPos.category?.left ?? 0, minWidth: ddPos.category?.minWidth ?? 0 }}>
                         <button
                           onClick={() => { setFilterCategory('all'); setCategoryDropdownOpen(false); }}
                           className="w-full px-3 py-2 text-left text-sm text-text-primary hover:bg-glass-light transition-colors"
@@ -821,21 +859,23 @@ export const SkillsTab: React.FC<SkillsTabProps> = ({ qubes }) => {
                             {cat.icon} {cat.name}
                           </button>
                         ))}
-                      </div>
+                      </div>,
+                      document.body
                     )}
                   </div>
 
                   {/* Node Type Filter */}
-                  <div className="relative">
+                  <div>
                     <button
-                      onClick={() => setTypeDropdownOpen(!typeDropdownOpen)}
+                      ref={typeBtnRef}
+                      onClick={() => openDropdown('type', typeBtnRef, typeDropdownOpen, setTypeDropdownOpen)}
                       className="px-3 py-1.5 bg-glass-light border border-glass-border rounded-lg text-sm text-text-primary hover:border-accent-primary transition-colors cursor-pointer flex items-center gap-2"
                     >
                       <span>{filterNodeType === 'all' ? 'All Types' : filterNodeType === 'sun' ? '🌟 Suns' : filterNodeType === 'planet' ? '🪐 Planets' : '🌙 Moons'}</span>
                       <span className="text-xs">▼</span>
                     </button>
-                    {typeDropdownOpen && (
-                      <div className="absolute top-full left-0 mt-1 bg-bg-secondary border border-glass-border rounded-lg shadow-lg z-50 min-w-full">
+                    {typeDropdownOpen && createPortal(
+                      <div ref={typePanelRef} className="fixed z-[9999] bg-bg-secondary border border-glass-border rounded-lg shadow-lg" style={{ top: ddPos.type?.top ?? 0, left: ddPos.type?.left ?? 0, minWidth: ddPos.type?.minWidth ?? 0 }}>
                         <button
                           onClick={() => { setFilterNodeType('all'); setTypeDropdownOpen(false); }}
                           className="w-full px-3 py-2 text-left text-sm text-text-primary hover:bg-glass-light transition-colors"
@@ -860,21 +900,23 @@ export const SkillsTab: React.FC<SkillsTabProps> = ({ qubes }) => {
                         >
                           🌙 Moons
                         </button>
-                      </div>
+                      </div>,
+                      document.body
                     )}
                   </div>
 
                   {/* Sort */}
-                  <div className="relative">
+                  <div>
                     <button
-                      onClick={() => setSortDropdownOpen(!sortDropdownOpen)}
+                      ref={sortBtnRef}
+                      onClick={() => openDropdown('sort', sortBtnRef, sortDropdownOpen, setSortDropdownOpen)}
                       className="px-3 py-1.5 bg-glass-light border border-glass-border rounded-lg text-sm text-text-primary hover:border-accent-primary transition-colors cursor-pointer flex items-center gap-2"
                     >
                       <span>Sort: {sortBy === 'level' ? 'Level' : sortBy === 'name' ? 'Name' : sortBy === 'xp' ? 'XP' : 'Branch'}</span>
                       <span className="text-xs">▼</span>
                     </button>
-                    {sortDropdownOpen && (
-                      <div className="absolute top-full left-0 mt-1 bg-bg-secondary border border-glass-border rounded-lg shadow-lg z-50 min-w-full">
+                    {sortDropdownOpen && createPortal(
+                      <div ref={sortPanelRef} className="fixed z-[9999] bg-bg-secondary border border-glass-border rounded-lg shadow-lg" style={{ top: ddPos.sort?.top ?? 0, left: ddPos.sort?.left ?? 0, minWidth: ddPos.sort?.minWidth ?? 0 }}>
                         <button
                           onClick={() => { setSortBy('level'); setSortDropdownOpen(false); }}
                           className="w-full px-3 py-2 text-left text-sm text-text-primary hover:bg-glass-light transition-colors"
@@ -899,7 +941,8 @@ export const SkillsTab: React.FC<SkillsTabProps> = ({ qubes }) => {
                         >
                           Sort: Branch
                         </button>
-                      </div>
+                      </div>,
+                      document.body
                     )}
                   </div>
 

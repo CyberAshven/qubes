@@ -925,9 +925,9 @@ class ToolRegistry:
             "change_model": "switch_model",
             "set_model": "switch_model",
             # Memory aliases
-            "search_memory": "memory_search",
-            "recall": "memory_search",
-            "remember": "memory_search",
+            "memory_search": "search_memory",
+            "recall": "search_memory",
+            "remember": "search_memory",
             "save_memory": "add_memory",
             "store_memory": "add_memory",
             "create_memory": "add_memory",

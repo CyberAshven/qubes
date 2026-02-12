@@ -869,14 +869,32 @@ class AudioManager:
                     wsl2_error = AIError(f"WSL2 server not available: {availability.get('error')}")
                     logger.debug("wsl2_tts_not_available", error=availability.get("error"))
 
-            # WSL2/Qwen3 not available or failed - NO silent fallback
-            # User explicitly selected local TTS, so fail with clear error message
-            error_msg = str(wsl2_error) if wsl2_error else "WSL2 TTS server not available"
-            logger.error("local_tts_failed", provider=provider, error=error_msg)
-            raise AIError(
-                f"Local TTS failed: {error_msg}. Please ensure the WSL2 TTS server is running.",
-                context={"provider": provider, "voice": voice_model}
-            )
+            # WSL2 not available or failed - try other local providers (Kokoro, native Qwen3)
+            local_fallback_provider = None
+            for local_fallback in ("kokoro", "qwen3"):
+                if local_fallback not in self.tts_providers:
+                    continue
+                if local_fallback == "qwen3":
+                    # Lazy-load Qwen3 if needed (marker is None)
+                    qwen3 = self._get_qwen3_provider()
+                    if qwen3 is None:
+                        continue
+                    local_fallback_provider = qwen3
+                else:
+                    local_fallback_provider = self.tts_providers[local_fallback]
+                logger.info("local_tts_fallback", original=provider, fallback=local_fallback)
+                provider = local_fallback
+                extension = "wav"
+                break
+
+            if local_fallback_provider is None:
+                error_msg = str(wsl2_error) if wsl2_error else "No local TTS providers available"
+                logger.error("local_tts_failed", provider=provider, error=error_msg)
+                raise AIError(
+                    f"Local TTS failed: {error_msg}",
+                    context={"provider": provider, "voice": voice_model}
+                )
+            tts_provider = local_fallback_provider
         else:
             # Non-local provider (openai, gemini, etc.) - use directly
             tts_provider = self.tts_providers[provider]

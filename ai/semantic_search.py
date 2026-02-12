@@ -7,7 +7,10 @@ From docs/09_AI_Integration_Tool_Calling.md Section 6.4
 
 import os
 import numpy as np
-import faiss
+try:
+    import faiss
+except ImportError:
+    faiss = None
 from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
 

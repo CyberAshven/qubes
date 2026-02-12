@@ -7,12 +7,28 @@ a = Analysis(
     binaries=[],
     datas=[],
     hiddenimports=[
-        'chess', 'bitcash', 'bitcash._ripemd160',
+        # Games
+        'chess',
+        # Crypto & Blockchain
+        'bitcash', 'bitcash._ripemd160',
         'coincurve', 'coincurve._cffi_backend',
         'cffi', '_cffi_backend',
-        'requests', 'websockets', 'numpy', 'PIL', 'fitz',
-        'pyaudio', 'pytz', 'colorama', 'bs4', 'sounddevice',
-        'pydub', 'elevenlabs',
+        'cryptography', 'ecdsa', 'base58',
+        # Networking
+        'requests', 'websockets', 'httpx', 'aiohttp',
+        # Data & Serialization
+        'numpy', 'PIL', 'fitz', 'pydantic', 'yaml',
+        # Audio/TTS
+        'pyaudio', 'sounddevice', 'pydub', 'soundfile',
+        'elevenlabs', 'huggingface_hub',
+        # AI Providers
+        'openai', 'anthropic', 'google.genai', 'google.cloud.texttospeech',
+        # System & Logging
+        'pytz', 'colorama', 'bs4', 'structlog', 'dotenv', 'psutil',
+        # Resilience & Monitoring
+        'tenacity', 'prometheus_client', 'pybreaker',
+        # Server
+        'fastapi', 'uvicorn',
     ],
     hookspath=[],
     hooksconfig={},

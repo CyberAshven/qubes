@@ -46,9 +46,11 @@ beautifulsoup4>=4.12.0
 sounddevice>=0.4.6          # Cross-platform audio playback
 numpy>=1.24.0               # Audio data processing (sounddevice/pydub dependency)
 pydub>=0.25.1               # Audio format conversion
+soundfile>=0.12.0           # Audio file I/O for WAV generation (Kokoro/Qwen3 TTS)
 pyaudio>=0.2.13             # Microphone recording
 elevenlabs>=1.0.0           # ElevenLabs TTS (cloud)
 google-cloud-texttospeech>=2.14.0  # Google Cloud TTS
+huggingface_hub>=0.23.0     # Model downloading from HuggingFace (Qwen3-TTS)
 
 # Document processing
 Pillow>=10.0.0              # Image processing (document handler)
@@ -59,6 +61,13 @@ google-genai>=1.0.0         # Gemini models
 
 # Timezone
 pytz>=2023.3                # Timezone fallback (zoneinfo fails in PyInstaller bundles)
+
+# Server
+fastapi>=0.100.0            # Health check endpoints (orchestrator/health.py)
+uvicorn>=0.23.0             # ASGI server for health/TTS endpoints
+
+# Blockchain extras
+base58>=2.1.0               # BCH address encoding (blockchain/wallet_tx.py)
 
 # Monitoring & Resilience
 prometheus_client>=0.17.0   # Metrics

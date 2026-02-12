@@ -70,6 +70,7 @@ qubes-gui/src-tauri/dist/
 # PyInstaller
 *.spec
 !qubes-gui/src-tauri/qubes-backend.spec
+!qubes-gui/src-tauri/qubes-backend-heavy.spec
 qubes-gui/src-tauri/binaries/
 
 # Website (deployed separately)
@@ -78,5 +79,6 @@ website/
 # Development/internal
 images/
 .claude/
-scripts/
+scripts/*
+!scripts/build-heavy-linux.sh
 PROGRESS_REPORT.md

@@ -186,27 +186,34 @@ class Qwen3ModelDownloader:
             cmd = [sys.executable, str(script_path), download_id, model_name, str(self.models_dir)]
 
         # Use subprocess.Popen to start a detached process
-        if sys.platform == 'win32':
-            # Windows: use CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS, and CREATE_NO_WINDOW
-            DETACHED_PROCESS = 0x00000008
-            CREATE_NEW_PROCESS_GROUP = 0x00000200
-            CREATE_NO_WINDOW = 0x08000000
-            subprocess.Popen(
-                cmd,
-                creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                stdin=subprocess.DEVNULL,
-            )
-        else:
-            # Unix: use nohup-style detachment
-            subprocess.Popen(
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                stdin=subprocess.DEVNULL,
-                start_new_session=True,
-            )
+        try:
+            if sys.platform == 'win32':
+                # Windows: use CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS, and CREATE_NO_WINDOW
+                DETACHED_PROCESS = 0x00000008
+                CREATE_NEW_PROCESS_GROUP = 0x00000200
+                CREATE_NO_WINDOW = 0x08000000
+                subprocess.Popen(
+                    cmd,
+                    creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL,
+                )
+            else:
+                # Unix: use nohup-style detachment
+                subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+        except Exception as e:
+            logger.error("download_subprocess_failed", error=str(e), cmd=str(cmd))
+            progress.status = "failed"
+            progress.error = f"Failed to start download process: {e}"
+            self._save_progress(progress)
+            raise
 
         return download_id
 
@@ -229,6 +236,25 @@ class Qwen3ModelDownloader:
             }
 
         prog = all_progress[download_id]
+
+        # Stale download detection: if status is "downloading" but no progress
+        # for over 2 minutes, the worker process likely crashed silently
+        if prog.get('status') == 'downloading' and prog.get('started_at'):
+            try:
+                started = datetime.fromisoformat(prog['started_at'])
+                elapsed = (datetime.now() - started).total_seconds()
+                downloaded_so_far = prog.get('downloaded_bytes', 0)
+                if elapsed > 120 and downloaded_so_far == 0:
+                    prog['status'] = 'failed'
+                    prog['error'] = 'Download timed out - worker process may have crashed. Please try again.'
+                    all_progress[download_id] = prog
+                    try:
+                        with open(self.progress_file, 'w') as f:
+                            json.dump(all_progress, f)
+                    except IOError:
+                        pass
+            except (ValueError, TypeError):
+                pass
 
         # Calculate percentage
         percentage = 0.0
