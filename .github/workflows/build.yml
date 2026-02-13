@@ -299,11 +299,29 @@ jobs:
         if: matrix.platform == 'windows-latest'
         shell: pwsh
         run: |
+          # The full Windows Ollama zip is ~1.8GB (includes CUDA DLLs for GPU inference).
+          # Extract only ollama.exe (~200MB) to keep bundle under 2GB GitHub limit.
+          # CPU LLM inference works out of the box; GPU libs can be downloaded on demand.
           New-Item -ItemType Directory -Force -Path ollama-temp
           Invoke-WebRequest -Uri "${{ matrix.ollama_url }}" -OutFile "ollama-temp/ollama.zip"
-          Expand-Archive -Path "ollama-temp/ollama.zip" -DestinationPath "ollama-temp/extracted"
           New-Item -ItemType Directory -Force -Path "dist-bundle/ollama"
-          Copy-Item -Path "ollama-temp/extracted/*" -Destination "dist-bundle/ollama/" -Recurse
+          # Extract just ollama.exe (and ollama_runners for CPU) from the zip
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [System.IO.Compression.ZipFile]::OpenRead("ollama-temp/ollama.zip")
+          foreach ($entry in $zip.Entries) {
+            # Include ollama.exe and cpu runner libs (skip cuda/rocm runners ~4GB)
+            if ($entry.FullName -eq "ollama.exe" -or $entry.FullName -match "^lib/ollama/runners/cpu") {
+              $destPath = Join-Path "dist-bundle/ollama" $entry.FullName
+              $destDir = Split-Path $destPath -Parent
+              if (!(Test-Path $destDir)) { New-Item -ItemType Directory -Force -Path $destDir | Out-Null }
+              if (!$entry.FullName.EndsWith("/")) {
+                [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $destPath, $true)
+              }
+            }
+          }
+          $zip.Dispose()
+          $size = (Get-ChildItem -Recurse "dist-bundle/ollama" | Measure-Object -Property Length -Sum).Sum / 1MB
+          Write-Host "Ollama extracted size: $([math]::Round($size))MB (exe + CPU runners only)"
 
       - name: Download Ollama (macOS)
         if: startsWith(matrix.platform, 'macos')
@@ -339,12 +357,12 @@ jobs:
           print('Models downloaded.')
           "
 
-      - name: Flatten HuggingFace model symlinks
-        shell: bash
+      - name: Deduplicate HuggingFace models (Unix)
+        if: matrix.platform != 'windows-latest'
         run: |
-          echo "Models size before flatten: $(du -sh dist-bundle/models | cut -f1)"
+          echo "Models size before dedup: $(du -sh dist-bundle/models | cut -f1)"
           # HF snapshot_download creates blobs/ (real files) + snapshots/ (symlinks).
-          # zip follows symlinks, storing every file twice. Resolve to real files.
+          # zip follows symlinks, storing every file twice. Resolve symlinks to real files.
           find dist-bundle/models -type l | while read link; do
             target=$(readlink -f "$link")
             if [ -f "$target" ]; then
@@ -354,7 +372,19 @@ jobs:
           done
           # Remove blobs/ dirs (data now lives directly in snapshots/)
           find dist-bundle/models -type d -name "blobs" -exec rm -rf {} + 2>/dev/null || true
-          echo "Models size after flatten: $(du -sh dist-bundle/models | cut -f1)"
+          echo "Models size after dedup: $(du -sh dist-bundle/models | cut -f1)"
+
+      - name: Deduplicate HuggingFace models (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          # On Windows, HF creates file copies (not symlinks) in both blobs/ and snapshots/.
+          # Just delete blobs/ dirs — snapshots/ already has the full files.
+          $before = (Get-ChildItem -Recurse "dist-bundle/models" | Measure-Object -Property Length -Sum).Sum / 1MB
+          Write-Host "Models size before dedup: $([math]::Round($before))MB"
+          Get-ChildItem -Path "dist-bundle/models" -Recurse -Directory -Filter "blobs" | Remove-Item -Recurse -Force
+          $after = (Get-ChildItem -Recurse "dist-bundle/models" | Measure-Object -Property Length -Sum).Sum / 1MB
+          Write-Host "Models size after dedup: $([math]::Round($after))MB (saved $([math]::Round($before - $after))MB)"
 
       # ========== Create Distribution Bundle ==========
       - name: Create distribution bundle (Windows)
@@ -634,8 +664,16 @@ jobs:
         if: matrix.platform == 'windows-latest'
         shell: pwsh
         run: |
+          Write-Host "=== Bundle size breakdown ==="
+          Get-ChildItem "dist-bundle/Qubes" -Directory | ForEach-Object {
+            $dirSize = (Get-ChildItem -Recurse $_.FullName | Measure-Object -Property Length -Sum).Sum / 1MB
+            Write-Host "$($_.Name)/: $([math]::Round($dirSize))MB"
+          }
           $size = (Get-ChildItem -Recurse "dist-bundle/Qubes" | Measure-Object -Property Length -Sum).Sum / 1MB
           Write-Host "Total uncompressed: $([math]::Round($size))MB"
+          if ($size -gt 3000) {
+            Write-Host "::warning::Bundle is $([math]::Round($size))MB uncompressed - ZIP may exceed 2GB"
+          }
 
       # ========== Create Archive ==========
       - name: Create ZIP archive (Windows)
