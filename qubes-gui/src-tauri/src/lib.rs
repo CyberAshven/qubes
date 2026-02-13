@@ -1231,24 +1231,47 @@ fn get_bundled_backend_path_with_diagnostics() -> (Option<PathBuf>, BackendDiagn
         if let Some(exe_dir) = exe_path.parent() {
             diagnostics.exe_dir = exe_dir.display().to_string();
 
+            // Check heavy bundle first: qubes-backend/ subfolder with --onedir output
+            // This is the primary distribution format (ZIP bundle with all deps)
+            #[cfg(target_os = "windows")]
+            let bundle_path = exe_dir.join("qubes-backend").join("qubes-backend.exe");
+            #[cfg(not(target_os = "windows"))]
+            let bundle_path = exe_dir.join("qubes-backend").join("qubes-backend");
+
+            diagnostics.paths_checked.push(format!("{} (exists: {})", bundle_path.display(), bundle_path.exists()));
+
+            if bundle_path.exists() {
+                diagnostics.found_path = Some(bundle_path.display().to_string());
+                return (Some(bundle_path), diagnostics);
+            }
+
             // Check for Tauri sidecar (placed next to main exe)
+            // Validate file size to reject dummy placeholders from CI builds
             let sidecar_path = exe_dir.join(sidecar_name);
             diagnostics.paths_checked.push(format!("{} (exists: {})", sidecar_path.display(), sidecar_path.exists()));
 
             if sidecar_path.exists() {
-                diagnostics.found_path = Some(sidecar_path.display().to_string());
+                let is_valid = std::fs::metadata(&sidecar_path)
+                    .map(|m| m.len() > 1024) // Real PyInstaller exe is many MB, dummy is ~11 bytes
+                    .unwrap_or(false);
 
-                // On Unix, check if it's executable
-                #[cfg(not(target_os = "windows"))]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    if let Ok(metadata) = std::fs::metadata(&sidecar_path) {
-                        let mode = metadata.permissions().mode();
-                        diagnostics.is_executable = Some(mode & 0o111 != 0);
+                if is_valid {
+                    diagnostics.found_path = Some(sidecar_path.display().to_string());
+
+                    // On Unix, check if it's executable
+                    #[cfg(not(target_os = "windows"))]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        if let Ok(metadata) = std::fs::metadata(&sidecar_path) {
+                            let mode = metadata.permissions().mode();
+                            diagnostics.is_executable = Some(mode & 0o111 != 0);
+                        }
                     }
-                }
 
-                return (Some(sidecar_path), diagnostics);
+                    return (Some(sidecar_path), diagnostics);
+                } else {
+                    diagnostics.paths_checked.push(format!("{} (skipped: file too small, likely placeholder)", sidecar_path.display()));
+                }
             }
 
             // Also check macOS bundle location (inside .app/Contents/MacOS/)
@@ -1263,19 +1286,6 @@ fn get_bundled_backend_path_with_diagnostics() -> (Option<PathBuf>, BackendDiagn
                         return (Some(resources_path), diagnostics);
                     }
                 }
-            }
-
-            // Legacy: check for old distribution format (qubes-backend subfolder)
-            #[cfg(target_os = "windows")]
-            let legacy_path = exe_dir.join("qubes-backend").join("qubes-backend.exe");
-            #[cfg(not(target_os = "windows"))]
-            let legacy_path = exe_dir.join("qubes-backend").join("qubes-backend");
-
-            diagnostics.paths_checked.push(format!("{} (exists: {})", legacy_path.display(), legacy_path.exists()));
-
-            if legacy_path.exists() {
-                diagnostics.found_path = Some(legacy_path.display().to_string());
-                return (Some(legacy_path), diagnostics);
             }
         }
     }
