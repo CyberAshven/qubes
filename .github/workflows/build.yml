@@ -378,12 +378,23 @@ jobs:
         if: matrix.platform == 'windows-latest'
         shell: pwsh
         run: |
-          # On Windows, HF creates file copies (not symlinks) in both blobs/ and snapshots/.
-          # Just delete blobs/ dirs — snapshots/ already has the full files.
-          $before = (Get-ChildItem -Recurse "dist-bundle/models" | Measure-Object -Property Length -Sum).Sum / 1MB
+          # On Windows, HF uses hardlinks — blobs/ and snapshots/ point to the same
+          # underlying data. Compress-Archive stores hardlinks as separate files (doubles size).
+          # Fix: break hardlinks by copying snapshot files to new real files, then delete blobs/.
+          $before = (Get-ChildItem -Recurse "dist-bundle/models" -File | Measure-Object -Property Length -Sum).Sum / 1MB
           Write-Host "Models size before dedup: $([math]::Round($before))MB"
+          # Break hardlinks in snapshots/ by replacing each file with an independent copy
+          Get-ChildItem -Path "dist-bundle/models" -Recurse -Directory -Filter "snapshots" | ForEach-Object {
+            Get-ChildItem -Path $_.FullName -Recurse -File | ForEach-Object {
+              $tmp = "$($_.FullName).tmp"
+              Copy-Item $_.FullName $tmp
+              Remove-Item $_.FullName
+              Move-Item $tmp $_.FullName
+            }
+          }
+          # Now safe to delete blobs/ — snapshots/ has independent copies
           Get-ChildItem -Path "dist-bundle/models" -Recurse -Directory -Filter "blobs" | Remove-Item -Recurse -Force
-          $after = (Get-ChildItem -Recurse "dist-bundle/models" | Measure-Object -Property Length -Sum).Sum / 1MB
+          $after = (Get-ChildItem -Recurse "dist-bundle/models" -File | Measure-Object -Property Length -Sum).Sum / 1MB
           Write-Host "Models size after dedup: $([math]::Round($after))MB (saved $([math]::Round($before - $after))MB)"
 
       # ========== Create Distribution Bundle ==========
