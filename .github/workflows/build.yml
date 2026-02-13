@@ -339,6 +339,23 @@ jobs:
           print('Models downloaded.')
           "
 
+      - name: Flatten HuggingFace model symlinks
+        shell: bash
+        run: |
+          echo "Models size before flatten: $(du -sh dist-bundle/models | cut -f1)"
+          # HF snapshot_download creates blobs/ (real files) + snapshots/ (symlinks).
+          # zip follows symlinks, storing every file twice. Resolve to real files.
+          find dist-bundle/models -type l | while read link; do
+            target=$(readlink -f "$link")
+            if [ -f "$target" ]; then
+              rm "$link"
+              cp "$target" "$link"
+            fi
+          done
+          # Remove blobs/ dirs (data now lives directly in snapshots/)
+          find dist-bundle/models -type d -name "blobs" -exec rm -rf {} + 2>/dev/null || true
+          echo "Models size after flatten: $(du -sh dist-bundle/models | cut -f1)"
+
       # ========== Create Distribution Bundle ==========
       - name: Create distribution bundle (Windows)
         if: matrix.platform == 'windows-latest'

@@ -14,6 +14,11 @@
     @apply h-full w-full m-0 p-0;
   }
 
+  /* Force dark mode for native form controls (critical for WebKitGTK on Linux) */
+  html {
+    color-scheme: dark;
+  }
+
   body {
     @apply bg-bg-primary text-text-primary font-primary;
     @apply antialiased;
@@ -183,18 +188,29 @@ circle[fill="#fff"] {
   display: none !important;
 }
 
-/* Scrollable select dropdowns - limit visible options */
-select.scrollable-select {
-  /* These may help on some browsers but native selects have limited styling */
-  overflow-y: auto;
+/* Dark select dropdowns — WebKitGTK (Linux) ignores most <option> CSS,
+   so we rely on color-scheme:dark (above) for the native popup and
+   explicit styles for sized/expanded selects. */
+select {
+  background-color: rgba(20, 20, 35, 0.95);
+  color: #e0e0e0;
 }
 
-/* For WebKit/Chromium browsers - attempt to style the dropdown */
-select.scrollable-select option {
+select option {
+  background-color: #141423;
+  color: #e0e0e0;
   padding: 4px 8px;
 }
 
-/* When using size attribute for scrollable behavior */
+select option:hover,
+select option:checked {
+  background-color: rgba(0, 255, 136, 0.15);
+}
+
+select.scrollable-select {
+  overflow-y: auto;
+}
+
 select[size] {
   overflow-y: auto;
   background: rgba(20, 20, 35, 0.95);

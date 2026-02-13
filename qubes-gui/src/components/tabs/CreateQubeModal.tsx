@@ -4,6 +4,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { QRCodeSVG } from 'qrcode.react';
 import { GlassCard, GlassButton, GlassInput } from '../glass';
+import DarkSelect from '../DarkSelect';
 import { PendingMintingResult, MintingStatusResult, MintingStatus } from '../../types';
 import { useAuth } from '../../hooks/useAuth';
 import { useModels } from '../../hooks/useModels';
@@ -820,39 +821,27 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
               <label className="block text-sm font-medium text-text-secondary mb-2">
                 AI Provider
               </label>
-              <select
+              <DarkSelect
                 value={formData.aiProvider}
-                onChange={(e) => {
-                  const newProvider = e.target.value;
-                  const defaultModel = getDefault(newProvider);
-                  setFormData({ ...formData, aiProvider: newProvider, aiModel: defaultModel });
+                onChange={(v) => {
+                  const defaultModel = getDefault(v);
+                  setFormData({ ...formData, aiProvider: v, aiModel: defaultModel });
                 }}
-                className="w-full px-4 py-2 bg-glass-bg backdrop-blur-glass border border-glass-border rounded-lg text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-primary/50"
-              >
-                {providers.map(provider => (
-                  <option key={provider.value} value={provider.value}>
-                    {provider.label}
-                  </option>
-                ))}
-              </select>
+                options={providers}
+              />
             </div>
 
             <div>
               <label className="block text-sm font-medium text-text-secondary mb-2">
                 AI Model
               </label>
-              <select
+              <DarkSelect
                 value={formData.aiModel}
-                onChange={(e) => setFormData({ ...formData, aiModel: e.target.value })}
-                className="w-full px-4 py-2 bg-glass-bg backdrop-blur-glass border border-glass-border rounded-lg text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-primary/50 scrollable-select"
-                size={Math.min(8, getModels(formData.aiProvider).length)}
-              >
-                {getModels(formData.aiProvider).map(model => (
-                  <option key={model.value} value={model.value}>
-                    {model.label}
-                  </option>
-                ))}
-              </select>
+                onChange={(v) => setFormData({ ...formData, aiModel: v })}
+                options={getModels(formData.aiProvider)}
+                expanded
+                maxVisible={8}
+              />
             </div>
           </div>
         )}
@@ -868,21 +857,19 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
               <label className="block text-sm font-medium text-text-secondary mb-2">
                 Voice Provider
               </label>
-              <select
+              <DarkSelect
                 value={voiceProvider}
-                onChange={(e) => setVoiceProvider(e.target.value)}
-                className="w-full px-4 py-2 bg-glass-bg backdrop-blur-glass border border-glass-border rounded-lg text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-primary/50"
-              >
-                {Object.keys(customVoices).length > 0 && (
-                  <option value="custom">Custom Voices (local)</option>
-                )}
-                <option value="kokoro">Kokoro (local)</option>
-                <option value="qwen3">Qwen3 (local)</option>
-                <option value="google">Google Cloud (API)</option>
-                <option value="gemini">Google Gemini (API)</option>
-                <option value="openai">OpenAI (API)</option>
-                <option value="elevenlabs">ElevenLabs (API)</option>
-              </select>
+                onChange={(v) => setVoiceProvider(v)}
+                options={[
+                  ...(Object.keys(customVoices).length > 0 ? [{ value: 'custom', label: 'Custom Voices (local)' }] : []),
+                  { value: 'kokoro', label: 'Kokoro (local)' },
+                  { value: 'qwen3', label: 'Qwen3 (local)' },
+                  { value: 'google', label: 'Google Cloud (API)' },
+                  { value: 'gemini', label: 'Google Gemini (API)' },
+                  { value: 'openai', label: 'OpenAI (API)' },
+                  { value: 'elevenlabs', label: 'ElevenLabs (API)' },
+                ]}
+              />
             </div>
 
             <div>

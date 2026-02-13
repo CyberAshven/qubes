@@ -6,6 +6,7 @@ import { useChainState } from '../../contexts/ChainStateContext';
 import { useUpdater } from '../../hooks/useUpdater';
 import { useQubeSelection } from '../../hooks/useQubeSelection';
 import { VoiceSettingsPanel } from '../settings/VoiceSettingsPanel';
+import DarkSelect from '../DarkSelect';
 import { useCelebration } from '../../contexts/CelebrationContext';
 
 interface APIKeyStatus {
@@ -1798,18 +1799,15 @@ export const SettingsTab: React.FC = () => {
               {/* Qube Selector */}
                 <div className="mb-3">
                   <label className="text-[10px] text-text-secondary mb-1 block">Select Qube:</label>
-                  <select
+                  <DarkSelect
                     value={selectedQubeForTrust}
-                    onChange={(e) => setSelectedQubeForTrust(e.target.value)}
+                    onChange={(v) => setSelectedQubeForTrust(v)}
                     disabled={loadingTrustPersonality}
-                    className="w-full h-7 px-2 text-xs rounded bg-bg-secondary border border-border-subtle text-text-primary focus:outline-none focus:border-accent-primary disabled:opacity-50"
-                  >
-                    {availableQubes.map((q) => (
-                      <option key={q.qube_id} value={q.qube_id}>
-                        {q.name} ({q.qube_id})
-                      </option>
-                    ))}
-                  </select>
+                    options={availableQubes.map((q) => ({
+                      value: q.qube_id,
+                      label: `${q.name} (${q.qube_id})`,
+                    }))}
+                  />
                 </div>
 
                 {/* Trust Personality Buttons */}

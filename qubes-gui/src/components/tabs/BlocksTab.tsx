@@ -8,6 +8,7 @@ import { Qube } from '../../types';
 import { BlockContentViewer } from '../blocks/BlockContentViewer';
 import { SKILL_DEFINITIONS } from '../../data/skillDefinitions';
 import { ActiveContextPanel, ContextSectionType, ContextSectionData } from '../context';
+import DarkSelect from '../DarkSelect';
 import { useChainState } from '../../contexts/ChainStateContext';
 
 // Helper to get skill name from ID
@@ -1220,17 +1221,14 @@ export const BlocksTab: React.FC<BlocksTabProps> = ({ selectedQubes, userId, pas
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="w-full px-3 py-2 bg-glass-bg backdrop-blur-glass border border-glass-border rounded-lg text-text-primary text-sm placeholder-text-tertiary focus:outline-none focus:ring-2 focus:ring-accent-primary/50"
               />
-              <select
+              <DarkSelect
                 value={filterType}
-                onChange={(e) => setFilterType(e.target.value)}
-                className="w-full px-3 py-2 bg-glass-bg backdrop-blur-glass border border-glass-border rounded-lg text-text-primary text-sm focus:outline-none focus:ring-2 focus:ring-accent-primary/50"
-              >
-                {blockTypes.map((type) => (
-                  <option key={type} value={type}>
-                    {type === 'all' ? 'All Types' : type}
-                  </option>
-                ))}
-              </select>
+                onChange={(v) => setFilterType(v)}
+                options={blockTypes.map((type) => ({
+                  value: type,
+                  label: type === 'all' ? 'All Types' : type,
+                }))}
+              />
             </div>
 
             {/* Block List */}

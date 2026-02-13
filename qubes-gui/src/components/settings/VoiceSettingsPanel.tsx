@@ -4,6 +4,7 @@ import { GlassCard, GlassButton, GlassInput } from '../glass';
 import { useAuth } from '../../hooks/useAuth';
 import { useVoiceLibrary } from '../../contexts/VoiceLibraryContext';
 import { LocalTTSSetupPanel } from './LocalTTSSetupPanel';
+import DarkSelect from '../DarkSelect';
 
 interface VoiceLibraryEntry {
   name: string;
@@ -848,15 +849,11 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
               {/* Language */}
               <div>
                 <label className="text-text-secondary text-[10px] block mb-1">Language</label>
-                <select
+                <DarkSelect
                   value={newVoiceLanguage}
-                  onChange={(e) => setNewVoiceLanguage(e.target.value)}
-                  className="w-full h-7 px-2 text-xs rounded bg-bg-secondary border border-border-subtle text-text-primary"
-                >
-                  {SUPPORTED_LANGUAGES.map((lang) => (
-                    <option key={lang.code} value={lang.code}>{lang.name}</option>
-                  ))}
-                </select>
+                  onChange={(v) => setNewVoiceLanguage(v)}
+                  options={SUPPORTED_LANGUAGES.map((lang) => ({ value: lang.code, label: lang.name }))}
+                />
               </div>
 
               {/* Mode-specific inputs */}
@@ -1045,15 +1042,15 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({
                         <label className="text-text-secondary text-[10px] font-medium">Model Size</label>
                         <p className="text-[9px] text-text-tertiary">Larger = better quality, Smaller = faster</p>
                       </div>
-                      <select
+                      <DarkSelect
                         value={modelVariant}
-                        onChange={(e) => handleModelVariantChange(e.target.value)}
+                        onChange={(v) => handleModelVariantChange(v)}
                         disabled={savingVariant}
-                        className="h-7 px-2 text-xs rounded bg-bg-secondary border border-border-subtle text-text-primary disabled:opacity-50"
-                      >
-                        <option value="1.7B">1.7B (Best Quality)</option>
-                        <option value="0.6B">0.6B (Faster)</option>
-                      </select>
+                        options={[
+                          { value: '1.7B', label: '1.7B (Best Quality)' },
+                          { value: '0.6B', label: '0.6B (Faster)' },
+                        ]}
+                      />
                     </div>
                   </div>
 

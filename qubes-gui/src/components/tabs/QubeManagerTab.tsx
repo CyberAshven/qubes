@@ -5,6 +5,7 @@ import { open } from '@tauri-apps/plugin-shell';
 import { readTextFile } from '@tauri-apps/plugin-fs';
 import { Qube, Tab } from '../../types';
 import { GlassCard, GlassButton } from '../glass';
+import DarkSelect from '../DarkSelect';
 import { WalletSecurityModal } from '../dialogs/WalletSecurityModal';
 import { QubeSettingsModal } from '../dialogs/QubeSettingsModal';
 import { useAuth } from '../../hooks/useAuth';
@@ -2226,32 +2227,24 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
           {isEditingModel ? (
             <div className="flex flex-col gap-1 flex-1">
               <div className="flex gap-1 items-center">
-                <select
+                <DarkSelect
                   value={selectedProvider}
-                  onChange={(e) => handleProviderChange(e.target.value)}
-                  className={`flex-1 px-2 py-1 bg-bg-tertiary border border-glass-border rounded text-xs text-text-primary focus:outline-none focus:ring-1 focus:ring-accent-primary/50 ${!providerSelectedInEdit ? 'scrollable-select' : ''}`}
-                  size={!providerSelectedInEdit ? Math.min(6, availableProviders.length) : 1}
-                >
-                  {availableProviders.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(v) => handleProviderChange(v)}
+                  options={availableProviders}
+                  expanded={!providerSelectedInEdit}
+                  maxVisible={6}
+                  className="flex-1"
+                />
               </div>
               <div className="flex gap-1 items-center">
-                <select
+                <DarkSelect
                   value={selectedModel}
-                  onChange={(e) => { setSelectedModel(e.target.value); setModelSelectedInEdit(true); }}
-                  className={`flex-1 px-2 py-1 bg-bg-tertiary border border-glass-border rounded text-xs text-text-primary focus:outline-none focus:ring-1 focus:ring-accent-primary/50 ${providerSelectedInEdit && !modelSelectedInEdit ? 'scrollable-select' : ''}`}
-                  size={providerSelectedInEdit && !modelSelectedInEdit ? Math.min(8, getModelsForProvider(selectedProvider).length) : 1}
-                >
-                  {getModelsForProvider(selectedProvider).map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(v) => { setSelectedModel(v); setModelSelectedInEdit(true); }}
+                  options={getModelsForProvider(selectedProvider)}
+                  expanded={providerSelectedInEdit && !modelSelectedInEdit}
+                  maxVisible={8}
+                  className="flex-1"
+                />
                 <button
                   onClick={handleSaveModel}
                   className="px-2 py-1 bg-accent-success/20 text-accent-success rounded hover:bg-accent-success/30 transition-all"
@@ -2294,36 +2287,28 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
           {isEditingVoice ? (
             <div className="flex flex-col gap-1 flex-1">
               <div className="flex gap-1 items-center">
-                <select
+                <DarkSelect
                   value={selectedVoiceProvider}
-                  onChange={(e) => handleVoiceProviderChange(e.target.value)}
-                  className={`flex-1 px-2 py-1 bg-bg-tertiary border border-glass-border rounded text-xs text-text-primary focus:outline-none focus:ring-1 focus:ring-accent-primary/50 ${!voiceProviderSelectedInEdit ? 'scrollable-select' : ''}`}
-                  size={!voiceProviderSelectedInEdit ? Math.min(6, voiceProviderOptions.length) : 1}
-                >
-                  {voiceProviderOptions.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(v) => handleVoiceProviderChange(v)}
+                  options={voiceProviderOptions}
+                  expanded={!voiceProviderSelectedInEdit}
+                  maxVisible={6}
+                  className="flex-1"
+                />
               </div>
               <div className="flex gap-1 items-center">
-                <select
+                <DarkSelect
                   value={selectedVoice}
-                  onChange={(e) => {
-                    console.log('[VOICE_DEBUG] Voice dropdown changed:', e.target.value);
-                    setSelectedVoice(e.target.value);
+                  onChange={(v) => {
+                    console.log('[VOICE_DEBUG] Voice dropdown changed:', v);
+                    setSelectedVoice(v);
                     setVoiceSelectedInEdit(true);
                   }}
-                  className={`flex-1 px-2 py-1 bg-bg-tertiary border border-glass-border rounded text-xs text-text-primary focus:outline-none focus:ring-1 focus:ring-accent-primary/50 ${voiceProviderSelectedInEdit && !voiceSelectedInEdit ? 'scrollable-select' : ''}`}
-                  size={voiceProviderSelectedInEdit && !voiceSelectedInEdit ? Math.min(10, (voiceOptionsWithCustom[selectedVoiceProvider] || []).length) : 1}
-                >
-                  {(voiceOptionsWithCustom[selectedVoiceProvider] || []).map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
+                  options={voiceOptionsWithCustom[selectedVoiceProvider] || []}
+                  expanded={voiceProviderSelectedInEdit && !voiceSelectedInEdit}
+                  maxVisible={10}
+                  className="flex-1"
+                />
                 <button
                   onClick={handleSaveVoice}
                   className="px-2 py-1 bg-accent-success/20 text-accent-success rounded hover:bg-accent-success/30 transition-all"
@@ -2422,31 +2407,22 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
           {isEditingEvalModel ? (
             <div className="flex flex-col gap-1 flex-1">
               <div className="flex gap-1 items-center">
-                <select
+                <DarkSelect
                   value={selectedEvalProvider}
-                  onChange={(e) => handleEvalProviderChange(e.target.value)}
-                  className="flex-1 px-2 py-1 bg-bg-tertiary border border-glass-border rounded text-xs text-text-primary focus:outline-none focus:ring-1 focus:ring-accent-primary/50"
-                >
-                  {availableProviders.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(v) => handleEvalProviderChange(v)}
+                  options={availableProviders}
+                  className="flex-1"
+                />
               </div>
               <div className="flex gap-1 items-center">
-                <select
+                <DarkSelect
                   value={selectedEvalModel}
-                  onChange={(e) => setSelectedEvalModel(e.target.value)}
-                  className="flex-1 px-2 py-1 bg-bg-tertiary border border-glass-border rounded text-xs text-text-primary focus:outline-none focus:ring-1 focus:ring-accent-primary/50 scrollable-select"
-                  size={Math.min(8, getModelsForProvider(selectedEvalProvider).length)}
-                >
-                  {getModelsForProvider(selectedEvalProvider).map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(v) => setSelectedEvalModel(v)}
+                  options={getModelsForProvider(selectedEvalProvider)}
+                  expanded
+                  maxVisible={8}
+                  className="flex-1"
+                />
                 <button
                   onClick={handleSaveEvalModel}
                   className="px-2 py-1 bg-accent-success/20 text-accent-success rounded hover:bg-accent-success/30 transition-all"
@@ -2837,25 +2813,24 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
                     <label className="text-xs font-semibold text-text-primary mb-2 block flex items-center gap-1.5">
                       🎨 Waveform Style (F1-F11)
                     </label>
-                    <select
-                      value={visualizerSettings.waveform_style}
-                      onChange={(e) => setVisualizerSettings({ ...visualizerSettings, waveform_style: parseInt(e.target.value) as any })}
-                      className="w-full px-3 py-2 text-xs rounded bg-bg-secondary border text-text-primary focus:outline-none focus:border-accent-primary"
-                      style={{ borderColor: qube.favorite_color }}
-                    >
-                      <option value={1}>1. Classic Bars</option>
-                      <option value={2}>2. Symmetric Bars</option>
-                      <option value={3}>3. Smooth Waveform</option>
-                      <option value={4}>4. Radial Spectrum</option>
-                      <option value={5}>5. Dot Matrix</option>
-                      <option value={6}>6. Polygon Morph</option>
-                      <option value={7}>7. Water Ripples</option>
-                      <option value={8}>8. Spectrum Rings</option>
-                      <option value={9}>9. VU Meters</option>
-                      <option value={10}>10. Avatar Glow</option>
-                      <option value={11}>11. Avatar Spectrum</option>
-                      <option value={12}>12. Avatar Cosmic</option>
-                    </select>
+                    <DarkSelect
+                      value={String(visualizerSettings.waveform_style)}
+                      onChange={(v) => setVisualizerSettings({ ...visualizerSettings, waveform_style: parseInt(v) as any })}
+                      options={[
+                        { value: '1', label: '1. Classic Bars' },
+                        { value: '2', label: '2. Symmetric Bars' },
+                        { value: '3', label: '3. Smooth Waveform' },
+                        { value: '4', label: '4. Radial Spectrum' },
+                        { value: '5', label: '5. Dot Matrix' },
+                        { value: '6', label: '6. Polygon Morph' },
+                        { value: '7', label: '7. Water Ripples' },
+                        { value: '8', label: '8. Spectrum Rings' },
+                        { value: '9', label: '9. VU Meters' },
+                        { value: '10', label: '10. Avatar Glow' },
+                        { value: '11', label: '11. Avatar Spectrum' },
+                        { value: '12', label: '12. Avatar Cosmic' },
+                      ]}
+                    />
                   </div>
 
                   {/* Color Theme */}
@@ -2863,20 +2838,19 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
                     <label className="text-xs font-semibold text-text-primary mb-2 block flex items-center gap-1.5">
                       🌈 Color Theme
                     </label>
-                    <select
+                    <DarkSelect
                       value={visualizerSettings.color_theme}
-                      onChange={(e) => setVisualizerSettings({ ...visualizerSettings, color_theme: e.target.value as any })}
-                      className="w-full px-3 py-2 text-xs rounded bg-bg-secondary border text-text-primary focus:outline-none focus:border-accent-primary"
-                      style={{ borderColor: qube.favorite_color }}
-                    >
-                      <option value="qube-color">Qube Color</option>
-                      <option value="rainbow">Rainbow</option>
-                      <option value="neon-cyan">Neon Cyan</option>
-                      <option value="electric-purple">Electric Purple</option>
-                      <option value="matrix-green">Matrix Green</option>
-                      <option value="fire">Fire</option>
-                      <option value="ice">Ice</option>
-                    </select>
+                      onChange={(v) => setVisualizerSettings({ ...visualizerSettings, color_theme: v as any })}
+                      options={[
+                        { value: 'qube-color', label: 'Qube Color' },
+                        { value: 'rainbow', label: 'Rainbow' },
+                        { value: 'neon-cyan', label: 'Neon Cyan' },
+                        { value: 'electric-purple', label: 'Electric Purple' },
+                        { value: 'matrix-green', label: 'Matrix Green' },
+                        { value: 'fire', label: 'Fire' },
+                        { value: 'ice', label: 'Ice' },
+                      ]}
+                    />
                   </div>
 
                   {/* Gradient Style (only for qube-color) */}
@@ -2885,17 +2859,16 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
                       <label className="text-xs font-semibold text-text-primary mb-2 block flex items-center gap-1.5">
                         🎭 Gradient Style
                       </label>
-                      <select
+                      <DarkSelect
                         value={visualizerSettings.gradient_style}
-                        onChange={(e) => setVisualizerSettings({ ...visualizerSettings, gradient_style: e.target.value as any })}
-                        className="w-full px-3 py-2 text-xs rounded bg-bg-secondary border text-text-primary focus:outline-none focus:border-accent-primary"
-                        style={{ borderColor: qube.favorite_color }}
-                      >
-                        <option value="solid">Solid Color</option>
-                        <option value="gradient-dark">Gradient to Dark</option>
-                        <option value="gradient-complementary">Gradient to Complementary</option>
-                        <option value="gradient-analogous">Gradient to Similar Colors</option>
-                      </select>
+                        onChange={(v) => setVisualizerSettings({ ...visualizerSettings, gradient_style: v as any })}
+                        options={[
+                          { value: 'solid', label: 'Solid Color' },
+                          { value: 'gradient-dark', label: 'Gradient to Dark' },
+                          { value: 'gradient-complementary', label: 'Gradient to Complementary' },
+                          { value: 'gradient-analogous', label: 'Gradient to Similar Colors' },
+                        ]}
+                      />
                     </div>
                   )}
 
@@ -2923,17 +2896,16 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
                     <label className="text-xs font-semibold text-text-primary mb-2 block flex items-center gap-1.5">
                       ⚡ Animation Smoothness
                     </label>
-                    <select
+                    <DarkSelect
                       value={visualizerSettings.animation_smoothness}
-                      onChange={(e) => setVisualizerSettings({ ...visualizerSettings, animation_smoothness: e.target.value as any })}
-                      className="w-full px-3 py-2 text-xs rounded bg-bg-secondary border text-text-primary focus:outline-none focus:border-accent-primary"
-                      style={{ borderColor: qube.favorite_color }}
-                    >
-                      <option value="low">Low (30fps - Better performance)</option>
-                      <option value="medium">Medium (45fps - Balanced)</option>
-                      <option value="high">High (60fps - Smooth)</option>
-                      <option value="ultra">Ultra (60fps+ - Maximum quality)</option>
-                    </select>
+                      onChange={(v) => setVisualizerSettings({ ...visualizerSettings, animation_smoothness: v as any })}
+                      options={[
+                        { value: 'low', label: 'Low (30fps - Better performance)' },
+                        { value: 'medium', label: 'Medium (45fps - Balanced)' },
+                        { value: 'high', label: 'High (60fps - Smooth)' },
+                        { value: 'ultra', label: 'Ultra (60fps+ - Maximum quality)' },
+                      ]}
+                    />
                   </div>
 
                   {/* Audio Offset */}
@@ -2983,19 +2955,17 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
                     <label className="text-xs font-semibold text-text-primary mb-2 block">
                       🖥️ Output Monitor
                     </label>
-                    <select
-                      value={visualizerSettings.output_monitor}
-                      onChange={(e) => handleOutputMonitorChange(parseInt(e.target.value))}
-                      className="w-full h-7 px-2 text-xs rounded bg-bg-secondary border text-text-primary focus:outline-none focus:border-accent-primary"
-                      style={{ borderColor: qube.favorite_color || '#00ff88' }}
-                    >
-                      <option value={0}>Main Window (Overlay)</option>
-                      {availableMonitors.map((monitor) => (
-                        <option key={monitor.id} value={monitor.id}>
-                          {monitor.name}
-                        </option>
-                      ))}
-                    </select>
+                    <DarkSelect
+                      value={String(visualizerSettings.output_monitor)}
+                      onChange={(v) => handleOutputMonitorChange(parseInt(v))}
+                      options={[
+                        { value: '0', label: 'Main Window (Overlay)' },
+                        ...availableMonitors.map((monitor) => ({
+                          value: String(monitor.id),
+                          label: monitor.name,
+                        })),
+                      ]}
+                    />
                     <p className="text-[10px] text-text-tertiary mt-1">
                       Choose where to display the visualizer (external monitor opens a dedicated fullscreen window)
                     </p>
