@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
 // Minimal interface matching the HTMLAudioElement properties that TypewriterText uses.
-// Implemented by NativeAudioPlayer (Linux/macOS) and WebAudioPlayer (Windows fallback).
+// Implemented by NativeAudioPlayer (all platforms via Rust native audio playback).
 export interface AudioPlaybackElement {
   readonly currentTime: number;
   readonly duration: number;

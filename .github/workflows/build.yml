@@ -235,6 +235,9 @@ jobs:
           # Transformers: remove unused model implementations (~100MB)
           rm -rf "$INTERNAL/transformers/testing_utils"* \
                  "$INTERNAL/transformers/models/deprecated" 2>/dev/null || true
+          # Numpy: remove setup.py that triggers "import from source directory" error
+          rm -f "$INTERNAL/numpy/setup.py" "$INTERNAL/numpy/pyproject.toml" 2>/dev/null || true
+          rm -rf "$INTERNAL/numpy/distutils" "$INTERNAL/numpy/f2py" 2>/dev/null || true
           # Tkinter/Tcl/Tk (GUI toolkit - not needed in headless backend)
           rm -rf "$INTERNAL/test" "$INTERNAL/tests" \
                  "$INTERNAL/unittest" "$INTERNAL/tkinter" \
@@ -266,6 +269,11 @@ jobs:
             $path = Join-Path $internal $d
             if (Test-Path $path) { Remove-Item -Recurse -Force $path }
           }
+          # Numpy: remove setup.py that triggers "import from source directory" error
+          Remove-Item -Force (Join-Path $internal "numpy/setup.py") -ErrorAction SilentlyContinue
+          Remove-Item -Force (Join-Path $internal "numpy/pyproject.toml") -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force (Join-Path $internal "numpy/distutils") -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force (Join-Path $internal "numpy/f2py") -ErrorAction SilentlyContinue
           # Remove __pycache__ and .pyc
           Get-ChildItem -Path $internal -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
           $sizeAfter = (Get-ChildItem -Recurse "qubes-gui/src-tauri/dist/qubes-backend" | Measure-Object -Property Length -Sum).Sum / 1MB

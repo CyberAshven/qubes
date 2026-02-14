@@ -18,6 +18,9 @@ from monitoring.metrics import MetricsRecorder
 
 logger = get_logger(__name__)
 
+# Track models we've already attempted to pull (avoid repeated pull attempts)
+_pull_attempted: set = set()
+
 
 class OllamaModel(AIModelInterface):
     """Ollama local model provider (OpenAI-compatible API)"""
@@ -212,8 +215,30 @@ class OllamaModel(AIModelInterface):
                     cause=e
                 )
             elif "model" in error_msg and ("not found" in error_msg or "does not exist" in error_msg or "pull" in error_msg):
+                # Auto-pull the model in background if we haven't tried yet
+                if self.model_name not in _pull_attempted:
+                    _pull_attempted.add(self.model_name)
+                    logger.info("ollama_auto_pulling_model", model=self.model_name)
+                    try:
+                        import httpx
+                        # Fire-and-forget: start the pull (streaming so it doesn't block)
+                        # Ollama will download in the background
+                        async with httpx.AsyncClient(timeout=10.0) as http_client:
+                            await http_client.post(
+                                "http://127.0.0.1:11434/api/pull",
+                                json={"name": self.model_name, "stream": True},
+                            )
+                    except Exception:
+                        pass  # Pull request sent, download continues in Ollama
+                    raise ModelNotAvailableError(
+                        f"Model '{self.model_name}' is being downloaded automatically. "
+                        f"This is a one-time download (~5GB). Please wait a few minutes and try again.",
+                        context={"model": self.model_name, "error_type": "model_pulling"},
+                        cause=e
+                    )
                 raise ModelNotAvailableError(
-                    f"Model '{self.model_name}' not found in Ollama. Run 'ollama pull {self.model_name}' to download it. "
+                    f"Model '{self.model_name}' not found in Ollama. It may still be downloading. "
+                    f"Run 'ollama pull {self.model_name}' to check status. "
                     f"Original error: {error_str}",
                     context={"model": self.model_name, "error_type": "model_not_found"},
                     cause=e

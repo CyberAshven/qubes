@@ -3007,9 +3007,13 @@ async fn get_audio_base64(file_path: String) -> Result<String, String> {
     Ok(format!("data:{};base64,{}", mime_type, base64_data))
 }
 
-/// Play audio file natively using system audio (bypasses WebKitGTK).
+/// PID of the currently playing native audio process (for stop functionality)
+static NATIVE_AUDIO_PID: std::sync::Mutex<Option<u32>> = std::sync::Mutex::new(None);
+
+/// Play audio file natively using system audio player.
 /// On Linux, uses pw-play (PipeWire) or aplay as fallback.
-/// Returns duration in seconds parsed from WAV header.
+/// On Windows, uses MCI (Media Control Interface) via PowerShell.
+/// Returns duration in seconds parsed from audio file header.
 /// Emits "audio-playback-ended" event when playback finishes.
 #[tauri::command]
 async fn play_audio_native(
@@ -3099,34 +3103,62 @@ async fn play_audio_native(
 
     eprintln!("[play_audio_native] Playing {:?}, duration: {:.1}s", absolute_path, duration_secs);
 
-    // Find the best available audio player
-    let (player_cmd, player_args): (&str, Vec<&str>) = if cfg!(target_os = "linux") {
+    let path_str = absolute_path.to_string_lossy().to_string();
+
+    // Find the best available audio player (platform-specific)
+    let (player_cmd, player_args, append_path): (String, Vec<String>, bool) = if cfg!(target_os = "windows") {
+        // Use ffplay (ffmpeg) for audio playback - no GUI, supports WAV/MP3
+        ("ffplay".to_string(), vec!["-nodisp".to_string(), "-autoexit".to_string(), "-loglevel".to_string(), "quiet".to_string()], true)
+    } else if cfg!(target_os = "linux") {
         // Try pw-play first (PipeWire), then aplay (ALSA)
-        if std::process::Command::new("pw-play").arg("--help").output().is_ok() {
-            ("pw-play", vec![])
+        let cmd = if std::process::Command::new("pw-play").arg("--help").output().is_ok() {
+            "pw-play"
         } else {
-            ("aplay", vec![])
-        }
+            "aplay"
+        };
+        (cmd.to_string(), vec![], true)
     } else if cfg!(target_os = "macos") {
-        ("afplay", vec![])
+        ("afplay".to_string(), vec![], true)
     } else {
         return Err("Native audio playback not supported on this platform".to_string());
     };
 
-    let path_str = absolute_path.to_string_lossy().to_string();
+    let player_name = player_cmd.clone();
 
     // Spawn playback in background thread
     std::thread::spawn(move || {
-        let result = std::process::Command::new(player_cmd)
-            .args(&player_args)
-            .arg(&path_str)
-            .output();
+        let mut cmd = std::process::Command::new(&player_cmd);
+        cmd.args(&player_args);
+        if append_path {
+            cmd.arg(&path_str);
+        }
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        }
 
-        match result {
-            Ok(output) => {
-                if !output.status.success() {
-                    eprintln!("[play_audio_native] Player exited with error: {}",
-                        String::from_utf8_lossy(&output.stderr));
+        match cmd.spawn() {
+            Ok(mut child) => {
+                // Store PID for stop functionality
+                if let Ok(mut lock) = NATIVE_AUDIO_PID.lock() {
+                    *lock = Some(child.id());
+                }
+
+                match child.wait() {
+                    Ok(status) => {
+                        if !status.success() {
+                            eprintln!("[play_audio_native] Player exited with error status: {}", status);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("[play_audio_native] Failed to wait for player: {}", e);
+                    }
+                }
+
+                // Clear PID
+                if let Ok(mut lock) = NATIVE_AUDIO_PID.lock() {
+                    *lock = None;
                 }
             }
             Err(e) => {
@@ -3140,15 +3172,30 @@ async fn play_audio_native(
 
     Ok(serde_json::json!({
         "duration": duration_secs,
-        "player": player_cmd,
+        "player": player_name,
     }))
 }
 
-/// Stop any native audio playback by killing pw-play/aplay processes
+/// Stop any native audio playback
 #[tauri::command]
 async fn stop_audio_native() -> Result<(), String> {
+    // Try to kill the tracked audio process by PID
+    if let Ok(mut lock) = NATIVE_AUDIO_PID.lock() {
+        if let Some(pid) = lock.take() {
+            if cfg!(target_os = "windows") {
+                let _ = std::process::Command::new("taskkill")
+                    .args(&["/F", "/PID", &pid.to_string(), "/T"])
+                    .output();
+            } else {
+                // Unix: kill process by PID
+                let _ = std::process::Command::new("kill")
+                    .arg(pid.to_string())
+                    .output();
+            }
+        }
+    }
     if cfg!(target_os = "linux") {
-        // Kill any running pw-play or aplay processes spawned by us
+        // Also kill any stray pw-play or aplay processes
         let _ = std::process::Command::new("pkill").arg("-f").arg("pw-play").output();
         let _ = std::process::Command::new("pkill").arg("-f").arg("aplay").output();
     }
