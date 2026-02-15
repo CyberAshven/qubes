@@ -66,18 +66,6 @@ fn check_rate_limit(command: &str) -> Result<(), String> {
 /// Key: "{user_id}:{qube_id}", Value: Child process handle
 static EVENT_WATCHERS: Mutex<Option<HashMap<String, Child>>> = Mutex::new(None);
 
-/// Event data structure for chain_state events
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct ChainStateEventData {
-    #[serde(rename = "type")]
-    event_kind: String,
-    qube_id: String,
-    event_type: String,
-    payload: serde_json::Value,
-    timestamp: i64,
-    source: String,
-}
-
 /// Start watching events for a qube
 fn start_event_watcher(
     app_handle: AppHandle,
@@ -269,36 +257,6 @@ fn find_python_path() -> Result<String, String> {
     }
 
     Err("Python not found".to_string())
-}
-
-fn find_gui_bridge_path() -> Result<PathBuf, String> {
-    // Get current exe directory
-    let exe_path = std::env::current_exe()
-        .map_err(|e| format!("Failed to get current exe path: {}", e))?;
-
-    let exe_dir = exe_path.parent()
-        .ok_or_else(|| "Failed to get exe directory".to_string())?;
-
-    // Try various relative paths
-    let possible_paths = vec![
-        exe_dir.join("gui_bridge.py"),
-        exe_dir.join("..").join("gui_bridge.py"),
-        exe_dir.join("..").join("..").join("gui_bridge.py"),
-        exe_dir.join("..").join("..").join("..").join("gui_bridge.py"),
-        exe_dir.join("..").join("..").join("..").join("..").join("gui_bridge.py"),
-        // Development paths
-        PathBuf::from("gui_bridge.py"),
-        PathBuf::from("../gui_bridge.py"),
-        PathBuf::from("../../gui_bridge.py"),
-    ];
-
-    for path in possible_paths {
-        if path.exists() {
-            return Ok(path.canonicalize().unwrap_or(path));
-        }
-    }
-
-    Err("gui_bridge.py not found".to_string())
 }
 
 // =============================================================================
@@ -520,32 +478,7 @@ struct AnalyzeImageResponse {
     error: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct MultiQubeConversationResponse {
-    conversation_id: String,
-    participants: Vec<serde_json::Value>,
-    first_response: serde_json::Value,
-}
 
-#[derive(Debug, Serialize, Deserialize)]
-struct ConversationMessageResponse {
-    speaker_id: String,
-    speaker_name: String,
-    message: String,
-    voice_model: String,
-    turn_number: i32,
-    conversation_id: String,
-    is_final: bool,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct ConversationSummaryResponse {
-    conversation_id: String,
-    total_turns: i32,
-    participants: Vec<serde_json::Value>,
-    conversation_history: Vec<serde_json::Value>,
-    anchored: bool,
-}
 
 #[derive(Debug, Serialize, Deserialize)]
 struct ConfiguredKeysResponse {
@@ -1054,25 +987,6 @@ struct TimelineResponse {
     error: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct ExportQubeResponse {
-    success: bool,
-    file_path: Option<String>,
-    block_count: Option<u32>,
-    qube_name: Option<String>,
-    qube_id: Option<String>,
-    error: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct ImportQubeResponse {
-    success: bool,
-    qube_id: Option<String>,
-    qube_name: Option<String>,
-    block_count: Option<u32>,
-    error: Option<String>,
-}
-
 // Chain Sync Response Types (NFT-Bundled Storage)
 #[derive(Debug, Serialize, Deserialize)]
 struct SyncToChainResponse {
@@ -1383,6 +1297,7 @@ fn get_python_bridge_path() -> PathBuf {
 fn create_backend_command() -> (Command, bool) {
     // Check if we're running bundled distribution
     if let Some(bundled_path) = get_bundled_backend_path() {
+        #[allow(unused_mut)] // mut needed on Windows for creation_flags()
         let mut cmd = Command::new(&bundled_path);
         // Hide console window on Windows
         #[cfg(target_os = "windows")]
@@ -1395,6 +1310,7 @@ fn create_backend_command() -> (Command, bool) {
 
     // Development mode - use Python
     let python = find_python_path().unwrap_or_else(|_| "python".to_string());
+    #[allow(unused_mut)] // mut needed on Windows for creation_flags()
     let mut cmd = Command::new(&python);
 
     // Hide console window on Windows
@@ -7407,6 +7323,437 @@ async fn approve_wallet_tx_stored_key(
     Ok(response)
 }
 
+// =============================================================================
+// HEAVY BUNDLE UPDATER
+// =============================================================================
+
+/// Response from check_heavy_update
+#[derive(Serialize, Deserialize, Clone)]
+struct HeavyUpdateInfo {
+    available: bool,
+    current_version: String,
+    new_version: Option<String>,
+    url: Option<String>,
+    sha256: Option<String>,
+    size: Option<u64>,
+    notes: Option<String>,
+}
+
+/// Progress payload for heavy update download
+#[derive(Serialize, Deserialize, Clone)]
+struct HeavyUpdateProgress {
+    downloaded: u64,
+    total: u64,
+}
+
+/// Check if this is a heavy bundle installation (qubes-backend/ subfolder exists)
+#[tauri::command]
+fn is_heavy_bundle() -> bool {
+    if cfg!(dev) {
+        return false;
+    }
+
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            #[cfg(target_os = "windows")]
+            let backend_path = exe_dir.join("qubes-backend").join("qubes-backend.exe");
+            #[cfg(not(target_os = "windows"))]
+            let backend_path = exe_dir.join("qubes-backend").join("qubes-backend");
+
+            return backend_path.exists();
+        }
+    }
+    false
+}
+
+/// Read the backend VERSION file. Returns "0.0.0" if missing.
+#[tauri::command]
+fn get_backend_version() -> String {
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            let version_path = exe_dir.join("qubes-backend").join("VERSION");
+            if let Ok(version) = std::fs::read_to_string(&version_path) {
+                return version.trim().to_string();
+            }
+        }
+    }
+    "0.0.0".to_string()
+}
+
+/// Get a writable directory for storing update downloads
+fn get_updates_dir() -> Result<PathBuf, String> {
+    let base = if cfg!(target_os = "windows") {
+        std::env::var("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                dirs_fallback_home().join("AppData").join("Local")
+            })
+            .join("Qubes")
+    } else if cfg!(target_os = "macos") {
+        dirs_fallback_home()
+            .join("Library")
+            .join("Application Support")
+            .join("Qubes")
+    } else {
+        std::env::var("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| dirs_fallback_home().join(".local").join("share"))
+            .join("Qubes")
+    };
+
+    let updates_dir = base.join("updates");
+    std::fs::create_dir_all(&updates_dir)
+        .map_err(|e| format!("Failed to create updates directory: {}", e))?;
+    Ok(updates_dir)
+}
+
+fn dirs_fallback_home() -> PathBuf {
+    std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."))
+}
+
+/// Determine the platform key for latest.json lookup
+fn get_platform_key() -> &'static str {
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    { "windows-x86_64" }
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    { "linux-x86_64" }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    { "darwin-aarch64" }
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    { "darwin-x86_64" }
+    // Fallback for other architectures
+    #[cfg(not(any(
+        all(target_os = "windows", target_arch = "x86_64"),
+        all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "macos", target_arch = "x86_64"),
+    )))]
+    { "unknown" }
+}
+
+/// Check for available heavy bundle updates
+#[tauri::command]
+async fn check_heavy_update() -> Result<HeavyUpdateInfo, String> {
+    let current_version = get_backend_version();
+
+    // Fetch latest.json from update endpoint
+    let client = reqwest::Client::new();
+    let response = client
+        .get("https://qube.cash/releases/latest.json")
+        .timeout(Duration::from_secs(15))
+        .send()
+        .await
+        .map_err(|e| format!("Failed to check for updates: {}", e))?;
+
+    if !response.status().is_success() {
+        return Err(format!("Update server returned status: {}", response.status()));
+    }
+
+    let manifest: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse update manifest: {}", e))?;
+
+    // Check for heavy_update section
+    let heavy_update = match manifest.get("heavy_update") {
+        Some(hu) => hu,
+        None => {
+            return Ok(HeavyUpdateInfo {
+                available: false,
+                current_version,
+                new_version: None,
+                url: None,
+                sha256: None,
+                size: None,
+                notes: manifest.get("notes").and_then(|n| n.as_str()).map(|s| s.to_string()),
+            });
+        }
+    };
+
+    let new_version = heavy_update
+        .get("version")
+        .and_then(|v| v.as_str())
+        .unwrap_or("0.0.0")
+        .to_string();
+
+    // Compare versions
+    let available = version_is_newer(&current_version, &new_version);
+
+    // Get platform-specific info
+    let platform_key = get_platform_key();
+    let platform_info = heavy_update.get(platform_key);
+
+    let (url, sha256, size) = if let Some(pi) = platform_info {
+        (
+            pi.get("url").and_then(|u| u.as_str()).map(|s| s.to_string()),
+            pi.get("sha256").and_then(|s| s.as_str()).map(|s| s.to_string()),
+            pi.get("size").and_then(|s| s.as_u64()),
+        )
+    } else {
+        (None, None, None)
+    };
+
+    Ok(HeavyUpdateInfo {
+        available,
+        current_version,
+        new_version: Some(new_version),
+        url,
+        sha256,
+        size,
+        notes: manifest.get("notes").and_then(|n| n.as_str()).map(|s| s.to_string()),
+    })
+}
+
+/// Simple semver comparison: returns true if new_ver > current_ver
+fn version_is_newer(current: &str, new_ver: &str) -> bool {
+    let parse = |v: &str| -> Vec<u32> {
+        v.split('.')
+            .filter_map(|p| p.parse::<u32>().ok())
+            .collect()
+    };
+    let c = parse(current);
+    let n = parse(new_ver);
+
+    for i in 0..std::cmp::max(c.len(), n.len()) {
+        let cv = c.get(i).copied().unwrap_or(0);
+        let nv = n.get(i).copied().unwrap_or(0);
+        if nv > cv {
+            return true;
+        }
+        if nv < cv {
+            return false;
+        }
+    }
+    false
+}
+
+/// Download a heavy update archive with progress events
+#[tauri::command]
+async fn download_heavy_update(
+    url: String,
+    app_handle: AppHandle,
+) -> Result<String, String> {
+    use futures_util::StreamExt;
+    use std::io::Write as IoWrite;
+
+    let updates_dir = get_updates_dir()?;
+
+    // Extract filename from URL
+    let filename = url
+        .rsplit('/')
+        .next()
+        .unwrap_or("qubes-update.tar.gz")
+        .to_string();
+    let download_path = updates_dir.join(&filename);
+
+    // Clean up any previous download
+    if download_path.exists() {
+        std::fs::remove_file(&download_path)
+            .map_err(|e| format!("Failed to remove old download: {}", e))?;
+    }
+
+    let client = reqwest::Client::new();
+    let response = client
+        .get(&url)
+        .timeout(Duration::from_secs(3600)) // 1 hour timeout for large files
+        .send()
+        .await
+        .map_err(|e| format!("Download failed: {}", e))?;
+
+    if !response.status().is_success() {
+        return Err(format!("Download server returned status: {}", response.status()));
+    }
+
+    let total = response.content_length().unwrap_or(0);
+    let mut downloaded: u64 = 0;
+
+    let mut file = std::fs::File::create(&download_path)
+        .map_err(|e| format!("Failed to create download file: {}", e))?;
+
+    let mut stream = response.bytes_stream();
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("Download stream error: {}", e))?;
+        file.write_all(&chunk)
+            .map_err(|e| format!("Failed to write download data: {}", e))?;
+        downloaded += chunk.len() as u64;
+
+        // Emit progress every ~100KB to avoid flooding
+        if downloaded % (100 * 1024) < chunk.len() as u64 || downloaded == total {
+            let _ = app_handle.emit(
+                "heavy-update-progress",
+                HeavyUpdateProgress { downloaded, total },
+            );
+        }
+    }
+
+    file.flush()
+        .map_err(|e| format!("Failed to flush download: {}", e))?;
+    drop(file);
+
+    Ok(download_path.to_string_lossy().to_string())
+}
+
+/// Verify SHA-256 hash of a downloaded update archive
+#[tauri::command]
+async fn verify_heavy_update(
+    path: String,
+    expected_sha256: String,
+) -> Result<bool, String> {
+    use sha2::{Sha256, Digest};
+
+    let file = std::fs::File::open(&path)
+        .map_err(|e| format!("Failed to open file for verification: {}", e))?;
+
+    let mut reader = std::io::BufReader::new(file);
+    let mut hasher = Sha256::new();
+
+    std::io::copy(&mut reader, &mut hasher)
+        .map_err(|e| format!("Failed to read file for hashing: {}", e))?;
+
+    let hash = format!("{:x}", hasher.finalize());
+    Ok(hash == expected_sha256.to_lowercase())
+}
+
+/// Install a heavy update by extracting and atomically swapping directories
+#[tauri::command]
+async fn install_heavy_update(archive_path: String) -> Result<bool, String> {
+    use flate2::read::GzDecoder;
+
+    let exe_dir = std::env::current_exe()
+        .map_err(|e| format!("Failed to get exe path: {}", e))?
+        .parent()
+        .ok_or("Failed to get exe directory")?
+        .to_path_buf();
+
+    let updates_dir = get_updates_dir()?;
+    let staging_dir = updates_dir.join("staging");
+
+    // Clean up any previous staging
+    if staging_dir.exists() {
+        std::fs::remove_dir_all(&staging_dir)
+            .map_err(|e| format!("Failed to clean staging directory: {}", e))?;
+    }
+    std::fs::create_dir_all(&staging_dir)
+        .map_err(|e| format!("Failed to create staging directory: {}", e))?;
+
+    // Extract tar.gz to staging
+    let archive_file = std::fs::File::open(&archive_path)
+        .map_err(|e| format!("Failed to open update archive: {}", e))?;
+    let decoder = GzDecoder::new(archive_file);
+    let mut archive = tar::Archive::new(decoder);
+
+    archive.unpack(&staging_dir)
+        .map_err(|e| format!("Failed to extract update archive: {}", e))?;
+
+    // ── Swap backend directory ──────────────────────────────────────────
+    let staged_backend = staging_dir.join("qubes-backend");
+    let current_backend = exe_dir.join("qubes-backend");
+    let backup_backend = exe_dir.join("qubes-backend.old");
+
+    if staged_backend.exists() && current_backend.exists() {
+        // Remove previous backup if exists
+        if backup_backend.exists() {
+            std::fs::remove_dir_all(&backup_backend).ok();
+        }
+
+        // Atomic swap: rename current → .old, move staged → current
+        std::fs::rename(&current_backend, &backup_backend)
+            .map_err(|e| {
+                format!("Failed to backup current backend: {}. No changes made.", e)
+            })?;
+
+        if let Err(e) = std::fs::rename(&staged_backend, &current_backend) {
+            // Rollback: restore from backup
+            let _ = std::fs::rename(&backup_backend, &current_backend);
+            return Err(format!(
+                "Failed to install new backend (rolled back): {}", e
+            ));
+        }
+    }
+
+    // ── Swap frontend binary ────────────────────────────────────────────
+    #[cfg(target_os = "windows")]
+    let frontend_name = "Qubes.exe";
+    #[cfg(target_os = "macos")]
+    let frontend_name = "Qubes";
+    #[cfg(target_os = "linux")]
+    let frontend_name = "Qubes";
+
+    let staged_frontend = staging_dir.join(frontend_name);
+    let current_frontend = exe_dir.join(frontend_name);
+    let backup_frontend_name = format!("{}.old", frontend_name);
+    let backup_frontend = exe_dir.join(&backup_frontend_name);
+
+    if staged_frontend.exists() && current_frontend.exists() {
+        // Remove previous backup
+        if backup_frontend.exists() {
+            std::fs::remove_file(&backup_frontend).ok();
+        }
+
+        // Rename running exe → .old (works on both Windows and Linux)
+        std::fs::rename(&current_frontend, &backup_frontend)
+            .map_err(|e| format!("Failed to backup frontend binary: {}", e))?;
+
+        if let Err(e) = std::fs::rename(&staged_frontend, &current_frontend) {
+            // Rollback frontend
+            let _ = std::fs::rename(&backup_frontend, &current_frontend);
+            return Err(format!(
+                "Failed to install new frontend (rolled back): {}", e
+            ));
+        }
+
+        // On Unix, ensure new binary is executable
+        #[cfg(not(target_os = "windows"))]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(metadata) = std::fs::metadata(&current_frontend) {
+                let mut perms = metadata.permissions();
+                perms.set_mode(0o755);
+                let _ = std::fs::set_permissions(&current_frontend, perms);
+            }
+        }
+    }
+
+    // Clean up staging directory
+    std::fs::remove_dir_all(&staging_dir).ok();
+
+    // Clean up downloaded archive
+    std::fs::remove_file(&archive_path).ok();
+
+    Ok(true)
+}
+
+/// Clean up leftover .old files from a previous update. Called on app startup.
+#[tauri::command]
+fn cleanup_old_backend() -> bool {
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            // Clean up old backend directory
+            let backup_backend = exe_dir.join("qubes-backend.old");
+            if backup_backend.exists() {
+                let _ = std::fs::remove_dir_all(&backup_backend);
+            }
+
+            // Clean up old frontend binary
+            #[cfg(target_os = "windows")]
+            let backup_frontend = exe_dir.join("Qubes.exe.old");
+            #[cfg(not(target_os = "windows"))]
+            let backup_frontend = exe_dir.join("Qubes.old");
+
+            if backup_frontend.exists() {
+                let _ = std::fs::remove_file(&backup_frontend);
+            }
+
+            return true;
+        }
+    }
+    false
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -7615,9 +7962,20 @@ pub fn run() {
             start_wsl2_tts_server,
             stop_wsl2_tts_server,
             uninstall_wsl2_tts,
-            install_wsl2
+            install_wsl2,
+            // Heavy Bundle Updater
+            is_heavy_bundle,
+            get_backend_version,
+            check_heavy_update,
+            download_heavy_update,
+            verify_heavy_update,
+            install_heavy_update,
+            cleanup_old_backend
         ])
         .setup(|app| {
+            // Clean up leftover .old files from previous heavy bundle update
+            cleanup_old_backend();
+
             // Get the main and splash windows
             let splashscreen_window = app.get_webview_window("splashscreen").unwrap();
             let main_window = app.get_webview_window("main").unwrap();

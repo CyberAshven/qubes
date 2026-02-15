@@ -433,6 +433,11 @@ jobs:
             Copy-Item "qubes-gui/src-tauri/resources/*" "$distDir/resources/" -Recurse
           }
 
+          # Create VERSION file for backend auto-updater
+          $version = "${{ needs.create-release.outputs.tag }}" -replace '^v', ''
+          if (-not $version) { $version = "0.0.0" }
+          $version | Out-File "$distDir/qubes-backend/VERSION" -Encoding ASCII -NoNewline
+
           # Create config
           @"
           {
@@ -485,6 +490,12 @@ jobs:
           # Copy Python backend (--onedir output with all deps)
           cp -r "qubes-gui/src-tauri/dist/qubes-backend" "$APP_MACOS/qubes-backend"
           chmod +x "$APP_MACOS/qubes-backend/qubes-backend"
+
+          # Create VERSION file for backend auto-updater
+          VERSION="${{ needs.create-release.outputs.tag }}"
+          VERSION="${VERSION#v}"
+          [ -z "$VERSION" ] && VERSION="0.0.0"
+          printf '%s' "$VERSION" > "$APP_MACOS/qubes-backend/VERSION"
 
           # Copy Ollama
           mkdir -p "$APP_MACOS/ollama"
@@ -541,6 +552,12 @@ jobs:
           # Copy Python backend (--onedir output with all deps)
           cp -r "qubes-gui/src-tauri/dist/qubes-backend" "$DIST_DIR/qubes-backend"
           chmod +x "$DIST_DIR/qubes-backend/qubes-backend"
+
+          # Create VERSION file for backend auto-updater
+          VERSION="${{ needs.create-release.outputs.tag }}"
+          VERSION="${VERSION#v}"
+          [ -z "$VERSION" ] && VERSION="0.0.0"
+          printf '%s' "$VERSION" > "$DIST_DIR/qubes-backend/VERSION"
 
           # Copy Ollama
           cp -r dist-bundle/ollama/* "$DIST_DIR/ollama/"
@@ -707,6 +724,54 @@ jobs:
           cd dist-bundle
           zip -r "../${{ matrix.artifact_name }}.zip" Qubes
 
+      # ========== Create Heavy Update Archive ==========
+      # Contains only frontend binary + backend (no models/ollama) for in-app updates
+      - name: Create heavy update archive (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          $updateDir = "update-staging"
+          New-Item -ItemType Directory -Force -Path $updateDir
+          Copy-Item "dist-bundle/Qubes/Qubes.exe" "$updateDir/Qubes.exe"
+          Copy-Item "dist-bundle/Qubes/qubes-backend" "$updateDir/qubes-backend" -Recurse
+          tar -czf "Qubes-Update-Windows.tar.gz" -C $updateDir .
+          $hash = (Get-FileHash "Qubes-Update-Windows.tar.gz" -Algorithm SHA256).Hash.ToLower()
+          $size = (Get-Item "Qubes-Update-Windows.tar.gz").Length
+          Write-Host "Update archive: size=${size}, sha256=${hash}"
+          echo "UPDATE_SHA256=$hash" >> $env:GITHUB_ENV
+          echo "UPDATE_SIZE=$size" >> $env:GITHUB_ENV
+
+      - name: Create heavy update archive (macOS)
+        if: startsWith(matrix.platform, 'macos')
+        run: |
+          UPDATE_DIR="update-staging"
+          mkdir -p "$UPDATE_DIR"
+          # macOS: backend is inside .app, so include the whole .app
+          cp -r "dist-bundle/Qubes/Qubes.app" "$UPDATE_DIR/Qubes.app"
+          # Remove models and ollama from inside .app to keep update small
+          rm -rf "$UPDATE_DIR/Qubes.app/Contents/MacOS/models" 2>/dev/null || true
+          rm -rf "$UPDATE_DIR/Qubes.app/Contents/MacOS/ollama" 2>/dev/null || true
+          tar -czf "Qubes-Update-macOS.tar.gz" -C "$UPDATE_DIR" .
+          HASH=$(sha256sum "Qubes-Update-macOS.tar.gz" | cut -d' ' -f1)
+          SIZE=$(stat -c%s "Qubes-Update-macOS.tar.gz" 2>/dev/null || stat -f%z "Qubes-Update-macOS.tar.gz")
+          echo "Update archive: size=${SIZE}, sha256=${HASH}"
+          echo "UPDATE_SHA256=$HASH" >> $GITHUB_ENV
+          echo "UPDATE_SIZE=$SIZE" >> $GITHUB_ENV
+
+      - name: Create heavy update archive (Linux)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          UPDATE_DIR="update-staging"
+          mkdir -p "$UPDATE_DIR"
+          cp "dist-bundle/Qubes/Qubes" "$UPDATE_DIR/Qubes"
+          cp -r "dist-bundle/Qubes/qubes-backend" "$UPDATE_DIR/qubes-backend"
+          tar -czf "Qubes-Update-Linux.tar.gz" -C "$UPDATE_DIR" .
+          HASH=$(sha256sum "Qubes-Update-Linux.tar.gz" | cut -d' ' -f1)
+          SIZE=$(stat -c%s "Qubes-Update-Linux.tar.gz")
+          echo "Update archive: size=${SIZE}, sha256=${HASH}"
+          echo "UPDATE_SHA256=$HASH" >> $GITHUB_ENV
+          echo "UPDATE_SIZE=$SIZE" >> $GITHUB_ENV
+
       # ========== Upload ZIP to Release ==========
       - name: Upload ZIP to Release
         if: needs.create-release.result == 'success'
@@ -715,6 +780,28 @@ jobs:
         shell: bash
         run: |
           gh release upload "${{ needs.create-release.outputs.tag }}" "${{ matrix.artifact_name }}.zip" --clobber
+
+      - name: Upload update archive to Release
+        if: needs.create-release.result == 'success'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          # Upload the heavy update archive
+          if [ -f "Qubes-Update-Windows.tar.gz" ]; then
+            gh release upload "${{ needs.create-release.outputs.tag }}" "Qubes-Update-Windows.tar.gz" --clobber
+          fi
+          if [ -f "Qubes-Update-macOS.tar.gz" ]; then
+            gh release upload "${{ needs.create-release.outputs.tag }}" "Qubes-Update-macOS.tar.gz" --clobber
+          fi
+          if [ -f "Qubes-Update-Linux.tar.gz" ]; then
+            gh release upload "${{ needs.create-release.outputs.tag }}" "Qubes-Update-Linux.tar.gz" --clobber
+          fi
+          # Save SHA-256 and size as a metadata file for the updater-manifest job
+          echo "${UPDATE_SHA256}" > "update-sha256-${{ matrix.platform }}.txt"
+          echo "${UPDATE_SIZE}" > "update-size-${{ matrix.platform }}.txt"
+          gh release upload "${{ needs.create-release.outputs.tag }}" "update-sha256-${{ matrix.platform }}.txt" --clobber
+          gh release upload "${{ needs.create-release.outputs.tag }}" "update-size-${{ matrix.platform }}.txt" --clobber
 
       # ========== Upload Tauri Updater Assets ==========
       - name: Upload Windows updater assets
@@ -810,7 +897,34 @@ jobs:
             LINUX_SIG=$(cat Qubes-Linux.AppImage.tar.gz.sig)
           fi
 
-          # Create latest.json
+          # Download heavy update metadata (SHA-256 and size per platform)
+          WIN_UPDATE_SHA=""
+          WIN_UPDATE_SIZE="0"
+          MAC_UPDATE_SHA=""
+          MAC_UPDATE_SIZE="0"
+          LINUX_UPDATE_SHA=""
+          LINUX_UPDATE_SIZE="0"
+
+          if gh release download "$TAG" --repo "$REPO" --pattern "update-sha256-windows-latest.txt" 2>/dev/null; then
+            WIN_UPDATE_SHA=$(cat update-sha256-windows-latest.txt)
+          fi
+          if gh release download "$TAG" --repo "$REPO" --pattern "update-size-windows-latest.txt" 2>/dev/null; then
+            WIN_UPDATE_SIZE=$(cat update-size-windows-latest.txt)
+          fi
+          if gh release download "$TAG" --repo "$REPO" --pattern "update-sha256-macos-latest.txt" 2>/dev/null; then
+            MAC_UPDATE_SHA=$(cat update-sha256-macos-latest.txt)
+          fi
+          if gh release download "$TAG" --repo "$REPO" --pattern "update-size-macos-latest.txt" 2>/dev/null; then
+            MAC_UPDATE_SIZE=$(cat update-size-macos-latest.txt)
+          fi
+          if gh release download "$TAG" --repo "$REPO" --pattern "update-sha256-ubuntu-22.04.txt" 2>/dev/null; then
+            LINUX_UPDATE_SHA=$(cat update-sha256-ubuntu-22.04.txt)
+          fi
+          if gh release download "$TAG" --repo "$REPO" --pattern "update-size-ubuntu-22.04.txt" 2>/dev/null; then
+            LINUX_UPDATE_SIZE=$(cat update-size-ubuntu-22.04.txt)
+          fi
+
+          # Create latest.json with both Tauri updater and heavy update sections
           cat > latest.json << EOF
           {
             "version": "$VERSION",
@@ -828,6 +942,24 @@ jobs:
               "linux-x86_64": {
                 "signature": "$LINUX_SIG",
                 "url": "$BASE_URL/Qubes-Linux.AppImage.tar.gz"
+              }
+            },
+            "heavy_update": {
+              "version": "$VERSION",
+              "windows-x86_64": {
+                "url": "$BASE_URL/Qubes-Update-Windows.tar.gz",
+                "sha256": "$WIN_UPDATE_SHA",
+                "size": $WIN_UPDATE_SIZE
+              },
+              "darwin-aarch64": {
+                "url": "$BASE_URL/Qubes-Update-macOS.tar.gz",
+                "sha256": "$MAC_UPDATE_SHA",
+                "size": $MAC_UPDATE_SIZE
+              },
+              "linux-x86_64": {
+                "url": "$BASE_URL/Qubes-Update-Linux.tar.gz",
+                "sha256": "$LINUX_UPDATE_SHA",
+                "size": $LINUX_UPDATE_SIZE
               }
             }
           }

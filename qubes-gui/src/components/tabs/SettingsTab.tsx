@@ -86,6 +86,9 @@ export const SettingsTab: React.FC = () => {
     isDownloading,
     downloadProgress,
     error: updateError,
+    isHeavy,
+    heavyStatus,
+    updateSize,
     checkForUpdates,
     installUpdate,
     dismissUpdate,
@@ -2349,6 +2352,7 @@ export const SettingsTab: React.FC = () => {
                         </p>
                         <p className="text-[10px] text-text-secondary">
                           Version {updateStatus.newVersion} is ready to install
+                          {updateSize && ` (${updateSize} download)`}
                         </p>
                       </div>
                       <div className="flex gap-2">
@@ -2366,11 +2370,18 @@ export const SettingsTab: React.FC = () => {
                           size="sm"
                           className="text-xs h-7 px-3"
                         >
-                          {isDownloading ? 'Installing...' : 'Install Now'}
+                          {isDownloading
+                            ? (isHeavy && heavyStatus !== 'idle' && heavyStatus !== 'downloading'
+                                ? heavyStatus === 'verifying' ? 'Verifying...'
+                                : heavyStatus === 'installing' ? 'Installing...'
+                                : heavyStatus === 'restarting' ? 'Restarting...'
+                                : 'Updating...'
+                              : 'Downloading...')
+                            : 'Install Now'}
                         </GlassButton>
                       </div>
                     </div>
-                    {isDownloading && downloadProgress && (
+                    {isDownloading && downloadProgress && downloadProgress.total > 0 && (
                       <div className="mt-2">
                         <div className="h-1.5 bg-white/10 rounded-full overflow-hidden">
                           <div
@@ -2380,6 +2391,11 @@ export const SettingsTab: React.FC = () => {
                             }}
                           />
                         </div>
+                        {isHeavy && (
+                          <p className="text-[9px] text-text-tertiary mt-1 text-right">
+                            {Math.round((downloadProgress.downloaded / downloadProgress.total) * 100)}%
+                          </p>
+                        )}
                       </div>
                     )}
                   </div>

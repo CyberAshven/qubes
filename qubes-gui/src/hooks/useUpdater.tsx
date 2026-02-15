@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import {
   checkForUpdate,
   downloadAndInstallUpdate,
@@ -6,6 +6,15 @@ import {
   UpdateStatus,
   UpdateProgress,
 } from '../utils/updater';
+import {
+  isHeavyBundle,
+  checkHeavyUpdate,
+  getHeavyUpdateInfo,
+  downloadAndInstallHeavyUpdate,
+  formatBytes,
+} from '../utils/heavy-updater';
+
+export type HeavyUpdateStatus = 'idle' | 'downloading' | 'verifying' | 'installing' | 'restarting';
 
 interface UseUpdaterReturn {
   // State
@@ -15,6 +24,11 @@ interface UseUpdaterReturn {
   isDownloading: boolean;
   downloadProgress: UpdateProgress | null;
   error: string | null;
+
+  // Heavy bundle extras
+  isHeavy: boolean;
+  heavyStatus: HeavyUpdateStatus;
+  updateSize: string | null; // Human-readable size (e.g. "680.2 MB")
 
   // Actions
   checkForUpdates: () => Promise<void>;
@@ -30,27 +44,57 @@ export function useUpdater(checkOnMount: boolean = false): UseUpdaterReturn {
   const [error, setError] = useState<string | null>(null);
   const [dismissed, setDismissed] = useState(false);
 
-  // Check for updates
+  // Heavy bundle state
+  const [isHeavy, setIsHeavy] = useState(false);
+  const [heavyStatus, setHeavyStatus] = useState<HeavyUpdateStatus>('idle');
+  const [updateSize, setUpdateSize] = useState<string | null>(null);
+  const heavyChecked = useRef(false);
+
+  // Detect heavy bundle mode on mount
+  useEffect(() => {
+    if (!heavyChecked.current) {
+      heavyChecked.current = true;
+      isHeavyBundle().then(setIsHeavy);
+    }
+  }, []);
+
+  // Check for updates (routes to appropriate updater)
   const checkForUpdates = useCallback(async () => {
     setIsChecking(true);
     setError(null);
 
     try {
-      const status = await checkForUpdate();
-      setUpdateStatus(status);
-      setDismissed(false);
+      if (isHeavy) {
+        // Heavy bundle: use custom updater
+        const status = await checkHeavyUpdate();
+        setUpdateStatus(status);
+        setDismissed(false);
 
-      if (status.error) {
-        setError(status.error);
+        // Fetch size info
+        if (status.available) {
+          const info = await getHeavyUpdateInfo();
+          if (info?.size) {
+            setUpdateSize(formatBytes(info.size));
+          }
+        }
+      } else {
+        // Light build: use Tauri updater
+        const status = await checkForUpdate();
+        setUpdateStatus(status);
+        setDismissed(false);
+
+        if (status.error) {
+          setError(status.error);
+        }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to check for updates');
     } finally {
       setIsChecking(false);
     }
-  }, []);
+  }, [isHeavy]);
 
-  // Download and install update
+  // Download and install update (routes to appropriate updater)
   const installUpdate = useCallback(async () => {
     if (!updateStatus?.available) return;
 
@@ -58,31 +102,58 @@ export function useUpdater(checkOnMount: boolean = false): UseUpdaterReturn {
     setError(null);
 
     try {
-      await downloadAndInstallUpdate((progress) => {
-        setDownloadProgress(progress);
-      });
+      if (isHeavy) {
+        // Heavy bundle: custom download → verify → install → restart
+        await downloadAndInstallHeavyUpdate(
+          (progress) => {
+            setDownloadProgress(progress);
+          },
+          (status) => {
+            setHeavyStatus(status);
+          },
+        );
+      } else {
+        // Light build: Tauri updater
+        await downloadAndInstallUpdate((progress) => {
+          setDownloadProgress(progress);
+        });
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to install update');
       setIsDownloading(false);
+      setHeavyStatus('idle');
     }
     // Note: If successful, app will relaunch, so we won't reach here
-  }, [updateStatus]);
+  }, [updateStatus, isHeavy]);
 
   // Dismiss update notification
   const dismissUpdate = useCallback(() => {
     setDismissed(true);
   }, []);
 
-  // Check on mount if requested
+  // Check on mount if requested (waits for heavy detection to complete)
   useEffect(() => {
-    if (checkOnMount) {
-      checkForUpdateSilently().then((status) => {
-        if (status) {
+    if (checkOnMount && heavyChecked.current) {
+      const doCheck = async () => {
+        if (isHeavy) {
+          const status = await checkHeavyUpdate();
           setUpdateStatus(status);
+          if (status.available) {
+            const info = await getHeavyUpdateInfo();
+            if (info?.size) {
+              setUpdateSize(formatBytes(info.size));
+            }
+          }
+        } else {
+          const status = await checkForUpdateSilently();
+          if (status) {
+            setUpdateStatus(status);
+          }
         }
-      });
+      };
+      doCheck();
     }
-  }, [checkOnMount]);
+  }, [checkOnMount, isHeavy]);
 
   return {
     updateAvailable: updateStatus?.available === true && !dismissed,
@@ -91,6 +162,9 @@ export function useUpdater(checkOnMount: boolean = false): UseUpdaterReturn {
     isDownloading,
     downloadProgress,
     error,
+    isHeavy,
+    heavyStatus,
+    updateSize,
     checkForUpdates,
     installUpdate,
     dismissUpdate,
