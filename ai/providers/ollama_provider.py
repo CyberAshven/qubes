@@ -83,11 +83,14 @@ class OllamaModel(AIModelInterface):
         """Generate response using Ollama API with retry and circuit breaker"""
         try:
             from openai import AsyncOpenAI
+            import httpx
 
             # Ollama uses OpenAI-compatible API
+            # Timeout: 5s connect, 300s total (local models can be slow, especially reasoning models)
             client = AsyncOpenAI(
                 api_key=self.api_key,
-                base_url=self.base_url
+                base_url=self.base_url,
+                timeout=httpx.Timeout(300.0, connect=5.0)
             )
 
             params = {
@@ -275,10 +278,13 @@ class OllamaModel(AIModelInterface):
         """Stream response using Ollama API"""
         try:
             from openai import AsyncOpenAI
+            import httpx
 
+            # Timeout: 5s connect, 300s total for streaming (local reasoning models can be very slow)
             client = AsyncOpenAI(
                 api_key=self.api_key,
-                base_url=self.base_url
+                base_url=self.base_url,
+                timeout=httpx.Timeout(300.0, connect=5.0)
             )
 
             params = {
@@ -315,7 +321,7 @@ class OllamaModel(AIModelInterface):
             stream = await client.chat.completions.create(**params)
 
             async for chunk in stream:
-                if chunk.choices[0].delta.content:
+                if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
                     yield chunk.choices[0].delta.content
 
             MetricsRecorder.record_ai_api_call("ollama", self.model_name, "success")

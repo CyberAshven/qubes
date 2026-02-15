@@ -1441,6 +1441,11 @@ fn execute_with_secrets(
 
 /// Execute a command with secrets passed via stdin, with a timeout.
 /// Returns an error if the command doesn't complete within the timeout.
+///
+/// IMPORTANT: Uses background threads to drain stdout/stderr while polling,
+/// preventing pipe buffer deadlocks (OS pipe buffers are ~64KB; if the child
+/// writes more than that to stdout or stderr, it blocks waiting for the parent
+/// to read, but the parent is waiting for the child to exit — classic deadlock).
 fn execute_with_secrets_timeout(
     mut cmd: Command,
     secrets: HashMap<&str, &str>,
@@ -1448,6 +1453,8 @@ fn execute_with_secrets_timeout(
 ) -> Result<(String, String), String> {
     use std::time::{Duration, Instant};
     use std::thread;
+    use std::io::Read;
+    use std::sync::{Arc, Mutex};
 
     // Configure stdin as piped so we can write secrets
     cmd.stdin(Stdio::piped())
@@ -1472,6 +1479,32 @@ fn execute_with_secrets_timeout(
         // stdin is dropped here, closing the pipe
     }
 
+    // Drain stdout and stderr in background threads to prevent pipe buffer deadlock.
+    let stdout_bytes = Arc::new(Mutex::new(Vec::new()));
+    let stderr_bytes = Arc::new(Mutex::new(Vec::new()));
+
+    let stdout_handle = if let Some(mut stdout) = child.stdout.take() {
+        let buf = Arc::clone(&stdout_bytes);
+        Some(thread::spawn(move || {
+            let mut data = Vec::new();
+            let _ = stdout.read_to_end(&mut data);
+            *buf.lock().unwrap() = data;
+        }))
+    } else {
+        None
+    };
+
+    let stderr_handle = if let Some(mut stderr) = child.stderr.take() {
+        let buf = Arc::clone(&stderr_bytes);
+        Some(thread::spawn(move || {
+            let mut data = Vec::new();
+            let _ = stderr.read_to_end(&mut data);
+            *buf.lock().unwrap() = data;
+        }))
+    } else {
+        None
+    };
+
     // Poll for completion with timeout
     let start = Instant::now();
     let timeout = Duration::from_secs(timeout_secs);
@@ -1479,21 +1512,12 @@ fn execute_with_secrets_timeout(
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                // Process finished
-                let mut stdout_bytes = Vec::new();
-                let mut stderr_bytes = Vec::new();
+                // Process finished — join reader threads
+                if let Some(h) = stdout_handle { let _ = h.join(); }
+                if let Some(h) = stderr_handle { let _ = h.join(); }
 
-                if let Some(mut stdout) = child.stdout.take() {
-                    use std::io::Read;
-                    let _ = stdout.read_to_end(&mut stdout_bytes);
-                }
-                if let Some(mut stderr) = child.stderr.take() {
-                    use std::io::Read;
-                    let _ = stderr.read_to_end(&mut stderr_bytes);
-                }
-
-                let stdout = String::from_utf8_lossy(&stdout_bytes).to_string();
-                let stderr = String::from_utf8_lossy(&stderr_bytes).to_string();
+                let stdout = String::from_utf8_lossy(&stdout_bytes.lock().unwrap()).to_string();
+                let stderr = String::from_utf8_lossy(&stderr_bytes.lock().unwrap()).to_string();
 
                 if !status.success() {
                     return Err(sanitize_backend_error(&stderr, "Backend"));
@@ -1506,6 +1530,9 @@ fn execute_with_secrets_timeout(
                 if start.elapsed() > timeout {
                     // Kill the process
                     let _ = child.kill();
+                    // Join reader threads (they'll finish once the killed process closes pipes)
+                    if let Some(h) = stdout_handle { let _ = h.join(); }
+                    if let Some(h) = stderr_handle { let _ = h.join(); }
                     return Err(format!(
                         "Operation timed out after {} seconds. The backend process was terminated.",
                         timeout_secs
@@ -2026,7 +2053,7 @@ async fn send_message(user_id: String, qube_id: String, message: String, passwor
 async fn generate_speech(user_id: String, qube_id: String, text: String, password: String) -> Result<SpeechResponse, String> {
     // Rate limit check
     check_rate_limit("generate_speech")?;
-    
+
     let mut cmd = prepare_backend_command()?;
     cmd.arg("generate-speech")
         .arg(&user_id)
@@ -2036,7 +2063,8 @@ async fn generate_speech(user_id: String, qube_id: String, text: String, passwor
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _) = execute_with_secrets(cmd, secrets)?;
+    // 120s timeout: cloud TTS is fast, local TTS (Kokoro/Qwen3) may need model loading time
+    let (stdout, _) = execute_with_secrets_timeout(cmd, secrets, 120)?;
 
     let speech_response: SpeechResponse = serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
@@ -2128,15 +2156,10 @@ async fn preview_voice(
         cmd.arg("--preset-voice").arg(preset);
     }
 
-    let output = cmd.output()
-        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+    // Voice cloning/design can take 2-3 minutes for model loading + generation
+    let secrets = HashMap::new();
+    let (stdout, _) = execute_with_secrets_timeout(cmd, secrets, 180)?;
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Preview voice"));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
     let response: serde_json::Value = serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
 
@@ -3026,13 +3049,16 @@ async fn play_audio_native(
         // Use ffplay (ffmpeg) for audio playback - no GUI, supports WAV/MP3
         ("ffplay".to_string(), vec!["-nodisp".to_string(), "-autoexit".to_string(), "-loglevel".to_string(), "quiet".to_string()], true)
     } else if cfg!(target_os = "linux") {
-        // Try pw-play first (PipeWire), then aplay (ALSA)
-        let cmd = if std::process::Command::new("pw-play").arg("--help").output().is_ok() {
-            "pw-play"
+        // Try pw-play (PipeWire) first, then ffplay (universal), then aplay (ALSA, WAV only)
+        let is_mp3 = path_str.ends_with(".mp3");
+        if std::process::Command::new("pw-play").arg("--help").output().is_ok() {
+            ("pw-play".to_string(), vec![], true)
+        } else if is_mp3 || std::process::Command::new("ffplay").arg("-version").output().is_ok() {
+            // aplay can't play MP3, so prefer ffplay for MP3 files or as general fallback
+            ("ffplay".to_string(), vec!["-nodisp".to_string(), "-autoexit".to_string(), "-loglevel".to_string(), "quiet".to_string()], true)
         } else {
-            "aplay"
-        };
-        (cmd.to_string(), vec![], true)
+            ("aplay".to_string(), vec![], true)
+        }
     } else if cfg!(target_os = "macos") {
         ("afplay".to_string(), vec![], true)
     } else {
@@ -3109,11 +3135,6 @@ async fn stop_audio_native() -> Result<(), String> {
                     .output();
             }
         }
-    }
-    if cfg!(target_os = "linux") {
-        // Also kill any stray pw-play or aplay processes
-        let _ = std::process::Command::new("pkill").arg("-f").arg("pw-play").output();
-        let _ = std::process::Command::new("pkill").arg("-f").arg("aplay").output();
     }
     Ok(())
 }
@@ -6172,6 +6193,63 @@ async fn check_ollama_status() -> Result<OllamaStatusResponse, String> {
     }
 }
 
+/// Auto-start Ollama at app launch if not already running.
+/// Runs in a background thread, silently skips if Ollama is already serving.
+fn auto_start_ollama() {
+    std::thread::spawn(|| {
+        // Check if Ollama is already running by connecting to its API
+        let is_running = std::net::TcpStream::connect_timeout(
+            &"127.0.0.1:11434".parse().unwrap(),
+            std::time::Duration::from_secs(2),
+        ).is_ok();
+
+        if is_running {
+            eprintln!("[OLLAMA] Already running on port 11434");
+            return;
+        }
+
+        eprintln!("[OLLAMA] Not running, attempting to start...");
+
+        let exe_dir = match std::env::current_exe() {
+            Ok(p) => p.parent().unwrap_or_else(|| std::path::Path::new(".")).to_path_buf(),
+            Err(_) => return,
+        };
+
+        #[cfg(target_os = "windows")]
+        let ollama_path = exe_dir.join("ollama").join("ollama.exe");
+        #[cfg(not(target_os = "windows"))]
+        let ollama_path = exe_dir.join("ollama").join("ollama");
+
+        let models_dir = exe_dir.join("models").join("ollama");
+
+        let mut cmd = if ollama_path.exists() {
+            eprintln!("[OLLAMA] Using bundled Ollama at {}", ollama_path.display());
+            Command::new(&ollama_path)
+        } else {
+            eprintln!("[OLLAMA] Using system Ollama");
+            Command::new("ollama")
+        };
+
+        cmd.arg("serve")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+
+        if models_dir.exists() {
+            cmd.env("OLLAMA_MODELS", &models_dir);
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        }
+
+        match cmd.spawn() {
+            Ok(_) => eprintln!("[OLLAMA] Started successfully"),
+            Err(e) => eprintln!("[OLLAMA] Failed to start: {} (Ollama features will require manual start)", e),
+        }
+    });
+}
+
 /// Start bundled Ollama
 #[tauri::command]
 async fn start_ollama() -> Result<bool, String> {
@@ -7975,6 +8053,9 @@ pub fn run() {
         .setup(|app| {
             // Clean up leftover .old files from previous heavy bundle update
             cleanup_old_backend();
+
+            // Auto-start Ollama if not already running (background, non-blocking)
+            auto_start_ollama();
 
             // Get the main and splash windows
             let splashscreen_window = app.get_webview_window("splashscreen").unwrap();

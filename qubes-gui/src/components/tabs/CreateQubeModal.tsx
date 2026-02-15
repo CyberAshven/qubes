@@ -138,14 +138,14 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
 
   // Fallback providers if dynamic data hasn't loaded yet
   const fallbackProviders = [
-    { value: 'openai', label: 'OpenAI' },
-    { value: 'anthropic', label: 'Anthropic' },
-    { value: 'google', label: 'Google' },
-    { value: 'perplexity', label: 'Perplexity' },
-    { value: 'deepseek', label: 'DeepSeek' },
+    { value: 'ollama', label: 'Ollama (Local, bundled)' },
+    { value: 'openai', label: 'OpenAI (API key required)' },
+    { value: 'anthropic', label: 'Anthropic (API key required)' },
+    { value: 'google', label: 'Google (API key required)' },
+    { value: 'perplexity', label: 'Perplexity (API key required)' },
+    { value: 'deepseek', label: 'DeepSeek (API key required)' },
     { value: 'venice', label: 'Venice (Private)' },
     { value: 'nanogpt', label: 'NanoGPT (Pay-per-prompt)' },
-    { value: 'ollama', label: 'Ollama (Local)' },
   ];
 
   // Fallback models by provider (matches backend ModelRegistry)
@@ -234,6 +234,7 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
       { value: 'nanogpt/mixtral-8x7b', label: 'Mixtral 8x7B (NanoGPT)' },
     ],
     ollama: [
+      { value: 'deepseek-r1:8b', label: 'DeepSeek R1 8B (bundled)' },
       { value: 'llama3.3:70b', label: 'Llama 3.3 70B' },
       { value: 'llama3.2', label: 'Llama 3.2' },
       { value: 'llama3.2:1b', label: 'Llama 3.2 1B' },
@@ -243,7 +244,6 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
       { value: 'qwen3:235b', label: 'Qwen3 235B' },
       { value: 'qwen3:30b', label: 'Qwen3 30B' },
       { value: 'qwen2.5:7b', label: 'Qwen 2.5 7B' },
-      { value: 'deepseek-r1:8b', label: 'DeepSeek R1 8B' },
       { value: 'phi4:14b', label: 'Phi-4 14B' },
       { value: 'gemma2:9b', label: 'Gemma 2 9B' },
       { value: 'mistral:7b', label: 'Mistral 7B' },
@@ -259,7 +259,7 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
     deepseek: 'deepseek-chat',
     venice: 'venice-uncensored',
     nanogpt: 'nanogpt/gpt-4o-mini',
-    ollama: 'llama3.3:70b',
+    ollama: 'deepseek-r1:8b',
   };
 
   // Use dynamic data if loaded, otherwise fallback
@@ -281,7 +281,7 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
-  const [voiceProvider, setVoiceProvider] = useState('google');
+  const [voiceProvider, setVoiceProvider] = useState('kokoro');
 
   // Fee-based minting state
   const [pendingMinting, setPendingMinting] = useState<PendingMintingResult | null>(null);
@@ -300,9 +300,9 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
   const [formData, setFormData] = useState<CreateQubeData>({
     name: '',
     genesisPrompt: '',
-    aiProvider: 'openai',
-    aiModel: 'gpt-5.2',
-    voiceModel: 'google:en-US-Neural2-A',  // Default to Google Cloud TTS Neural2!
+    aiProvider: 'ollama',
+    aiModel: 'deepseek-r1:8b',
+    voiceModel: 'kokoro:af_heart',  // Default to Kokoro local TTS (bundled, no API key needed)
     ownerPubkey: '',  // NFT address derived automatically from this
     encryptGenesis: false,
     favoriteColor: '#00ff88',
@@ -586,9 +586,9 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
     setFormData({
       name: '',
       genesisPrompt: '',
-      aiProvider: 'openai',
-      aiModel: 'gpt-5.2',
-      voiceModel: 'google:en-US-Neural2-A',  // Default to Google Cloud TTS Neural2!
+      aiProvider: 'ollama',
+      aiModel: 'deepseek-r1:8b',
+      voiceModel: 'kokoro:af_heart',  // Default to Kokoro local TTS (bundled, no API key needed)
       ownerPubkey: '',  // NFT address derived automatically from this
       encryptGenesis: false,
       favoriteColor: '#00ff88',
@@ -596,7 +596,7 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
       avatarStyle: 'cyberpunk',
       avatarFile: undefined,
     });
-    setVoiceProvider('google');
+    setVoiceProvider('kokoro');
     setStep(1);
     setSuccess(false);
     setErrors({});
@@ -861,13 +861,13 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
                 value={voiceProvider}
                 onChange={(v) => setVoiceProvider(v)}
                 options={[
-                  ...(Object.keys(customVoices).length > 0 ? [{ value: 'custom', label: 'Custom Voices (local)' }] : []),
-                  { value: 'kokoro', label: 'Kokoro (local)' },
+                  { value: 'kokoro', label: 'Kokoro (local, bundled)' },
                   { value: 'qwen3', label: 'Qwen3 (local)' },
-                  { value: 'google', label: 'Google Cloud (API)' },
-                  { value: 'gemini', label: 'Google Gemini (API)' },
-                  { value: 'openai', label: 'OpenAI (API)' },
-                  { value: 'elevenlabs', label: 'ElevenLabs (API)' },
+                  ...(Object.keys(customVoices).length > 0 ? [{ value: 'custom', label: 'Custom Voices (local)' }] : []),
+                  { value: 'google', label: 'Google Cloud (API key required)' },
+                  { value: 'gemini', label: 'Google Gemini (API key required)' },
+                  { value: 'openai', label: 'OpenAI (API key required)' },
+                  { value: 'elevenlabs', label: 'ElevenLabs (API key required)' },
                 ]}
               />
             </div>

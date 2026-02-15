@@ -380,20 +380,21 @@ class ModelRegistry:
         Groups models by provider with display names and metadata.
         """
         provider_labels = {
-            "openai": "OpenAI",
-            "anthropic": "Anthropic",
-            "google": "Google",
-            "perplexity": "Perplexity",
-            "deepseek": "DeepSeek",
+            "ollama": "Ollama (Local, bundled)",
+            "openai": "OpenAI (API key required)",
+            "anthropic": "Anthropic (API key required)",
+            "google": "Google (API key required)",
+            "perplexity": "Perplexity (API key required)",
+            "deepseek": "DeepSeek (API key required)",
             "venice": "Venice (Private)",
-            "ollama": "Ollama (Local)",
             "nanogpt": "NanoGPT (Pay-per-prompt)"
         }
 
-        # Provider order for UI
-        provider_order = ["openai", "anthropic", "google", "perplexity", "deepseek", "venice", "nanogpt", "ollama"]
+        # Provider order for UI - Ollama first (works out of the box)
+        provider_order = ["ollama", "openai", "anthropic", "google", "perplexity", "deepseek", "venice", "nanogpt"]
 
         defaults = {
+            "ollama": "deepseek-r1:8b",
             "openai": "gpt-5.2",
             "anthropic": "claude-sonnet-4-5-20250929",
             "google": "gemini-3-flash-preview",
@@ -401,7 +402,6 @@ class ModelRegistry:
             "deepseek": "deepseek-chat",
             "venice": "openai-gpt-52",
             "nanogpt": "nanogpt/gpt-4o-mini",
-            "ollama": "llama3.3:70b"
         }
 
         # Group models by provider (skip aliases - they're for programmatic use)

@@ -1201,7 +1201,7 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
     deepseek: 'deepseek-chat',
     venice: 'venice-uncensored',
     nanogpt: 'nanogpt/gpt-4o-mini',
-    ollama: 'llama3.3:70b',
+    ollama: 'deepseek-r1:8b',
   };
 
   // Use dynamic models from hook when loaded, fallback to static list otherwise

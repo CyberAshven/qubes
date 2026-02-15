@@ -111,17 +111,19 @@ class AudioPlayer:
 class StreamingAudioPlayer:
     """Low-latency streaming audio player with buffering"""
 
-    def __init__(self, buffer_size: int = 4096):
+    def __init__(self, sample_rate: int = 24000, buffer_size: int = 4096):
         """
         Initialize streaming audio player
 
         Args:
+            sample_rate: Audio sample rate in Hz (default 24kHz for most TTS)
             buffer_size: Size of audio buffer (bytes)
         """
+        self.sample_rate = sample_rate
         self.buffer_size = buffer_size
         self.buffer = asyncio.Queue(maxsize=10)
 
-        logger.debug("streaming_audio_player_initialized", buffer_size=buffer_size)
+        logger.debug("streaming_audio_player_initialized", sample_rate=sample_rate, buffer_size=buffer_size)
 
     async def play_streaming_tts(self, audio_chunks: AsyncIterator[bytes]):
         """
@@ -155,7 +157,7 @@ class StreamingAudioPlayer:
             import sounddevice as sd
             import numpy as np
 
-            stream = sd.OutputStream(samplerate=self.buffer_size, channels=1)
+            stream = sd.OutputStream(samplerate=self.sample_rate, channels=1)
             stream.start()
 
             while True:

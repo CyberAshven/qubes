@@ -129,17 +129,42 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   // Multi-chunk playback state
   const chunkPathsRef = useRef<string[]>([]);
   const currentChunkIndexRef = useRef<number>(0);
+  const playbackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [totalChunks, setTotalChunks] = React.useState(1);
   const [currentChunk, setCurrentChunk] = React.useState(1);
   const [isLastChunk, setIsLastChunk] = React.useState(true);
 
+  const clearPlaybackTimeout = () => {
+    if (playbackTimeoutRef.current) {
+      clearTimeout(playbackTimeoutRef.current);
+      playbackTimeoutRef.current = null;
+    }
+  };
+
   const resetChunkState = () => {
     chunkPathsRef.current = [];
     currentChunkIndexRef.current = 0;
+    clearPlaybackTimeout();
     setTotalChunks(1);
     setCurrentChunk(1);
     setIsLastChunk(true);
+  };
+
+  // Safety timeout: if audio-playback-ended is never emitted (player crash, thread panic),
+  // auto-recover after duration + 10 seconds to prevent permanently stuck "playing" state.
+  const startPlaybackTimeout = (durationSecs: number) => {
+    clearPlaybackTimeout();
+    const timeoutMs = (durationSecs + 10) * 1000;
+    playbackTimeoutRef.current = setTimeout(() => {
+      console.warn(`[AudioContext] Safety timeout: audio-playback-ended not received after ${durationSecs + 10}s, recovering`);
+      const player = playerRef.current;
+      if (player) {
+        player.markEnded();
+      }
+      setIsPlaying(false);
+      resetChunkState();
+    }, timeoutMs);
   };
 
   // Play a single audio file natively and set up the timer
@@ -150,6 +175,7 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const result = await invoke<NativePlayResult>('play_audio_native', { filePath });
     player.setDuration(result.duration);
     player.startPlayback();
+    startPlaybackTimeout(result.duration);
     return result.duration;
   };
 
@@ -169,6 +195,7 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     let mounted = true;
     listen('audio-playback-ended', () => {
       if (!mounted) return;
+      clearPlaybackTimeout();
       const player = playerRef.current;
       if (!player) return;
 
