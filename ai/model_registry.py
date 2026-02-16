@@ -380,12 +380,12 @@ class ModelRegistry:
         Groups models by provider with display names and metadata.
         """
         provider_labels = {
-            "ollama": "Ollama (Local, bundled)",
-            "openai": "OpenAI (API key required)",
-            "anthropic": "Anthropic (API key required)",
-            "google": "Google (API key required)",
-            "perplexity": "Perplexity (API key required)",
-            "deepseek": "DeepSeek (API key required)",
+            "ollama": "Ollama (Local)",
+            "openai": "OpenAI",
+            "anthropic": "Anthropic",
+            "google": "Google",
+            "perplexity": "Perplexity",
+            "deepseek": "DeepSeek",
             "venice": "Venice (Private)",
             "nanogpt": "NanoGPT (Pay-per-prompt)"
         }

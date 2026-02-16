@@ -138,12 +138,12 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
 
   // Fallback providers if dynamic data hasn't loaded yet
   const fallbackProviders = [
-    { value: 'ollama', label: 'Ollama (Local, bundled)' },
-    { value: 'openai', label: 'OpenAI (API key required)' },
-    { value: 'anthropic', label: 'Anthropic (API key required)' },
-    { value: 'google', label: 'Google (API key required)' },
-    { value: 'perplexity', label: 'Perplexity (API key required)' },
-    { value: 'deepseek', label: 'DeepSeek (API key required)' },
+    { value: 'ollama', label: 'Ollama (Local)' },
+    { value: 'openai', label: 'OpenAI' },
+    { value: 'anthropic', label: 'Anthropic' },
+    { value: 'google', label: 'Google' },
+    { value: 'perplexity', label: 'Perplexity' },
+    { value: 'deepseek', label: 'DeepSeek' },
     { value: 'venice', label: 'Venice (Private)' },
     { value: 'nanogpt', label: 'NanoGPT (Pay-per-prompt)' },
   ];
@@ -861,13 +861,13 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
                 value={voiceProvider}
                 onChange={(v) => setVoiceProvider(v)}
                 options={[
-                  { value: 'kokoro', label: 'Kokoro (local, bundled)' },
+                  { value: 'kokoro', label: 'Kokoro (local)' },
                   { value: 'qwen3', label: 'Qwen3 (local)' },
                   ...(Object.keys(customVoices).length > 0 ? [{ value: 'custom', label: 'Custom Voices (local)' }] : []),
-                  { value: 'google', label: 'Google Cloud (API key required)' },
-                  { value: 'gemini', label: 'Google Gemini (API key required)' },
-                  { value: 'openai', label: 'OpenAI (API key required)' },
-                  { value: 'elevenlabs', label: 'ElevenLabs (API key required)' },
+                  { value: 'google', label: 'Google Cloud' },
+                  { value: 'gemini', label: 'Google Gemini' },
+                  { value: 'openai', label: 'OpenAI' },
+                  { value: 'elevenlabs', label: 'ElevenLabs' },
                 ]}
               />
             </div>
