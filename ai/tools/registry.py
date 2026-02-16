@@ -654,6 +654,20 @@ class ToolRegistry:
                 if not (revolver_mode_enabled and tool.name == "switch_model")
             ]
 
+        # OpenAI enforces a max of 128 tools per request
+        # If we exceed that, prioritize ALWAYS_AVAILABLE_TOOLS and trim the rest
+        MAX_TOOLS = 128
+        if len(tools_to_use) > MAX_TOOLS:
+            always = [t for t in tools_to_use if t.name in ALWAYS_AVAILABLE_TOOLS]
+            rest = [t for t in tools_to_use if t.name not in ALWAYS_AVAILABLE_TOOLS]
+            tools_to_use = always + rest[:MAX_TOOLS - len(always)]
+            logger.warning(
+                "tools_truncated_to_api_limit",
+                original_count=len(always) + len(rest),
+                truncated_to=len(tools_to_use),
+                max_tools=MAX_TOOLS,
+            )
+
         if model_provider == "openai":
             return [tool.to_openai_format() for tool in tools_to_use]
         elif model_provider == "anthropic":

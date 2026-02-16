@@ -90,6 +90,19 @@ pyinstaller "$PROJECT_ROOT/qubes-gui/src-tauri/qubes-backend-heavy.spec" \
 # Copy --onedir output to bundle
 cp -r "$BUILD_DIR/pyinstaller-out/qubes-backend" "$DIST_DIR/qubes-backend"
 chmod +x "$DIST_DIR/qubes-backend/qubes-backend"
+
+# Ensure numpy.libs/ is present (OpenBLAS, gfortran — required by numpy._core._multiarray_umath)
+INTERNAL="$DIST_DIR/qubes-backend/_internal"
+if [ ! -d "$INTERNAL/numpy.libs" ] || [ -z "$(ls -A "$INTERNAL/numpy.libs" 2>/dev/null)" ]; then
+    echo "    Copying numpy.libs (OpenBLAS) into bundle..."
+    NUMPY_LIBS="$HEAVY_VENV/lib/python3.*/site-packages/numpy.libs"
+    NUMPY_LIBS_DIR=$(ls -d $NUMPY_LIBS 2>/dev/null | head -1)
+    if [ -d "$NUMPY_LIBS_DIR" ]; then
+        mkdir -p "$INTERNAL/numpy.libs"
+        cp -v "$NUMPY_LIBS_DIR"/*.so* "$INTERNAL/numpy.libs/" 2>/dev/null || true
+    fi
+fi
+echo "    numpy.libs: $(ls "$INTERNAL/numpy.libs/" 2>/dev/null | wc -l) files"
 echo "    Backend built: $(du -sh "$DIST_DIR/qubes-backend" | cut -f1)"
 
 # =============================================================================

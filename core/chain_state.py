@@ -962,11 +962,15 @@ class ChainState:
                             if section in disk_state:
                                 merged_state[section] = disk_state[section]
 
-                        # CRITICAL: Preserve current_model_override from disk
-                        # This is a backend-managed value set by switch_model tool
-                        # GUI must not overwrite it with stale in-memory value
-                        if "current_model_override" in disk_state:
-                            merged_state["current_model_override"] = disk_state["current_model_override"]
+                        # NOTE: current_model_override is NOT restored from disk here.
+                        # Methods that use preserve_gui_fields=False (set_model_lock,
+                        # set_revolver_mode, etc.) explicitly manage current_model_override.
+                        # Restoring from disk would undo intentional clears — e.g.,
+                        # set_model_lock sets it to None to clear stale overrides, but
+                        # restoring from disk would bring back the old override, causing
+                        # get_current_model() to return the wrong model.
+                        # Each GUI save runs in a fresh subprocess that loads the latest
+                        # disk state, so in-memory values already match disk for unmodified fields.
 
                     # CRITICAL DEBUG: Log state after merge
                     logger.info(
@@ -3081,8 +3085,7 @@ class ChainState:
             settings["autonomous_mode_enabled"] = False
             settings["model_mode"] = "manual"
             # Clear any stale model override from autonomous mode
-            # Otherwise the override takes precedence over manual lock
-            # Use None instead of deleting - this prevents _save from restoring old value from disk
+            # Otherwise the override takes precedence over manual lock in get_current_model()
             self.state["current_model_override"] = None
             # Also update runtime model so get_current_model returns the correct value
             # (runtime.current_model has higher priority than model_locked_to)

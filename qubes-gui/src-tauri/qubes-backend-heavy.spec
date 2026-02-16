@@ -14,6 +14,8 @@ for p in sys.path:
 
 # Collect data directories that PyInstaller misses
 datas = []
+# Collect binary libraries that PyInstaller misses
+extra_binaries = []
 if site_packages:
     # espeakng_loader: bundled espeak-ng for Kokoro phonemizer
     espeak_dir = os.path.join(site_packages, 'espeakng_loader')
@@ -35,11 +37,21 @@ if site_packages:
     if os.path.isdir(misaki_dir):
         datas.append((misaki_dir, 'misaki'))
 
+    # numpy.libs: OpenBLAS, gfortran, quadmath shared libraries required by
+    # numpy._core._multiarray_umath.so. Without these, numpy.__config__ import
+    # fails with misleading "import from source directory" error.
+    numpy_libs_dir = os.path.join(site_packages, 'numpy.libs')
+    if os.path.isdir(numpy_libs_dir):
+        for lib_file in os.listdir(numpy_libs_dir):
+            lib_path = os.path.join(numpy_libs_dir, lib_file)
+            if os.path.isfile(lib_path) and '.so' in lib_file:
+                extra_binaries.append((lib_path, 'numpy.libs'))
+
 
 a = Analysis(
     ['../../gui_bridge.py'],
     pathex=[],
-    binaries=[],
+    binaries=extra_binaries,
     datas=datas,
     hiddenimports=[
         # Games
@@ -51,8 +63,9 @@ a = Analysis(
         'cryptography', 'ecdsa', 'base58',
         # Networking
         'requests', 'websockets', 'httpx', 'aiohttp',
-        # Data & Serialization
-        'numpy', 'PIL', 'fitz', 'pydantic', 'yaml',
+        # Data & Serialization (numpy 2.x needs explicit _core imports)
+        'numpy', 'numpy.__config__', 'numpy._core', 'numpy._core._multiarray_umath',
+        'PIL', 'fitz', 'pydantic', 'yaml',
         # Audio/TTS (light)
         'pyaudio', 'sounddevice', 'pydub', 'soundfile',
         'elevenlabs', 'huggingface_hub',
