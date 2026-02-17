@@ -721,6 +721,13 @@ IMPORTANT RULES:
         for match in tool_call_header.finditer(content):
             ranges_to_remove.append((match.start(), match.end()))
 
+        # Remove orphaned [Tool Call] headers (JSON already parsed/removed separately)
+        orphaned_header = re.compile(r'\s*`?\[Tool Call\]`?\s*', re.IGNORECASE)
+        for match in orphaned_header.finditer(content):
+            is_covered = any(start <= match.start() < end for start, end in ranges_to_remove)
+            if not is_covered:
+                ranges_to_remove.append((match.start(), match.end()))
+
         # Also match bare JSON tool calls (without [Tool Call] header)
         for match in self.BARE_JSON_TOOL_PATTERN.finditer(content):
             ranges_to_remove.append((match.start(), match.end()))
