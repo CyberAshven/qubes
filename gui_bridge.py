@@ -255,7 +255,7 @@ def get_secret(name: str, argv_index: Optional[int] = None, required: bool = Tru
 class GUIBridge:
     """Bridge between Tauri GUI and Python backend"""
 
-    def __init__(self, user_id: str = "bit_faced"):
+    def __init__(self, user_id: str = "default_user"):
         self.orchestrator = UserOrchestrator(user_id=user_id)
         # Store background task references to prevent garbage collection
         self._background_tasks: set = set()

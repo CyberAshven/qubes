@@ -315,8 +315,8 @@ async def start_server(force: bool = False) -> bool:
             # CREATE_NO_WINDOW hides the console, while keeping it as a child
             # The server dies when the app closes (cleaned up by cleanup())
             start_cmd = (
-                "cd /home/bit_faced/qubes-tts && "
-                "exec /home/bit_faced/qubes-tts/venv/bin/python -u tts_server.py"
+                "cd ~/qubes-tts && "
+                "exec ~/qubes-tts/venv/bin/python -u tts_server.py"
             )
             _server_process = subprocess.Popen(
                 ["wsl", "-d", WSL2_DISTRO, "bash", "-c", start_cmd],

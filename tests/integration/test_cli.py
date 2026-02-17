@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from unittest.mock import patch
 from io import StringIO
 
-PASSWORD = "reefer"
+PASSWORD = "test_password"
 
 def run_cli_test(test_name, command_func, *args, **kwargs):
     """Run a CLI command test with mocked password"""
@@ -31,7 +31,7 @@ def run_cli_test(test_name, command_func, *args, **kwargs):
                     return PASSWORD
                 # For other prompts, return appropriate defaults
                 if 'user id' in prompt_text.lower():
-                    return 'bit_faced'
+                    return 'test_user'
                 return kwargs.get('default', '')
 
             mock_prompt.side_effect = prompt_side_effect

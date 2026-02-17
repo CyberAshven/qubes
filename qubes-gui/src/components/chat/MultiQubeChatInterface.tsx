@@ -1380,7 +1380,7 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
     // Show user's message immediately (with temporary conversation ID)
     const tempUserMessage: ConversationMessage = {
       speaker_id: userId,
-      speaker_name: 'bit_faced',
+      speaker_name: 'You',
       message: userPrompt,
       voice_model: '',
       turn_number: 0,
@@ -1462,7 +1462,7 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
         // Update user's message with real conversation ID
         const userMessage: ConversationMessage = {
           speaker_id: userId,
-          speaker_name: 'bit_faced',
+          speaker_name: 'You',
           message: userPrompt,
           voice_model: '',
           turn_number: 0,
@@ -1514,7 +1514,7 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
         // Update user's message with real conversation ID
         const userMessage: ConversationMessage = {
           speaker_id: userId,
-          speaker_name: 'bit_faced',
+          speaker_name: 'You',
           message: userPrompt,
           voice_model: '',
           turn_number: 0,
@@ -1584,7 +1584,7 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
     setNextResponseStatus({
       stage: 'processing',
       qubeId: userId,
-      qubeName: 'bit_faced'
+      qubeName: 'You'
     });
 
     // Show "User ready to respond" indicator
@@ -1640,7 +1640,7 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
         }
 
         // Store the responses (don't display yet - wait for speaker to finish)
-        // Don't change status here - keep showing "bit_faced response ready"
+        // Don't change status here - keep showing "user response ready"
         setPendingUserMessage({
           message: userMessage,
           userMessageResponse: response.user_message,

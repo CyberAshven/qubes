@@ -13,8 +13,8 @@ from datetime import datetime, timezone
 # ============================================================================
 # PASTE YOUR IDs HERE:
 # ============================================================================
-TRANSACTION_ID = "64c8fa8317b32e884b6e50ef1a295f7cc32aba783f07230ea2c9924d5841e6a4"
-CATEGORY_ID = "9414252c6d661907829c9cee3fbaf2e1278d59a80392858fcd22916862602b4b"
+TRANSACTION_ID = "YOUR_TRANSACTION_ID_HERE"
+CATEGORY_ID = "YOUR_CATEGORY_ID_HERE"
 # ============================================================================
 
 def main():
