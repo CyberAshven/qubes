@@ -538,18 +538,27 @@ IMPORTANT RULES:
         Last resort for models like DeepSeek R1 that output raw JSON like:
         {"name": "send_bch", "arguments": {"to_qube_name": "Paradox", "amount_sats": 20000}}
 
+        Also handles models that wrap tool calls in backticks or [Tool Call] headers:
+        `[Tool Call]`
+        `{"name": "web_search", "arguments": {"query": "...", "num_results": 2}}`
+
         This is more permissive but only matches JSON with both "name" and "arguments" keys.
         """
         tool_calls = []
 
+        # Strip backticks that some models wrap around tool calls
+        cleaned = re.sub(r'`(\{[^`]+\})`', r'\1', content)
+        # Remove [Tool Call] headers (with or without backticks)
+        cleaned = re.sub(r'`?\[Tool Call\]`?\s*', '', cleaned, flags=re.IGNORECASE)
+
         # Try to find JSON objects that look like tool calls
         # First try the regex pattern
-        matches = self.BARE_JSON_TOOL_PATTERN.findall(content)
+        matches = self.BARE_JSON_TOOL_PATTERN.findall(cleaned)
 
         # If no matches, try a more aggressive approach: find any JSON object in the content
         if not matches:
             # Look for content that's primarily JSON (stripped content starts with { and ends with })
-            stripped = content.strip()
+            stripped = cleaned.strip()
             if stripped.startswith('{') and stripped.endswith('}'):
                 matches = [stripped]
 
@@ -702,6 +711,19 @@ IMPORTANT RULES:
         for pattern in self.ALT_PATTERNS:
             for match in pattern.finditer(content):
                 ranges_to_remove.append((match.start(), match.end()))
+
+        # Remove [Tool Call] headers + backtick-wrapped JSON (DeepSeek R1 format)
+        # Matches: `[Tool Call]`\n`{"name": "...", "arguments": {...}}`
+        tool_call_header = re.compile(
+            r'`?\[Tool Call\]`?\s*\n\s*`?\{"name":\s*"[^"]+",\s*"arguments":\s*\{.*?\}\}`?',
+            re.DOTALL | re.IGNORECASE
+        )
+        for match in tool_call_header.finditer(content):
+            ranges_to_remove.append((match.start(), match.end()))
+
+        # Also match bare JSON tool calls (without [Tool Call] header)
+        for match in self.BARE_JSON_TOOL_PATTERN.finditer(content):
+            ranges_to_remove.append((match.start(), match.end()))
 
         # Sort ranges and merge overlapping ones
         ranges_to_remove.sort()

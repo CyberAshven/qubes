@@ -3858,6 +3858,9 @@ class ChainState:
                         result[section] = {"data": data}
                     else:
                         result[section] = data
+                else:
+                    # Return empty default so AI can see the section exists
+                    result[section] = {}
 
         return result
 

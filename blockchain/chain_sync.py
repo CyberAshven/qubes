@@ -270,29 +270,13 @@ class ChainSyncService:
             # Extract CID from ipfs:// URI
             ipfs_cid = ipfs_uri.replace("ipfs://", "")
 
-            # Step 4: Get merkle root and chain length from chain_state
-            chain_length = 0
-            merkle_root = ""
-
-            if encryption_key:
-                # Use ChainState class for encrypted chain_state
-                from core.chain_state import ChainState
-                try:
-                    chain_dir = Path(qube_dir) / "chain"
-                    cs = ChainState(chain_dir, encryption_key, qube_id)
-                    chain_state = cs.get_all_settings()
-                    chain_length = chain_state.get("chain_length", 0)
-                    merkle_root = chain_state.get("merkle_root", "")
-                except Exception as e:
-                    logger.warning(f"Failed to read encrypted chain_state for merkle_root: {e}")
+            # Step 4: Count blocks from actual block files
+            blocks_dir = Path(qube_dir) / "blocks" / "permanent"
+            if blocks_dir.exists():
+                chain_length = len(list(blocks_dir.glob("*.json")))
             else:
-                # Legacy: read plain JSON
-                chain_state_path = Path(qube_dir) / "chain" / "chain_state.json"
-                if chain_state_path.exists():
-                    with open(chain_state_path, 'r') as f:
-                        chain_state = json.load(f)
-                        chain_length = chain_state.get("chain_length", 0)
-                        merkle_root = chain_state.get("merkle_root", "")
+                chain_length = 0
+            merkle_root = ""
 
             # Step 5: Update BCMR metadata
             print("  📝 Updating BCMR metadata...", file=sys.stderr)

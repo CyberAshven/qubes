@@ -6379,6 +6379,9 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
             # Set the Pinata key in environment for IPFSUploader
             os.environ["PINATA_API_KEY"] = pinata_jwt
 
+            # Get encryption key so chain_state can be read for chain_length
+            encryption_key = self._get_qube_encryption_key(qube_dir)
+
             # Sync to chain
             sync_service = ChainSyncService(use_pinata=True, pinata_api_key=pinata_jwt)
             # Convert genesis_block to dict if it's a Block object
@@ -6390,7 +6393,8 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
                 owner_public_key_hex=public_key_hex,
                 genesis_block=genesis_dict,
                 user_id=self.orchestrator.user_id,
-                category_id=category_id
+                category_id=category_id,
+                encryption_key=encryption_key
             )
 
             return result.to_dict()
@@ -13030,7 +13034,7 @@ async def main():
             parser.add_argument("command")
             parser.add_argument("user_id")
             parser.add_argument("--qube-id", required=True)
-            parser.add_argument("--password", required=True)  # Master password
+            parser.add_argument("--password", required=False)  # Master password (via stdin or arg)
 
             args = parser.parse_args()
 
