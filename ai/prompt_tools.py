@@ -84,24 +84,27 @@ You have access to the following tools. Use them when needed to help the user.
 
 ## CRITICAL: How to Use Tools
 
-**YOU MUST USE THE EXACT FORMAT BELOW TO CALL TOOLS. DO NOT DESCRIBE OR NARRATE TOOL USAGE.**
+**YOU MUST OUTPUT VALID JSON TO CALL TOOLS. DO NOT DESCRIBE OR NARRATE TOOL USAGE.**
 
-When you need to use a tool, output ONLY this format:
+When you need to use a tool, output this JSON (with or without the <tool_call> tags):
 <tool_call>{{"name": "tool_name", "arguments": {{"arg1": "value1"}}}}</tool_call>
+
+Or simply output the JSON directly:
+{{"name": "tool_name", "arguments": {{"arg1": "value1"}}}}
 
 **WRONG (DO NOT DO THIS):**
 - "I'll switch to the llama model now" (just describing, not calling)
 - "Let me search for that..." (narrating without tool call)
-- "*switches to a different model*" (roleplay, not actual call)
+- "[Tool Call]" without any JSON (this does nothing!)
 
 **CORRECT:**
 <tool_call>{{"name": "switch_model", "arguments": {{"model_name": "llama-3.3-70b"}}}}</tool_call>
 
-Rules:
-1. **ALWAYS** output the <tool_call> tag - never just describe what you would do
-2. Output ONLY the tool_call tag when using a tool - no extra text before it
-3. Wait for the [Tool Result] before continuing your response
-4. You can call multiple tools if needed
+IMPORTANT RULES:
+1. You MUST output the JSON object {{"name": "...", "arguments": {{...}}}} — without it, the tool will NOT execute
+2. Wait for the [Tool Result] before continuing your response
+3. You can call multiple tools if needed
+4. Do NOT write "[Tool Call]" by itself — you must include the actual JSON
 
 ## Common Examples
 
@@ -117,6 +120,9 @@ Assistant: <tool_call>{{"name": "get_system_state", "arguments": {{}}}}</tool_ca
 
 User: "Switch to a different model"
 Assistant: <tool_call>{{"name": "switch_model", "arguments": {{"model_name": "gpt-4o"}}}}</tool_call>
+
+User: "Visit qube.cash"
+Assistant: <tool_call>{{"name": "browse_url", "arguments": {{"url": "https://qube.cash"}}}}</tool_call>
 """
 
     # Hermes 3 specific template - uses <tools> XML format as per NousResearch spec
@@ -542,7 +548,8 @@ IMPORTANT RULES:
         `[Tool Call]`
         `{"name": "web_search", "arguments": {"query": "...", "num_results": 2}}`
 
-        This is more permissive but only matches JSON with both "name" and "arguments" keys.
+        Uses json.JSONDecoder.raw_decode to find JSON objects embedded within
+        natural language text, which is more robust than regex.
         """
         tool_calls = []
 
@@ -551,30 +558,29 @@ IMPORTANT RULES:
         # Remove [Tool Call] headers (with or without backticks)
         cleaned = re.sub(r'`?\[Tool Call\]`?\s*', '', cleaned, flags=re.IGNORECASE)
 
-        # Try to find JSON objects that look like tool calls
-        # First try the regex pattern
-        matches = self.BARE_JSON_TOOL_PATTERN.findall(cleaned)
+        # Use raw_decode to find JSON objects embedded in text
+        # This handles JSON that's not on its own line
+        decoder = json.JSONDecoder()
+        pos = 0
+        while pos < len(cleaned):
+            # Find the next '{' character
+            brace_pos = cleaned.find('{', pos)
+            if brace_pos == -1:
+                break
 
-        # If no matches, try a more aggressive approach: find any JSON object in the content
-        if not matches:
-            # Look for content that's primarily JSON (stripped content starts with { and ends with })
-            stripped = cleaned.strip()
-            if stripped.startswith('{') and stripped.endswith('}'):
-                matches = [stripped]
-
-        for match in matches:
             try:
-                data = json.loads(match)
+                data, end_pos = decoder.raw_decode(cleaned, brace_pos)
 
                 # Must have both "name" and "arguments" to be considered a tool call
                 if isinstance(data, dict) and "name" in data and "arguments" in data:
                     name = data["name"]
                     arguments = data.get("arguments", {})
+                    raw_text = cleaned[brace_pos:brace_pos + end_pos - brace_pos]
 
                     tool_calls.append(ParsedToolCall(
                         name=name,
                         arguments=arguments if isinstance(arguments, dict) else {},
-                        raw_text=match
+                        raw_text=raw_text
                     ))
 
                     logger.info(
@@ -584,13 +590,10 @@ IMPORTANT RULES:
                         note="Model output bare JSON without tags"
                     )
 
-            except json.JSONDecodeError as e:
-                logger.debug(
-                    "bare_json_parse_failed",
-                    error=str(e),
-                    raw_text=match[:100] if len(match) > 100 else match
-                )
-                continue
+                pos = brace_pos + end_pos - brace_pos
+            except (json.JSONDecodeError, ValueError):
+                # Not valid JSON starting here, move past this brace
+                pos = brace_pos + 1
 
         return tool_calls
 
@@ -606,12 +609,11 @@ IMPORTANT RULES:
         if bool(self.TOOL_CALL_PATTERN.search(content)) or \
                any(p.search(content) for p in self.ALT_PATTERNS):
             return True
-        # Check for bare JSON tool calls
+        # Check for bare JSON tool calls (on own line)
         if self.BARE_JSON_TOOL_PATTERN.search(content):
             return True
-        # Last check: content is pure JSON with name and arguments
-        stripped = content.strip()
-        if stripped.startswith('{"name":') and stripped.endswith('}'):
+        # Check for JSON with "name" and "arguments" anywhere in content
+        if '"name"' in content and '"arguments"' in content and '{' in content:
             return True
         return False
 
@@ -731,6 +733,26 @@ IMPORTANT RULES:
         # Also match bare JSON tool calls (without [Tool Call] header)
         for match in self.BARE_JSON_TOOL_PATTERN.finditer(content):
             ranges_to_remove.append((match.start(), match.end()))
+
+        # Find embedded JSON tool calls using raw_decode (catches inline JSON)
+        # Also strip surrounding backticks if present
+        decoder = json.JSONDecoder()
+        pos = 0
+        while pos < len(content):
+            brace_pos = content.find('{', pos)
+            if brace_pos == -1:
+                break
+            try:
+                data, end_pos = decoder.raw_decode(content, brace_pos)
+                json_end = brace_pos + end_pos - brace_pos
+                if isinstance(data, dict) and "name" in data and "arguments" in data:
+                    # Expand range to include surrounding backticks
+                    start = brace_pos - 1 if brace_pos > 0 and content[brace_pos - 1] == '`' else brace_pos
+                    end = json_end + 1 if json_end < len(content) and content[json_end] == '`' else json_end
+                    ranges_to_remove.append((start, end))
+                pos = json_end
+            except (json.JSONDecodeError, ValueError):
+                pos = brace_pos + 1
 
         # Sort ranges and merge overlapping ones
         ranges_to_remove.sort()
