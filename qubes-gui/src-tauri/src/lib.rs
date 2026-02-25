@@ -5,7 +5,8 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use tauri::{Manager, AppHandle, Emitter};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use std::sync::Mutex;
+use std::sync::{Mutex, Arc};
+use std::sync::atomic::{AtomicU64, AtomicBool, Ordering};
 use std::thread;
 
 #[cfg(target_os = "windows")]
@@ -59,155 +60,299 @@ fn check_rate_limit(command: &str) -> Result<(), String> {
 }
 
 // =============================================================================
-// EVENT WATCHER
+// PERSISTENT SIDECAR PROCESS
 // =============================================================================
 
-/// Stores active event watcher processes for each qube
-/// Key: "{user_id}:{qube_id}", Value: Child process handle
-static EVENT_WATCHERS: Mutex<Option<HashMap<String, Child>>> = Mutex::new(None);
+static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
+static SIDECAR_READY: AtomicBool = AtomicBool::new(false);
 
-/// Start watching events for a qube
-fn start_event_watcher(
-    app_handle: AppHandle,
-    user_id: String,
-    qube_id: String,
-    password: String,
-) -> Result<(), String> {
-    let watcher_key = format!("{}:{}", user_id, qube_id);
+struct SidecarProcess {
+    child: Child,
+    stdin_tx: std::sync::mpsc::Sender<String>,
+    pending: Arc<Mutex<HashMap<String, PendingRequest>>>,
+    _reader_thread: Option<thread::JoinHandle<()>>,
+    _writer_thread: Option<thread::JoinHandle<()>>,
+}
 
-    // Check if watcher already running
-    {
-        let mut watchers_guard = EVENT_WATCHERS.lock().map_err(|_| "Event watchers lock poisoned")?;
-        let watchers = watchers_guard.get_or_insert_with(HashMap::new);
+struct PendingRequest {
+    response_tx: tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>,
+    app_handle: Option<AppHandle>,
+}
 
-        if watchers.contains_key(&watcher_key) {
-            return Ok(()); // Already watching
-        }
-    }
+static SIDECAR_PROCESS: Mutex<Option<SidecarProcess>> = Mutex::new(None);
 
-    // Build command using the same backend as other commands (bundled or Python)
+fn start_sidecar(app_handle: &AppHandle) -> Result<(), String> {
+    // Hold the lock through the entire spawn+store to prevent TOCTOU races.
+    // Multiple threads calling start_sidecar() concurrently will serialize here.
+    let mut guard = SIDECAR_PROCESS.lock().map_err(|_| "Sidecar lock poisoned")?;
+    if guard.is_some() { return Ok(()); }
+
+    eprintln!("[SIDECAR] Starting persistent backend process...");
+
     let (mut cmd, is_bundled) = create_backend_command();
     let project_root = get_python_project_path();
     cmd.current_dir(&project_root);
 
-    // Add bridge path argument if not bundled (development mode)
+    if is_bundled {
+        if let Ok(exe_path) = std::env::current_exe() {
+            if let Some(exe_dir) = exe_path.parent() {
+                let hf_models = exe_dir.join("models").join("huggingface");
+                if hf_models.exists() { cmd.env("HF_HOME", &hf_models); }
+            }
+        }
+    }
+
     if !is_bundled {
         let bridge_path = get_python_bridge_path();
+        if !bridge_path.exists() {
+            return Err(format!("Python bridge not found at: {}", bridge_path.display()));
+        }
         cmd.arg(&bridge_path);
     }
 
-    cmd.arg("watch-events")
-        .arg(&user_id)
-        .arg(&qube_id)
+    cmd.arg("server")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    // Spawn process
-    let mut child = cmd.spawn().map_err(|e| format!("Failed to spawn event watcher: {}", e))?;
+    let mut child = cmd.spawn().map_err(|e| format!("[SIDECAR] Failed to spawn: {}", e))?;
 
-    // Send password via stdin
-    if let Some(mut stdin) = child.stdin.take() {
-        let stdin_data = serde_json::json!({ "password": password });
-        let _ = stdin.write_all(stdin_data.to_string().as_bytes());
-        let _ = stdin.write_all(b"\n");
+    let child_stdin = child.stdin.take()
+        .ok_or_else(|| "[SIDECAR] Failed to capture stdin".to_string())?;
+    let (stdin_tx, stdin_rx) = std::sync::mpsc::channel::<String>();
+
+    let writer_thread = thread::spawn(move || {
+        let mut writer = std::io::BufWriter::new(child_stdin);
+        while let Ok(line) = stdin_rx.recv() {
+            if writer.write_all(line.as_bytes()).is_err() { break; }
+            if writer.write_all(b"\n").is_err() { break; }
+            if writer.flush().is_err() { break; }
+        }
+        // Mark sidecar as not ready so new requests fail fast instead of timing out
+        eprintln!("[SIDECAR] Writer thread exiting — stdin pipe broken");
+        SIDECAR_READY.store(false, Ordering::SeqCst);
+    });
+
+    let child_stdout = child.stdout.take()
+        .ok_or_else(|| "[SIDECAR] Failed to capture stdout".to_string())?;
+
+    if let Some(child_stderr) = child.stderr.take() {
+        thread::spawn(move || {
+            let reader = BufReader::new(child_stderr);
+            for line in reader.lines() {
+                match line {
+                    Ok(l) => eprintln!("[SIDECAR stderr] {}", l),
+                    Err(_) => break,
+                }
+            }
+        });
     }
 
-    // Get stdout for reading events
-    let stdout = child.stdout.take()
-        .ok_or_else(|| "Failed to capture stdout".to_string())?;
-
-    // Store process handle
-    {
-        let mut watchers_guard = EVENT_WATCHERS.lock().map_err(|_| "Event watchers lock poisoned")?;
-        let watchers = watchers_guard.get_or_insert_with(HashMap::new);
-        watchers.insert(watcher_key.clone(), child);
-    }
-
-    // Spawn thread to read events and emit to frontend
+    let pending: Arc<Mutex<HashMap<String, PendingRequest>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    let pending_clone = Arc::clone(&pending);
     let app_handle_clone = app_handle.clone();
-    let watcher_key_clone = watcher_key.clone();
-    let qube_id_clone = qube_id.clone();
 
-    thread::spawn(move || {
-        let reader = BufReader::new(stdout);
-
+    let reader_thread = thread::spawn(move || {
+        let reader = BufReader::new(child_stdout);
         for line in reader.lines() {
             match line {
                 Ok(json_line) => {
-                    if json_line.trim().is_empty() {
+                    if json_line.trim().is_empty() { continue; }
+                    let parsed: serde_json::Value = match serde_json::from_str(&json_line) {
+                        Ok(v) => v,
+                        Err(e) => { eprintln!("[SIDECAR] Parse error: {} - {}", e, json_line); continue; }
+                    };
+
+                    if parsed.get("ready").and_then(|v| v.as_bool()).unwrap_or(false) {
+                        eprintln!("[SIDECAR] Backend is ready");
+                        SIDECAR_READY.store(true, Ordering::SeqCst);
                         continue;
                     }
 
-                    // Try to parse as JSON
-                    match serde_json::from_str::<serde_json::Value>(&json_line) {
-                        Ok(event_data) => {
-                            // Check event type
-                            let event_kind = event_data.get("type")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("");
+                    let req_id = match parsed.get("id").and_then(|v| v.as_str()) {
+                        Some(id) => id.to_string(),
+                        None => { eprintln!("[SIDECAR] Response missing id"); continue; }
+                    };
 
-                            if event_kind == "chain_state_event" {
-                                // Emit to frontend
-                                let _ = app_handle_clone.emit("chain-state-event", &event_data);
-                            } else if event_kind == "ready" {
-                                eprintln!("[EVENT WATCHER] Started for qube {}", qube_id_clone);
-                            } else if event_kind == "error" {
-                                eprintln!("[EVENT WATCHER] Error: {:?}", event_data);
-                            }
+                    if let Some(stream_type) = parsed.get("stream").and_then(|v| v.as_str()) {
+                        if let Some(data) = parsed.get("data") {
+                            let event_name = match stream_type {
+                                "tool_call" => "tool-call-event",
+                                "chain_state_event" => "chain-state-event",
+                                _ => stream_type,
+                            };
+                            let handle = {
+                                let guard = pending_clone.lock().ok();
+                                guard.and_then(|g| g.get(&req_id).and_then(|p| p.app_handle.clone()))
+                            };
+                            let handle = handle.as_ref().unwrap_or(&app_handle_clone);
+                            let _ = handle.emit(event_name, data);
                         }
-                        Err(e) => {
-                            eprintln!("[EVENT WATCHER] Failed to parse JSON: {} - Line: {}", e, json_line);
+                        continue;
+                    }
+
+                    let mut pguard = match pending_clone.lock() { Ok(g) => g, Err(_) => continue };
+                    if let Some(pending_req) = pguard.remove(&req_id) {
+                        if let Some(error) = parsed.get("error") {
+                            let err_msg = error.as_str().unwrap_or("Unknown sidecar error").to_string();
+                            let _ = pending_req.response_tx.send(Err(err_msg));
+                        } else if let Some(result) = parsed.get("result") {
+                            let _ = pending_req.response_tx.send(Ok(result.clone()));
+                        } else {
+                            let _ = pending_req.response_tx.send(Err("Missing result/error".to_string()));
                         }
                     }
                 }
-                Err(e) => {
-                    eprintln!("[EVENT WATCHER] Read error: {}", e);
-                    break;
-                }
+                Err(e) => { eprintln!("[SIDECAR] Read error: {}", e); break; }
             }
         }
-
-        // Process ended - remove from watchers
-        eprintln!("[EVENT WATCHER] Process ended for {}", watcher_key_clone);
-        if let Ok(mut watchers_guard) = EVENT_WATCHERS.lock() {
-            if let Some(watchers) = watchers_guard.as_mut() {
-                watchers.remove(&watcher_key_clone);
+        SIDECAR_READY.store(false, Ordering::SeqCst);
+        if let Ok(mut pguard) = pending_clone.lock() {
+            for (_, p) in pguard.drain() {
+                let _ = p.response_tx.send(Err("Sidecar process terminated".to_string()));
             }
         }
     });
 
-    Ok(())
-}
+    // Store the sidecar while still holding the lock — prevents TOCTOU race
+    *guard = Some(SidecarProcess {
+        child,
+        stdin_tx,
+        pending,
+        _reader_thread: Some(reader_thread),
+        _writer_thread: Some(writer_thread),
+    });
 
-/// Stop watching events for a qube
-fn stop_event_watcher(user_id: &str, qube_id: &str) -> Result<(), String> {
-    let watcher_key = format!("{}:{}", user_id, qube_id);
+    // Release the lock before the ready-wait so other operations aren't blocked
+    drop(guard);
 
-    let mut watchers_guard = EVENT_WATCHERS.lock().map_err(|_| "Event watchers lock poisoned")?;
-    let watchers = watchers_guard.get_or_insert_with(HashMap::new);
-
-    if let Some(mut child) = watchers.remove(&watcher_key) {
-        // Kill the process
-        let _ = child.kill();
-        let _ = child.wait();
-        eprintln!("[EVENT WATCHER] Stopped for {}", watcher_key);
+    let start = Instant::now();
+    while !SIDECAR_READY.load(Ordering::SeqCst) {
+        if start.elapsed() > Duration::from_secs(30) {
+            stop_sidecar();
+            return Err("[SIDECAR] Timed out waiting for ready signal".to_string());
+        }
+        thread::sleep(Duration::from_millis(50));
     }
 
+    eprintln!("[SIDECAR] Started in {:?}", start.elapsed());
     Ok(())
 }
 
-/// Stop all event watchers (called on app exit)
-fn stop_all_event_watchers() {
-    if let Ok(mut watchers_guard) = EVENT_WATCHERS.lock() {
-        if let Some(watchers) = watchers_guard.as_mut() {
-            for (key, mut child) in watchers.drain() {
-                let _ = child.kill();
-                let _ = child.wait();
-                eprintln!("[EVENT WATCHER] Stopped {} on shutdown", key);
-            }
+fn stop_sidecar() {
+    SIDECAR_READY.store(false, Ordering::SeqCst);
+    let mut guard = match SIDECAR_PROCESS.lock() { Ok(g) => g, Err(_) => return };
+    if let Some(mut sidecar) = guard.take() {
+        eprintln!("[SIDECAR] Shutting down...");
+        let _ = sidecar.stdin_tx.send(r#"{"id":"shutdown","command":"shutdown"}"#.to_string());
+        thread::sleep(Duration::from_millis(500));
+        let _ = sidecar.child.kill();
+        match sidecar.child.wait() {
+            Ok(status) => eprintln!("[SIDECAR] Stopped with exit status: {}", status),
+            Err(e) => eprintln!("[SIDECAR] Stopped (wait error: {})", e),
         }
     }
+}
+
+async fn sidecar_execute(
+    command: &str,
+    args: &[String],
+    secrets: &HashMap<&str, &str>,
+    app_handle: Option<&AppHandle>,
+    timeout_secs: Option<u64>,
+) -> Result<serde_json::Value, String> {
+    if !SIDECAR_READY.load(Ordering::SeqCst) {
+        return Err("Sidecar not ready".to_string());
+    }
+
+    let req_id = format!("req_{}", REQUEST_COUNTER.fetch_add(1, Ordering::SeqCst));
+    let request = serde_json::json!({
+        "id": req_id, "command": command, "args": args, "secrets": secrets,
+    });
+    let request_line = serde_json::to_string(&request)
+        .map_err(|e| format!("Failed to serialize request: {}", e))?;
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let stdin_tx = {
+        let guard = SIDECAR_PROCESS.lock().map_err(|_| "Sidecar lock poisoned")?;
+        let sidecar = guard.as_ref().ok_or_else(|| "Sidecar not running".to_string())?;
+        {
+            let mut pending = sidecar.pending.lock().map_err(|_| "Pending lock poisoned")?;
+            pending.insert(req_id.clone(), PendingRequest {
+                response_tx: tx, app_handle: app_handle.cloned(),
+            });
+        }
+        sidecar.stdin_tx.clone()
+    };
+
+    stdin_tx.send(request_line)
+        .map_err(|_| "Failed to send to sidecar stdin".to_string())?;
+
+    let timeout = Duration::from_secs(timeout_secs.unwrap_or(60));
+    match tokio::time::timeout(timeout, rx).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(_)) => Err("Sidecar connection lost".to_string()),
+        Err(_) => {
+            if let Ok(guard) = SIDECAR_PROCESS.lock() {
+                if let Some(sidecar) = guard.as_ref() {
+                    if let Ok(mut pending) = sidecar.pending.lock() {
+                        pending.remove(&req_id);
+                    }
+                }
+            }
+            Err(format!("Sidecar command '{}' timed out after {}s", command, timeout.as_secs()))
+        }
+    }
+}
+
+async fn sidecar_execute_with_retry(
+    command: &str,
+    args: Vec<String>,
+    secrets: HashMap<&str, &str>,
+    app_handle: Option<&AppHandle>,
+    timeout_secs: Option<u64>,
+) -> Result<serde_json::Value, String> {
+    match sidecar_execute(command, &args, &secrets, app_handle, timeout_secs).await {
+        Ok(result) => return Ok(result),
+        Err(e) => eprintln!("[SIDECAR] Command '{}' failed: {} — retrying...", command, e),
+    }
+
+    if let Some(handle) = app_handle {
+        stop_sidecar();
+        if let Err(e) = start_sidecar(handle) {
+            eprintln!("[SIDECAR] Restart failed: {} — falling back to subprocess", e);
+            return fallback_subprocess_execute(command, &args, &secrets, app_handle).await;
+        }
+        match sidecar_execute(command, &args, &secrets, app_handle, timeout_secs).await {
+            Ok(result) => return Ok(result),
+            Err(e) => eprintln!("[SIDECAR] Retry failed: {} — falling back to subprocess", e),
+        }
+    }
+
+    fallback_subprocess_execute(command, &args, &secrets, app_handle).await
+}
+
+async fn fallback_subprocess_execute(
+    command: &str,
+    args: &[String],
+    secrets: &HashMap<&str, &str>,
+    app_handle: Option<&AppHandle>,
+) -> Result<serde_json::Value, String> {
+    eprintln!("[SIDECAR FALLBACK] Executing '{}' via subprocess", command);
+    let mut cmd = prepare_backend_command()?;
+    cmd.arg(command);
+    for arg in args { cmd.arg(arg); }
+    let secrets_owned: HashMap<&str, &str> = secrets.clone();
+
+    let (stdout, _stderr) = if let Some(handle) = app_handle {
+        execute_with_secrets_streaming(cmd, secrets_owned, handle)?
+    } else {
+        execute_with_secrets(cmd, secrets_owned)?
+    };
+
+    serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse subprocess response: {}. Output: {}", e, stdout))
 }
 
 // Helper functions to find Python and gui_bridge paths
@@ -1320,6 +1465,35 @@ fn create_backend_command() -> (Command, bool) {
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
+    // If using system python (not venv python), set PYTHONPATH to include
+    // the venv's site-packages. This handles the common case on NTFS mounts
+    // where venv/bin/python3 is a broken Windows symlink but the packages
+    // in venv/lib/ are still accessible.
+    #[cfg(not(target_os = "windows"))]
+    {
+        let project_root = get_python_project_path();
+        let venv_python = project_root.join("venv").join("bin").join("python3");
+        if !venv_python.exists() {
+            // System python — inject venv site-packages via PYTHONPATH
+            let site_packages = project_root.join("venv").join("lib");
+            if site_packages.exists() {
+                // Find python3.X directory under lib/
+                if let Ok(entries) = std::fs::read_dir(&site_packages) {
+                    for entry in entries.flatten() {
+                        let sp = entry.path().join("site-packages");
+                        if sp.exists() {
+                            // Only include site-packages — project root is already
+                            // in sys.path via Python's script-directory auto-add
+                            eprintln!("[BACKEND] Using system python with PYTHONPATH={}", sp.display());
+                            cmd.env("PYTHONPATH", sp.display().to_string());
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     (cmd, false) // false = need to add bridge path argument
 }
 
@@ -1446,6 +1620,7 @@ fn execute_with_secrets(
 /// preventing pipe buffer deadlocks (OS pipe buffers are ~64KB; if the child
 /// writes more than that to stdout or stderr, it blocks waiting for the parent
 /// to read, but the parent is waiting for the child to exit — classic deadlock).
+#[allow(dead_code)]
 fn execute_with_secrets_timeout(
     mut cmd: Command,
     secrets: HashMap<&str, &str>,
@@ -1656,16 +1831,21 @@ async fn start_event_watcher_cmd(
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    start_event_watcher(app_handle, user_id.clone(), qube_id.clone(), password)?;
+    let args = vec![user_id, qube_id];
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
 
-    Ok(serde_json::json!({
-        "success": true,
-        "message": format!("Event watcher started for qube {}", qube_id)
-    }))
+    // The sidecar starts a long-running subscription and returns immediately.
+    // Stream events arrive as JSONL lines and the reader thread emits them
+    // as "chain-state-event" Tauri events.
+    let result = sidecar_execute_with_retry("watch-events", args, secrets, Some(&app_handle), None).await?;
+
+    Ok(result)
 }
 
 #[tauri::command]
 async fn stop_event_watcher_cmd(
+    app_handle: AppHandle,
     user_id: String,
     qube_id: String
 ) -> Result<serde_json::Value, String> {
@@ -1673,12 +1853,12 @@ async fn stop_event_watcher_cmd(
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    stop_event_watcher(&user_id, &qube_id)?;
+    let args = vec![user_id, qube_id];
+    let secrets = HashMap::new();
 
-    Ok(serde_json::json!({
-        "success": true,
-        "message": format!("Event watcher stopped for qube {}", qube_id)
-    }))
+    let result = sidecar_execute_with_retry("stop-watch-events", args, secrets, Some(&app_handle), None).await?;
+
+    Ok(result)
 }
 
 // =============================================================================
@@ -1686,72 +1866,68 @@ async fn stop_event_watcher_cmd(
 // =============================================================================
 
 #[tauri::command]
-async fn authenticate(username: String, password: String) -> Result<AuthResponse, String> {
+async fn authenticate(app_handle: AppHandle, username: String, password: String) -> Result<AuthResponse, String> {
     // Validate inputs
     validate_identifier(&username, "username")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("authenticate").arg(&username);
-
-    // Pass password via stdin instead of CLI argument (security)
+    let args = vec![username];
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("authenticate", args, secrets, Some(&app_handle), None).await?;
 
-    let auth_response: AuthResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let auth_response: AuthResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse authenticate response: {}", e))?;
+
+    // Fire-and-forget warm-up to pre-import heavy modules in the sidecar.
+    // Uses sidecar_execute (NOT with_retry) so failure doesn't trigger sidecar restart.
+    if auth_response.success {
+        tokio::spawn(async move {
+            let _ = sidecar_execute(
+                "warm-up", &vec![], &HashMap::new(), None, None,
+            ).await;
+        });
+    }
 
     Ok(auth_response)
 }
 
 #[tauri::command]
-async fn get_available_models() -> Result<AvailableModelsResponse, String> {
+async fn get_available_models(app_handle: AppHandle, ) -> Result<AvailableModelsResponse, String> {
+
     // No authentication required - this is public model metadata
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("get-available-models");
+    let args: Vec<String> = vec![];
 
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let secrets = HashMap::new();
 
-    let output = cmd
-        .output()
-        .map_err(|e| format!("Failed to execute Python: {}", e))?;
+    let result = sidecar_execute_with_retry("get-available-models", args, secrets, Some(&app_handle), None).await?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    if !output.status.success() {
-        return Err(sanitize_backend_error(&stderr, "Get available models"));
-    }
-
-    let response: AvailableModelsResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse models response: {}. Output: {}", e, stdout))?;
+    let response: AvailableModelsResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse get-available-models response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn list_qubes(user_id: String, password: String) -> Result<Vec<Qube>, String> {
+async fn list_qubes(app_handle: AppHandle, user_id: String, password: String) -> Result<Vec<Qube>, String> {
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("list-qubes")
-        .arg(&user_id);
-
+    let args = vec![user_id];
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("list-qubes", args, secrets, Some(&app_handle), None).await?;
 
-    let qubes: Vec<Qube> = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let qubes: Vec<Qube> = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse list-qubes response: {}", e))?;
 
     Ok(qubes)
 }
 
 #[tauri::command]
-async fn create_qube(
+async fn create_qube(app_handle: AppHandle, 
     user_id: String,
     name: String,
     genesis_prompt: String,
@@ -1766,57 +1942,40 @@ async fn create_qube(
     generate_avatar: bool,
     avatar_style: Option<String>,
 ) -> Result<Qube, String> {
+
     // Rate limit check
     check_rate_limit("create_qube")?;
 
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
 
-    let mut command = prepare_backend_command()?;
-    command
-        .arg("create-qube")
-        .arg(&user_id)
-        .arg("--name")
-        .arg(&name)
-        .arg("--genesis-prompt")
-        .arg(&genesis_prompt)
-        .arg("--ai-provider")
-        .arg(&ai_provider)
-        .arg("--ai-model")
-        .arg(&ai_model)
-        .arg("--voice-model")
-        .arg(&voice_model)
-        .arg("--owner-pubkey")
-        .arg(&owner_pubkey)  // Backend derives NFT address from this
-        .arg("--encrypt-genesis")
-        .arg(if encrypt_genesis { "true" } else { "false" })
-        .arg("--favorite-color")
-        .arg(&favorite_color);
+    let mut args = vec![user_id, "--name".to_string(), name, "--genesis-prompt".to_string(), genesis_prompt, "--ai-provider".to_string(), ai_provider, "--ai-model".to_string(), ai_model, "--voice-model".to_string(), voice_model, "--owner-pubkey".to_string(), owner_pubkey, "--encrypt-genesis".to_string(), (if encrypt_genesis { "true" } else { "false" }).to_string(), "--favorite-color".to_string(), favorite_color];
 
-    // Add avatar parameters
     if let Some(avatar_path) = avatar_file {
-        command.arg("--avatar-file").arg(&avatar_path);
+        args.push("--avatar-file".to_string());
+        args.push(avatar_path);
     } else if generate_avatar {
-        command.arg("--generate-avatar");
+        args.push("--generate-avatar".to_string());
         if let Some(style) = avatar_style {
-            command.arg("--avatar-style").arg(&style);
+            args.push("--avatar-style".to_string());
+            args.push(style);
         }
     }
 
-    // Pass password via stdin (security)
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(command, secrets)?;
+    let result = sidecar_execute_with_retry("create-qube", args, secrets, Some(&app_handle), None).await?;
 
-    let qube: Qube = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let qube: Qube = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse create-qube response: {}", e))?;
 
     Ok(qube)
+
 }
 
 #[tauri::command]
-async fn prepare_qube_for_minting(
+async fn prepare_qube_for_minting(app_handle: AppHandle, 
     user_id: String,
     name: String,
     genesis_prompt: String,
@@ -1831,173 +1990,127 @@ async fn prepare_qube_for_minting(
     generate_avatar: bool,
     avatar_style: Option<String>,
 ) -> Result<serde_json::Value, String> {
+
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
 
-    let mut command = prepare_backend_command()?;
-    command
-        .arg("prepare-qube-for-minting")
-        .arg(&user_id)
-        .arg("--name")
-        .arg(&name)
-        .arg("--genesis-prompt")
-        .arg(&genesis_prompt)
-        .arg("--ai-provider")
-        .arg(&ai_provider)
-        .arg("--ai-model")
-        .arg(&ai_model)
-        .arg("--voice-model")
-        .arg(&voice_model)
-        .arg("--owner-pubkey")
-        .arg(&owner_pubkey)  // Backend derives NFT address from this
-        .arg("--encrypt-genesis")
-        .arg(if encrypt_genesis { "true" } else { "false" })
-        .arg("--favorite-color")
-        .arg(&favorite_color);
+    let mut args = vec![user_id, "--name".to_string(), name, "--genesis-prompt".to_string(), genesis_prompt, "--ai-provider".to_string(), ai_provider, "--ai-model".to_string(), ai_model, "--voice-model".to_string(), voice_model, "--owner-pubkey".to_string(), owner_pubkey, "--encrypt-genesis".to_string(), (if encrypt_genesis { "true" } else { "false" }).to_string(), "--favorite-color".to_string(), favorite_color];
 
-    // Add avatar parameters
     if let Some(avatar_path) = avatar_file {
-        command.arg("--avatar-file").arg(&avatar_path);
+        args.push("--avatar-file".to_string());
+        args.push(avatar_path);
     } else if generate_avatar {
-        command.arg("--generate-avatar");
+        args.push("--generate-avatar".to_string());
         if let Some(style) = avatar_style {
-            command.arg("--avatar-style").arg(&style);
+            args.push("--avatar-style".to_string());
+            args.push(style);
         }
     }
 
-    // Pass password via stdin (security)
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(command, secrets)?;
+    let result = sidecar_execute_with_retry("prepare-qube-for-minting", args, secrets, Some(&app_handle), None).await?;
 
-    let result: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let result: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse prepare-qube-for-minting response: {}", e))?;
 
     Ok(result)
+
 }
 
 #[tauri::command]
-async fn check_minting_status(
+async fn check_minting_status(app_handle: AppHandle, 
     user_id: String,
     registration_id: String,
     password: String,
 ) -> Result<serde_json::Value, String> {
+
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
 
-    let mut command = prepare_backend_command()?;
-    command
-        .arg("check-minting-status")
-        .arg(&user_id)
-        .arg(&registration_id);
+    let args = vec![user_id, registration_id];
 
-    // Pass password via stdin (security)
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(command, secrets)?;
+    let result = sidecar_execute_with_retry("check-minting-status", args, secrets, Some(&app_handle), None).await?;
 
-    let result: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let result: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse check-minting-status response: {}", e))?;
 
     Ok(result)
+
 }
 
 #[tauri::command]
-async fn submit_payment_txid(
+async fn submit_payment_txid(app_handle: AppHandle, 
     user_id: String,
     registration_id: String,
     txid: String,
 ) -> Result<serde_json::Value, String> {
+
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
 
-    let mut command = prepare_backend_command()?;
-    command
-        .arg("submit-payment-txid")
-        .arg(&user_id)
-        .arg(&registration_id)
-        .arg(&txid);
+    let args = vec![user_id, registration_id, txid];
 
-    let output = command
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+    let secrets = HashMap::new();
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    let result = sidecar_execute_with_retry("submit-payment-txid", args, secrets, Some(&app_handle), None).await?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let result: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let result: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse submit-payment-txid response: {}", e))?;
 
     Ok(result)
+
 }
 
 #[tauri::command]
-async fn cancel_pending_minting(
+async fn cancel_pending_minting(app_handle: AppHandle, 
     user_id: String,
     registration_id: String,
 ) -> Result<serde_json::Value, String> {
+
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
 
-    let mut command = prepare_backend_command()?;
-    command
-        .arg("cancel-pending-minting")
-        .arg(&user_id)
-        .arg(&registration_id);
+    let args = vec![user_id, registration_id];
 
-    let output = command
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+    let secrets = HashMap::new();
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    let result = sidecar_execute_with_retry("cancel-pending-minting", args, secrets, Some(&app_handle), None).await?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let result: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let result: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse cancel-pending-minting response: {}", e))?;
 
     Ok(result)
+
 }
 
 #[tauri::command]
-async fn list_pending_registrations(
+async fn list_pending_registrations(app_handle: AppHandle, 
     user_id: String,
 ) -> Result<serde_json::Value, String> {
+
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
 
-    let mut command = prepare_backend_command()?;
-    command
-        .arg("list-pending-registrations")
-        .arg(&user_id);
+    let args = vec![user_id];
 
-    let output = command
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+    let secrets = HashMap::new();
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    let result = sidecar_execute_with_retry("list-pending-registrations", args, secrets, Some(&app_handle), None).await?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let result: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let result: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse list-pending-registrations response: {}", e))?;
 
     Ok(result)
+
 }
 
 #[tauri::command]
-async fn send_message(user_id: String, qube_id: String, message: String, password: String) -> Result<ChatResponse, String> {
-    use std::fs;
-    
+async fn send_message(app_handle: AppHandle, user_id: String, qube_id: String, message: String, password: String) -> Result<ChatResponse, String> {
     // Rate limit check
     check_rate_limit("send_message")?;
 
@@ -2005,69 +2118,33 @@ async fn send_message(user_id: String, qube_id: String, message: String, passwor
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    // If message is too long for command line, use a temp file
-    let stdout = if message.len() > 7000 {
-        // Write message to a secure temporary file with unpredictable name
-        let temp_file = secure_temp_path("message");
-        fs::write(&temp_file, &message)
-            .map_err(|e| format!("Failed to write temp file: {}", e))?;
+    // In sidecar mode, message goes via JSON — no CLI length limit
+    let args = vec![user_id, qube_id, message];
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
 
-        let mut cmd = prepare_backend_command()?;
-        cmd.arg("send-message")
-            .arg(&user_id)
-            .arg(&qube_id)
-            .arg(format!("@file:{}", temp_file.to_str().unwrap()));
+    let result = sidecar_execute_with_retry("send-message", args, secrets, Some(&app_handle), None).await?;
 
-        // Pass password via stdin for security
-        let mut secrets = HashMap::new();
-        secrets.insert("password", password.as_str());
-
-        let result = execute_with_secrets(cmd, secrets);
-
-        // Always clean up temp file
-        let _ = fs::remove_file(&temp_file);
-
-        result?.0
-    } else {
-        // Short message - use command line directly
-        let mut cmd = prepare_backend_command()?;
-        cmd.arg("send-message")
-            .arg(&user_id)
-            .arg(&qube_id)
-            .arg(&message);
-
-        // Pass password via stdin for security
-        let mut secrets = HashMap::new();
-        secrets.insert("password", password.as_str());
-
-        execute_with_secrets(cmd, secrets)?.0
-    };
-
-    let chat_response: ChatResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let chat_response: ChatResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse send-message response: {}", e))?;
 
     Ok(chat_response)
 }
 
 #[tauri::command]
-async fn generate_speech(user_id: String, qube_id: String, text: String, password: String) -> Result<SpeechResponse, String> {
+async fn generate_speech(app_handle: AppHandle, user_id: String, qube_id: String, text: String, password: String) -> Result<SpeechResponse, String> {
     // Rate limit check
     check_rate_limit("generate_speech")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("generate-speech")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .arg(&text);
-
+    let args = vec![user_id, qube_id, text];
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
     // 120s timeout: cloud TTS is fast, local TTS (Kokoro/Qwen3) may need model loading time
-    let (stdout, _) = execute_with_secrets_timeout(cmd, secrets, 120)?;
+    let result = sidecar_execute_with_retry("generate-speech", args, secrets, Some(&app_handle), Some(120)).await?;
 
-    let speech_response: SpeechResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let speech_response: SpeechResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse generate-speech response: {}", e))?;
 
     Ok(speech_response)
 }
@@ -2075,56 +2152,57 @@ async fn generate_speech(user_id: String, qube_id: String, text: String, passwor
 // ========== Voice Settings Commands ==========
 
 #[tauri::command]
-async fn get_voice_settings(user_id: String, qube_id: String, password: String) -> Result<serde_json::Value, String> {
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("get-voice-settings")
-        .arg(&user_id)
-        .arg(&qube_id);
+async fn get_voice_settings(app_handle: AppHandle, user_id: String, qube_id: String, password: String) -> Result<serde_json::Value, String> {
+
+    let args = vec![user_id, qube_id];
 
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("get-voice-settings", args, secrets, Some(&app_handle), None).await?;
 
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse get-voice-settings response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn update_voice_settings(
+async fn update_voice_settings(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     password: String,
     voice_library_ref: Option<String>,
     tts_enabled: Option<bool>
 ) -> Result<serde_json::Value, String> {
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("update-voice-settings")
-        .arg(&user_id)
-        .arg(&qube_id);
+
+    let mut args = vec![user_id, qube_id];
 
     if let Some(ref voice_ref) = voice_library_ref {
-        cmd.arg("--voice-library-ref").arg(voice_ref);
+        args.push("--voice-library-ref".to_string());
+        args.push(voice_ref.clone());
     }
+
     if let Some(enabled) = tts_enabled {
-        cmd.arg("--tts-enabled").arg(enabled.to_string());
+        args.push("--tts-enabled".to_string());
+        args.push(enabled.to_string());
     }
 
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("update-voice-settings", args, secrets, Some(&app_handle), None).await?;
 
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse update-voice-settings response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn preview_voice(
+async fn preview_voice(app_handle: AppHandle, 
     user_id: String,
     text: String,
     voice_type: String,
@@ -2134,40 +2212,47 @@ async fn preview_voice(
     clone_audio_text: Option<String>,
     preset_voice: Option<String>
 ) -> Result<serde_json::Value, String> {
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("preview-voice")
-        .arg(&user_id)
-        .arg(&text)
-        .arg(&voice_type);
+
+    let mut args = vec![user_id, text, voice_type];
 
     if let Some(lang) = language {
-        cmd.arg("--language").arg(lang);
+        args.push("--language".to_string());
+        args.push(lang);
     }
+
     if let Some(prompt) = design_prompt {
-        cmd.arg("--design-prompt").arg(prompt);
+        args.push("--design-prompt".to_string());
+        args.push(prompt);
     }
+
     if let Some(path) = clone_audio_path {
-        cmd.arg("--clone-audio-path").arg(path);
+        args.push("--clone-audio-path".to_string());
+        args.push(path);
     }
+
     if let Some(audio_text) = clone_audio_text {
-        cmd.arg("--clone-audio-text").arg(audio_text);
+        args.push("--clone-audio-text".to_string());
+        args.push(audio_text);
     }
+
     if let Some(preset) = preset_voice {
-        cmd.arg("--preset-voice").arg(preset);
+        args.push("--preset-voice".to_string());
+        args.push(preset);
     }
 
-    // Voice cloning/design can take 2-3 minutes for model loading + generation
     let secrets = HashMap::new();
-    let (stdout, _) = execute_with_secrets_timeout(cmd, secrets, 180)?;
 
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let result = sidecar_execute_with_retry("preview-voice", args, secrets, Some(&app_handle), Some(180)).await?;
+
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse preview-voice response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn add_voice_to_library(
+async fn add_voice_to_library(app_handle: AppHandle, 
     user_id: String,
     name: String,
     voice_type: String,
@@ -2176,376 +2261,299 @@ async fn add_voice_to_library(
     clone_audio_path: Option<String>,
     clone_audio_text: Option<String>
 ) -> Result<serde_json::Value, String> {
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("add-voice-to-library")
-        .arg(&user_id)
-        .arg(&name)
-        .arg(&voice_type);
+
+    let mut args = vec![user_id, name, voice_type];
 
     if let Some(lang) = language {
-        cmd.arg("--language").arg(lang);
+        args.push("--language".to_string());
+        args.push(lang);
     }
+
     if let Some(prompt) = design_prompt {
-        cmd.arg("--design-prompt").arg(prompt);
+        args.push("--design-prompt".to_string());
+        args.push(prompt);
     }
+
     if let Some(path) = clone_audio_path {
-        cmd.arg("--clone-audio-path").arg(path);
+        args.push("--clone-audio-path".to_string());
+        args.push(path);
     }
+
     if let Some(audio_text) = clone_audio_text {
-        cmd.arg("--clone-audio-text").arg(audio_text);
+        args.push("--clone-audio-text".to_string());
+        args.push(audio_text);
     }
 
-    let output = cmd.output()
-        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+    let secrets = HashMap::new();
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Add voice to library"));
-    }
+    let result = sidecar_execute_with_retry("add-voice-to-library", args, secrets, Some(&app_handle), None).await?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse add-voice-to-library response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn delete_voice_from_library(user_id: String, voice_id: String) -> Result<serde_json::Value, String> {
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("delete-voice-from-library")
-        .arg(&user_id)
-        .arg(&voice_id)
-        .output()
-        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+async fn delete_voice_from_library(app_handle: AppHandle, user_id: String, voice_id: String) -> Result<serde_json::Value, String> {
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Delete voice from library"));
-    }
+    let args = vec![user_id, voice_id];
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let secrets = HashMap::new();
+
+    let result = sidecar_execute_with_retry("delete-voice-from-library", args, secrets, Some(&app_handle), None).await?;
+
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse delete-voice-from-library response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn get_voice_library(user_id: String) -> Result<serde_json::Value, String> {
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("get-voice-library")
-        .arg(&user_id)
-        .output()
-        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+async fn get_voice_library(app_handle: AppHandle, user_id: String) -> Result<serde_json::Value, String> {
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Get voice library"));
-    }
+    let args = vec![user_id];
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let secrets = HashMap::new();
+
+    let result = sidecar_execute_with_retry("get-voice-library", args, secrets, Some(&app_handle), None).await?;
+
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse get-voice-library response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn check_qwen3_status(user_id: String) -> Result<serde_json::Value, String> {
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("check-qwen3-status")
-        .arg(&user_id)
-        .output()
-        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+async fn check_qwen3_status(app_handle: AppHandle, user_id: String) -> Result<serde_json::Value, String> {
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Check Qwen3 status"));
-    }
+    let args = vec![user_id];
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let secrets = HashMap::new();
+
+    let result = sidecar_execute_with_retry("check-qwen3-status", args, secrets, Some(&app_handle), None).await?;
+
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse check-qwen3-status response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn check_kokoro_status(user_id: String) -> Result<serde_json::Value, String> {
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("check-kokoro-status")
-        .arg(&user_id)
-        .output()
-        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+async fn check_kokoro_status(app_handle: AppHandle, user_id: String) -> Result<serde_json::Value, String> {
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Check Kokoro status"));
-    }
+    let args = vec![user_id];
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let secrets = HashMap::new();
+
+    let result = sidecar_execute_with_retry("check-kokoro-status", args, secrets, Some(&app_handle), None).await?;
+
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse check-kokoro-status response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn get_tts_progress(user_id: String) -> Result<serde_json::Value, String> {
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("get-tts-progress")
-        .arg(&user_id)
-        .output()
-        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+async fn get_tts_progress(app_handle: AppHandle, user_id: String) -> Result<serde_json::Value, String> {
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Get TTS progress"));
-    }
+    let args = vec![user_id];
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let secrets = HashMap::new();
+
+    let result = sidecar_execute_with_retry("get-tts-progress", args, secrets, Some(&app_handle), None).await?;
+
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse get-tts-progress response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn download_qwen3_model(user_id: String, model_name: String) -> Result<serde_json::Value, String> {
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("download-qwen3-model")
-        .arg(&user_id)
-        .arg(&model_name)
-        .output()
-        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+async fn download_qwen3_model(app_handle: AppHandle, user_id: String, model_name: String) -> Result<serde_json::Value, String> {
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Download Qwen3 model"));
-    }
+    let args = vec![user_id, model_name];
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let secrets = HashMap::new();
+
+    let result = sidecar_execute_with_retry("download-qwen3-model", args, secrets, Some(&app_handle), None).await?;
+
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse download-qwen3-model response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn get_qwen3_download_progress(user_id: String, download_id: String) -> Result<serde_json::Value, String> {
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("get-qwen3-download-progress")
-        .arg(&user_id)
-        .arg(&download_id)
-        .output()
-        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+async fn get_qwen3_download_progress(app_handle: AppHandle, user_id: String, download_id: String) -> Result<serde_json::Value, String> {
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Get download progress"));
-    }
+    let args = vec![user_id, download_id];
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let secrets = HashMap::new();
+
+    let result = sidecar_execute_with_retry("get-qwen3-download-progress", args, secrets, Some(&app_handle), None).await?;
+
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse get-qwen3-download-progress response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn cancel_qwen3_download(user_id: String, download_id: String) -> Result<serde_json::Value, String> {
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("cancel-qwen3-download")
-        .arg(&user_id)
-        .arg(&download_id)
-        .output()
-        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+async fn cancel_qwen3_download(app_handle: AppHandle, user_id: String, download_id: String) -> Result<serde_json::Value, String> {
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Cancel download"));
-    }
+    let args = vec![user_id, download_id];
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let secrets = HashMap::new();
+
+    let result = sidecar_execute_with_retry("cancel-qwen3-download", args, secrets, Some(&app_handle), None).await?;
+
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse cancel-qwen3-download response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn delete_qwen3_model(user_id: String, model_name: String) -> Result<serde_json::Value, String> {
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("delete-qwen3-model")
-        .arg(&user_id)
-        .arg(&model_name)
-        .output()
-        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+async fn delete_qwen3_model(app_handle: AppHandle, user_id: String, model_name: String) -> Result<serde_json::Value, String> {
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Delete Qwen3 model"));
-    }
+    let args = vec![user_id, model_name];
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let secrets = HashMap::new();
+
+    let result = sidecar_execute_with_retry("delete-qwen3-model", args, secrets, Some(&app_handle), None).await?;
+
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse delete-qwen3-model response: {}", e))?;
 
     Ok(response)
+
 }
 
 // ========== GPU Acceleration Commands ==========
 
 #[tauri::command]
-async fn check_gpu_acceleration(user_id: String) -> Result<serde_json::Value, String> {
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("check-gpu-acceleration")
-        .arg(&user_id)
-        .output()
-        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+async fn check_gpu_acceleration(app_handle: AppHandle, user_id: String) -> Result<serde_json::Value, String> {
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Check GPU acceleration"));
-    }
+    let args = vec![user_id];
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let secrets = HashMap::new();
+
+    let result = sidecar_execute_with_retry("check-gpu-acceleration", args, secrets, Some(&app_handle), None).await?;
+
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse check-gpu-acceleration response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn install_gpu_acceleration(user_id: String) -> Result<serde_json::Value, String> {
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("install-gpu-acceleration")
-        .arg(&user_id)
-        .output()
-        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+async fn install_gpu_acceleration(app_handle: AppHandle, user_id: String) -> Result<serde_json::Value, String> {
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Install GPU acceleration"));
-    }
+    let args = vec![user_id];
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let secrets = HashMap::new();
+
+    let result = sidecar_execute_with_retry("install-gpu-acceleration", args, secrets, Some(&app_handle), None).await?;
+
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse install-gpu-acceleration response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn get_gpu_install_progress(user_id: String, install_id: String) -> Result<serde_json::Value, String> {
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("get-gpu-install-progress")
-        .arg(&user_id)
-        .arg(&install_id)
-        .output()
-        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+async fn get_gpu_install_progress(app_handle: AppHandle, user_id: String, install_id: String) -> Result<serde_json::Value, String> {
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Get GPU install progress"));
-    }
+    let args = vec![user_id, install_id];
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let secrets = HashMap::new();
+
+    let result = sidecar_execute_with_retry("get-gpu-install-progress", args, secrets, Some(&app_handle), None).await?;
+
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse get-gpu-install-progress response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn uninstall_gpu_acceleration(user_id: String) -> Result<serde_json::Value, String> {
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("uninstall-gpu-acceleration")
-        .arg(&user_id)
-        .output()
-        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+async fn uninstall_gpu_acceleration(app_handle: AppHandle, user_id: String) -> Result<serde_json::Value, String> {
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Uninstall GPU acceleration"));
-    }
+    let args = vec![user_id];
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let secrets = HashMap::new();
+
+    let result = sidecar_execute_with_retry("uninstall-gpu-acceleration", args, secrets, Some(&app_handle), None).await?;
+
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse uninstall-gpu-acceleration response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn update_qwen3_preferences(
+async fn update_qwen3_preferences(app_handle: AppHandle, 
     user_id: String,
     model_variant: Option<String>,
     use_flash_attention: Option<bool>
 ) -> Result<serde_json::Value, String> {
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("update-qwen3-preferences")
-        .arg(&user_id);
+
+    let mut args = vec![user_id];
 
     if let Some(variant) = model_variant {
-        cmd.arg("--model-variant").arg(variant);
+        args.push("--model-variant".to_string());
+        args.push(variant);
     }
+
     if let Some(flash) = use_flash_attention {
-        cmd.arg("--use-flash-attention").arg(flash.to_string());
+        args.push("--use-flash-attention".to_string());
+        args.push(flash.to_string());
     }
 
-    let output = cmd.output()
-        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+    let secrets = HashMap::new();
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Update Qwen3 preferences"));
-    }
+    let result = sidecar_execute_with_retry("update-qwen3-preferences", args, secrets, Some(&app_handle), None).await?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse update-qwen3-preferences response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn record_voice_clone_audio(user_id: String, duration_seconds: Option<i32>) -> Result<serde_json::Value, String> {
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("record-voice-clone-audio")
-        .arg(&user_id);
+async fn record_voice_clone_audio(app_handle: AppHandle, user_id: String, duration_seconds: Option<i32>) -> Result<serde_json::Value, String> {
+
+    let mut args = vec![user_id];
 
     if let Some(duration) = duration_seconds {
-        cmd.arg("--duration").arg(duration.to_string());
+        args.push("--duration".to_string());
+        args.push(duration.to_string());
     }
 
-    let output = cmd.output()
-        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+    let secrets = HashMap::new();
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Record voice clone audio"));
-    }
+    let result = sidecar_execute_with_retry("record-voice-clone-audio", args, secrets, Some(&app_handle), None).await?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse record-voice-clone-audio response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
@@ -2588,25 +2596,19 @@ async fn save_recorded_audio(user_id: String, audio_data: Vec<u8>) -> Result<ser
 }
 
 #[tauri::command]
-async fn transcribe_audio(user_id: String, audio_path: String) -> Result<serde_json::Value, String> {
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("transcribe-audio")
-        .arg(&user_id)
-        .arg(&audio_path)
-        .output()
-        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+async fn transcribe_audio(app_handle: AppHandle, user_id: String, audio_path: String) -> Result<serde_json::Value, String> {
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Transcribe audio"));
-    }
+    let args = vec![user_id, audio_path];
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let secrets = HashMap::new();
+
+    let result = sidecar_execute_with_retry("transcribe-audio", args, secrets, Some(&app_handle), None).await?;
+
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse transcribe-audio response: {}", e))?;
 
     Ok(response)
+
 }
 
 // ========== End Voice Settings Commands ==========
@@ -2614,175 +2616,135 @@ async fn transcribe_audio(user_id: String, audio_path: String) -> Result<serde_j
 // ========== WSL2 TTS Setup Commands ==========
 
 #[tauri::command]
-async fn check_wsl2_tts_status(user_id: String) -> Result<serde_json::Value, String> {
+async fn check_wsl2_tts_status(app_handle: AppHandle, user_id: String) -> Result<serde_json::Value, String> {
+
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("check-wsl2-tts-status")
-        .arg(&user_id)
-        .output()
-        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+    let args = vec![user_id];
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Check WSL2 TTS status"));
-    }
+    let secrets = HashMap::new();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let result = sidecar_execute_with_retry("check-wsl2-tts-status", args, secrets, Some(&app_handle), None).await?;
+
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse check-wsl2-tts-status response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn setup_wsl2_tts(user_id: String) -> Result<serde_json::Value, String> {
+async fn setup_wsl2_tts(app_handle: AppHandle, user_id: String) -> Result<serde_json::Value, String> {
+
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
 
     // This is a long-running operation, so use a longer timeout
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("setup-wsl2-tts")
-        .arg(&user_id);
+    let args = vec![user_id];
 
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let secrets = HashMap::new();
 
-    let output = cmd
-        .output()
-        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+    let result = sidecar_execute_with_retry("setup-wsl2-tts", args, secrets, Some(&app_handle), None).await?;
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Setup WSL2 TTS"));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse setup-wsl2-tts response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn get_wsl2_tts_setup_progress(user_id: String) -> Result<serde_json::Value, String> {
+async fn get_wsl2_tts_setup_progress(app_handle: AppHandle, user_id: String) -> Result<serde_json::Value, String> {
+
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("get-wsl2-tts-setup-progress")
-        .arg(&user_id)
-        .output()
-        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+    let args = vec![user_id];
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Get WSL2 TTS setup progress"));
-    }
+    let secrets = HashMap::new();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let result = sidecar_execute_with_retry("get-wsl2-tts-setup-progress", args, secrets, Some(&app_handle), None).await?;
+
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse get-wsl2-tts-setup-progress response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn start_wsl2_tts_server(user_id: String) -> Result<serde_json::Value, String> {
+async fn start_wsl2_tts_server(app_handle: AppHandle, user_id: String) -> Result<serde_json::Value, String> {
+
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("start-wsl2-tts-server")
-        .arg(&user_id);
+    let args = vec![user_id];
 
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let secrets = HashMap::new();
 
-    let output = cmd
-        .output()
-        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+    let result = sidecar_execute_with_retry("start-wsl2-tts-server", args, secrets, Some(&app_handle), None).await?;
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Start WSL2 TTS server"));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse start-wsl2-tts-server response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn stop_wsl2_tts_server(user_id: String) -> Result<serde_json::Value, String> {
+async fn stop_wsl2_tts_server(app_handle: AppHandle, user_id: String) -> Result<serde_json::Value, String> {
+
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("stop-wsl2-tts-server")
-        .arg(&user_id)
-        .output()
-        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+    let args = vec![user_id];
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Stop WSL2 TTS server"));
-    }
+    let secrets = HashMap::new();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let result = sidecar_execute_with_retry("stop-wsl2-tts-server", args, secrets, Some(&app_handle), None).await?;
+
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse stop-wsl2-tts-server response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn uninstall_wsl2_tts(user_id: String) -> Result<serde_json::Value, String> {
+async fn uninstall_wsl2_tts(app_handle: AppHandle, user_id: String) -> Result<serde_json::Value, String> {
+
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("uninstall-wsl2-tts")
-        .arg(&user_id)
-        .output()
-        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+    let args = vec![user_id];
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Uninstall WSL2 TTS"));
-    }
+    let secrets = HashMap::new();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let result = sidecar_execute_with_retry("uninstall-wsl2-tts", args, secrets, Some(&app_handle), None).await?;
+
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse uninstall-wsl2-tts response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn install_wsl2() -> Result<serde_json::Value, String> {
+async fn install_wsl2(app_handle: AppHandle, ) -> Result<serde_json::Value, String> {
+
     // One-click WSL2 installation (requires admin, shows UAC prompt)
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("install-wsl2")
-        .output()
-        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+    let args: Vec<String> = vec![];
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Install WSL2"));
-    }
+    let secrets = HashMap::new();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let result = sidecar_execute_with_retry("install-wsl2", args, secrets, Some(&app_handle), None).await?;
+
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse install-wsl2 response: {}", e))?;
 
     Ok(response)
+
 }
 
 // ========== End WSL2 TTS Setup Commands ==========
@@ -2798,106 +2760,91 @@ fn force_exit() {
 }
 
 #[tauri::command]
-async fn check_sessions(user_id: String, qube_id: String) -> Result<serde_json::Value, String> {
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("check-sessions")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .output()
-        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+async fn check_sessions(app_handle: AppHandle, user_id: String, qube_id: String) -> Result<serde_json::Value, String> {
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    let args = vec![user_id, qube_id];
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let secrets = HashMap::new();
+
+    let result = sidecar_execute_with_retry("check-sessions", args, secrets, Some(&app_handle), None).await?;
+
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse check-sessions response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn anchor_session(user_id: String, qube_id: String, password: String) -> Result<serde_json::Value, String> {
+async fn anchor_session(app_handle: AppHandle, user_id: String, qube_id: String, password: String) -> Result<serde_json::Value, String> {
     // Rate limit check
     check_rate_limit("anchor_session")?;
-    
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("anchor-session")
-        .arg(&user_id)
-        .arg(&qube_id);
 
+    let args = vec![user_id, qube_id];
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("anchor-session", args, secrets, Some(&app_handle), None).await?;
 
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse anchor-session response: {}", e))?;
 
     Ok(response)
 }
 
 #[tauri::command]
-async fn discard_session(user_id: String, qube_id: String, password: String) -> Result<serde_json::Value, String> {
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("discard-session")
-        .arg(&user_id)
-        .arg(&qube_id);
+async fn discard_session(app_handle: AppHandle, user_id: String, qube_id: String, password: String) -> Result<serde_json::Value, String> {
+
+    let args = vec![user_id, qube_id];
 
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("discard-session", args, secrets, Some(&app_handle), None).await?;
 
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse discard-session response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn delete_session_block(user_id: String, qube_id: String, block_number: i32, password: String, timestamp: Option<i64>) -> Result<serde_json::Value, String> {
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("delete-session-block")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .arg(block_number.to_string());
+async fn delete_session_block(app_handle: AppHandle, user_id: String, qube_id: String, block_number: i32, password: String, timestamp: Option<i64>) -> Result<serde_json::Value, String> {
 
-    // Pass timestamp if provided (for stable deletion when deleting multiple blocks)
+    let mut args = vec![user_id, qube_id, block_number.to_string()];
+
     if let Some(ts) = timestamp {
-        cmd.arg(ts.to_string());
+        args.push(ts.to_string());
     }
 
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("delete-session-block", args, secrets, Some(&app_handle), None).await?;
 
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse delete-session-block response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn discard_last_block(user_id: String, qube_id: String, password: String) -> Result<serde_json::Value, String> {
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("discard-last-block")
-        .arg(&user_id)
-        .arg(&qube_id);
+async fn discard_last_block(app_handle: AppHandle, user_id: String, qube_id: String, password: String) -> Result<serde_json::Value, String> {
+
+    let args = vec![user_id, qube_id];
 
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("discard-last-block", args, secrets, Some(&app_handle), None).await?;
 
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse discard-last-block response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
@@ -3140,13 +3087,14 @@ async fn stop_audio_native() -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn get_qube_blocks(
+async fn get_qube_blocks(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     password: String,
     limit: Option<i32>,
     offset: Option<i32>
 ) -> Result<serde_json::Value, String> {
+
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
@@ -3156,52 +3104,47 @@ async fn get_qube_blocks(
     let limit_val = limit.unwrap_or(100);
     let offset_val = offset.unwrap_or(0);
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("get-qube-blocks")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .arg(limit_val.to_string())
-        .arg(offset_val.to_string());
+    let args = vec![user_id, qube_id, limit_val.to_string(), offset_val.to_string()];
 
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("get-qube-blocks", args, secrets, Some(&app_handle), None).await?;
 
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse get-qube-blocks response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn recall_last_context(
+async fn recall_last_context(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     password: String,
 ) -> Result<serde_json::Value, String> {
+
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("recall-last-context")
-        .arg(&user_id)
-        .arg(&qube_id);
+    let args = vec![user_id, qube_id];
 
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("recall-last-context", args, secrets, Some(&app_handle), None).await?;
 
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse recall-last-context response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn update_qube_config(
+async fn update_qube_config(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     ai_model: Option<String>,
@@ -3211,140 +3154,109 @@ async fn update_qube_config(
     evaluation_model: Option<String>,
     password: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let mut cmd = prepare_backend_command()?;
 
-    // Add command and required args
-    cmd.arg("update-qube-config")
-        .arg(&user_id)
-        .arg(&qube_id);
-
-    // Add optional parameters (empty string if not provided)
-    cmd.arg(ai_model.unwrap_or_default());
-    cmd.arg(voice_model.unwrap_or_default());
-    cmd.arg(favorite_color.unwrap_or_default());
-    cmd.arg(match tts_enabled {
+    let args = vec![user_id, qube_id, ai_model.unwrap_or_default(), voice_model.unwrap_or_default(), favorite_color.unwrap_or_default(), (match tts_enabled {
         Some(true) => "true",
         Some(false) => "false",
         None => "",
-    });
-    cmd.arg(evaluation_model.unwrap_or_default());
-    cmd.arg(password.unwrap_or_default());
+    }).to_string(), evaluation_model.unwrap_or_default()];
 
-    let output = cmd
-        .output()
-        .map_err(|e| format!("Failed to execute backend: {}", e))?;
-
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
+    let mut secrets = HashMap::new();
+    if let Some(ref pwd) = password {
+        secrets.insert("password", pwd.as_str());
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let result = sidecar_execute_with_retry("update-qube-config", args, secrets, Some(&app_handle), None).await?;
+
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse update-qube-config response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn delete_qube(user_id: String, qube_id: String) -> Result<DeleteResponse, String> {
+async fn delete_qube(app_handle: AppHandle, user_id: String, qube_id: String) -> Result<DeleteResponse, String> {
+
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("delete-qube")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+    let args = vec![user_id, qube_id];
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    let secrets = HashMap::new();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let delete_response: DeleteResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let result = sidecar_execute_with_retry("delete-qube", args, secrets, Some(&app_handle), None).await?;
+
+    let delete_response: DeleteResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse delete-qube response: {}", e))?;
 
     Ok(delete_response)
+
 }
 
 #[tauri::command]
-async fn reset_qube(user_id: String, qube_id: String, password: String) -> Result<DeleteResponse, String> {
+async fn reset_qube(app_handle: AppHandle, user_id: String, qube_id: String, password: String) -> Result<DeleteResponse, String> {
+
     // DEV ONLY: Reset qube to fresh state while preserving identity
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("reset-qube")
-        .arg(&user_id)
-        .arg(&qube_id);
+    let args = vec![user_id, qube_id];
 
-    // Pass password via stdin (secure) - needed for encrypted chain_state
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    // Use timeout version (30 seconds) to prevent indefinite hangs
-    let (stdout, _stderr) = execute_with_secrets_timeout(cmd, secrets, 30)?;
+    let result = sidecar_execute_with_retry("reset-qube", args, secrets, Some(&app_handle), Some(30)).await?;
 
-    let reset_response: DeleteResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let reset_response: DeleteResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse reset-qube response: {}", e))?;
 
     Ok(reset_response)
+
 }
 
 #[tauri::command]
-async fn save_image(user_id: String, qube_id: String, image_url: String) -> Result<SaveImageResponse, String> {
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("save-image")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .arg(&image_url)
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+async fn save_image(app_handle: AppHandle, user_id: String, qube_id: String, image_url: String) -> Result<SaveImageResponse, String> {
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    let args = vec![user_id, qube_id, image_url];
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let save_response: SaveImageResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let secrets = HashMap::new();
+
+    let result = sidecar_execute_with_retry("save-image", args, secrets, Some(&app_handle), None).await?;
+
+    let save_response: SaveImageResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse save-image response: {}", e))?;
 
     Ok(save_response)
+
 }
 
 #[tauri::command]
-async fn upload_avatar_to_ipfs(user_id: String, qube_id: String, password: String) -> Result<UploadAvatarToIpfsResponse, String> {
+async fn upload_avatar_to_ipfs(app_handle: AppHandle, user_id: String, qube_id: String, password: String) -> Result<UploadAvatarToIpfsResponse, String> {
+
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("upload-avatar-to-ipfs")
-        .arg(&user_id)
-        .arg(&qube_id);
+    let args = vec![user_id, qube_id];
 
-    // Pass password via stdin (security)
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("upload-avatar-to-ipfs", args, secrets, Some(&app_handle), None).await?;
 
-    let response: UploadAvatarToIpfsResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: UploadAvatarToIpfsResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse upload-avatar-to-ipfs response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn analyze_image(user_id: String, qube_id: String, image_base64: String, user_message: String, password: String) -> Result<AnalyzeImageResponse, String> {
+async fn analyze_image(app_handle: AppHandle, user_id: String, qube_id: String, image_base64: String, user_message: String, password: String) -> Result<AnalyzeImageResponse, String> {
+
     use std::fs;
     
     // Rate limit check
@@ -3356,28 +3268,21 @@ async fn analyze_image(user_id: String, qube_id: String, image_base64: String, u
     fs::write(&temp_file, &image_base64)
         .map_err(|e| format!("Failed to write temp file: {}", e))?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("analyze-image")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .arg(temp_file.to_str().unwrap())
-        .arg(&user_message);
+    let args = vec![user_id, qube_id, temp_file.to_str().unwrap().to_string(), user_message];
 
-    // Pass password via stdin (security)
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let result = execute_with_secrets(cmd, secrets);
+    let result = sidecar_execute_with_retry("analyze-image", args, secrets, Some(&app_handle), None).await?;
 
     // Always clean up temp file, even on error
     let _ = fs::remove_file(&temp_file);
 
-    let (stdout, _stderr) = result?;
-
-    let analyze_response: AnalyzeImageResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let analyze_response: AnalyzeImageResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse analyze-image response: {}", e))?;
 
     Ok(analyze_response)
+
 }
 
 #[tauri::command]
@@ -3389,50 +3294,43 @@ async fn start_multi_qube_conversation(
     password: String,
     conversation_mode: String,
 ) -> Result<serde_json::Value, String> {
+
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("start-multi-qube-conversation")
-        .arg(&user_id)
-        .arg(&qube_ids_str)
-        .arg(&initial_prompt)
-        .arg(&conversation_mode);
+    let args = vec![user_id, qube_ids_str, initial_prompt, conversation_mode];
 
-    // Pass password via stdin (security)
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    // Use streaming execution to emit tool call events in real-time
-    let (stdout, _stderr) = execute_with_secrets_streaming(cmd, secrets, &app_handle)?;
+    let result = sidecar_execute_with_retry("start-multi-qube-conversation", args, secrets, Some(&app_handle), None).await?;
 
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse start-multi-qube-conversation response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn get_next_speaker(
+async fn get_next_speaker(app_handle: AppHandle, 
     user_id: String,
     conversation_id: String,
     password: String,
 ) -> Result<serde_json::Value, String> {
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("get-next-speaker")
-        .arg(&user_id)
-        .arg(&conversation_id);
 
-    // Pass password via stdin (security)
+    let args = vec![user_id, conversation_id];
+
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("get-next-speaker", args, secrets, Some(&app_handle), None).await?;
 
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse get-next-speaker response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
@@ -3444,59 +3342,51 @@ async fn continue_multi_qube_conversation(
     skip_tools: Option<bool>,
     participant_ids: Option<String>,  // JSON array of participant qube IDs (optimization to skip scanning all qubes)
 ) -> Result<serde_json::Value, String> {
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("continue-multi-qube-conversation")
-        .arg(&user_id)
-        .arg(&conversation_id);
 
-    // Add skip_tools flag if specified (for faster prefetch without tool calls)
+    let mut args = vec![user_id, conversation_id];
+
     if let Some(skip) = skip_tools {
-        cmd.arg(if skip { "true" } else { "false" });
+        args.push((if skip { "true" } else { "false" }).to_string());
     } else {
-        cmd.arg("false");  // Need placeholder so participant_ids is in right position
+        args.push("false".to_string());
     }
 
-    // Add participant_ids if provided (skips scanning all qubes)
     if let Some(ref ids) = participant_ids {
-        cmd.arg(ids);
+        args.push(ids.clone());
     }
 
-    // Pass password via stdin (security)
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    // Use streaming execution to emit tool call events in real-time
-    let (stdout, _stderr) = execute_with_secrets_streaming(cmd, secrets, &app_handle)?;
+    let result = sidecar_execute_with_retry("continue-multi-qube-conversation", args, secrets, Some(&app_handle), None).await?;
 
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse continue-multi-qube-conversation response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn run_background_turns(
+async fn run_background_turns(app_handle: AppHandle, 
     user_id: String,
     conversation_id: String,
     exclude_qube_ids: String,  // JSON array of qube IDs to exclude
     password: String,
 ) -> Result<serde_json::Value, String> {
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("run-background-turns")
-        .arg(&user_id)
-        .arg(&conversation_id)
-        .arg(&exclude_qube_ids);
 
-    // Pass password via stdin (security)
+    let args = vec![user_id, conversation_id, exclude_qube_ids];
+
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("run-background-turns", args, secrets, Some(&app_handle), None).await?;
 
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse run-background-turns response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
@@ -3507,232 +3397,176 @@ async fn inject_multi_qube_user_message(
     message: String,
     password: String,
 ) -> Result<serde_json::Value, String> {
-    use std::fs;
+    // In sidecar mode, args are sent via JSONL (no command-line length limit)
+    let args = vec![user_id, conversation_id, message];
 
-    // Pass password via stdin (security)
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    // If message is too long for command line, use a temp file
-    if message.len() > 7000 {
-        // Use secure temporary file with unpredictable name
-        let temp_file = secure_temp_path("multi_message");
+    let result = sidecar_execute_with_retry("inject-multi-qube-user-message", args, secrets, Some(&app_handle), None).await?;
 
-        fs::write(&temp_file, &message)
-            .map_err(|e| format!("Failed to write temp file: {}", e))?;
-
-        let mut cmd = prepare_backend_command()?;
-        cmd.arg("inject-multi-qube-user-message")
-            .arg(&user_id)
-            .arg(&conversation_id)
-            .arg(format!("@file:{}", temp_file.to_str().unwrap()));
-
-        // Use streaming execution to emit tool call events in real-time
-        let result = execute_with_secrets_streaming(cmd, secrets, &app_handle);
-
-        // Always clean up temp file, even on error
-        let _ = fs::remove_file(&temp_file);
-
-        let (stdout, _stderr) = result?;
-
-        let response: serde_json::Value = serde_json::from_str(&stdout)
-            .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
-
-        Ok(response)
-    } else {
-        // Short message - use command line directly
-        let mut cmd = prepare_backend_command()?;
-        cmd.arg("inject-multi-qube-user-message")
-            .arg(&user_id)
-            .arg(&conversation_id)
-            .arg(&message);
-
-        // Use streaming execution to emit tool call events in real-time
-        let (stdout, _stderr) = execute_with_secrets_streaming(cmd, secrets, &app_handle)?;
-
-        let response: serde_json::Value = serde_json::from_str(&stdout)
-            .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
-
-        Ok(response)
-    }
+    serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse inject-multi-qube-user-message response: {}", e))
 }
 
 #[tauri::command]
-async fn lock_in_multi_qube_response(
+async fn lock_in_multi_qube_response(app_handle: AppHandle, 
     user_id: String,
     conversation_id: String,
     timestamp: i64,
     password: String,
     participant_ids: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("lock-in-multi-qube-response")
-        .arg(&user_id)
-        .arg(&conversation_id)
-        .arg(timestamp.to_string());
 
-    // Add participant_ids if provided (optimization to skip scanning all qubes)
+    let mut args = vec![user_id, conversation_id, timestamp.to_string()];
+
     if let Some(ids) = participant_ids {
-        cmd.arg("--participant-ids").arg(&ids);
+        args.push("--participant-ids".to_string());
+        args.push(ids);
     }
 
-    // Pass password via stdin (security)
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("lock-in-multi-qube-response", args, secrets, Some(&app_handle), None).await?;
 
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse lock-in-multi-qube-response response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn end_multi_qube_conversation(
+async fn end_multi_qube_conversation(app_handle: AppHandle, 
     user_id: String,
     conversation_id: String,
     anchor: bool,
     password: String,
 ) -> Result<serde_json::Value, String> {
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("end-multi-qube-conversation")
-        .arg(&user_id)
-        .arg(&conversation_id)
-        .arg(if anchor { "true" } else { "false" });
 
-    // Pass password via stdin (security)
+    let args = vec![user_id, conversation_id, (if anchor { "true" } else { "false" }).to_string()];
+
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("end-multi-qube-conversation", args, secrets, Some(&app_handle), None).await?;
 
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse end-multi-qube-conversation response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn get_configured_api_keys(user_id: String, password: String) -> Result<ConfiguredKeysResponse, String> {
+async fn get_configured_api_keys(app_handle: AppHandle, user_id: String, password: String) -> Result<ConfiguredKeysResponse, String> {
+
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("get-configured-api-keys")
-        .arg(&user_id);
+    let args = vec![user_id];
 
-    // Pass password via stdin (security)
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("get-configured-api-keys", args, secrets, Some(&app_handle), None).await?;
 
-    let response: ConfiguredKeysResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: ConfiguredKeysResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse get-configured-api-keys response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn save_api_key(user_id: String, provider: String, api_key: String, password: String) -> Result<APIKeyResponse, String> {
+async fn save_api_key(app_handle: AppHandle, user_id: String, provider: String, api_key: String, password: String) -> Result<APIKeyResponse, String> {
+
     // Rate limit check
     check_rate_limit("save_api_key")?;
     
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("save-api-key")
-        .arg(&user_id)
-        .arg(&provider);
+    let args = vec![user_id, provider];
 
-    // Pass api_key and password via stdin (security)
     let mut secrets = HashMap::new();
-    secrets.insert("api_key", api_key.as_str());
     secrets.insert("password", password.as_str());
+    secrets.insert("api_key", api_key.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("save-api-key", args, secrets, Some(&app_handle), None).await?;
 
-    let response: APIKeyResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: APIKeyResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse save-api-key response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn validate_api_key(user_id: String, provider: String, api_key: String, password: Option<String>) -> Result<ValidationResponse, String> {
+async fn validate_api_key(app_handle: AppHandle, user_id: String, provider: String, api_key: String, password: Option<String>) -> Result<ValidationResponse, String> {
+
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("validate-api-key")
-        .arg(&user_id)
-        .arg(&provider);
+    let args = vec![user_id, provider];
 
-    // Pass api_key and optional password via stdin (security)
     let mut secrets = HashMap::new();
     secrets.insert("api_key", api_key.as_str());
     if let Some(ref pw) = password {
         secrets.insert("password", pw.as_str());
     }
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("validate-api-key", args, secrets, Some(&app_handle), None).await?;
 
-    let response: ValidationResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: ValidationResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse validate-api-key response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn delete_api_key(user_id: String, provider: String, password: String) -> Result<APIKeyResponse, String> {
+async fn delete_api_key(app_handle: AppHandle, user_id: String, provider: String, password: String) -> Result<APIKeyResponse, String> {
+
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("delete-api-key")
-        .arg(&user_id)
-        .arg(&provider);
+    let args = vec![user_id, provider];
 
-    // Pass password via stdin (security)
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("delete-api-key", args, secrets, Some(&app_handle), None).await?;
 
-    let response: APIKeyResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: APIKeyResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse delete-api-key response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn get_block_preferences(user_id: String) -> Result<BlockPreferencesResponse, String> {
+async fn get_block_preferences(app_handle: AppHandle, user_id: String) -> Result<BlockPreferencesResponse, String> {
+
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("get-block-preferences")
-        .arg(&user_id)
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+    let args = vec![user_id];
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    let secrets = HashMap::new();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: BlockPreferencesResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let result = sidecar_execute_with_retry("get-block-preferences", args, secrets, Some(&app_handle), None).await?;
+
+    let response: BlockPreferencesResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse get-block-preferences response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn update_block_preferences(
+async fn update_block_preferences(app_handle: AppHandle, 
     user_id: String,
     individual_auto_anchor: Option<bool>,
     individual_anchor_threshold: Option<i32>,
@@ -3740,75 +3574,73 @@ async fn update_block_preferences(
     group_anchor_threshold: Option<i32>,
     auto_sync_ipfs_on_anchor: Option<bool>
 ) -> Result<BlockPreferencesResponse, String> {
+
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd
-        .arg("update-block-preferences")
-        .arg(&user_id);
+    let mut args = vec![user_id];
 
-    // Add optional parameters
     if let Some(val) = individual_auto_anchor {
-        cmd.arg("--individual-auto-anchor").arg(val.to_string());
+        args.push("--individual-auto-anchor".to_string());
+        args.push(val.to_string());
     }
+
     if let Some(val) = individual_anchor_threshold {
-        cmd.arg("--individual-anchor-threshold").arg(val.to_string());
+        args.push("--individual-anchor-threshold".to_string());
+        args.push(val.to_string());
     }
+
     if let Some(val) = group_auto_anchor {
-        cmd.arg("--group-auto-anchor").arg(val.to_string());
+        args.push("--group-auto-anchor".to_string());
+        args.push(val.to_string());
     }
+
     if let Some(val) = group_anchor_threshold {
-        cmd.arg("--group-anchor-threshold").arg(val.to_string());
+        args.push("--group-anchor-threshold".to_string());
+        args.push(val.to_string());
     }
+
     if let Some(val) = auto_sync_ipfs_on_anchor {
-        cmd.arg("--auto-sync-ipfs").arg(val.to_string());
+        args.push("--auto-sync-ipfs".to_string());
+        args.push(val.to_string());
     }
 
-    let output = cmd.output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+    let secrets = HashMap::new();
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    let result = sidecar_execute_with_retry("update-block-preferences", args, secrets, Some(&app_handle), None).await?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: BlockPreferencesResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: BlockPreferencesResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse update-block-preferences response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn get_relationship_difficulty(user_id: String) -> Result<RelationshipSettingsResponse, String> {
+async fn get_relationship_difficulty(app_handle: AppHandle, user_id: String) -> Result<RelationshipSettingsResponse, String> {
+
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("get-relationship-difficulty")
-        .arg(&user_id)
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+    let args = vec![user_id];
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    let secrets = HashMap::new();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: RelationshipSettingsResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let result = sidecar_execute_with_retry("get-relationship-difficulty", args, secrets, Some(&app_handle), None).await?;
+
+    let response: RelationshipSettingsResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse get-relationship-difficulty response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn set_relationship_difficulty(
+async fn set_relationship_difficulty(app_handle: AppHandle, 
     user_id: String,
     difficulty: String
 ) -> Result<RelationshipSettingsResponse, String> {
+
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
 
@@ -3817,76 +3649,58 @@ async fn set_relationship_difficulty(
         return Err(format!("Invalid difficulty: {}. Must be one of: quick, normal, long, extreme", difficulty));
     }
 
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("set-relationship-difficulty")
-        .arg(&user_id)
-        .arg(&difficulty)
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+    let args = vec![user_id, difficulty];
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    let secrets = HashMap::new();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: RelationshipSettingsResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let result = sidecar_execute_with_retry("set-relationship-difficulty", args, secrets, Some(&app_handle), None).await?;
+
+    let response: RelationshipSettingsResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse set-relationship-difficulty response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn get_decision_config(user_id: String) -> Result<serde_json::Value, String> {
+async fn get_decision_config(app_handle: AppHandle, user_id: String) -> Result<serde_json::Value, String> {
+
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("get-decision-config")
-        .arg(&user_id)
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+    let args = vec![user_id];
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    let secrets = HashMap::new();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let result = sidecar_execute_with_retry("get-decision-config", args, secrets, Some(&app_handle), None).await?;
+
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse get-decision-config response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn update_decision_config(
+async fn update_decision_config(app_handle: AppHandle, 
     user_id: String,
     config_json: String
 ) -> Result<serde_json::Value, String> {
+
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("update-decision-config")
-        .arg(&user_id)
-        .arg(&config_json)
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+    let args = vec![user_id, config_json];
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    let secrets = HashMap::new();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let result = sidecar_execute_with_retry("update-decision-config", args, secrets, Some(&app_handle), None).await?;
+
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse update-decision-config response: {}", e))?;
 
     Ok(response)
+
 }
 
 // =============================================================================
@@ -3894,55 +3708,44 @@ async fn update_decision_config(
 // =============================================================================
 
 #[tauri::command]
-async fn get_memory_config(user_id: String) -> Result<serde_json::Value, String> {
+async fn get_memory_config(app_handle: AppHandle, user_id: String) -> Result<serde_json::Value, String> {
+
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("get-memory-config")
-        .arg(&user_id)
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+    let args = vec![user_id];
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    let secrets = HashMap::new();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let result = sidecar_execute_with_retry("get-memory-config", args, secrets, Some(&app_handle), None).await?;
+
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse get-memory-config response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn update_memory_config(
+async fn update_memory_config(app_handle: AppHandle, 
     user_id: String,
     config_json: String
 ) -> Result<serde_json::Value, String> {
+
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("update-memory-config")
-        .arg(&user_id)
-        .arg(&config_json)
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+    let args = vec![user_id, config_json];
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    let secrets = HashMap::new();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let result = sidecar_execute_with_retry("update-memory-config", args, secrets, Some(&app_handle), None).await?;
+
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse update-memory-config response: {}", e))?;
 
     Ok(response)
+
 }
 
 // =============================================================================
@@ -3950,489 +3753,385 @@ async fn update_memory_config(
 // =============================================================================
 
 #[tauri::command]
-async fn get_onboarding_preferences(user_id: String) -> Result<serde_json::Value, String> {
+async fn get_onboarding_preferences(app_handle: AppHandle, user_id: String) -> Result<serde_json::Value, String> {
+
     validate_identifier(&user_id, "user_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("get-onboarding-preferences")
-        .arg(&user_id)
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+    let args = vec![user_id];
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    let secrets = HashMap::new();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let result = sidecar_execute_with_retry("get-onboarding-preferences", args, secrets, Some(&app_handle), None).await?;
+
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse get-onboarding-preferences response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn mark_tutorial_seen(user_id: String, tab_name: String) -> Result<serde_json::Value, String> {
+async fn mark_tutorial_seen(app_handle: AppHandle, user_id: String, tab_name: String) -> Result<serde_json::Value, String> {
+
     validate_identifier(&user_id, "user_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("mark-tutorial-seen")
-        .arg(&user_id)
-        .arg(&tab_name)
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+    let args = vec![user_id, tab_name];
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    let secrets = HashMap::new();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let result = sidecar_execute_with_retry("mark-tutorial-seen", args, secrets, Some(&app_handle), None).await?;
+
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse mark-tutorial-seen response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn reset_tutorial(user_id: String, tab_name: String) -> Result<serde_json::Value, String> {
+async fn reset_tutorial(app_handle: AppHandle, user_id: String, tab_name: String) -> Result<serde_json::Value, String> {
+
     validate_identifier(&user_id, "user_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("reset-tutorial")
-        .arg(&user_id)
-        .arg(&tab_name)
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+    let args = vec![user_id, tab_name];
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    let secrets = HashMap::new();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let result = sidecar_execute_with_retry("reset-tutorial", args, secrets, Some(&app_handle), None).await?;
+
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse reset-tutorial response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn reset_all_tutorials(user_id: String) -> Result<serde_json::Value, String> {
+async fn reset_all_tutorials(app_handle: AppHandle, user_id: String) -> Result<serde_json::Value, String> {
+
     validate_identifier(&user_id, "user_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("reset-all-tutorials")
-        .arg(&user_id)
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+    let args = vec![user_id];
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    let secrets = HashMap::new();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let result = sidecar_execute_with_retry("reset-all-tutorials", args, secrets, Some(&app_handle), None).await?;
+
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse reset-all-tutorials response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn update_show_tutorials(user_id: String, show: bool) -> Result<serde_json::Value, String> {
+async fn update_show_tutorials(app_handle: AppHandle, user_id: String, show: bool) -> Result<serde_json::Value, String> {
+
     validate_identifier(&user_id, "user_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("update-show-tutorials")
-        .arg(&user_id)
-        .arg(if show { "true" } else { "false" })
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+    let args = vec![user_id, (if show { "true" } else { "false" }).to_string()];
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    let secrets = HashMap::new();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let result = sidecar_execute_with_retry("update-show-tutorials", args, secrets, Some(&app_handle), None).await?;
+
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse update-show-tutorials response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn get_difficulty_presets() -> Result<std::collections::HashMap<String, DifficultyPreset>, String> {
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("get-difficulty-presets")
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+async fn get_difficulty_presets(app_handle: AppHandle, ) -> Result<std::collections::HashMap<String, DifficultyPreset>, String> {
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    let args: Vec<String> = vec![];
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: std::collections::HashMap<String, DifficultyPreset> = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let secrets = HashMap::new();
+
+    let result = sidecar_execute_with_retry("get-difficulty-presets", args, secrets, Some(&app_handle), None).await?;
+
+    let response: std::collections::HashMap<String, DifficultyPreset> = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse get-difficulty-presets response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn get_qube_relationships(
+async fn get_qube_relationships(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     password: Option<String>,
 ) -> Result<RelationshipResponse, String> {
+
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
     let password_str = password.unwrap_or_default();
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("get-qube-relationships")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .arg(&password_str)
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+    let args = vec![user_id, qube_id, password_str];
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    let secrets = HashMap::new();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: RelationshipResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let result = sidecar_execute_with_retry("get-qube-relationships", args, secrets, Some(&app_handle), None).await?;
+
+    let response: RelationshipResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse get-qube-relationships response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn get_relationship_timeline(
+async fn get_relationship_timeline(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     entity_id: String,
     password: Option<String>,
 ) -> Result<TimelineResponse, String> {
+
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
     validate_identifier(&entity_id, "entity_id")?;
 
     let password_str = password.unwrap_or_default();
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("get-relationship-timeline")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .arg(&entity_id)
-        .arg(&password_str)
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+    let args = vec![user_id, qube_id, entity_id, password_str];
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    let secrets = HashMap::new();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: TimelineResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let result = sidecar_execute_with_retry("get-relationship-timeline", args, secrets, Some(&app_handle), None).await?;
+
+    let response: TimelineResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse get-relationship-timeline response: {}", e))?;
 
     Ok(response)
+
 }
 
 // Clearance Request Commands
 #[tauri::command]
-async fn get_pending_clearance_requests(
+async fn get_pending_clearance_requests(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     password: Option<String>,
 ) -> Result<ClearanceRequestsResponse, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
     let password_str = password.unwrap_or_default();
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("get-pending-clearance-requests")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .arg(&password_str)
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+    let args = vec![user_id, qube_id, password_str];
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    let secrets = HashMap::new();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: ClearanceRequestsResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let result = sidecar_execute_with_retry("get-pending-clearance-requests", args, secrets, Some(&app_handle), None).await?;
+
+    let response: ClearanceRequestsResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse get-pending-clearance-requests response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn approve_clearance_request(
+async fn approve_clearance_request(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     request_id: String,
     password: Option<String>,
     expires_in_days: Option<u32>,
 ) -> Result<ClearanceRequestResponse, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
     let password_str = password.unwrap_or_default();
     let expires_str = expires_in_days.map(|d| d.to_string()).unwrap_or_default();
 
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("approve-clearance-request")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .arg(&request_id)
-        .arg(&password_str)
-        .arg(&expires_str)
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+    let args = vec![user_id, qube_id, request_id, password_str, expires_str];
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    let secrets = HashMap::new();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: ClearanceRequestResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let result = sidecar_execute_with_retry("approve-clearance-request", args, secrets, Some(&app_handle), None).await?;
+
+    let response: ClearanceRequestResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse approve-clearance-request response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn deny_clearance_request(
+async fn deny_clearance_request(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     request_id: String,
     password: Option<String>,
     reason: Option<String>,
 ) -> Result<ClearanceRequestResponse, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
     let password_str = password.unwrap_or_default();
     let reason_str = reason.unwrap_or_default();
 
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("deny-clearance-request")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .arg(&request_id)
-        .arg(&password_str)
-        .arg(&reason_str)
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+    let args = vec![user_id, qube_id, request_id, password_str, reason_str];
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    let secrets = HashMap::new();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: ClearanceRequestResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let result = sidecar_execute_with_retry("deny-clearance-request", args, secrets, Some(&app_handle), None).await?;
+
+    let response: ClearanceRequestResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse deny-clearance-request response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn get_clearance_audit_log(
+async fn get_clearance_audit_log(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     password: String,
     limit: Option<i32>,
     entity_filter: Option<String>,
 ) -> Result<AuditLogResponse, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("get-clearance-audit-log")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .arg(&password);
+    let mut args = vec![user_id, qube_id, password];
 
     if let Some(l) = limit {
-        cmd.arg(l.to_string());
+        args.push(l.to_string());
     }
+
     if let Some(e) = entity_filter {
-        cmd.arg(&e);
+        args.push(e);
     }
 
-    let output = cmd.output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+    let secrets = HashMap::new();
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    let result = sidecar_execute_with_retry("get-clearance-audit-log", args, secrets, Some(&app_handle), None).await?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    serde_json::from_str(&stdout)
+    serde_json::from_value(result)
         .map_err(|e| format!("Failed to parse response: {}", e))
+
 }
 
 // ==================== Clearance Profile v2 Commands ====================
 
 #[tauri::command]
-async fn get_clearance_profiles(
+async fn get_clearance_profiles(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
 ) -> Result<ClearanceProfilesResponse, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("get-clearance-profiles")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .output()
-        .map_err(|e| format!("Failed to execute: {}", e))?;
+    let args = vec![user_id, qube_id];
 
-    if !output.status.success() {
-        return Err(sanitize_backend_error(&String::from_utf8_lossy(&output.stderr), "Operation"));
-    }
+    let secrets = HashMap::new();
 
-    serde_json::from_str(&String::from_utf8_lossy(&output.stdout))
+    let result = sidecar_execute_with_retry("get-clearance-profiles", args, secrets, Some(&app_handle), None).await?;
+
+    serde_json::from_value(result)
         .map_err(|e| format!("Parse error: {}", e))
+
 }
 
 #[tauri::command]
-async fn get_available_tags(
+async fn get_available_tags(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
 ) -> Result<TagsResponse, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("get-available-tags")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .output()
-        .map_err(|e| format!("Failed to execute: {}", e))?;
+    let args = vec![user_id, qube_id];
 
-    if !output.status.success() {
-        return Err(sanitize_backend_error(&String::from_utf8_lossy(&output.stderr), "Operation"));
-    }
+    let secrets = HashMap::new();
 
-    serde_json::from_str(&String::from_utf8_lossy(&output.stdout))
+    let result = sidecar_execute_with_retry("get-available-tags", args, secrets, Some(&app_handle), None).await?;
+
+    serde_json::from_value(result)
         .map_err(|e| format!("Parse error: {}", e))
+
 }
 
 #[tauri::command]
-async fn get_trait_definitions(
+async fn get_trait_definitions(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
 ) -> Result<TraitsResponse, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("get-trait-definitions")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .output()
-        .map_err(|e| format!("Failed to execute: {}", e))?;
+    let args = vec![user_id, qube_id];
 
-    if !output.status.success() {
-        return Err(sanitize_backend_error(&String::from_utf8_lossy(&output.stderr), "Operation"));
-    }
+    let secrets = HashMap::new();
 
-    serde_json::from_str(&String::from_utf8_lossy(&output.stdout))
+    let result = sidecar_execute_with_retry("get-trait-definitions", args, secrets, Some(&app_handle), None).await?;
+
+    serde_json::from_value(result)
         .map_err(|e| format!("Parse error: {}", e))
+
 }
 
 #[tauri::command]
-async fn add_relationship_tag(
+async fn add_relationship_tag(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     entity_id: String,
     tag: String,
     password: String,
 ) -> Result<TagUpdateResponse, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("add-relationship-tag")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .arg(&entity_id)
-        .arg(&tag)
-        .arg(&password)
-        .output()
-        .map_err(|e| format!("Failed to execute: {}", e))?;
+    let args = vec![user_id, qube_id, entity_id, tag, password];
 
-    if !output.status.success() {
-        return Err(sanitize_backend_error(&String::from_utf8_lossy(&output.stderr), "Operation"));
-    }
+    let secrets = HashMap::new();
 
-    serde_json::from_str(&String::from_utf8_lossy(&output.stdout))
+    let result = sidecar_execute_with_retry("add-relationship-tag", args, secrets, Some(&app_handle), None).await?;
+
+    serde_json::from_value(result)
         .map_err(|e| format!("Parse error: {}", e))
+
 }
 
 #[tauri::command]
-async fn remove_relationship_tag(
+async fn remove_relationship_tag(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     entity_id: String,
     tag: String,
     password: String,
 ) -> Result<TagUpdateResponse, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("remove-relationship-tag")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .arg(&entity_id)
-        .arg(&tag)
-        .arg(&password)
-        .output()
-        .map_err(|e| format!("Failed to execute: {}", e))?;
+    let args = vec![user_id, qube_id, entity_id, tag, password];
 
-    if !output.status.success() {
-        return Err(sanitize_backend_error(&String::from_utf8_lossy(&output.stderr), "Operation"));
-    }
+    let secrets = HashMap::new();
 
-    serde_json::from_str(&String::from_utf8_lossy(&output.stdout))
+    let result = sidecar_execute_with_retry("remove-relationship-tag", args, secrets, Some(&app_handle), None).await?;
+
+    serde_json::from_value(result)
         .map_err(|e| format!("Parse error: {}", e))
+
 }
 
 #[tauri::command]
-async fn set_relationship_clearance(
+async fn set_relationship_clearance(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     entity_id: String,
@@ -4442,6 +4141,7 @@ async fn set_relationship_clearance(
     field_denials: Option<Vec<String>>,
     expires_in_days: Option<i32>,
 ) -> Result<SetClearanceResponse, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
@@ -4449,222 +4149,166 @@ async fn set_relationship_clearance(
     let denials_json = field_denials.map(|v| serde_json::to_string(&v).unwrap_or_default()).unwrap_or_default();
     let expires_str = expires_in_days.map(|d| d.to_string()).unwrap_or_default();
 
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("set-relationship-clearance")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .arg(&entity_id)
-        .arg(&profile)
-        .arg(&password)
-        .arg(&grants_json)
-        .arg(&denials_json)
-        .arg(&expires_str)
-        .output()
-        .map_err(|e| format!("Failed to execute: {}", e))?;
+    let args = vec![user_id, qube_id, entity_id, profile, password, grants_json, denials_json, expires_str];
 
-    if !output.status.success() {
-        return Err(sanitize_backend_error(&String::from_utf8_lossy(&output.stderr), "Operation"));
-    }
+    let secrets = HashMap::new();
 
-    serde_json::from_str(&String::from_utf8_lossy(&output.stdout))
+    let result = sidecar_execute_with_retry("set-relationship-clearance", args, secrets, Some(&app_handle), None).await?;
+
+    serde_json::from_value(result)
         .map_err(|e| format!("Parse error: {}", e))
+
 }
 
 #[tauri::command]
-async fn suggest_clearance(
+async fn suggest_clearance(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     entity_id: String,
 ) -> Result<ClearanceSuggestionResponse, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("suggest-clearance")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .arg(&entity_id)
-        .output()
-        .map_err(|e| format!("Failed to execute: {}", e))?;
+    let args = vec![user_id, qube_id, entity_id];
 
-    if !output.status.success() {
-        return Err(sanitize_backend_error(&String::from_utf8_lossy(&output.stderr), "Operation"));
-    }
+    let secrets = HashMap::new();
 
-    serde_json::from_str(&String::from_utf8_lossy(&output.stdout))
+    let result = sidecar_execute_with_retry("suggest-clearance", args, secrets, Some(&app_handle), None).await?;
+
+    serde_json::from_value(result)
         .map_err(|e| format!("Parse error: {}", e))
+
 }
 
 // ==================== End Clearance Profile v2 Commands ====================
 
 #[tauri::command]
-async fn get_google_tts_path(user_id: String) -> Result<GoogleTTSPathResponse, String> {
+async fn get_google_tts_path(app_handle: AppHandle, user_id: String) -> Result<GoogleTTSPathResponse, String> {
+
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("get-google-tts-path")
-        .arg(&user_id)
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+    let args = vec![user_id];
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    let secrets = HashMap::new();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: GoogleTTSPathResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let result = sidecar_execute_with_retry("get-google-tts-path", args, secrets, Some(&app_handle), None).await?;
+
+    let response: GoogleTTSPathResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse get-google-tts-path response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn set_google_tts_path(user_id: String, path: String) -> Result<SetPathResponse, String> {
+async fn set_google_tts_path(app_handle: AppHandle, user_id: String, path: String) -> Result<SetPathResponse, String> {
+
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("set-google-tts-path")
-        .arg(&user_id)
-        .arg(&path)
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+    let args = vec![user_id, path];
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    let secrets = HashMap::new();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: SetPathResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let result = sidecar_execute_with_retry("set-google-tts-path", args, secrets, Some(&app_handle), None).await?;
+
+    let response: SetPathResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse set-google-tts-path response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn get_qube_skills(user_id: String, qube_id: String) -> Result<SkillsResponse, String> {
+async fn get_qube_skills(app_handle: AppHandle, user_id: String, qube_id: String) -> Result<SkillsResponse, String> {
+
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("get-qube-skills")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+    let args = vec![user_id, qube_id];
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    let secrets = HashMap::new();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: SkillsResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let result = sidecar_execute_with_retry("get-qube-skills", args, secrets, Some(&app_handle), None).await?;
+
+    let response: SkillsResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse get-qube-skills response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn save_qube_skills(user_id: String, qube_id: String, skills_json: String) -> Result<SkillsResponse, String> {
+async fn save_qube_skills(app_handle: AppHandle, user_id: String, qube_id: String, skills_json: String) -> Result<SkillsResponse, String> {
+
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("save-qube-skills")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .arg(&skills_json)
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+    let args = vec![user_id, qube_id, skills_json];
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    let secrets = HashMap::new();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: SkillsResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let result = sidecar_execute_with_retry("save-qube-skills", args, secrets, Some(&app_handle), None).await?;
+
+    let response: SkillsResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse save-qube-skills response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn add_skill_xp(
+async fn add_skill_xp(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     skill_id: String,
     xp_amount: i32,
     evidence_block_id: Option<String>
 ) -> Result<serde_json::Value, String> {
+
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd
-        .arg("add-skill-xp")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .arg(&skill_id)
-        .arg(xp_amount.to_string());
+    let mut args = vec![user_id, qube_id, skill_id, xp_amount.to_string()];
 
     if let Some(block_id) = evidence_block_id {
-        cmd.arg(block_id);
+        args.push(block_id);
     }
 
-    let output = cmd.output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+    let secrets = HashMap::new();
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    let result = sidecar_execute_with_retry("add-skill-xp", args, secrets, Some(&app_handle), None).await?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse add-skill-xp response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn unlock_skill(user_id: String, qube_id: String, skill_id: String) -> Result<serde_json::Value, String> {
+async fn unlock_skill(app_handle: AppHandle, user_id: String, qube_id: String, skill_id: String) -> Result<serde_json::Value, String> {
+
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("unlock-skill")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .arg(&skill_id)
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+    let args = vec![user_id, qube_id, skill_id];
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    let secrets = HashMap::new();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let result = sidecar_execute_with_retry("unlock-skill", args, secrets, Some(&app_handle), None).await?;
+
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse unlock-skill response: {}", e))?;
 
     Ok(response)
+
 }
 
 // =====================================================================
@@ -4672,34 +4316,27 @@ async fn unlock_skill(user_id: String, qube_id: String, skill_id: String) -> Res
 // =====================================================================
 
 #[tauri::command]
-async fn get_owner_info(user_id: String, qube_id: String, password: String) -> Result<OwnerInfoResponse, String> {
+async fn get_owner_info(app_handle: AppHandle, user_id: String, qube_id: String, password: String) -> Result<OwnerInfoResponse, String> {
+
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("get-owner-info")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .arg(&password)
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+    let args = vec![user_id, qube_id, password];
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    let secrets = HashMap::new();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: OwnerInfoResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let result = sidecar_execute_with_retry("get-owner-info", args, secrets, Some(&app_handle), None).await?;
+
+    let response: OwnerInfoResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse get-owner-info response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn set_owner_info_field(
+async fn set_owner_info_field(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     password: String,
@@ -4711,92 +4348,74 @@ async fn set_owner_info_field(
     confidence: Option<i32>,
     block_id: Option<String>
 ) -> Result<GenericSuccessResponse, String> {
+
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd
-        .arg("set-owner-info-field")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .arg(&password)
-        .arg(&category)
-        .arg(&key)
-        .arg(&value);
+    let mut args = vec![user_id, qube_id, password, category, key, value];
 
-    // Add optional parameters
     if let Some(sens) = sensitivity {
-        cmd.arg(sens);
+        args.push(sens);
     } else {
-        cmd.arg("");
+        args.push("".to_string());
     }
+
     if let Some(src) = source {
-        cmd.arg(src);
+        args.push(src);
     } else {
-        cmd.arg("explicit");
+        args.push("explicit".to_string());
     }
+
     if let Some(conf) = confidence {
-        cmd.arg(conf.to_string());
+        args.push(conf.to_string());
     } else {
-        cmd.arg("100");
+        args.push("100".to_string());
     }
+
     if let Some(bid) = block_id {
-        cmd.arg(bid);
+        args.push(bid);
     }
 
-    let output = cmd.output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+    let secrets = HashMap::new();
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    let result = sidecar_execute_with_retry("set-owner-info-field", args, secrets, Some(&app_handle), None).await?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: GenericSuccessResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: GenericSuccessResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse set-owner-info-field response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn delete_owner_info_field(
+async fn delete_owner_info_field(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     password: String,
     category: String,
     key: String
 ) -> Result<GenericSuccessResponse, String> {
+
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("delete-owner-info-field")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .arg(&password)
-        .arg(&category)
-        .arg(&key)
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+    let args = vec![user_id, qube_id, password, category, key];
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    let secrets = HashMap::new();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: GenericSuccessResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let result = sidecar_execute_with_retry("delete-owner-info-field", args, secrets, Some(&app_handle), None).await?;
+
+    let response: GenericSuccessResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse delete-owner-info-field response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn update_owner_info_sensitivity(
+async fn update_owner_info_sensitivity(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     password: String,
@@ -4804,32 +4423,22 @@ async fn update_owner_info_sensitivity(
     key: String,
     sensitivity: String
 ) -> Result<GenericSuccessResponse, String> {
+
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("update-owner-info-sensitivity")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .arg(&password)
-        .arg(&category)
-        .arg(&key)
-        .arg(&sensitivity)
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+    let args = vec![user_id, qube_id, password, category, key, sensitivity];
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    let secrets = HashMap::new();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: GenericSuccessResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let result = sidecar_execute_with_retry("update-owner-info-sensitivity", args, secrets, Some(&app_handle), None).await?;
+
+    let response: GenericSuccessResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse update-owner-info-sensitivity response: {}", e))?;
 
     Ok(response)
+
 }
 
 // =============================================================================
@@ -4837,297 +4446,255 @@ async fn update_owner_info_sensitivity(
 // =============================================================================
 
 #[tauri::command]
-async fn get_model_preferences(
+async fn get_model_preferences(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     password: String,
 ) -> Result<ModelPreferencesResponse, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("get-model-preferences")
-        .arg(&user_id)
-        .arg(&qube_id);
+    let args = vec![user_id, qube_id];
 
-    // Pass password via stdin for decryption
-    let mut secrets = std::collections::HashMap::new();
+    let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("get-model-preferences", args, secrets, Some(&app_handle), None).await?;
 
-    let response: ModelPreferencesResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: ModelPreferencesResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse get-model-preferences response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn set_model_lock(
+async fn set_model_lock(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     locked: bool,
     model_name: Option<String>,
     password: String,
 ) -> Result<ModelLockResponse, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("set-model-lock")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .arg(if locked { "true" } else { "false" });
+    let mut args = vec![user_id, qube_id, (if locked { "true" } else { "false" }).to_string()];
 
     if let Some(model) = &model_name {
-        cmd.arg(model);
+        args.push(model.clone());
     } else {
-        cmd.arg(""); // Empty placeholder for model_name
+        args.push("".to_string());
     }
 
-    // Pass password via stdin for security
-    let mut secrets = std::collections::HashMap::new();
+    let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("set-model-lock", args, secrets, Some(&app_handle), None).await?;
 
-    let response: ModelLockResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: ModelLockResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse set-model-lock response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn set_revolver_mode(
+async fn set_revolver_mode(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     enabled: bool,
     password: String,
 ) -> Result<RevolverModeResponse, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("set-revolver-mode")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .arg(if enabled { "true" } else { "false" });
+    let args = vec![user_id, qube_id, (if enabled { "true" } else { "false" }).to_string()];
 
-    // Pass password via stdin for security
-    let mut secrets = std::collections::HashMap::new();
+    let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("set-revolver-mode", args, secrets, Some(&app_handle), None).await?;
 
-    let response: RevolverModeResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: RevolverModeResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse set-revolver-mode response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn set_revolver_mode_pool(
+async fn set_revolver_mode_pool(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     pool: Vec<String>,
     password: String,
 ) -> Result<RevolverModePoolResponse, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
     let pool_json = serde_json::to_string(&pool)
         .map_err(|e| format!("Failed to serialize pool: {}", e))?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("set-revolver-mode-pool")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .arg(&pool_json);
+    let args = vec![user_id, qube_id, pool_json];
 
-    // Pass password via stdin for security
-    let mut secrets = std::collections::HashMap::new();
+    let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("set-revolver-mode-pool", args, secrets, Some(&app_handle), None).await?;
 
-    let response: RevolverModePoolResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: RevolverModePoolResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse set-revolver-mode-pool response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn get_revolver_mode_pool(
+async fn get_revolver_mode_pool(app_handle: AppHandle, 
     user_id: String,
     qube_id: String
 ) -> Result<RevolverModePoolResponse, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("get-revolver-mode-pool")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+    let args = vec![user_id, qube_id];
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    let secrets = HashMap::new();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: RevolverModePoolResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let result = sidecar_execute_with_retry("get-revolver-mode-pool", args, secrets, Some(&app_handle), None).await?;
+
+    let response: RevolverModePoolResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse get-revolver-mode-pool response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn set_autonomous_mode_pool(
+async fn set_autonomous_mode_pool(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     pool: Vec<String>,
     password: String,
 ) -> Result<AutonomousModePoolResponse, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
     let pool_json = serde_json::to_string(&pool)
         .map_err(|e| format!("Failed to serialize pool: {}", e))?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("set-autonomous-mode-pool")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .arg(&pool_json);
+    let args = vec![user_id, qube_id, pool_json];
 
-    // Pass password via stdin for security
-    let mut secrets = std::collections::HashMap::new();
+    let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("set-autonomous-mode-pool", args, secrets, Some(&app_handle), None).await?;
 
-    let response: AutonomousModePoolResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: AutonomousModePoolResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse set-autonomous-mode-pool response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn get_autonomous_mode_pool(
+async fn get_autonomous_mode_pool(app_handle: AppHandle, 
     user_id: String,
     qube_id: String
 ) -> Result<AutonomousModePoolResponse, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("get-autonomous-mode-pool")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+    let args = vec![user_id, qube_id];
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    let secrets = HashMap::new();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: AutonomousModePoolResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let result = sidecar_execute_with_retry("get-autonomous-mode-pool", args, secrets, Some(&app_handle), None).await?;
+
+    let response: AutonomousModePoolResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse get-autonomous-mode-pool response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn set_autonomous_mode(
+async fn set_autonomous_mode(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     enabled: bool,
     password: String,
 ) -> Result<AutonomousModeResponse, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("set-autonomous-mode")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .arg(if enabled { "true" } else { "false" });
+    let args = vec![user_id, qube_id, (if enabled { "true" } else { "false" }).to_string()];
 
-    // Pass password via stdin for security
-    let mut secrets = std::collections::HashMap::new();
+    let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("set-autonomous-mode", args, secrets, Some(&app_handle), None).await?;
 
-    let response: AutonomousModeResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: AutonomousModeResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse set-autonomous-mode response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn clear_model_preferences(
+async fn clear_model_preferences(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     task_type: Option<String>
 ) -> Result<GenericSuccessResponse, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("clear-model-preferences")
-        .arg(&user_id)
-        .arg(&qube_id);
+    let mut args = vec![user_id, qube_id];
 
     if let Some(tt) = &task_type {
-        cmd.arg(tt);
+        args.push(tt.clone());
     }
 
-    let output = cmd
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+    let secrets = HashMap::new();
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    let result = sidecar_execute_with_retry("clear-model-preferences", args, secrets, Some(&app_handle), None).await?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: GenericSuccessResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: GenericSuccessResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse clear-model-preferences response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn reset_model_to_genesis(user_id: String, qube_id: String) -> Result<ResetModelResponse, String> {
+async fn reset_model_to_genesis(app_handle: AppHandle, user_id: String, qube_id: String) -> Result<ResetModelResponse, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("reset-model-to-genesis")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+    let args = vec![user_id, qube_id];
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    let secrets = HashMap::new();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: ResetModelResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let result = sidecar_execute_with_retry("reset-model-to-genesis", args, secrets, Some(&app_handle), None).await?;
+
+    let response: ResetModelResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse reset-model-to-genesis response: {}", e))?;
 
     Ok(response)
+
 }
 
 // =============================================================================
@@ -5135,94 +4702,78 @@ async fn reset_model_to_genesis(user_id: String, qube_id: String) -> Result<Rese
 // =============================================================================
 
 #[tauri::command]
-async fn get_visualizer_settings(user_id: String, qube_id: String, password: Option<String>) -> Result<VisualizerSettingsResponse, String> {
+async fn get_visualizer_settings(app_handle: AppHandle, user_id: String, qube_id: String, password: Option<String>) -> Result<VisualizerSettingsResponse, String> {
+
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("get-visualizer-settings")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .arg(password.unwrap_or_default());
+    let args = vec![user_id, qube_id, password.unwrap_or_default()];
 
-    let output = cmd.output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+    let secrets = HashMap::new();
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    let result = sidecar_execute_with_retry("get-visualizer-settings", args, secrets, Some(&app_handle), None).await?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: VisualizerSettingsResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: VisualizerSettingsResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse get-visualizer-settings response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn save_visualizer_settings(
+async fn save_visualizer_settings(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     settings: String,
     password: Option<String>
 ) -> Result<GenericSuccessResponse, String> {
+
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("save-visualizer-settings")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .arg(&settings)
-        .arg(password.unwrap_or_default());
+    let args = vec![user_id, qube_id, settings, password.unwrap_or_default()];
 
-    let output = cmd.output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+    let secrets = HashMap::new();
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    let result = sidecar_execute_with_retry("save-visualizer-settings", args, secrets, Some(&app_handle), None).await?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: GenericSuccessResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: GenericSuccessResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse save-visualizer-settings response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn get_trust_personality(user_id: String, qube_id: String, password: String) -> Result<TrustPersonalityResponse, String> {
+async fn get_trust_personality(app_handle: AppHandle, user_id: String, qube_id: String, password: String) -> Result<TrustPersonalityResponse, String> {
+
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("get-trust-personality")
-        .arg(&user_id)
-        .arg(&qube_id);
+    let args = vec![user_id, qube_id];
 
-    // Pass password via stdin (secure)
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("get-trust-personality", args, secrets, Some(&app_handle), None).await?;
 
-    let response: TrustPersonalityResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: TrustPersonalityResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse get-trust-personality response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn update_trust_personality(
+async fn update_trust_personality(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     trust_profile: String
 ) -> Result<GenericSuccessResponse, String> {
+
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
@@ -5232,25 +4783,17 @@ async fn update_trust_personality(
         return Err(format!("Invalid trust profile: {}. Must be one of: cautious, balanced, social, analytical", trust_profile));
     }
 
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("update-trust-personality")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .arg(&trust_profile)
-        .output()
-        .map_err(|e| format!("Failed to execute Python bridge: {}", e))?;
+    let args = vec![user_id, qube_id, trust_profile];
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    let secrets = HashMap::new();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: GenericSuccessResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let result = sidecar_execute_with_retry("update-trust-personality", args, secrets, Some(&app_handle), None).await?;
+
+    let response: GenericSuccessResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse update-trust-personality response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
@@ -5433,98 +4976,84 @@ struct TokenRefreshResponse {
 /// Authenticate a Qube via NFT challenge-response.
 /// Returns a JWT token for authenticated API requests.
 #[tauri::command]
-async fn authenticate_nft(
+async fn authenticate_nft(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     password: String,
 ) -> Result<NftAuthResponse, String> {
+
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("authenticate-nft")
-        .arg(&user_id)
-        .arg(&qube_id);
+    let args = vec![user_id, qube_id];
 
-    // Pass password via stdin (security)
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("authenticate-nft", args, secrets, Some(&app_handle), None).await?;
 
-    serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse NFT auth response: {}. Output: {}", e, stdout))
+    serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse authenticate-nft response: {}", e))
+
 }
 
 /// Refresh an existing JWT token.
 #[tauri::command]
-async fn refresh_auth_token(token: String) -> Result<TokenRefreshResponse, String> {
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("refresh-auth-token");
+async fn refresh_auth_token(app_handle: AppHandle, token: String) -> Result<TokenRefreshResponse, String> {
 
-    // Pass token via stdin (security - tokens are secrets)
+    let args: Vec<String> = vec![];
+
     let mut secrets = HashMap::new();
     secrets.insert("token", token.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("refresh-auth-token", args, secrets, Some(&app_handle), None).await?;
 
-    serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse token refresh response: {}. Output: {}", e, stdout))
+    serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse refresh-auth-token response: {}", e))
+
 }
 
 /// Check if a Qube can authenticate (is registered on server).
 #[tauri::command]
-async fn get_nft_auth_status(qube_id: String) -> Result<NftAuthStatusResponse, String> {
+async fn get_nft_auth_status(app_handle: AppHandle, qube_id: String) -> Result<NftAuthStatusResponse, String> {
+
     // Validate inputs
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("get-auth-status")
-        .arg(&qube_id)
-        .output()
-        .map_err(|e| format!("Failed to execute Python: {}", e))?;
+    let args = vec![qube_id];
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let secrets = HashMap::new();
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        return Err(format!("Auth status check failed: {}", stderr));
-    }
+    let result = sidecar_execute_with_retry("get-auth-status", args, secrets, Some(&app_handle), None).await?;
 
-    serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse auth status response: {}. Output: {}", e, stdout))
+    serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse get-auth-status response: {}", e))
+
 }
 
 // P2P Command Functions
 
 /// Get list of currently online Qubes
 #[tauri::command]
-async fn get_online_qubes(user_id: String) -> Result<OnlineQubesResponse, String> {
+async fn get_online_qubes(app_handle: AppHandle, user_id: String) -> Result<OnlineQubesResponse, String> {
+
     validate_identifier(&user_id, "user_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("get-online-qubes")
-        .arg(&user_id)
-        .output()
-        .map_err(|e| format!("Failed to execute Python: {}", e))?;
+    let args = vec![user_id];
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let secrets = HashMap::new();
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        return Err(format!("Get online qubes failed: {}", stderr));
-    }
+    let result = sidecar_execute_with_retry("get-online-qubes", args, secrets, Some(&app_handle), None).await?;
 
-    serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse response: {}. Output: {}", e, stdout))
+    serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse get-online-qubes response: {}", e))
+
 }
 
 /// Generate an AI introduction message from a Qube
 #[tauri::command]
-async fn generate_introduction(
+async fn generate_introduction(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     to_commitment: String,
@@ -5532,59 +5061,50 @@ async fn generate_introduction(
     to_description: String,
     password: String,
 ) -> Result<GenerateIntroductionResponse, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("generate-introduction")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .arg(&to_commitment)
-        .arg(&to_name)
-        .arg(&to_description);
+    let args = vec![user_id, qube_id, to_commitment, to_name, to_description];
 
-    // Pass password via stdin (security)
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("generate-introduction", args, secrets, Some(&app_handle), None).await?;
 
-    serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse response: {}. Output: {}", e, stdout))
+    serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse generate-introduction response: {}", e))
+
 }
 
 /// Evaluate an incoming introduction using the Qube's AI
 #[tauri::command]
-async fn evaluate_introduction(
+async fn evaluate_introduction(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     from_name: String,
     intro_message: String,
     password: String,
 ) -> Result<EvaluateIntroductionResponse, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("evaluate-introduction")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .arg(&from_name)
-        .arg(&intro_message);
+    let args = vec![user_id, qube_id, from_name, intro_message];
 
-    // Pass password via stdin (security)
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("evaluate-introduction", args, secrets, Some(&app_handle), None).await?;
 
-    serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse response: {}. Output: {}", e, stdout))
+    serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse evaluate-introduction response: {}", e))
+
 }
 
 /// Process an incoming P2P message through the local Qube's AI
 #[tauri::command]
-async fn process_p2p_message(
+async fn process_p2p_message(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     from_name: String,
@@ -5593,171 +5113,142 @@ async fn process_p2p_message(
     context: String,
     password: String,
 ) -> Result<ProcessP2PMessageResponse, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("process-p2p-message")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .arg("--from-name")
-        .arg(&from_name)
-        .arg("--from-commitment")
-        .arg(&from_commitment)
-        .arg("--message")
-        .arg(&message)
-        .arg("--context")
-        .arg(&context);
+    let args = vec![user_id, qube_id, "--from-name".to_string(), from_name, "--from-commitment".to_string(), from_commitment, "--message".to_string(), message, "--context".to_string(), context];
 
-    // Pass password via stdin (security)
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("process-p2p-message", args, secrets, Some(&app_handle), None).await?;
 
-    serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse response: {}. Output: {}", e, stdout))
+    serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse process-p2p-message response: {}", e))
+
 }
 
 /// Send an introduction request to another Qube
 #[tauri::command]
-async fn send_introduction(
+async fn send_introduction(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     to_commitment: String,
     message: String,
     password: String,
 ) -> Result<IntroductionResponse, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("send-introduction")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .arg(&to_commitment)
-        .arg(&message);
+    let args = vec![user_id, qube_id, to_commitment, message];
 
-    // Pass password via stdin (security)
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("send-introduction", args, secrets, Some(&app_handle), None).await?;
 
-    serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse response: {}. Output: {}", e, stdout))
+    serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse send-introduction response: {}", e))
+
 }
 
 /// Get pending introduction requests
 #[tauri::command]
-async fn get_pending_introductions(
+async fn get_pending_introductions(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     password: String,
 ) -> Result<PendingIntroductionsResponse, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("get-pending-introductions")
-        .arg(&user_id)
-        .arg(&qube_id);
+    let args = vec![user_id, qube_id];
 
-    // Pass password via stdin (security)
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("get-pending-introductions", args, secrets, Some(&app_handle), None).await?;
 
-    serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse response: {}. Output: {}", e, stdout))
+    serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse get-pending-introductions response: {}", e))
+
 }
 
 /// Accept a pending introduction request
 #[tauri::command]
-async fn accept_introduction(
+async fn accept_introduction(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     relay_id: String,
     password: String,
 ) -> Result<AcceptIntroductionResponse, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("accept-introduction")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .arg(&relay_id);
+    let args = vec![user_id, qube_id, relay_id];
 
-    // Pass password via stdin (security)
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("accept-introduction", args, secrets, Some(&app_handle), None).await?;
 
-    serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse response: {}. Output: {}", e, stdout))
+    serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse accept-introduction response: {}", e))
+
 }
 
 /// Reject a pending introduction request
 #[tauri::command]
-async fn reject_introduction(
+async fn reject_introduction(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     relay_id: String,
     password: String,
 ) -> Result<serde_json::Value, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("reject-introduction")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .arg(&relay_id);
+    let args = vec![user_id, qube_id, relay_id];
 
-    // Pass password via stdin (security)
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("reject-introduction", args, secrets, Some(&app_handle), None).await?;
 
-    serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse response: {}. Output: {}", e, stdout))
+    serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse reject-introduction response: {}", e))
+
 }
 
 /// Get accepted connections for a Qube
 #[tauri::command]
-async fn get_connections(
+async fn get_connections(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
 ) -> Result<ConnectionsResponse, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("get-connections")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .output()
-        .map_err(|e| format!("Failed to execute Python: {}", e))?;
+    let args = vec![user_id, qube_id];
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let secrets = HashMap::new();
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        return Err(format!("Get connections failed: {}", stderr));
-    }
+    let result = sidecar_execute_with_retry("get-connections", args, secrets, Some(&app_handle), None).await?;
 
-    serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse response: {}. Output: {}", e, stdout))
+    serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse get-connections response: {}", e))
+
 }
 
 /// Create a P2P conversation session
 #[tauri::command]
-async fn create_p2p_session(
+async fn create_p2p_session(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     local_qubes: String,
@@ -5765,58 +5256,48 @@ async fn create_p2p_session(
     topic: String,
     password: String,
 ) -> Result<P2PSessionResponse, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("create-p2p-session")
-        .arg(&user_id)
-        .arg(&qube_id)
-        .arg("--local-qubes")
-        .arg(&local_qubes)
-        .arg("--remote-commitments")
-        .arg(&remote_commitments)
-        .arg("--topic")
-        .arg(&topic);
+    let args = vec![user_id, qube_id, "--local-qubes".to_string(), local_qubes, "--remote-commitments".to_string(), remote_commitments, "--topic".to_string(), topic];
 
-    // Pass password via stdin (security)
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("create-p2p-session", args, secrets, Some(&app_handle), None).await?;
 
-    serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse response: {}. Output: {}", e, stdout))
+    serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse create-p2p-session response: {}", e))
+
 }
 
 /// Get P2P sessions for a Qube
 #[tauri::command]
-async fn get_p2p_sessions(
+async fn get_p2p_sessions(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     password: String,
 ) -> Result<P2PSessionsResponse, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("get-p2p-sessions")
-        .arg(&user_id)
-        .arg(&qube_id);
+    let args = vec![user_id, qube_id];
 
-    // Pass password via stdin (security)
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("get-p2p-sessions", args, secrets, Some(&app_handle), None).await?;
 
-    serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse response: {}. Output: {}", e, stdout))
+    serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse get-p2p-sessions response: {}", e))
+
 }
 
 /// Start a P2P conversation using the same logic as local multi-qube
 #[tauri::command]
-async fn start_p2p_conversation(
+async fn start_p2p_conversation(app_handle: AppHandle, 
     user_id: String,
     local_qubes: String,
     remote_connections: String,
@@ -5824,33 +5305,24 @@ async fn start_p2p_conversation(
     initial_prompt: String,
     password: String,
 ) -> Result<serde_json::Value, String> {
+
     validate_identifier(&user_id, "user_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("start-p2p-conversation")
-        .arg(&user_id)
-        .arg("--local-qubes")
-        .arg(&local_qubes)
-        .arg("--remote-connections")
-        .arg(&remote_connections)
-        .arg("--session-id")
-        .arg(&session_id)
-        .arg("--initial-prompt")
-        .arg(&initial_prompt);
+    let args = vec![user_id, "--local-qubes".to_string(), local_qubes, "--remote-connections".to_string(), remote_connections, "--session-id".to_string(), session_id, "--initial-prompt".to_string(), initial_prompt];
 
-    // Pass password via stdin (security)
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("start-p2p-conversation", args, secrets, Some(&app_handle), None).await?;
 
-    serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse response: {}. Output: {}", e, stdout))
+    serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse start-p2p-conversation response: {}", e))
+
 }
 
 /// Continue P2P conversation - get next local Qube response
 #[tauri::command]
-async fn continue_p2p_conversation(
+async fn continue_p2p_conversation(app_handle: AppHandle, 
     user_id: String,
     conversation_id: String,
     session_id: String,
@@ -5858,33 +5330,24 @@ async fn continue_p2p_conversation(
     remote_connections: String,
     password: String,
 ) -> Result<serde_json::Value, String> {
+
     validate_identifier(&user_id, "user_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("continue-p2p-conversation")
-        .arg(&user_id)
-        .arg("--conversation-id")
-        .arg(&conversation_id)
-        .arg("--session-id")
-        .arg(&session_id)
-        .arg("--local-qubes")
-        .arg(&local_qubes)
-        .arg("--remote-connections")
-        .arg(&remote_connections);
+    let args = vec![user_id, "--conversation-id".to_string(), conversation_id, "--session-id".to_string(), session_id, "--local-qubes".to_string(), local_qubes, "--remote-connections".to_string(), remote_connections];
 
-    // Pass password via stdin (security)
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("continue-p2p-conversation", args, secrets, Some(&app_handle), None).await?;
 
-    serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse response: {}. Output: {}", e, stdout))
+    serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse continue-p2p-conversation response: {}", e))
+
 }
 
 /// Inject a block received from hub into local conversation
 #[tauri::command]
-async fn inject_p2p_block(
+async fn inject_p2p_block(app_handle: AppHandle, 
     user_id: String,
     conversation_id: String,
     session_id: String,
@@ -5894,37 +5357,24 @@ async fn inject_p2p_block(
     remote_connections: String,
     password: String,
 ) -> Result<serde_json::Value, String> {
+
     validate_identifier(&user_id, "user_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("inject-p2p-block")
-        .arg(&user_id)
-        .arg("--conversation-id")
-        .arg(&conversation_id)
-        .arg("--session-id")
-        .arg(&session_id)
-        .arg("--block-data")
-        .arg(&block_data)
-        .arg("--from-commitment")
-        .arg(&from_commitment)
-        .arg("--local-qubes")
-        .arg(&local_qubes)
-        .arg("--remote-connections")
-        .arg(&remote_connections);
+    let args = vec![user_id, "--conversation-id".to_string(), conversation_id, "--session-id".to_string(), session_id, "--block-data".to_string(), block_data, "--from-commitment".to_string(), from_commitment, "--local-qubes".to_string(), local_qubes, "--remote-connections".to_string(), remote_connections];
 
-    // Pass password via stdin (security)
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("inject-p2p-block", args, secrets, Some(&app_handle), None).await?;
 
-    serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse response: {}. Output: {}", e, stdout))
+    serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse inject-p2p-block response: {}", e))
+
 }
 
 /// Send user message in P2P conversation
 #[tauri::command]
-async fn send_p2p_user_message(
+async fn send_p2p_user_message(app_handle: AppHandle, 
     user_id: String,
     conversation_id: String,
     session_id: String,
@@ -5933,30 +5383,19 @@ async fn send_p2p_user_message(
     remote_connections: String,
     password: String,
 ) -> Result<serde_json::Value, String> {
+
     validate_identifier(&user_id, "user_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("send-p2p-user-message")
-        .arg(&user_id)
-        .arg("--conversation-id")
-        .arg(&conversation_id)
-        .arg("--session-id")
-        .arg(&session_id)
-        .arg("--message")
-        .arg(&message)
-        .arg("--local-qubes")
-        .arg(&local_qubes)
-        .arg("--remote-connections")
-        .arg(&remote_connections);
+    let args = vec![user_id, "--conversation-id".to_string(), conversation_id, "--session-id".to_string(), session_id, "--message".to_string(), message, "--local-qubes".to_string(), local_qubes, "--remote-connections".to_string(), remote_connections];
 
-    // Pass password via stdin (security)
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("send-p2p-user-message", args, secrets, Some(&app_handle), None).await?;
 
-    serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse response: {}. Output: {}", e, stdout))
+    serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse send-p2p-user-message response: {}", e))
+
 }
 
 // ============================================================================
@@ -6014,6 +5453,23 @@ struct FirstRunResponse {
 /// Check if this is the first run (no users exist)
 #[tauri::command]
 async fn check_first_run() -> Result<FirstRunResponse, String> {
+    // Try sidecar first (fast path, ~0ms)
+    if SIDECAR_READY.load(Ordering::SeqCst) {
+        eprintln!("[check_first_run] Using sidecar");
+        let empty_args: Vec<String> = vec![];
+        match sidecar_execute("check-first-run", &empty_args, &HashMap::new(), None, None).await {
+            Ok(value) => {
+                return serde_json::from_value(value)
+                    .map_err(|e| format!("Sidecar parse error: {}", e));
+            }
+            Err(e) => {
+                eprintln!("[check_first_run] Sidecar failed: {} — falling back to subprocess", e);
+            }
+        }
+    }
+
+    // Subprocess fallback
+    eprintln!("[check_first_run] Using subprocess fallback");
     let bridge_path = get_python_bridge_path();
     let project_root = get_python_project_path();
 
@@ -6030,7 +5486,6 @@ async fn check_first_run() -> Result<FirstRunResponse, String> {
         Ok(output) => output,
         Err(e) => {
             eprintln!("[check_first_run] Failed to execute backend: {}", e);
-            // If backend can't run, assume first run so user sees setup wizard
             return Ok(FirstRunResponse {
                 is_first_run: true,
                 users: vec![],
@@ -6039,14 +5494,19 @@ async fn check_first_run() -> Result<FirstRunResponse, String> {
     };
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
     if !output.status.success() {
-        // If backend fails, assume first run
+        eprintln!("[check_first_run] Backend failed with status: {:?}", output.status);
+        eprintln!("[check_first_run] stdout: {}", stdout.chars().take(500).collect::<String>());
+        eprintln!("[check_first_run] stderr: {}", stderr.chars().take(500).collect::<String>());
         return Ok(FirstRunResponse {
             is_first_run: true,
             users: vec![],
         });
     }
+
+    eprintln!("[check_first_run] Success. stdout: {}", stdout.chars().take(200).collect::<String>());
 
     serde_json::from_str(&stdout.trim())
         .map_err(|e| format!("Failed to parse response: {}. Output: {}", e, stdout))
@@ -6054,23 +5514,18 @@ async fn check_first_run() -> Result<FirstRunResponse, String> {
 
 /// Create a new user account
 #[tauri::command]
-async fn create_user_account(user_id: String, password: String) -> Result<CreateAccountResponse, String> {
+async fn create_user_account(app_handle: AppHandle, user_id: String, password: String) -> Result<CreateAccountResponse, String> {
     validate_identifier(&user_id, "user_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("create-user-account")
-        .arg(&user_id);
+    let args = vec![user_id];
 
-    // Pass password via stdin (security)
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let result = execute_with_secrets(cmd, secrets);
-
-    match result {
-        Ok((stdout, _stderr)) => {
-            serde_json::from_str(&stdout.trim())
-                .map_err(|e| format!("Failed to parse response: {}. Output: {}", e, stdout))
+    match sidecar_execute_with_retry("create-user-account", args, secrets, Some(&app_handle), None).await {
+        Ok(result) => {
+            serde_json::from_value(result)
+                .map_err(|e| format!("Failed to parse create-user-account response: {}", e))
         }
         Err(e) => {
             Ok(CreateAccountResponse {
@@ -6302,6 +5757,7 @@ async fn start_ollama() -> Result<bool, String> {
 /// Create a Qube locally and prepare for minting
 #[tauri::command]
 async fn create_qube_for_minting(
+    app_handle: AppHandle,
     user_id: String,
     password: String,
     qube_name: String,
@@ -6314,32 +5770,23 @@ async fn create_qube_for_minting(
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_name, "qube_name")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("create-qube-for-minting")
-        .arg(&user_id)
-        .arg("--name")
-        .arg(&qube_name)
-        .arg("--genesis-prompt")
-        .arg(&genesis_prompt)
-        .arg("--favorite-color")
-        .arg(&favorite_color)
-        .arg("--ai-provider")
-        .arg(&ai_provider)
-        .arg("--ai-model")
-        .arg(&ai_model)
-        .arg("--evaluation-model")
-        .arg(&evaluation_model);
+    let args = vec![
+        user_id,
+        "--name".to_string(), qube_name,
+        "--genesis-prompt".to_string(), genesis_prompt,
+        "--favorite-color".to_string(), favorite_color,
+        "--ai-provider".to_string(), ai_provider,
+        "--ai-model".to_string(), ai_model,
+        "--evaluation-model".to_string(), evaluation_model,
+    ];
 
-    // Pass password via stdin (security)
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let result = execute_with_secrets(cmd, secrets);
-
-    match result {
-        Ok((stdout, _stderr)) => {
-            serde_json::from_str(&stdout)
-                .map_err(|e| format!("Failed to parse response: {}. Output: {}", e, stdout))
+    match sidecar_execute_with_retry("create-qube-for-minting", args, secrets, Some(&app_handle), None).await {
+        Ok(result) => {
+            serde_json::from_value(result)
+                .map_err(|e| format!("Failed to parse create-qube-for-minting response: {}", e))
         }
         Err(e) => {
             Ok(CreateQubeForMintingResponse {
@@ -6480,35 +5927,32 @@ async fn open_external_url(url: String) -> Result<bool, String> {
 
 /// Sync Qube to chain (backup to IPFS, encrypted to owner)
 #[tauri::command]
-async fn sync_to_chain(
+async fn sync_to_chain(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     password: String,
 ) -> Result<SyncToChainResponse, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("sync-to-chain")
-        .arg(&user_id)
-        .arg("--qube-id")
-        .arg(&qube_id);
+    let args = vec![user_id, "--qube-id".to_string(), qube_id];
 
-    // Pass password via stdin (security)
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("sync-to-chain", args, secrets, Some(&app_handle), None).await?;
 
-    let response: SyncToChainResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: SyncToChainResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse sync-to-chain response: {}", e))?;
 
     Ok(response)
+
 }
 
 /// Transfer Qube to new owner (DESTRUCTIVE - deletes local copy)
 #[tauri::command]
-async fn transfer_qube(
+async fn transfer_qube(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     recipient_address: String,
@@ -6516,59 +5960,49 @@ async fn transfer_qube(
     wallet_wif: String,
     password: String,
 ) -> Result<TransferQubeResponse, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("transfer-qube")
-        .arg(&user_id)
-        .arg("--qube-id")
-        .arg(&qube_id)
-        .arg("--recipient-address")
-        .arg(&recipient_address)
-        .arg("--recipient-public-key")
-        .arg(&recipient_public_key);
+    let args = vec![user_id, "--qube-id".to_string(), qube_id, "--recipient-address".to_string(), recipient_address, "--recipient-public-key".to_string(), recipient_public_key];
 
-    // Pass wallet_wif and password via stdin (security)
     let mut secrets = HashMap::new();
-    secrets.insert("wallet_wif", wallet_wif.as_str());
     secrets.insert("password", password.as_str());
+    secrets.insert("wallet_wif", wallet_wif.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("transfer-qube", args, secrets, Some(&app_handle), None).await?;
 
-    let response: TransferQubeResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: TransferQubeResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse transfer-qube response: {}", e))?;
 
     Ok(response)
+
 }
 
 /// Import Qube from wallet
 #[tauri::command]
-async fn import_from_wallet(
+async fn import_from_wallet(app_handle: AppHandle, 
     user_id: String,
     wallet_wif: String,
     category_id: String,
     password: String,
 ) -> Result<ImportFromWalletResponse, String> {
+
     validate_identifier(&user_id, "user_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("import-from-wallet")
-        .arg(&user_id)
-        .arg("--category-id")
-        .arg(&category_id);
+    let args = vec![user_id, "--category-id".to_string(), category_id];
 
-    // Pass wallet_wif and password via stdin (security)
     let mut secrets = HashMap::new();
-    secrets.insert("wallet_wif", wallet_wif.as_str());
     secrets.insert("password", password.as_str());
+    secrets.insert("wallet_wif", wallet_wif.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("import-from-wallet", args, secrets, Some(&app_handle), None).await?;
 
-    let response: ImportFromWalletResponse = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: ImportFromWalletResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse import-from-wallet response: {}", e))?;
 
     Ok(response)
+
 }
 
 /// Scan wallet for Qube NFTs
@@ -6646,24 +6080,19 @@ async fn resolve_public_key(
 }
 
 #[tauri::command]
-async fn get_debug_prompt(qube_id: String) -> Result<serde_json::Value, String> {
-    let mut cmd = prepare_backend_command()?;
-    let output = cmd
-        .arg("get-debug-prompt")
-        .arg(&qube_id)
-        .output()
-        .map_err(|e| format!("Failed to execute backend: {}", e))?;
+async fn get_debug_prompt(app_handle: AppHandle, qube_id: String) -> Result<serde_json::Value, String> {
 
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(sanitize_backend_error(&error, "Operation"));
-    }
+    let args = vec![qube_id];
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let secrets = HashMap::new();
+
+    let result = sidecar_execute_with_retry("get-debug-prompt", args, secrets, Some(&app_handle), None).await?;
+
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse get-debug-prompt response: {}", e))?;
 
     Ok(response)
+
 }
 
 // =============================================================================
@@ -6671,7 +6100,7 @@ async fn get_debug_prompt(qube_id: String) -> Result<serde_json::Value, String> 
 // =============================================================================
 
 #[tauri::command]
-async fn start_game(
+async fn start_game(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     game_type: String,
@@ -6680,248 +6109,217 @@ async fn start_game(
     qube_color: String,
     password: String,
 ) -> Result<serde_json::Value, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("start-game")
-        .arg(&user_id)
-        .arg("--qube-id")
-        .arg(&qube_id)
-        .arg("--game-type")
-        .arg(&game_type)
-        .arg("--opponent-type")
-        .arg(&opponent_type)
-        .arg("--qube-color")
-        .arg(&qube_color);
+    let mut args = vec![user_id, "--qube-id".to_string(), qube_id, "--game-type".to_string(), game_type, "--opponent-type".to_string(), opponent_type, "--qube-color".to_string(), qube_color];
 
     if let Some(ref opp_id) = opponent_id {
-        cmd.arg("--opponent-id").arg(opp_id);
+        args.push("--opponent-id".to_string());
+        args.push(opp_id.clone());
     }
 
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("start-game", args, secrets, Some(&app_handle), None).await?;
 
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse start-game response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn get_game_state(
+async fn get_game_state(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     password: String,
 ) -> Result<serde_json::Value, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("get-game-state")
-        .arg(&user_id)
-        .arg("--qube-id")
-        .arg(&qube_id);
+    let args = vec![user_id, "--qube-id".to_string(), qube_id];
 
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("get-game-state", args, secrets, Some(&app_handle), None).await?;
 
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse get-game-state response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn get_game_stats(
+async fn get_game_stats(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     password: String,
     game_type: Option<String>,
 ) -> Result<serde_json::Value, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("get-game-stats")
-        .arg(&user_id)
-        .arg("--qube-id")
-        .arg(&qube_id);
+    let mut args = vec![user_id, "--qube-id".to_string(), qube_id];
 
     if let Some(gt) = game_type {
-        cmd.arg("--game-type").arg(&gt);
+        args.push("--game-type".to_string());
+        args.push(gt);
     }
 
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("get-game-stats", args, secrets, Some(&app_handle), None).await?;
 
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse get-game-stats response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn make_move(
+async fn make_move(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     chess_move: String,
     player_type: String,
     password: String,
 ) -> Result<serde_json::Value, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("make-move")
-        .arg(&user_id)
-        .arg("--qube-id")
-        .arg(&qube_id)
-        .arg("--move")
-        .arg(&chess_move)
-        .arg("--player-type")
-        .arg(&player_type);
+    let args = vec![user_id, "--qube-id".to_string(), qube_id, "--move".to_string(), chess_move, "--player-type".to_string(), player_type];
 
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("make-move", args, secrets, Some(&app_handle), None).await?;
 
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse make-move response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn add_game_chat(
+async fn add_game_chat(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     message: String,
     sender_type: String,
     password: String,
 ) -> Result<serde_json::Value, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("add-game-chat")
-        .arg(&user_id)
-        .arg("--qube-id")
-        .arg(&qube_id)
-        .arg("--message")
-        .arg(&message)
-        .arg("--sender-type")
-        .arg(&sender_type);
+    let args = vec![user_id, "--qube-id".to_string(), qube_id, "--message".to_string(), message, "--sender-type".to_string(), sender_type];
 
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("add-game-chat", args, secrets, Some(&app_handle), None).await?;
 
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse add-game-chat response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn end_game(
+async fn end_game(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     result: String,
     termination: String,
     password: String,
 ) -> Result<serde_json::Value, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("end-game")
-        .arg(&user_id)
-        .arg("--qube-id")
-        .arg(&qube_id)
-        .arg("--result")
-        .arg(&result)
-        .arg("--termination")
-        .arg(&termination);
+    let args = vec![user_id, "--qube-id".to_string(), qube_id, "--result".to_string(), result, "--termination".to_string(), termination];
 
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("end-game", args, secrets, Some(&app_handle), None).await?;
 
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse end-game response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn abandon_game(
+async fn abandon_game(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     password: String,
 ) -> Result<serde_json::Value, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("abandon-game")
-        .arg(&user_id)
-        .arg("--qube-id")
-        .arg(&qube_id);
+    let args = vec![user_id, "--qube-id".to_string(), qube_id];
 
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("abandon-game", args, secrets, Some(&app_handle), None).await?;
 
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse abandon-game response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn request_qube_move(
+async fn request_qube_move(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     password: String,
 ) -> Result<serde_json::Value, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("request-qube-move")
-        .arg(&user_id)
-        .arg("--qube-id")
-        .arg(&qube_id);
+    let args = vec![user_id, "--qube-id".to_string(), qube_id];
 
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("request-qube-move", args, secrets, Some(&app_handle), None).await?;
 
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse request-qube-move response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn resign_game(
+async fn resign_game(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     resigning_player: String,
     password: String,
 ) -> Result<serde_json::Value, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
@@ -6929,32 +6327,28 @@ async fn resign_game(
         return Err("resigning_player must be 'white' or 'black'".to_string());
     }
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("resign-game")
-        .arg(&user_id)
-        .arg("--qube-id")
-        .arg(&qube_id)
-        .arg("--resigning-player")
-        .arg(&resigning_player);
+    let args = vec![user_id, "--qube-id".to_string(), qube_id, "--resigning-player".to_string(), resigning_player];
 
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("resign-game", args, secrets, Some(&app_handle), None).await?;
 
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse resign-game response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn offer_draw(
+async fn offer_draw(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     offering_player: String,
     password: String,
 ) -> Result<serde_json::Value, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
@@ -6962,33 +6356,29 @@ async fn offer_draw(
         return Err("offering_player must be 'white' or 'black'".to_string());
     }
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("offer-draw")
-        .arg(&user_id)
-        .arg("--qube-id")
-        .arg(&qube_id)
-        .arg("--offering-player")
-        .arg(&offering_player);
+    let args = vec![user_id, "--qube-id".to_string(), qube_id, "--offering-player".to_string(), offering_player];
 
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("offer-draw", args, secrets, Some(&app_handle), None).await?;
 
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse offer-draw response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn respond_to_draw(
+async fn respond_to_draw(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     accepting: bool,
     responding_player: String,
     password: String,
 ) -> Result<serde_json::Value, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
@@ -6996,25 +6386,18 @@ async fn respond_to_draw(
         return Err("responding_player must be 'white' or 'black'".to_string());
     }
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("respond-to-draw")
-        .arg(&user_id)
-        .arg("--qube-id")
-        .arg(&qube_id)
-        .arg("--accepting")
-        .arg(accepting.to_string())
-        .arg("--responding-player")
-        .arg(&responding_player);
+    let args = vec![user_id, "--qube-id".to_string(), qube_id, "--accepting".to_string(), accepting.to_string(), "--responding-player".to_string(), responding_player];
 
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("respond-to-draw", args, secrets, Some(&app_handle), None).await?;
 
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse respond-to-draw response: {}", e))?;
 
     Ok(response)
+
 }
 
 // =============================================================================
@@ -7022,85 +6405,79 @@ async fn respond_to_draw(
 // =============================================================================
 
 #[tauri::command]
-async fn get_wallet_info(
+async fn get_wallet_info(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     password: String,
 ) -> Result<serde_json::Value, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("get-wallet-info")
-        .arg(&user_id)
-        .arg("--qube-id")
-        .arg(&qube_id);
+    let args = vec![user_id, "--qube-id".to_string(), qube_id];
 
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("get-wallet-info", args, secrets, Some(&app_handle), None).await?;
 
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse get-wallet-info response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn get_context_preview(
+async fn get_context_preview(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     password: String,
 ) -> Result<serde_json::Value, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("get-context-preview")
-        .arg(&user_id)
-        .arg("--qube-id")
-        .arg(&qube_id);
+    let args = vec![user_id, "--qube-id".to_string(), qube_id];
 
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("get-context-preview", args, secrets, Some(&app_handle), None).await?;
 
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse get-context-preview response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn get_system_prompt_preview(
+async fn get_system_prompt_preview(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     password: String,
 ) -> Result<serde_json::Value, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("get-system-prompt-preview")
-        .arg(&user_id)
-        .arg("--qube-id")
-        .arg(&qube_id);
+    let args = vec![user_id, "--qube-id".to_string(), qube_id];
 
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("get-system-prompt-preview", args, secrets, Some(&app_handle), None).await?;
 
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse get-system-prompt-preview response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn propose_wallet_transaction(
+async fn propose_wallet_transaction(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     to_address: String,
@@ -7108,94 +6485,78 @@ async fn propose_wallet_transaction(
     memo: String,
     password: String,
 ) -> Result<serde_json::Value, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("propose-wallet-tx")
-        .arg(&user_id)
-        .arg("--qube-id")
-        .arg(&qube_id)
-        .arg("--to-address")
-        .arg(&to_address)
-        .arg("--amount")
-        .arg(amount.to_string())
-        .arg("--memo")
-        .arg(&memo);
+    let args = vec![user_id, "--qube-id".to_string(), qube_id, "--to-address".to_string(), to_address, "--amount".to_string(), amount.to_string(), "--memo".to_string(), memo];
 
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("propose-wallet-tx", args, secrets, Some(&app_handle), None).await?;
 
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse propose-wallet-tx response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn approve_wallet_transaction(
+async fn approve_wallet_transaction(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     tx_id: String,
     owner_wif: String,
     password: String,
 ) -> Result<serde_json::Value, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("approve-wallet-tx")
-        .arg(&user_id)
-        .arg("--qube-id")
-        .arg(&qube_id)
-        .arg("--tx-id")
-        .arg(&tx_id);
+    let args = vec![user_id, "--qube-id".to_string(), qube_id, "--tx-id".to_string(), tx_id];
 
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
     secrets.insert("owner_wif", owner_wif.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("approve-wallet-tx", args, secrets, Some(&app_handle), None).await?;
 
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse approve-wallet-tx response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn reject_wallet_transaction(
+async fn reject_wallet_transaction(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     tx_id: String,
     password: String,
 ) -> Result<serde_json::Value, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("reject-wallet-tx")
-        .arg(&user_id)
-        .arg("--qube-id")
-        .arg(&qube_id)
-        .arg("--tx-id")
-        .arg(&tx_id);
+    let args = vec![user_id, "--qube-id".to_string(), qube_id, "--tx-id".to_string(), tx_id];
 
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("reject-wallet-tx", args, secrets, Some(&app_handle), None).await?;
 
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse reject-wallet-tx response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn owner_withdraw_from_wallet(
+async fn owner_withdraw_from_wallet(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     to_address: String,
@@ -7203,202 +6564,185 @@ async fn owner_withdraw_from_wallet(
     owner_wif: String,
     password: String,
 ) -> Result<serde_json::Value, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("owner-withdraw")
-        .arg(&user_id)
-        .arg("--qube-id")
-        .arg(&qube_id)
-        .arg("--to-address")
-        .arg(&to_address)
-        .arg("--amount")
-        .arg(amount.to_string());
+    let args = vec![user_id, "--qube-id".to_string(), qube_id, "--to-address".to_string(), to_address, "--amount".to_string(), amount.to_string()];
 
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
     secrets.insert("owner_wif", owner_wif.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("owner-withdraw", args, secrets, Some(&app_handle), None).await?;
 
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse owner-withdraw response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn get_wallet_transactions(
+async fn get_wallet_transactions(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     password: String,
     limit: Option<u32>,
     offset: Option<u32>,
 ) -> Result<serde_json::Value, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("get-wallet-transactions")
-        .arg(&user_id)
-        .arg("--qube-id")
-        .arg(&qube_id);
+    let mut args = vec![user_id, "--qube-id".to_string(), qube_id];
 
-    // Add pagination parameters if provided
     if let Some(lim) = limit {
-        cmd.arg("--limit").arg(lim.to_string());
+        args.push("--limit".to_string());
+        args.push(lim.to_string());
     }
+
     if let Some(off) = offset {
-        cmd.arg("--offset").arg(off.to_string());
+        args.push("--offset".to_string());
+        args.push(off.to_string());
     }
 
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("get-wallet-transactions", args, secrets, Some(&app_handle), None).await?;
 
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse get-wallet-transactions response: {}", e))?;
 
     Ok(response)
+
 }
 
 // ==================== Wallet Security Commands ====================
 
 #[tauri::command]
-async fn save_owner_key(
+async fn save_owner_key(app_handle: AppHandle, 
     user_id: String,
     nft_address: String,
     owner_wif: String,
     password: String,
 ) -> Result<serde_json::Value, String> {
+
     check_rate_limit("save_owner_key")?;
     validate_identifier(&user_id, "user_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("save-owner-key")
-        .arg(&user_id)
-        .arg("--nft-address")
-        .arg(&nft_address);
+    let args = vec![user_id, "--nft-address".to_string(), nft_address];
 
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
     secrets.insert("owner_wif", owner_wif.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("save-owner-key", args, secrets, Some(&app_handle), None).await?;
 
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse save-owner-key response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn delete_owner_key(
+async fn delete_owner_key(app_handle: AppHandle, 
     user_id: String,
     nft_address: String,
     password: String,
 ) -> Result<serde_json::Value, String> {
+
     validate_identifier(&user_id, "user_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("delete-owner-key")
-        .arg(&user_id)
-        .arg("--nft-address")
-        .arg(&nft_address);
+    let args = vec![user_id, "--nft-address".to_string(), nft_address];
 
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("delete-owner-key", args, secrets, Some(&app_handle), None).await?;
 
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse delete-owner-key response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn get_wallet_security(
+async fn get_wallet_security(app_handle: AppHandle, 
     user_id: String,
     password: String,
 ) -> Result<serde_json::Value, String> {
+
     validate_identifier(&user_id, "user_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("get-wallet-security").arg(&user_id);
+    let args = vec![user_id];
 
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("get-wallet-security", args, secrets, Some(&app_handle), None).await?;
 
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse get-wallet-security response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn update_whitelist(
+async fn update_whitelist(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     whitelist: Vec<String>,
     password: String,
 ) -> Result<serde_json::Value, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
     let whitelist_json = serde_json::to_string(&whitelist)
         .map_err(|e| format!("Failed to serialize whitelist: {}", e))?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("update-whitelist")
-        .arg(&user_id)
-        .arg("--qube-id")
-        .arg(&qube_id)
-        .arg("--whitelist")
-        .arg(&whitelist_json);
+    let args = vec![user_id, "--qube-id".to_string(), qube_id, "--whitelist".to_string(), whitelist_json];
 
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("update-whitelist", args, secrets, Some(&app_handle), None).await?;
 
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse update-whitelist response: {}", e))?;
 
     Ok(response)
+
 }
 
 #[tauri::command]
-async fn approve_wallet_tx_stored_key(
+async fn approve_wallet_tx_stored_key(app_handle: AppHandle, 
     user_id: String,
     qube_id: String,
     tx_id: String,
     password: String,
 ) -> Result<serde_json::Value, String> {
+
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut cmd = prepare_backend_command()?;
-    cmd.arg("approve-wallet-tx-stored-key")
-        .arg(&user_id)
-        .arg("--qube-id")
-        .arg(&qube_id)
-        .arg("--tx-id")
-        .arg(&tx_id);
+    let args = vec![user_id, "--qube-id".to_string(), qube_id, "--tx-id".to_string(), tx_id];
 
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let (stdout, _stderr) = execute_with_secrets(cmd, secrets)?;
+    let result = sidecar_execute_with_retry("approve-wallet-tx-stored-key", args, secrets, Some(&app_handle), None).await?;
 
-    let response: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse JSON response: {}. Output: {}", e, stdout))?;
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse approve-wallet-tx-stored-key response: {}", e))?;
 
     Ok(response)
+
 }
 
 // =============================================================================
@@ -8057,6 +7401,14 @@ pub fn run() {
             // Auto-start Ollama if not already running (background, non-blocking)
             auto_start_ollama();
 
+            // Start persistent sidecar backend process (background, non-blocking)
+            let sidecar_app_handle = app.handle().clone();
+            std::thread::spawn(move || {
+                if let Err(e) = start_sidecar(&sidecar_app_handle) {
+                    eprintln!("[SIDECAR] Failed to start on launch: {} — will use subprocess fallback", e);
+                }
+            });
+
             // Get the main and splash windows
             let splashscreen_window = app.get_webview_window("splashscreen").unwrap();
             let main_window = app.get_webview_window("main").unwrap();
@@ -8107,10 +7459,10 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // Stop all event watchers and TTS server when main window closes
+            // Stop sidecar and TTS server when main window closes
             if let tauri::WindowEvent::Destroyed = event {
                 if window.label() == "main" {
-                    stop_all_event_watchers();
+                    stop_sidecar();
 
                     // Stop TTS servers (only in dev mode - production doesn't start them)
                     if !is_bundled_distribution() {

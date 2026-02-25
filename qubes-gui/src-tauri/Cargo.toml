@@ -1,6 +1,6 @@
 [package]
 name = "qubes-gui"
-version = "0.6.5"
+version = "0.6.6"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -30,7 +30,7 @@ base64 = "0.22"
 tauri-plugin-shell = "2.3.1"
 tauri-plugin-updater = "2"
 reqwest = { version = "0.12", features = ["json", "stream"] }
-tokio = { version = "1", features = ["process"] }
+tokio = { version = "1", features = ["process", "sync", "time"] }
 sha2 = "0.10"
 tar = "0.4"
 flate2 = "1.0"

@@ -17,6 +17,15 @@ from monitoring.metrics import MetricsRecorder
 
 logger = get_logger(__name__)
 
+# Sidecar tool event callback — set by sidecar_server.py for JSONL streaming
+# When set, tool events route through the sidecar's stdout instead of stderr
+_tool_event_callback = None
+
+def set_tool_event_callback(callback):
+    """Set a callback for tool events (used by sidecar server)."""
+    global _tool_event_callback
+    _tool_event_callback = callback
+
 # Dynamic tool selection for small models
 # Maps keywords/phrases in user messages to relevant tools
 # Small models see only tools matching their request (max ~10 tools)
@@ -1023,7 +1032,10 @@ class ToolRegistry:
                 "timestamp": tool_timestamp,
                 "parameters": parameters,
             }
-            print(f"__TOOL_EVENT__{json.dumps(tool_event)}", file=sys.stderr, flush=True)
+            if _tool_event_callback:
+                _tool_event_callback(tool_event)
+            else:
+                print(f"__TOOL_EVENT__{json.dumps(tool_event)}", file=sys.stderr, flush=True)
 
         # Execute tool
         try:
@@ -1082,7 +1094,10 @@ class ToolRegistry:
                         "timestamp": tool_timestamp,
                         "result": result if not isinstance(result, dict) or len(json.dumps(result)) < 500 else {"truncated": True},
                     }
-                    print(f"__TOOL_EVENT__{json.dumps(tool_event)}", file=sys.stderr, flush=True)
+                    if _tool_event_callback:
+                        _tool_event_callback(tool_event)
+                    else:
+                        print(f"__TOOL_EVENT__{json.dumps(tool_event)}", file=sys.stderr, flush=True)
 
                     # Award XP now that we have complete status and result
                     logger.info(

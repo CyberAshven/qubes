@@ -54,6 +54,8 @@ a = Analysis(
     binaries=extra_binaries,
     datas=datas,
     hiddenimports=[
+        # Sidecar server
+        'sidecar_server',
         # Games
         'chess',
         # Crypto & Blockchain

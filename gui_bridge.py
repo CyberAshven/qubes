@@ -9290,6 +9290,13 @@ async def main():
 
     command = sys.argv[1]
 
+    # Persistent sidecar mode — single long-running process for all commands
+    if command == "server":
+        from sidecar_server import SidecarServer
+        server = SidecarServer()
+        await server.run()
+        return
+
     # Handle setup wizard commands BEFORE creating GUIBridge
     # (GUIBridge creates default user directory which interferes with first-run detection)
     if command == "check-first-run":
