@@ -216,9 +216,9 @@ class Qube:
             )
             self.chain_state.increment_block_count("GENESIS")
         else:
-            # For existing qubes, rebuild block_counts if stale/zero
-            # This fixes qubes created before chain_state tracking was added
-            self.chain_state.rebuild_block_counts(self.memory_chain)
+            # For existing qubes, sync block_counts with actual memory chain files
+            # This fixes inflated counts (e.g., session blocks wrongly counted as permanent)
+            self.chain_state.sync_block_counts(self.memory_chain)
 
         # =====================================================================
         # RELATIONSHIP STORAGE (migrates from file if needed)
@@ -1138,17 +1138,17 @@ class Qube:
         if not self.current_session:
             self.start_session()
 
-        # Check for duplicate message in current session (within last 5 minutes)
-        # This prevents re-processing if user refreshes page and re-sends
+        # Check for duplicate message in current session (within last 10 seconds)
+        # Safety net against double-sends (primary guard is useRef in frontend)
         from datetime import datetime, timezone, timedelta
         current_time = datetime.now(timezone.utc)
-        five_minutes_ago = int((current_time - timedelta(minutes=5)).timestamp())
+        dedup_cutoff = int((current_time - timedelta(seconds=10)).timestamp())
 
         for block in reversed(self.current_session.session_blocks):
             # Only check recent MESSAGE blocks from human
             if block.block_type != "MESSAGE":
                 continue
-            if block.timestamp < five_minutes_ago:
+            if block.timestamp < dedup_cutoff:
                 break  # Blocks are sorted by timestamp, no need to check older ones
 
             content = block.content if isinstance(block.content, dict) else {}

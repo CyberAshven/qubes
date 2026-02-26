@@ -1045,6 +1045,7 @@ class ChainState:
                     time.sleep(0.1 * (attempt + 1))
 
         logger.error("chain_state_save_failed_all_retries", qube_id=self.state.get("qube_id"))
+        raise RuntimeError(f"Failed to save chain state after {max_retries} retries")
 
     def reload(self) -> None:
         """Reload state from disk, picking up external changes.

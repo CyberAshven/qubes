@@ -387,7 +387,7 @@ class ChainStateEventBus:
         # =====================================================================
         elif event.event_type == Events.BLOCK_ADDED:
             block_type = payload.get("block_type", "MESSAGE")
-            is_session_block = payload.get("is_session_block", False)
+            is_session_block = payload.get("is_session_block", False) or payload.get("temporary", False)
             cs.increment_block_count(block_type, is_session_block=is_session_block)
             if payload.get("chain_update"):
                 cs.update_chain(**payload.get("chain_update"))

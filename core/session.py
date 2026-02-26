@@ -271,6 +271,7 @@ class Session:
             "timestamp": block.timestamp,
             "content": block.content if isinstance(block.content, dict) else {},
             "temporary": True,  # This is a session block
+            "is_session_block": True,  # Tells chain_state to count as session, not permanent
             "session_id": self.session_id
         })
 

@@ -702,9 +702,17 @@ class SidecarServer:
                 if f.suffix == ".json":
                     f.unlink()
                     deleted += 1
-        # End session in chain state
-        if hasattr(qube, "chain_state") and qube.chain_state:
-            qube.chain_state.end_session()
+        # Only touch chain state if there were actual session blocks or an active session
+        # end_session() → _save() is expensive (lock + decrypt + encrypt + write)
+        # Run in executor so it doesn't block the asyncio event loop
+        has_session = deleted > 0 or (qube.current_session is not None)
+        if has_session:
+            try:
+                if hasattr(qube, "chain_state") and qube.chain_state:
+                    loop = asyncio.get_event_loop()
+                    await loop.run_in_executor(None, qube.chain_state.end_session)
+            except Exception as e:
+                logger.warning(f"discard_end_session_failed qube_id={qube_id} error={e}")
         qube.current_session = None
         return {"success": True, "blocks_deleted": deleted}
 

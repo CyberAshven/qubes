@@ -46,6 +46,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
   const currentTab = useQubeSelection(state => state.currentTab);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const isSendingRef = useRef(false); // Ref guard for double-send (state closures are stale)
   const [processingStage, setProcessingStage] = useState<'document' | 'response' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [failedMessage, setFailedMessage] = useState<string | null>(null); // Store message for retry
@@ -913,14 +914,19 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
 
   const handleSend = async () => {
     // Guard against double-sending (e.g., double-click, Enter key repeat)
-    if (isLoading) return;
+    // useRef is checked FIRST because React state closures can be stale
+    // when multiple keypress events fire before a re-render
+    if (isSendingRef.current || isLoading) return;
+    isSendingRef.current = true;
 
     if ((!inputValue.trim() && uploadedFiles.length === 0) || selectedQubes.length === 0 || !userId) {
+      isSendingRef.current = false;
       return;
     }
 
     if (!password) {
       setError('Session expired. Please log out and log back in.');
+      isSendingRef.current = false;
       return;
     }
 
@@ -975,6 +981,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
         if (binaryFiles.length > 0) {
           setError(`Sorry, I cannot read binary files. Please upload images (.png, .jpg), documents (.pdf, .txt, .md, .json) instead.`);
           setIsLoading(false);
+          isSendingRef.current = false;
       setProcessingStage(null);
           return;
         }
@@ -1114,6 +1121,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
           setError(response.error || 'Failed to get response from qube');
           setFailedMessage(messageToSend); // Store for retry
           setIsLoading(false);
+          isSendingRef.current = false;
       setProcessingStage(null);
         }
       }
@@ -1122,6 +1130,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
       setError(`Backend failed. Please try again or check the logs for details.`);
       setFailedMessage(messageToSend); // Store for retry
       setIsLoading(false);
+      isSendingRef.current = false;
       setProcessingStage(null);
     }
   };
@@ -1327,6 +1336,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
           // Clear pending response and stop loading
           setPendingResponse(null);
           setIsLoading(false);
+          isSendingRef.current = false;
           setProcessingStage(null);
           processingResponseRef.current = null;
         } catch (err) {
@@ -1344,6 +1354,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
           addMessage(currentQube.qube_id, qubeResponse);
           setPendingResponse(null);
           setIsLoading(false);
+          isSendingRef.current = false;
           setProcessingStage(null);
           processingResponseRef.current = null;
         }
@@ -1352,6 +1363,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
         addMessage(currentQube.qube_id, qubeResponse);
         setPendingResponse(null);
         setIsLoading(false);
+        isSendingRef.current = false;
       setProcessingStage(null);
         processingResponseRef.current = null;
       }

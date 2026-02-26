@@ -9,6 +9,16 @@ interface ExitConfirmDialogProps {
   onCancel: () => void;
 }
 
+// Timeout wrapper for invoke calls - prevents hanging forever
+function invokeWithTimeout<T>(cmd: string, args: Record<string, unknown>, timeoutMs = 15000): Promise<T> {
+  return Promise.race([
+    invoke<T>(cmd, args),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`${cmd} timed out after ${timeoutMs / 1000}s`)), timeoutMs)
+    ),
+  ]);
+}
+
 export function ExitConfirmDialog({ userId, password, qubes, onComplete, onCancel }: ExitConfirmDialogProps) {
   const [processingAction, setProcessingAction] = useState<'anchor' | 'discard' | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -18,14 +28,16 @@ export function ExitConfirmDialog({ userId, password, qubes, onComplete, onCance
       setProcessingAction('anchor');
       setError(null);
 
-      // Anchor sessions for all qubes
-      for (const qube of qubes) {
-        await invoke('anchor_session', {
-          userId,
-          qubeId: qube.qube_id,
-          password
-        });
-      }
+      // Anchor all qubes in parallel
+      await Promise.allSettled(
+        qubes.map(qube =>
+          invokeWithTimeout('anchor_session', {
+            userId,
+            qubeId: qube.qube_id,
+            password
+          }).catch(err => console.warn(`Failed to anchor ${qube.name}:`, err))
+        )
+      );
 
       onComplete();
     } catch (err) {
@@ -40,14 +52,16 @@ export function ExitConfirmDialog({ userId, password, qubes, onComplete, onCance
       setProcessingAction('discard');
       setError(null);
 
-      // Discard sessions for all qubes
-      for (const qube of qubes) {
-        await invoke('discard_session', {
-          userId,
-          qubeId: qube.qube_id,
-          password
-        });
-      }
+      // Discard all qubes in parallel
+      await Promise.allSettled(
+        qubes.map(qube =>
+          invokeWithTimeout('discard_session', {
+            userId,
+            qubeId: qube.qube_id,
+            password
+          }).catch(err => console.warn(`Failed to discard ${qube.name}:`, err))
+        )
+      );
 
       onComplete();
     } catch (err) {
