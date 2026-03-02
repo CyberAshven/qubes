@@ -2,9 +2,10 @@ import React from 'react';
 
 interface WelcomeStepProps {
   onNext: () => void;
+  onBackToLogin?: () => void;
 }
 
-const WelcomeStep: React.FC<WelcomeStepProps> = ({ onNext }) => {
+const WelcomeStep: React.FC<WelcomeStepProps> = ({ onNext, onBackToLogin }) => {
   return (
     <div className="wizard-step wizard-welcome">
       <div className="wizard-logo">
@@ -57,6 +58,24 @@ const WelcomeStep: React.FC<WelcomeStepProps> = ({ onNext }) => {
           <span>→</span>
         </button>
       </div>
+
+      {onBackToLogin && (
+        <div style={{ textAlign: 'center', marginTop: '1rem' }}>
+          <button
+            onClick={onBackToLogin}
+            style={{
+              background: 'none',
+              border: 'none',
+              color: 'var(--accent-primary, #00d4ff)',
+              cursor: 'pointer',
+              fontSize: '0.875rem',
+              fontWeight: 500,
+            }}
+          >
+            Back to Sign In
+          </button>
+        </div>
+      )}
     </div>
   );
 };

@@ -5,10 +5,12 @@ import { GlassButton } from '../glass/GlassButton';
 
 interface LoginScreenProps {
   onLogin: (username: string, password: string) => Promise<void>;
+  onCreateAccount: () => void;
+  onResetAccount?: (username: string) => void;
   error?: string | null;
 }
 
-export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, error }) => {
+export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccount, onResetAccount, error }) => {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -68,7 +70,19 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, error }) => {
 
           {error && (
             <div className="p-4 bg-accent-danger/10 border border-accent-danger/30 rounded-lg">
-              <p className="text-accent-danger text-sm">{error}</p>
+              <p className="text-accent-danger text-sm">
+                {error.includes('ACCOUNT_CORRUPTED')
+                  ? 'This account appears incomplete or corrupted.'
+                  : error}
+              </p>
+              {error.includes('ACCOUNT_CORRUPTED') && onResetAccount && username.trim() && (
+                <button
+                  onClick={() => onResetAccount(username.trim())}
+                  className="mt-3 px-4 py-1.5 rounded bg-accent-danger/20 text-accent-danger hover:bg-accent-danger/30 transition-colors text-xs font-medium"
+                >
+                  Reset Account &amp; Start Over
+                </button>
+              )}
             </div>
           )}
 
@@ -86,6 +100,15 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, error }) => {
 
         <div className="mt-6 text-center text-text-tertiary text-sm">
           <p>Secured with end-to-end encryption</p>
+        </div>
+
+        <div className="mt-4 text-center">
+          <button
+            onClick={onCreateAccount}
+            className="text-accent-primary hover:text-accent-primary/80 text-sm font-medium transition-colors"
+          >
+            Create New Account
+          </button>
         </div>
       </GlassCard>
     </div>

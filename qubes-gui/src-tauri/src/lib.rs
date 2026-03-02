@@ -1867,6 +1867,11 @@ async fn stop_event_watcher_cmd(
 
 #[tauri::command]
 async fn authenticate(app_handle: AppHandle, username: String, password: String) -> Result<AuthResponse, String> {
+    // If running as AppImage without a real backend, block authentication
+    if std::env::var("APPIMAGE").is_ok() && !is_bundled_distribution() {
+        return Err("APPIMAGE_NO_BACKEND".to_string());
+    }
+
     // Validate inputs
     validate_identifier(&username, "username")?;
 
@@ -5453,6 +5458,12 @@ struct FirstRunResponse {
 /// Check if this is the first run (no users exist)
 #[tauri::command]
 async fn check_first_run() -> Result<FirstRunResponse, String> {
+    // If running as AppImage without a real backend, return a descriptive error
+    // so the frontend can show a helpful message instead of confusing path errors
+    if std::env::var("APPIMAGE").is_ok() && !is_bundled_distribution() {
+        return Err("APPIMAGE_NO_BACKEND".to_string());
+    }
+
     // Try sidecar first (fast path, ~0ms)
     if SIDECAR_READY.load(Ordering::SeqCst) {
         eprintln!("[check_first_run] Using sidecar");
@@ -5536,6 +5547,17 @@ async fn create_user_account(app_handle: AppHandle, user_id: String, password: S
             })
         }
     }
+}
+
+/// Delete a user account directory (for resetting corrupted accounts)
+#[tauri::command]
+async fn delete_user_account(app_handle: AppHandle, user_id: String) -> Result<serde_json::Value, String> {
+    validate_identifier(&user_id, "user_id")?;
+
+    let args = vec![user_id];
+    let secrets = HashMap::new();
+
+    sidecar_execute_with_retry("delete-user-account", args, secrets, Some(&app_handle), None).await
 }
 
 /// Get backend diagnostics - useful for debugging startup issues on Linux/macOS
@@ -7309,6 +7331,7 @@ pub fn run() {
             // Setup Wizard
             check_first_run,
             create_user_account,
+            delete_user_account,
             check_ollama_status,
             get_backend_diagnostics,
             start_ollama,

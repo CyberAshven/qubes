@@ -6,6 +6,7 @@ import { QubeRoster } from './components/roster/QubeRoster';
 import { TabBar } from './components/tabs/TabBar';
 import { TabContent } from './components/tabs/TabContent';
 import { LoginScreen } from './components/auth/LoginScreen';
+import { AppImageErrorScreen } from './components/AppImageErrorScreen';
 import { LockScreen } from './components/LockScreen';
 import { ExitConfirmDialog } from './components/dialogs/ExitConfirmDialog';
 import { PromptDebugModal } from './components/dialogs/PromptDebugModal';
@@ -49,6 +50,8 @@ function App() {
   const [isFirstRun, setIsFirstRun] = useState<boolean | null>(null);
   const [checkingFirstRun, setCheckingFirstRun] = useState(true);
   const [showDebugPrompt, setShowDebugPrompt] = useState(false);
+  const [appImageError, setAppImageError] = useState(false);
+  const [showWizard, setShowWizard] = useState(false);
 
   // Dev-only keyboard shortcut for debug prompt modal (Ctrl+Shift+D)
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
@@ -73,9 +76,14 @@ function App() {
         setIsFirstRun(response.is_first_run);
       } catch (err) {
         console.error('Failed to check first run:', err);
-        // If check fails, assume first run (show wizard) - better to let user
-        // create an account than to show login for a nonexistent account
-        setIsFirstRun(true);
+        const errStr = String(err);
+        if (errStr.includes('APPIMAGE_NO_BACKEND')) {
+          setAppImageError(true);
+        } else {
+          // If check fails, assume first run (show wizard) - better to let user
+          // create an account than to show login for a nonexistent account
+          setIsFirstRun(true);
+        }
       } finally {
         setCheckingFirstRun(false);
       }
@@ -274,8 +282,28 @@ function App() {
     }
 
     setIsFirstRun(false);
+    setShowWizard(false);
     // Log in the user with their credentials from the wizard
     login(data.userId, data.dataDir, data.password);
+  };
+
+  // Handle account reset (for corrupted accounts)
+  const handleResetAccount = async (username: string) => {
+    try {
+      await invoke('delete_user_account', { userId: username });
+      setLoginError(null);
+      // Re-check if any users remain
+      const response = await invoke<FirstRunResponse>('check_first_run');
+      if (response.is_first_run) {
+        setIsFirstRun(true);
+      } else {
+        // Other users still exist, show wizard for new account creation
+        setShowWizard(true);
+      }
+    } catch (err) {
+      console.error('Failed to reset account:', err);
+      setLoginError('Failed to reset account. Please try again.');
+    }
   };
 
   // Show loading while checking first run
@@ -289,14 +317,31 @@ function App() {
     );
   }
 
-  // Show setup wizard for first run
-  if (isFirstRun) {
-    return <SetupWizard onComplete={handleWizardComplete} />;
+  // Show AppImage error if backend is missing
+  if (appImageError) {
+    return <AppImageErrorScreen />;
   }
 
-  // Show login screen if not authenticated
+  // Show setup wizard for first run (no users) or explicit "Create Account" click
+  if (isFirstRun || showWizard) {
+    return (
+      <SetupWizard
+        onComplete={handleWizardComplete}
+        onBackToLogin={isFirstRun ? undefined : () => setShowWizard(false)}
+      />
+    );
+  }
+
+  // Show login screen if not authenticated (always has "Create Account" option)
   if (!isAuthenticated) {
-    return <LoginScreen onLogin={handleLogin} error={loginError} />;
+    return (
+      <LoginScreen
+        onLogin={handleLogin}
+        onCreateAccount={() => setShowWizard(true)}
+        onResetAccount={handleResetAccount}
+        error={loginError}
+      />
+    );
   }
 
   if (loading) {

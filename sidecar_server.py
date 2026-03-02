@@ -74,6 +74,7 @@ def _sidecar_tool_event_callback(event_data: dict):
 PRE_BRIDGE_COMMANDS = {
     "check-first-run",
     "create-user-account",
+    "delete-user-account",
     "check-ollama-status",
     "get-available-models",
     "get-difficulty-presets",
@@ -222,6 +223,7 @@ POSITIONAL_ARG_NAMES = {
     "get-p2p-sessions": ["user_id", "qube_id"],
     # Pre-bridge
     "create-user-account": ["user_id"],
+    "delete-user-account": ["user_id"],
     "check-first-run": [],
 }
 
@@ -585,6 +587,24 @@ class SidecarServer:
         # Cache master key for subsequent requests
         self.state.master_keys[user_id] = orchestrator.master_key
         return {"success": True, "user_id": user_id, "data_dir": str(user_data_dir.absolute())}
+
+    async def _pre_delete_user_account(self, params, secrets):
+        import shutil
+        from utils.input_validation import validate_user_id
+        from utils.paths import get_users_dir
+
+        user_id = validate_user_id(params["user_id"])
+        users_dir = get_users_dir()
+        user_dir = users_dir / user_id
+        if not user_dir.exists():
+            return {"success": False, "error": "User not found"}
+        if not str(user_dir.resolve()).startswith(str(users_dir.resolve())):
+            return {"success": False, "error": "Invalid user path"}
+        shutil.rmtree(user_dir)
+        # Clear any cached state for this user
+        self.state.master_keys.pop(user_id, None)
+        self.state.bridges.pop(user_id, None)
+        return {"success": True}
 
     async def _pre_check_ollama_status(self, params, secrets):
         import shutil

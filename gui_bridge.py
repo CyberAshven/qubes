@@ -457,7 +457,7 @@ class GUIBridge:
                     # No qubes AND no verifier - this is a broken state
                     # User must have been created before verifier was implemented
                     logger.error(f"No password verifier and no qubes for {user_id}")
-                    return {"success": False, "error": "Account corrupted. Please contact support."}
+                    return {"success": False, "error": "ACCOUNT_CORRUPTED: No password verifier and no qubes found. Account may be incomplete."}
 
             # Authentication successful
             return {
@@ -504,6 +504,24 @@ class GUIBridge:
         except Exception as e:
             logger.error(f"Failed to create password verifier: {e}")
             # Non-fatal - login will still work via qube verification
+
+    async def delete_user_account(self, user_id: str) -> Dict[str, Any]:
+        """Delete a user account directory (for resetting corrupted accounts)"""
+        import shutil
+        users_dir = get_users_dir()
+        user_dir = users_dir / user_id
+        if not user_dir.exists():
+            return {"success": False, "error": "User not found"}
+        # Path traversal protection
+        if not str(user_dir.resolve()).startswith(str(users_dir.resolve())):
+            return {"success": False, "error": "Invalid user path"}
+        try:
+            shutil.rmtree(user_dir)
+            logger.info(f"Deleted user account directory: {user_id}")
+            return {"success": True}
+        except Exception as e:
+            logger.error(f"Failed to delete user account {user_id}: {e}")
+            return {"success": False, "error": str(e)}
 
     async def list_qubes(self) -> List[Dict[str, Any]]:
         """List all qubes with their metadata"""
@@ -9383,6 +9401,27 @@ async def main():
                 "success": False,
                 "error": f"Account creation failed: {error_msg}"
             }))
+        return
+
+    elif command == "delete-user-account":
+        # Delete a user account directory (for resetting corrupted accounts)
+        if len(sys.argv) < 3:
+            print(json.dumps({"success": False, "error": "User ID required"}))
+            sys.exit(1)
+        try:
+            import shutil as shutil_mod
+            user_id = validate_user_id(sys.argv[2])
+            users_dir = get_users_dir()
+            user_dir = users_dir / user_id
+            if not user_dir.exists():
+                print(json.dumps({"success": False, "error": "User not found"}))
+            elif not str(user_dir.resolve()).startswith(str(users_dir.resolve())):
+                print(json.dumps({"success": False, "error": "Invalid user path"}))
+            else:
+                shutil_mod.rmtree(user_dir)
+                print(json.dumps({"success": True}))
+        except Exception as e:
+            print(json.dumps({"success": False, "error": str(e)}))
         return
 
     elif command == "check-ollama-status":

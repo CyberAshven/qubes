@@ -29,11 +29,12 @@ export interface WizardData {
 
 interface SetupWizardProps {
   onComplete: (data: WizardData) => void;
+  onBackToLogin?: () => void;
 }
 
 const STEPS: WizardStep[] = ['welcome', 'create-account', 'api-keys', 'pinata', 'completion'];
 
-const SetupWizard: React.FC<SetupWizardProps> = ({ onComplete }) => {
+const SetupWizard: React.FC<SetupWizardProps> = ({ onComplete, onBackToLogin }) => {
   const [currentStep, setCurrentStep] = useState<WizardStep>('welcome');
   const [wizardData, setWizardData] = useState<WizardData>({
     userId: '',
@@ -76,6 +77,7 @@ const SetupWizard: React.FC<SetupWizardProps> = ({ onComplete }) => {
         return (
           <WelcomeStep
             onNext={goToNextStep}
+            onBackToLogin={onBackToLogin}
           />
         );
 
