@@ -75,6 +75,7 @@ PRE_BRIDGE_COMMANDS = {
     "check-first-run",
     "create-user-account",
     "delete-user-account",
+    "migrate-user-data",
     "check-ollama-status",
     "get-available-models",
     "get-difficulty-presets",
@@ -224,6 +225,7 @@ POSITIONAL_ARG_NAMES = {
     # Pre-bridge
     "create-user-account": ["user_id"],
     "delete-user-account": ["user_id"],
+    "migrate-user-data": ["old_data_dir", "user_id"],
     "check-first-run": [],
 }
 
@@ -548,12 +550,26 @@ class SidecarServer:
     # ====================================================================
 
     async def _pre_check_first_run(self, params, secrets):
-        from utils.paths import get_users_dir, get_app_data_dir
+        from utils.paths import get_users_dir, get_app_data_dir, detect_legacy_data_dirs
         users_dir = get_users_dir()
+        result = {"data_dir": str(get_app_data_dir())}
         if not users_dir.exists():
-            return {"is_first_run": True, "users": [], "data_dir": str(get_app_data_dir())}
-        users = [d.name for d in users_dir.iterdir() if d.is_dir()]
-        return {"is_first_run": len(users) == 0, "users": users, "data_dir": str(get_app_data_dir())}
+            result["is_first_run"] = True
+            result["users"] = []
+        else:
+            users = [d.name for d in users_dir.iterdir() if d.is_dir()]
+            result["is_first_run"] = len(users) == 0
+            result["users"] = users
+        # Detect legacy data from older versions
+        if result["is_first_run"]:
+            legacy = detect_legacy_data_dirs()
+            if legacy:
+                old_users_dir = legacy[0] / "users"
+                old_users = [d.name for d in old_users_dir.iterdir() if d.is_dir()]
+                if old_users:
+                    result["legacy_data_dir"] = str(legacy[0])
+                    result["legacy_users"] = old_users
+        return result
 
     async def _pre_create_user_account(self, params, secrets):
         from utils.input_validation import validate_user_id
@@ -605,6 +621,27 @@ class SidecarServer:
         self.state.master_keys.pop(user_id, None)
         self.state.bridges.pop(user_id, None)
         return {"success": True}
+
+    async def _pre_migrate_user_data(self, params, secrets):
+        import shutil
+        from pathlib import Path
+        from utils.input_validation import validate_user_id
+        from utils.paths import get_user_data_dir
+
+        old_data_dir = Path(params["old_data_dir"])
+        user_id = validate_user_id(params["user_id"])
+        old_user_dir = old_data_dir / "users" / user_id
+        if not old_user_dir.exists():
+            return {"success": False, "error": f"Old user directory not found: {old_user_dir}"}
+        new_user_dir = get_user_data_dir(user_id)
+        for item in old_user_dir.iterdir():
+            dest = new_user_dir / item.name
+            if not dest.exists():
+                if item.is_dir():
+                    shutil.copytree(item, dest)
+                else:
+                    shutil.copy2(item, dest)
+        return {"success": True, "data_dir": str(new_user_dir)}
 
     async def _pre_check_ollama_status(self, params, secrets):
         import shutil

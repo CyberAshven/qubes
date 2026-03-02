@@ -9320,21 +9320,26 @@ async def main():
     if command == "check-first-run":
         # Check if this is the first run (no users exist)
         # Use platform-aware path (critical for Linux AppImage)
+        from utils.paths import detect_legacy_data_dirs
         users_dir = get_users_dir()
+        result = {"data_dir": str(get_app_data_dir())}
         if not users_dir.exists():
-            print(json.dumps({
-                "is_first_run": True,
-                "users": [],
-                "data_dir": str(get_app_data_dir())
-            }))
+            result["is_first_run"] = True
+            result["users"] = []
         else:
-            # List existing users (directories in users dir)
             users = [d.name for d in users_dir.iterdir() if d.is_dir()]
-            print(json.dumps({
-                "is_first_run": len(users) == 0,
-                "users": users,
-                "data_dir": str(get_app_data_dir())
-            }))
+            result["is_first_run"] = len(users) == 0
+            result["users"] = users
+        # Detect legacy data from older versions (./data/users/)
+        if result["is_first_run"]:
+            legacy = detect_legacy_data_dirs()
+            if legacy:
+                old_users_dir = legacy[0] / "users"
+                old_users = [d.name for d in old_users_dir.iterdir() if d.is_dir()]
+                if old_users:
+                    result["legacy_data_dir"] = str(legacy[0])
+                    result["legacy_users"] = old_users
+        print(json.dumps(result))
         return
 
     elif command == "create-user-account":
@@ -9421,6 +9426,35 @@ async def main():
                 shutil_mod.rmtree(user_dir)
                 print(json.dumps({"success": True}))
         except Exception as e:
+            print(json.dumps({"success": False, "error": str(e)}))
+        return
+
+    elif command == "migrate-user-data":
+        # Migrate user data from old ./data/ path to platform-aware path
+        if len(sys.argv) < 4:
+            print(json.dumps({"success": False, "error": "Usage: migrate-user-data <old_data_dir> <user_id>"}))
+            sys.exit(1)
+        try:
+            import shutil as shutil_mod
+            old_data_dir = Path(sys.argv[2])
+            user_id = validate_user_id(sys.argv[3])
+            old_user_dir = old_data_dir / "users" / user_id
+            if not old_user_dir.exists():
+                print(json.dumps({"success": False, "error": f"Old user directory not found: {old_user_dir}"}))
+            else:
+                new_user_dir = get_user_data_dir(user_id)
+                # Copy contents from old to new (merge, don't overwrite existing)
+                for item in old_user_dir.iterdir():
+                    dest = new_user_dir / item.name
+                    if not dest.exists():
+                        if item.is_dir():
+                            shutil_mod.copytree(item, dest)
+                        else:
+                            shutil_mod.copy2(item, dest)
+                print(json.dumps({"success": True, "data_dir": str(new_user_dir)}))
+        except Exception as e:
+            import traceback
+            traceback.print_exc(file=sys.stderr)
             print(json.dumps({"success": False, "error": str(e)}))
         return
 

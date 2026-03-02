@@ -200,6 +200,55 @@ def get_config_dir() -> Path:
         return config_dir
 
 
+def detect_legacy_data_dirs() -> list[Path]:
+    """
+    Detect old-style ./data/users/ directories from pre-v0.6.6 installations.
+
+    Older versions stored data relative to the binary (./data/users/{user_id}/).
+    Current versions use platform paths (~/.local/share/Qubes/users/ on Linux).
+
+    Returns a list of legacy data root paths (the parent of 'users/') that contain
+    actual user directories, excluding the current app data dir.
+    """
+    if is_dev_mode() and not is_bundled_app():
+        # Dev mode still uses ./data — no migration needed
+        return []
+
+    current_data_dir = get_app_data_dir()
+    candidates = []
+
+    # Check relative to the executable (where old bundled versions stored data)
+    exe_path = Path(sys.executable)
+    if exe_path.parent:
+        candidates.append(exe_path.parent / "data")
+        # Also check one level up (e.g., qubes-backend/ subfolder)
+        if exe_path.parent.parent:
+            candidates.append(exe_path.parent.parent / "data")
+
+    # Check relative to cwd (common for ZIP extractions)
+    cwd = Path.cwd()
+    candidates.append(cwd / "data")
+
+    found = []
+    for candidate in candidates:
+        # Skip if it resolves to the current data dir
+        try:
+            if candidate.resolve() == current_data_dir.resolve():
+                continue
+        except OSError:
+            continue
+
+        users_dir = candidate / "users"
+        if users_dir.is_dir():
+            # Check that it actually has user directories
+            has_users = any(d.is_dir() for d in users_dir.iterdir())
+            if has_users:
+                found.append(candidate.resolve())
+
+    # Deduplicate
+    return list(dict.fromkeys(found))
+
+
 # For backwards compatibility - convert relative "data" paths
 def migrate_relative_path(relative_path: Path | str) -> Path:
     """

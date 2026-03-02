@@ -5453,6 +5453,10 @@ struct RegistrationStatusResponse {
 struct FirstRunResponse {
     is_first_run: bool,
     users: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    legacy_data_dir: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    legacy_users: Option<Vec<String>>,
 }
 
 /// Check if this is the first run (no users exist)
@@ -5500,6 +5504,8 @@ async fn check_first_run() -> Result<FirstRunResponse, String> {
             return Ok(FirstRunResponse {
                 is_first_run: true,
                 users: vec![],
+                legacy_data_dir: None,
+                legacy_users: None,
             });
         }
     };
@@ -5514,6 +5520,8 @@ async fn check_first_run() -> Result<FirstRunResponse, String> {
         return Ok(FirstRunResponse {
             is_first_run: true,
             users: vec![],
+            legacy_data_dir: None,
+            legacy_users: None,
         });
     }
 
@@ -5558,6 +5566,17 @@ async fn delete_user_account(app_handle: AppHandle, user_id: String) -> Result<s
     let secrets = HashMap::new();
 
     sidecar_execute_with_retry("delete-user-account", args, secrets, Some(&app_handle), None).await
+}
+
+/// Migrate user data from old ./data/ path to platform-aware path
+#[tauri::command]
+async fn migrate_user_data(app_handle: AppHandle, old_data_dir: String, user_id: String) -> Result<serde_json::Value, String> {
+    validate_identifier(&user_id, "user_id")?;
+
+    let args = vec![old_data_dir, user_id];
+    let secrets = HashMap::new();
+
+    sidecar_execute_with_retry("migrate-user-data", args, secrets, Some(&app_handle), None).await
 }
 
 /// Get backend diagnostics - useful for debugging startup issues on Linux/macOS
@@ -7332,6 +7351,7 @@ pub fn run() {
             check_first_run,
             create_user_account,
             delete_user_account,
+            migrate_user_data,
             check_ollama_status,
             get_backend_diagnostics,
             start_ollama,

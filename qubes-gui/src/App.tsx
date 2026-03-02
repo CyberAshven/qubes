@@ -33,6 +33,8 @@ interface AuthResponse {
 interface FirstRunResponse {
   is_first_run: boolean;
   users: string[];
+  legacy_data_dir?: string;
+  legacy_users?: string[];
 }
 
 function App() {
@@ -52,6 +54,8 @@ function App() {
   const [showDebugPrompt, setShowDebugPrompt] = useState(false);
   const [appImageError, setAppImageError] = useState(false);
   const [showWizard, setShowWizard] = useState(false);
+  const [legacyMigration, setLegacyMigration] = useState<{ dataDir: string; users: string[] } | null>(null);
+  const [migrating, setMigrating] = useState(false);
 
   // Dev-only keyboard shortcut for debug prompt modal (Ctrl+Shift+D)
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
@@ -73,6 +77,10 @@ function App() {
     const checkFirstRun = async () => {
       try {
         const response = await invoke<FirstRunResponse>('check_first_run');
+        // Check for legacy data that needs migration
+        if (response.is_first_run && response.legacy_data_dir && response.legacy_users?.length) {
+          setLegacyMigration({ dataDir: response.legacy_data_dir, users: response.legacy_users });
+        }
         setIsFirstRun(response.is_first_run);
       } catch (err) {
         console.error('Failed to check first run:', err);
@@ -306,6 +314,30 @@ function App() {
     }
   };
 
+  // Handle migrating all legacy users
+  const handleMigrateLegacy = async () => {
+    if (!legacyMigration) return;
+    setMigrating(true);
+    try {
+      for (const user of legacyMigration.users) {
+        await invoke('migrate_user_data', {
+          oldDataDir: legacyMigration.dataDir,
+          userId: user,
+        });
+      }
+      // Re-check first run — should now find the migrated users
+      const response = await invoke<FirstRunResponse>('check_first_run');
+      setIsFirstRun(response.is_first_run);
+      setLegacyMigration(null);
+    } catch (err) {
+      console.error('Migration failed:', err);
+      setLoginError('Data migration failed: ' + String(err));
+      setLegacyMigration(null);
+    } finally {
+      setMigrating(false);
+    }
+  };
+
   // Show loading while checking first run
   if (checkingFirstRun) {
     return (
@@ -320,6 +352,55 @@ function App() {
   // Show AppImage error if backend is missing
   if (appImageError) {
     return <AppImageErrorScreen />;
+  }
+
+  // Show migration prompt if legacy data found
+  if (legacyMigration && isFirstRun) {
+    return (
+      <div className="h-screen w-screen flex items-center justify-center bg-bg-primary relative overflow-hidden">
+        <div className="absolute inset-0 opacity-30">
+          <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-accent-primary/20 rounded-full blur-3xl animate-pulse"></div>
+          <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-accent-secondary/20 rounded-full blur-3xl animate-pulse" style={{ animationDelay: '1s' }}></div>
+        </div>
+        <div className="w-full max-w-lg p-8 relative z-10 bg-glass-bg border border-glass-border rounded-xl backdrop-blur-lg">
+          <div className="text-center mb-6">
+            <h1 className="text-3xl font-display text-accent-primary mb-2">QUBES</h1>
+            <h2 className="text-xl font-display text-text-primary">Data Migration Required</h2>
+          </div>
+          <div className="space-y-3 text-text-secondary text-sm mb-6">
+            <p>
+              We found existing account data from a previous installation that needs to be migrated
+              to the new data directory.
+            </p>
+            <div className="p-3 bg-bg-secondary rounded-lg">
+              <p className="text-text-tertiary text-xs mb-1">Accounts found:</p>
+              {legacyMigration.users.map(u => (
+                <p key={u} className="text-accent-primary font-medium">{u}</p>
+              ))}
+            </div>
+            <p className="text-text-tertiary text-xs">
+              From: {legacyMigration.dataDir}
+            </p>
+          </div>
+          <div className="space-y-3">
+            <button
+              onClick={handleMigrateLegacy}
+              disabled={migrating}
+              className="w-full py-3 rounded-lg bg-accent-primary text-bg-primary font-medium hover:bg-accent-primary/80 transition-colors disabled:opacity-50"
+            >
+              {migrating ? 'Migrating...' : 'Migrate My Data'}
+            </button>
+            <button
+              onClick={() => { setLegacyMigration(null); }}
+              disabled={migrating}
+              className="w-full py-2 rounded-lg text-text-tertiary hover:text-text-secondary text-sm transition-colors"
+            >
+              Skip (start fresh)
+            </button>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   // Show setup wizard for first run (no users) or explicit "Create Account" click
