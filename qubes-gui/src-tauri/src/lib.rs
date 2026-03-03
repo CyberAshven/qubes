@@ -3875,9 +3875,10 @@ async fn get_qube_relationships(app_handle: AppHandle,
     validate_identifier(&qube_id, "qube_id")?;
 
     let password_str = password.unwrap_or_default();
-    let args = vec![user_id, qube_id, password_str];
+    let args = vec![user_id, qube_id];
 
-    let secrets = HashMap::new();
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password_str.as_str());
 
     let result = sidecar_execute_with_retry("get-qube-relationships", args, secrets, Some(&app_handle), None).await?;
 
@@ -3902,9 +3903,10 @@ async fn get_relationship_timeline(app_handle: AppHandle,
     validate_identifier(&entity_id, "entity_id")?;
 
     let password_str = password.unwrap_or_default();
-    let args = vec![user_id, qube_id, entity_id, password_str];
+    let args = vec![user_id, qube_id, entity_id];
 
-    let secrets = HashMap::new();
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password_str.as_str());
 
     let result = sidecar_execute_with_retry("get-relationship-timeline", args, secrets, Some(&app_handle), None).await?;
 
@@ -3927,9 +3929,10 @@ async fn get_pending_clearance_requests(app_handle: AppHandle,
     validate_identifier(&qube_id, "qube_id")?;
 
     let password_str = password.unwrap_or_default();
-    let args = vec![user_id, qube_id, password_str];
+    let args = vec![user_id, qube_id];
 
-    let secrets = HashMap::new();
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password_str.as_str());
 
     let result = sidecar_execute_with_retry("get-pending-clearance-requests", args, secrets, Some(&app_handle), None).await?;
 
@@ -3955,9 +3958,10 @@ async fn approve_clearance_request(app_handle: AppHandle,
     let password_str = password.unwrap_or_default();
     let expires_str = expires_in_days.map(|d| d.to_string()).unwrap_or_default();
 
-    let args = vec![user_id, qube_id, request_id, password_str, expires_str];
+    let args = vec![user_id, qube_id, request_id, expires_str];
 
-    let secrets = HashMap::new();
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password_str.as_str());
 
     let result = sidecar_execute_with_retry("approve-clearance-request", args, secrets, Some(&app_handle), None).await?;
 
@@ -3983,9 +3987,10 @@ async fn deny_clearance_request(app_handle: AppHandle,
     let password_str = password.unwrap_or_default();
     let reason_str = reason.unwrap_or_default();
 
-    let args = vec![user_id, qube_id, request_id, password_str, reason_str];
+    let args = vec![user_id, qube_id, request_id, reason_str];
 
-    let secrets = HashMap::new();
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password_str.as_str());
 
     let result = sidecar_execute_with_retry("deny-clearance-request", args, secrets, Some(&app_handle), None).await?;
 
@@ -4008,7 +4013,7 @@ async fn get_clearance_audit_log(app_handle: AppHandle,
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut args = vec![user_id, qube_id, password];
+    let mut args = vec![user_id, qube_id];
 
     if let Some(l) = limit {
         args.push(l.to_string());
@@ -4018,7 +4023,8 @@ async fn get_clearance_audit_log(app_handle: AppHandle,
         args.push(e);
     }
 
-    let secrets = HashMap::new();
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
 
     let result = sidecar_execute_with_retry("get-clearance-audit-log", args, secrets, Some(&app_handle), None).await?;
 
@@ -4101,9 +4107,10 @@ async fn add_relationship_tag(app_handle: AppHandle,
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let args = vec![user_id, qube_id, entity_id, tag, password];
+    let args = vec![user_id, qube_id, entity_id, tag];
 
-    let secrets = HashMap::new();
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
 
     let result = sidecar_execute_with_retry("add-relationship-tag", args, secrets, Some(&app_handle), None).await?;
 
@@ -4124,9 +4131,10 @@ async fn remove_relationship_tag(app_handle: AppHandle,
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let args = vec![user_id, qube_id, entity_id, tag, password];
+    let args = vec![user_id, qube_id, entity_id, tag];
 
-    let secrets = HashMap::new();
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
 
     let result = sidecar_execute_with_retry("remove-relationship-tag", args, secrets, Some(&app_handle), None).await?;
 
@@ -4154,9 +4162,10 @@ async fn set_relationship_clearance(app_handle: AppHandle,
     let denials_json = field_denials.map(|v| serde_json::to_string(&v).unwrap_or_default()).unwrap_or_default();
     let expires_str = expires_in_days.map(|d| d.to_string()).unwrap_or_default();
 
-    let args = vec![user_id, qube_id, entity_id, profile, password, grants_json, denials_json, expires_str];
+    let args = vec![user_id, qube_id, entity_id, profile, grants_json, denials_json, expires_str];
 
-    let secrets = HashMap::new();
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
 
     let result = sidecar_execute_with_retry("set-relationship-clearance", args, secrets, Some(&app_handle), None).await?;
 
@@ -4327,9 +4336,10 @@ async fn get_owner_info(app_handle: AppHandle, user_id: String, qube_id: String,
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let args = vec![user_id, qube_id, password];
+    let args = vec![user_id, qube_id];
 
-    let secrets = HashMap::new();
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
 
     let result = sidecar_execute_with_retry("get-owner-info", args, secrets, Some(&app_handle), None).await?;
 
@@ -4358,7 +4368,7 @@ async fn set_owner_info_field(app_handle: AppHandle,
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let mut args = vec![user_id, qube_id, password, category, key, value];
+    let mut args = vec![user_id, qube_id, category, key, value];
 
     if let Some(sens) = sensitivity {
         args.push(sens);
@@ -4382,7 +4392,8 @@ async fn set_owner_info_field(app_handle: AppHandle,
         args.push(bid);
     }
 
-    let secrets = HashMap::new();
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
 
     let result = sidecar_execute_with_retry("set-owner-info-field", args, secrets, Some(&app_handle), None).await?;
 
@@ -4406,9 +4417,10 @@ async fn delete_owner_info_field(app_handle: AppHandle,
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let args = vec![user_id, qube_id, password, category, key];
+    let args = vec![user_id, qube_id, category, key];
 
-    let secrets = HashMap::new();
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
 
     let result = sidecar_execute_with_retry("delete-owner-info-field", args, secrets, Some(&app_handle), None).await?;
 
@@ -4433,9 +4445,10 @@ async fn update_owner_info_sensitivity(app_handle: AppHandle,
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let args = vec![user_id, qube_id, password, category, key, sensitivity];
+    let args = vec![user_id, qube_id, category, key, sensitivity];
 
-    let secrets = HashMap::new();
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
 
     let result = sidecar_execute_with_retry("update-owner-info-sensitivity", args, secrets, Some(&app_handle), None).await?;
 
@@ -5122,7 +5135,7 @@ async fn process_p2p_message(app_handle: AppHandle,
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let args = vec![user_id, qube_id, "--from-name".to_string(), from_name, "--from-commitment".to_string(), from_commitment, "--message".to_string(), message, "--context".to_string(), context];
+    let args = vec![user_id, qube_id, "--from-name".to_string(), from_name, "--from-commitment".to_string(), from_commitment, "--message".to_string(), message, "--conversation-context".to_string(), context];
 
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
@@ -5265,7 +5278,7 @@ async fn create_p2p_session(app_handle: AppHandle,
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let args = vec![user_id, qube_id, "--local-qubes".to_string(), local_qubes, "--remote-commitments".to_string(), remote_commitments, "--topic".to_string(), topic];
+    let args = vec![user_id, qube_id, "--local-qube-ids".to_string(), local_qubes, "--remote-commitments".to_string(), remote_commitments, "--topic".to_string(), topic];
 
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
@@ -5313,7 +5326,7 @@ async fn start_p2p_conversation(app_handle: AppHandle,
 
     validate_identifier(&user_id, "user_id")?;
 
-    let args = vec![user_id, "--local-qubes".to_string(), local_qubes, "--remote-connections".to_string(), remote_connections, "--session-id".to_string(), session_id, "--initial-prompt".to_string(), initial_prompt];
+    let args = vec![user_id, "--local-qube-ids".to_string(), local_qubes, "--remote-connections".to_string(), remote_connections, "--session-id".to_string(), session_id, "--initial-prompt".to_string(), initial_prompt];
 
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
@@ -5338,7 +5351,7 @@ async fn continue_p2p_conversation(app_handle: AppHandle,
 
     validate_identifier(&user_id, "user_id")?;
 
-    let args = vec![user_id, "--conversation-id".to_string(), conversation_id, "--session-id".to_string(), session_id, "--local-qubes".to_string(), local_qubes, "--remote-connections".to_string(), remote_connections];
+    let args = vec![user_id, "--conversation-id".to_string(), conversation_id, "--session-id".to_string(), session_id, "--local-qube-ids".to_string(), local_qubes, "--remote-connections".to_string(), remote_connections];
 
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
@@ -5365,7 +5378,7 @@ async fn inject_p2p_block(app_handle: AppHandle,
 
     validate_identifier(&user_id, "user_id")?;
 
-    let args = vec![user_id, "--conversation-id".to_string(), conversation_id, "--session-id".to_string(), session_id, "--block-data".to_string(), block_data, "--from-commitment".to_string(), from_commitment, "--local-qubes".to_string(), local_qubes, "--remote-connections".to_string(), remote_connections];
+    let args = vec![user_id, "--conversation-id".to_string(), conversation_id, "--session-id".to_string(), session_id, "--block-data".to_string(), block_data, "--from-commitment".to_string(), from_commitment, "--local-qube-ids".to_string(), local_qubes, "--remote-connections".to_string(), remote_connections];
 
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
@@ -5391,7 +5404,7 @@ async fn send_p2p_user_message(app_handle: AppHandle,
 
     validate_identifier(&user_id, "user_id")?;
 
-    let args = vec![user_id, "--conversation-id".to_string(), conversation_id, "--session-id".to_string(), session_id, "--message".to_string(), message, "--local-qubes".to_string(), local_qubes, "--remote-connections".to_string(), remote_connections];
+    let args = vec![user_id, "--conversation-id".to_string(), conversation_id, "--session-id".to_string(), session_id, "--message".to_string(), message, "--local-qube-ids".to_string(), local_qubes, "--remote-connections".to_string(), remote_connections];
 
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());

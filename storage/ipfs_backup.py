@@ -493,8 +493,6 @@ class QubeBackup:
         with open(chain_state_path, 'w') as f:
             json.dump(chain_state_data, f, indent=2)
 
-        storage.close()
-
         logger.info(
             "qube_data_imported",
             qube_id=qube_id,

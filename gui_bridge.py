@@ -4319,13 +4319,14 @@ class GUIBridge:
 
     # ==================== Clearance Profile Methods (v2) ====================
 
-    async def get_clearance_profiles(self, qube_id: str, password: str) -> Dict[str, Any]:
+    async def get_clearance_profiles(self, qube_id: str, password: str = None) -> Dict[str, Any]:
         """Get all clearance profiles for a Qube from chain_state."""
         try:
             from utils.clearance_profiles import ClearanceConfig
 
             # Load qube to access chain_state
-            self.orchestrator.set_master_key(password)
+            if password:
+                self.orchestrator.set_master_key(password)
             qube = await self.orchestrator.load_qube(qube_id)
 
             if not qube:
@@ -4368,13 +4369,14 @@ class GUIBridge:
             logger.error(f"Failed to update clearance profile: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
 
-    async def get_available_tags(self, qube_id: str, password: str) -> Dict[str, Any]:
+    async def get_available_tags(self, qube_id: str, password: str = None) -> Dict[str, Any]:
         """Get all available tags for a Qube from chain_state."""
         try:
             from utils.clearance_profiles import ClearanceConfig
 
             # Load qube to access chain_state
-            self.orchestrator.set_master_key(password)
+            if password:
+                self.orchestrator.set_master_key(password)
             qube = await self.orchestrator.load_qube(qube_id)
 
             if not qube:
@@ -4511,8 +4513,8 @@ class GUIBridge:
     async def suggest_clearance(
         self,
         qube_id: str,
-        password: str,
-        entity_id: str
+        password: str = None,
+        entity_id: str = None
     ) -> Dict[str, Any]:
         """Get clearance suggestion for a relationship based on status and tags."""
         try:
@@ -4520,7 +4522,8 @@ class GUIBridge:
             from utils.clearance_profiles import ClearanceConfig
 
             # Load qube to access chain_state
-            self.orchestrator.set_master_key(password)
+            if password:
+                self.orchestrator.set_master_key(password)
             qube = await self.orchestrator.load_qube(qube_id)
 
             if not qube:
@@ -6329,13 +6332,13 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
     # Chain Sync Methods (NFT-Bundled Storage)
     # =========================================================================
 
-    async def sync_to_chain(self, qube_id: str, master_password: str) -> Dict[str, Any]:
+    async def sync_to_chain(self, qube_id: str, password: str) -> Dict[str, Any]:
         """
         Sync Qube to chain (backup to IPFS, encrypted to owner).
 
         Args:
             qube_id: The Qube ID to sync
-            master_password: User's master password
+            password: User's master password
 
         Returns:
             Dict with success, ipfs_cid, chain_length, etc.
@@ -6345,7 +6348,7 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
 
         try:
             # Set master key to access Qube data
-            self.orchestrator.set_master_key(master_password)
+            self.orchestrator.set_master_key(password)
 
             # Find qube directory and load qube
             qubes_dir = self.orchestrator.data_dir / "qubes"
@@ -6412,7 +6415,8 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
                 genesis_block=genesis_dict,
                 user_id=self.orchestrator.user_id,
                 category_id=category_id,
-                encryption_key=encryption_key
+                encryption_key=encryption_key,
+                master_password=password
             )
 
             return result.to_dict()
@@ -6427,7 +6431,7 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
         recipient_address: str,
         recipient_public_key: str,
         wallet_wif: str,
-        master_password: str
+        password: str
     ) -> Dict[str, Any]:
         """
         Transfer Qube to new owner.
@@ -6439,7 +6443,7 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
             recipient_address: Recipient's BCH address
             recipient_public_key: Recipient's public key hex
             wallet_wif: Sender's wallet WIF for NFT transfer
-            master_password: User's master password
+            password: User's master password
 
         Returns:
             Dict with success, transfer_txid, etc.
@@ -6449,7 +6453,7 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
 
         try:
             # Set master key to access Qube data
-            self.orchestrator.set_master_key(master_password)
+            self.orchestrator.set_master_key(password)
 
             # Find qube directory and load qube
             qubes_dir = self.orchestrator.data_dir / "qubes"
@@ -6531,17 +6535,22 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
 
     async def import_from_wallet(
         self,
-        wallet_wif: str,
-        category_id: str,
-        master_password: str
+        wallet_wif: str = "",
+        category_id: str = "",
+        password: str = ""
     ) -> Dict[str, Any]:
         """
         Import Qube from wallet.
 
+        Supports two decryption modes:
+        - WIF-based: Provide wallet_wif to decrypt via ECIES (verifies NFT ownership)
+        - Password-based (Option A): Omit wallet_wif to decrypt using master password
+          (requires password_wrapped_key in BCMR metadata)
+
         Args:
-            wallet_wif: Wallet's WIF private key
+            wallet_wif: Wallet's WIF private key (optional for password-based import)
             category_id: NFT category ID to import
-            master_password: User's master password for re-encryption
+            password: User's master password for re-encryption (and decryption in password mode)
 
         Returns:
             Dict with success, qube_id, qube_name, qube_dir
@@ -6550,16 +6559,16 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
 
         try:
             # Set master key for re-encryption
-            self.orchestrator.set_master_key(master_password)
+            self.orchestrator.set_master_key(password)
 
             target_user_dir = str(self.orchestrator.data_dir / "qubes")
 
             sync_service = ChainSyncService()
             result = await sync_service.import_from_wallet(
-                wallet_wif=wallet_wif,
+                wallet_wif=wallet_wif or None,
                 category_id=category_id,
                 target_user_dir=target_user_dir,
-                master_password=master_password
+                master_password=password
             )
 
             return result.to_dict()
@@ -8698,6 +8707,105 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
 
         except Exception as e:
             logger.error(f"Failed to get wallet transactions: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    # =============================================================================
+    # Wallet Security (Owner Keys, Whitelists, Stored-Key Approval)
+    # =============================================================================
+
+    async def save_owner_key(self, nft_address: str, owner_wif: str, password: str = None) -> Dict[str, Any]:
+        """Save encrypted owner WIF for an NFT address."""
+        try:
+            if password:
+                self.orchestrator.set_master_key(password)
+            self.orchestrator.save_owner_key(nft_address, owner_wif)
+            return {"success": True}
+        except Exception as e:
+            logger.error(f"Failed to save owner key: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def delete_owner_key(self, nft_address: str, password: str = None) -> Dict[str, Any]:
+        """Delete stored owner WIF for an NFT address."""
+        try:
+            if password:
+                self.orchestrator.set_master_key(password)
+            self.orchestrator.delete_owner_key(nft_address)
+            return {"success": True}
+        except Exception as e:
+            logger.error(f"Failed to delete owner key: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def get_wallet_security(self, password: str = None) -> Dict[str, Any]:
+        """Get wallet security config (addresses with stored keys + whitelists)."""
+        try:
+            if password:
+                self.orchestrator.set_master_key(password)
+            result = self.orchestrator.get_wallet_security()
+            return {"success": True, **result}
+        except Exception as e:
+            logger.error(f"Failed to get wallet security: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def update_whitelist(self, qube_id: str, whitelist: str, password: str = None) -> Dict[str, Any]:
+        """Update auto-send whitelist for a Qube. whitelist is a JSON array string."""
+        try:
+            if password:
+                self.orchestrator.set_master_key(password)
+            import json as _json
+            whitelist_list = _json.loads(whitelist) if isinstance(whitelist, str) else whitelist
+            self.orchestrator.update_whitelist(qube_id, whitelist_list)
+            return {"success": True}
+        except Exception as e:
+            logger.error(f"Failed to update whitelist: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def approve_wallet_tx_stored_key(self, qube_id: str, tx_id: str, password: str = None) -> Dict[str, Any]:
+        """Approve wallet transaction using stored owner WIF (one-click approval)."""
+        try:
+            if password:
+                self.orchestrator.set_master_key(password)
+            await self.orchestrator.load_qube(qube_id)
+            owner_wif = self.orchestrator.get_owner_wif_for_qube(qube_id)
+            if not owner_wif:
+                return {"success": False, "error": "No stored owner key for this Qube's NFT address"}
+            return await self.approve_wallet_transaction(qube_id, tx_id, owner_wif, password)
+        except Exception as e:
+            logger.error(f"Failed to approve tx with stored key: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def create_qube_for_minting(
+        self,
+        name: str,
+        genesis_prompt: str,
+        ai_provider: str,
+        ai_model: str,
+        password: str,
+        evaluation_model: str = "mistral:7b",
+        favorite_color: str = "#6366f1"
+    ) -> Dict[str, Any]:
+        """Create a Qube with minting-specific parameters and return minting info."""
+        try:
+            result = await self.create_qube(
+                name=name,
+                genesis_prompt=genesis_prompt,
+                ai_provider=ai_provider,
+                ai_model=ai_model,
+                evaluation_model=evaluation_model,
+                voice_model="",
+                favorite_color=favorite_color,
+                owner_pubkey="",
+                generate_avatar=False,
+                password=password
+            )
+            if result.get("success") and result.get("qube_id"):
+                qube_id = result["qube_id"]
+                qube = self.orchestrator.qubes.get(qube_id)
+                if qube and qube.genesis_block:
+                    result["public_key"] = qube.genesis_block.public_key
+                    result["genesis_block_hash"] = qube.genesis_block.block_hash
+            return result
+        except Exception as e:
+            logger.error(f"Failed to create qube for minting: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
 
     # =============================================================================
@@ -13124,7 +13232,7 @@ async def main():
             user_bridge = GUIBridge(user_id=user_id)
             result = await user_bridge.sync_to_chain(
                 qube_id=args.qube_id,
-                master_password=password
+                password=password
             )
             print(json.dumps(result))
 
@@ -13158,7 +13266,7 @@ async def main():
                 recipient_address=args.recipient_address,
                 recipient_public_key=args.recipient_public_key,
                 wallet_wif=wallet_wif,
-                master_password=password
+                password=password
             )
             print(json.dumps(result))
 
@@ -13188,7 +13296,7 @@ async def main():
             result = await user_bridge.import_from_wallet(
                 wallet_wif=wallet_wif,
                 category_id=args.category_id,
-                master_password=password
+                password=password
             )
             print(json.dumps(result))
 

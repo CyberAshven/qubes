@@ -82,6 +82,10 @@ class QubePackageData:
     nft_metadata: Optional[Dict[str, Any]] = None
     bcmr_data: Optional[Dict[str, Any]] = None
 
+    # Identity private key (hex-encoded, included for full restore capability)
+    # Safe because the entire package is AES-256-GCM encrypted
+    private_key_hex: Optional[str] = None
+
 
 def create_chain_package(
     qube_dir: Path,
@@ -92,7 +96,8 @@ def create_chain_package(
     user_id: str,
     has_nft: bool = False,
     nft_category_id: Optional[str] = None,
-    encryption_key: Optional[bytes] = None
+    encryption_key: Optional[bytes] = None,
+    master_password: Optional[str] = None
 ) -> Tuple[bytes, bytes]:
     """
     Create an encrypted chain package from Qube data.
@@ -108,6 +113,9 @@ def create_chain_package(
         nft_category_id: NFT category ID if minted
         encryption_key: Optional encryption key for reading encrypted chain_state.
                        If not provided, chain_state is read as plain JSON (legacy mode).
+        master_password: Optional master password for decrypting identity private key.
+                        If provided, the Qube's identity private key is included in the
+                        package (safe because the package itself is AES-256-GCM encrypted).
 
     Returns:
         Tuple of (encrypted_package_bytes, symmetric_key)
@@ -132,7 +140,8 @@ def create_chain_package(
             user_id=user_id,
             has_nft=has_nft,
             nft_category_id=nft_category_id,
-            encryption_key=encryption_key
+            encryption_key=encryption_key,
+            master_password=master_password
         )
 
         # Serialize to JSON
@@ -239,7 +248,8 @@ def unpack_chain_package(
             avatar_data=package_dict.get('avatar_data'),
             avatar_filename=package_dict.get('avatar_filename'),
             nft_metadata=package_dict.get('nft_metadata'),
-            bcmr_data=package_dict.get('bcmr_data')
+            bcmr_data=package_dict.get('bcmr_data'),
+            private_key_hex=package_dict.get('private_key_hex')
         )
 
         logger.info(
@@ -325,7 +335,8 @@ def _collect_qube_data(
     user_id: str,
     has_nft: bool,
     nft_category_id: Optional[str],
-    encryption_key: Optional[bytes] = None
+    encryption_key: Optional[bytes] = None,
+    master_password: Optional[str] = None
 ) -> QubePackageData:
     """
     Collect all Qube data from filesystem.
@@ -374,6 +385,22 @@ def _collect_qube_data(
     # Load BCMR data
     bcmr_data = _load_json_file(qube_dir / "blockchain" / f"{qube_name}_bcmr.json")
 
+    # Extract identity private key if master_password is available
+    private_key_hex = None
+    if master_password:
+        try:
+            qube_metadata = _load_json_file(qube_dir / "chain" / "qube_metadata.json")
+            if qube_metadata and "encrypted_private_key" in qube_metadata:
+                from crypto.keys import decrypt_private_key, serialize_private_key
+                enc_pk = qube_metadata["encrypted_private_key"]
+                private_key = decrypt_private_key(enc_pk, master_password)
+                # Serialize to hex for inclusion in package
+                pk_bytes = serialize_private_key(private_key)
+                private_key_hex = pk_bytes.hex()
+                logger.info("identity_private_key_included", qube_id=qube_id)
+        except Exception as e:
+            logger.warning(f"Could not extract identity private key: {e}")
+
     # Calculate merkle root
     block_hashes = [genesis_block.get('block_hash', '')]
     block_hashes.extend([b.get('block_hash', '') for b in memory_blocks])
@@ -403,7 +430,8 @@ def _collect_qube_data(
         avatar_data=avatar_data,
         avatar_filename=avatar_filename,
         nft_metadata=nft_metadata,
-        bcmr_data=bcmr_data
+        bcmr_data=bcmr_data,
+        private_key_hex=private_key_hex
     )
 
 

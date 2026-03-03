@@ -147,34 +147,34 @@ POSITIONAL_ARG_NAMES = {
     "reset-tutorial": ["user_id", "tab_name"],
     "reset-all-tutorials": ["user_id"],
     "update-show-tutorials": ["user_id", "show"],
-    # Relationships
-    "get-qube-relationships": ["user_id", "qube_id", "password"],
-    "get-relationship-timeline": ["user_id", "qube_id", "entity_id", "password"],
+    # Relationships (password now in secrets, not positional)
+    "get-qube-relationships": ["user_id", "qube_id"],
+    "get-relationship-timeline": ["user_id", "qube_id", "entity_id"],
     "get-clearance-profiles": ["user_id", "qube_id"],
     "get-available-tags": ["user_id", "qube_id"],
     "get-trait-definitions": ["user_id", "qube_id"],
     "suggest-clearance": ["user_id", "qube_id", "entity_id"],
-    "add-relationship-tag": ["user_id", "qube_id", "entity_id", "tag", "password"],
-    "remove-relationship-tag": ["user_id", "qube_id", "entity_id", "tag", "password"],
-    # Clearance
-    "get-pending-clearance-requests": ["user_id", "qube_id", "password"],
-    "approve-clearance-request": ["user_id", "qube_id", "request_id", "password", "expires_in_days"],
-    "deny-clearance-request": ["user_id", "qube_id", "request_id", "password", "reason"],
-    "get-clearance-audit-log": ["user_id", "qube_id", "password"],
-    "set-relationship-clearance": ["user_id", "qube_id", "entity_id", "profile", "password", "field_grants", "field_denials", "expires_in_days"],
-    # Owner info
-    "get-owner-info": ["user_id", "qube_id", "password"],
-    "set-owner-info-field": ["user_id", "qube_id", "password", "category", "key", "value"],
-    "delete-owner-info-field": ["user_id", "qube_id", "password", "category", "key"],
-    "update-owner-info-sensitivity": ["user_id", "qube_id", "password", "category", "key", "sensitivity"],
+    "add-relationship-tag": ["user_id", "qube_id", "entity_id", "tag"],
+    "remove-relationship-tag": ["user_id", "qube_id", "entity_id", "tag"],
+    # Clearance (password now in secrets)
+    "get-pending-clearance-requests": ["user_id", "qube_id"],
+    "approve-clearance-request": ["user_id", "qube_id", "request_id", "expires_in_days"],
+    "deny-clearance-request": ["user_id", "qube_id", "request_id", "reason"],
+    "get-clearance-audit-log": ["user_id", "qube_id"],
+    "set-relationship-clearance": ["user_id", "qube_id", "entity_id", "profile", "field_grants", "field_denials", "expires_in_days"],
+    # Owner info (password now in secrets)
+    "get-owner-info": ["user_id", "qube_id"],
+    "set-owner-info-field": ["user_id", "qube_id", "category", "key", "value"],
+    "delete-owner-info-field": ["user_id", "qube_id", "category", "key"],
+    "update-owner-info-sensitivity": ["user_id", "qube_id", "category", "key", "sensitivity"],
     # Skills
     "get-qube-skills": ["user_id", "qube_id"],
     "save-qube-skills": ["user_id", "qube_id", "skills_data"],
-    "add-skill-xp": ["user_id", "qube_id", "skill_id", "xp_amount"],
+    "add-skill-xp": ["user_id", "qube_id", "skill_id", "xp_amount", "evidence_block_id"],
     "unlock-skill": ["user_id", "qube_id", "skill_id"],
     # Model preferences
     "get-model-preferences": ["user_id", "qube_id"],
-    "set-model-lock": ["user_id", "qube_id", "locked"],
+    "set-model-lock": ["user_id", "qube_id", "locked", "model_name"],
     "set-revolver-mode": ["user_id", "qube_id", "enabled"],
     "set-revolver-mode-pool": ["user_id", "qube_id", "models"],
     "get-revolver-mode-pool": ["user_id", "qube_id"],
@@ -489,9 +489,22 @@ class SidecarServer:
         bridge = await self.state.get_bridge(user_id, password)
         return await self._dispatch_bridge_method(bridge, command, params, secrets)
 
+    # Command-to-method aliases for cases where the lib.rs command name
+    # doesn't match the GUIBridge method name (e.g., abbreviated command
+    # names vs full method names). This avoids renaming lib.rs commands
+    # or duplicating methods.
+    COMMAND_ALIASES = {
+        "get_wallet_info": "get_qube_wallet_info",
+        "propose_wallet_tx": "propose_wallet_transaction",
+        "approve_wallet_tx": "approve_wallet_transaction",
+        "reject_wallet_tx": "reject_wallet_transaction",
+        "owner_withdraw": "owner_withdraw_from_wallet",
+    }
+
     async def _dispatch_bridge_method(self, bridge, command: str, params: dict, secrets: dict) -> Any:
         """Call a GUIBridge method by name, using introspection for parameter mapping."""
         method_name = command.replace("-", "_")
+        method_name = self.COMMAND_ALIASES.get(method_name, method_name)
         method = getattr(bridge, method_name, None)
         if method is None:
             raise ValueError(f"Unknown command: {command} (no method '{method_name}' on GUIBridge)")
@@ -1086,7 +1099,7 @@ class SidecarServer:
     # --- Misc special handlers ---
 
     async def _handle_refresh_auth_token(self, bridge, params, secrets, request_id):
-        token = params.get("token", "")
+        token = secrets.get("token", "") or params.get("token", "")
         return await bridge.refresh_auth_token(token)
 
     async def _handle_get_auth_status(self, bridge, params, secrets, request_id):

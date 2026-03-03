@@ -16,6 +16,7 @@ From the NFT-Bundled Qube Transfer System plan.
 
 import json
 import os
+import secrets
 import shutil
 import tempfile
 from typing import Dict, Any, Optional, Tuple, List
@@ -185,7 +186,8 @@ class ChainSyncService:
         genesis_block: Any,
         user_id: str,
         category_id: str,
-        encryption_key: Optional[bytes] = None
+        encryption_key: Optional[bytes] = None,
+        master_password: Optional[str] = None
     ) -> SyncResult:
         """
         Sync Qube to chain (backup to IPFS)
@@ -230,7 +232,8 @@ class ChainSyncService:
                 user_id=user_id,
                 has_nft=True,
                 nft_category_id=category_id,
-                encryption_key=encryption_key
+                encryption_key=encryption_key,
+                master_password=master_password
             )
 
             # Step 2: Encrypt symmetric key with ECIES to owner
@@ -239,6 +242,27 @@ class ChainSyncService:
                 symmetric_key,
                 owner_public_key_hex
             )
+
+            # Step 2b: Also create password-wrapped key (Option A: password-based import)
+            password_wrapped_key = None
+            if master_password:
+                import base64 as _b64
+                from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+                from cryptography.hazmat.primitives import hashes
+                from cryptography.hazmat.backends import default_backend
+                from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+                pw_salt = secrets.token_bytes(32)
+                kdf = PBKDF2HMAC(
+                    algorithm=hashes.SHA256(), length=32, salt=pw_salt,
+                    iterations=600000, backend=default_backend()
+                )
+                wrapping_key = kdf.derive(master_password.encode('utf-8'))
+                pw_nonce = secrets.token_bytes(12)
+                wrapped = AESGCM(wrapping_key).encrypt(pw_nonce, symmetric_key, None)
+                password_wrapped_key = _b64.b64encode(
+                    pw_salt + pw_nonce + wrapped
+                ).decode('ascii')
 
             # Step 3: Upload to IPFS
             print("  ☁️  Uploading to IPFS...", file=sys.stderr)
@@ -285,7 +309,8 @@ class ChainSyncService:
                 ipfs_cid=ipfs_cid,
                 encrypted_key=encrypted_key,
                 chain_length=chain_length,
-                merkle_root=merkle_root
+                merkle_root=merkle_root,
+                password_wrapped_key=password_wrapped_key
             )
 
             logger.info(
@@ -495,7 +520,7 @@ class ChainSyncService:
 
     async def import_from_wallet(
         self,
-        wallet_wif: str,
+        wallet_wif: Optional[str],
         category_id: str,
         target_user_dir: str,
         master_password: str
@@ -522,8 +547,6 @@ class ChainSyncService:
             ImportResult with imported Qube info
         """
         try:
-            from bitcash import PrivateKey
-
             logger.info(
                 "import_from_wallet_started",
                 category_id=category_id[:16] + "..."
@@ -532,27 +555,7 @@ class ChainSyncService:
             import sys
             print(f"\n📥 Importing Qube from wallet...", file=sys.stderr)
 
-            # Step 1: Parse wallet and get address
-            bitcash_network = "test" if self.network == "chipnet" else "main"
-            wallet = PrivateKey(wallet_wif, network=bitcash_network)
-            wallet_address = wallet.cashtoken_address
-
-            print(f"  🔑 Wallet: {wallet_address[:20]}...", file=sys.stderr)
-
-            # Step 2: Verify wallet owns this NFT
-            print("  🔍 Verifying NFT ownership...", file=sys.stderr)
-            owns_nft = await self.nft_verifier.verify_ownership(
-                category_id,
-                wallet_address
-            )
-
-            if not owns_nft:
-                return ImportResult(
-                    success=False,
-                    error="Wallet does not own NFT with this category"
-                )
-
-            # Step 3: Get chain_sync metadata from BCMR
+            # Step 1: Get chain_sync metadata from BCMR
             print("  📝 Fetching BCMR metadata...", file=sys.stderr)
             chain_sync = self.bcmr_generator.get_chain_sync_metadata(category_id)
 
@@ -564,6 +567,7 @@ class ChainSyncService:
 
             ipfs_cid = chain_sync.get("ipfs_cid")
             encrypted_key = chain_sync.get("encrypted_key")
+            password_wrapped_key = chain_sync.get("password_wrapped_key")
 
             if not ipfs_cid or not encrypted_key:
                 return ImportResult(
@@ -571,7 +575,34 @@ class ChainSyncService:
                     error="Missing ipfs_cid or encrypted_key in BCMR"
                 )
 
-            # Step 4: Download encrypted package from IPFS
+            # Step 2: Determine decryption method and verify ownership
+            use_password_decrypt = bool(password_wrapped_key and master_password and not wallet_wif)
+
+            if wallet_wif:
+                # WIF-based: verify wallet owns the NFT
+                from bitcash import PrivateKey
+                bitcash_network = "test" if self.network == "chipnet" else "main"
+                wallet = PrivateKey(wallet_wif, network=bitcash_network)
+                wallet_address = wallet.cashtoken_address
+                print(f"  🔑 Wallet: {wallet_address[:20]}...", file=sys.stderr)
+
+                print("  🔍 Verifying NFT ownership...", file=sys.stderr)
+                owns_nft = await self.nft_verifier.verify_ownership(
+                    category_id,
+                    wallet_address
+                )
+                if not owns_nft:
+                    return ImportResult(
+                        success=False,
+                        error="Wallet does not own NFT with this category"
+                    )
+            elif not use_password_decrypt:
+                return ImportResult(
+                    success=False,
+                    error="Either wallet_wif or password_wrapped_key is required for import"
+                )
+
+            # Step 3: Download encrypted package from IPFS
             print(f"  ☁️  Downloading from IPFS ({ipfs_cid[:16]}...)", file=sys.stderr)
             encrypted_package = await self._download_from_ipfs(ipfs_cid)
 
@@ -581,26 +612,45 @@ class ChainSyncService:
                     error=f"Failed to download from IPFS: {ipfs_cid}"
                 )
 
-            # Step 5: Get wallet's private key for decryption
-            # Convert bitcash private key to cryptography format
-            wallet_private_key = self._bitcash_to_crypto_key(wallet)
-
-            # Step 6: Decrypt symmetric key
+            # Step 4: Decrypt symmetric key
             print("  🔓 Decrypting package...", file=sys.stderr)
-            symmetric_key = decrypt_symmetric_key(
-                encrypted_key,
-                wallet_private_key
-            )
+            if use_password_decrypt:
+                # Option A: Password-based decryption
+                import base64 as _b64
+                from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+                from cryptography.hazmat.primitives import hashes
+                from cryptography.hazmat.backends import default_backend
+                from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-            # Step 7: Unpack and decrypt Qube data
-            package_data, package_metadata = unpack_chain_package(
+                wrapped_blob = _b64.b64decode(password_wrapped_key)
+                pw_salt = wrapped_blob[:32]
+                pw_nonce = wrapped_blob[32:44]
+                wrapped_ciphertext = wrapped_blob[44:]
+
+                kdf = PBKDF2HMAC(
+                    algorithm=hashes.SHA256(), length=32, salt=pw_salt,
+                    iterations=600000, backend=default_backend()
+                )
+                wrapping_key = kdf.derive(master_password.encode('utf-8'))
+                symmetric_key = AESGCM(wrapping_key).decrypt(pw_nonce, wrapped_ciphertext, None)
+                print("  🔑 Decrypted with password", file=sys.stderr)
+            else:
+                # WIF-based: ECIES decryption
+                wallet_private_key = self._bitcash_to_crypto_key(wallet)
+                symmetric_key = decrypt_symmetric_key(
+                    encrypted_key,
+                    wallet_private_key
+                )
+
+            # Step 5: Unpack and decrypt Qube data
+            package_data = unpack_chain_package(
                 encrypted_package,
                 symmetric_key
             )
 
-            # Step 8: Check if Qube already exists locally
-            qube_id = package_metadata.qube_id
-            qube_name = package_metadata.qube_name
+            # Step 6: Check if Qube already exists locally
+            qube_id = package_data.metadata.qube_id
+            qube_name = package_data.metadata.qube_name
 
             existing_qubes = list(Path(target_user_dir).glob(f"*_{qube_id}"))
             if existing_qubes:
@@ -611,13 +661,49 @@ class ChainSyncService:
                     error=f"Qube {qube_name} ({qube_id}) already exists locally"
                 )
 
+            # Step 7: Re-encrypt Qube's private key with new owner's password
+            print("  🔐 Re-encrypting keys...", file=sys.stderr)
+            from crypto.keys import encrypt_private_key, derive_master_key_from_password
+
+            if package_data.private_key_hex:
+                # Package contains the raw identity private key (included during sync)
+                from cryptography.hazmat.primitives.asymmetric import ec
+                from cryptography.hazmat.backends import default_backend as _backend
+                private_key_int = int(package_data.private_key_hex, 16)
+                private_key = ec.derive_private_key(private_key_int, ec.SECP256K1(), _backend())
+                new_encrypted_private_key = encrypt_private_key(private_key, master_password)
+                logger.info("identity_key_re_encrypted", qube_id=qube_id)
+            else:
+                # No private key in package - create placeholder
+                # The Qube will be read-only until private key is provided
+                new_encrypted_private_key = {
+                    "encrypted_key": "",
+                    "salt": "",
+                    "kdf": "PBKDF2-SHA256",
+                    "iterations": 600000,
+                    "imported_without_key": True
+                }
+                logger.warning(
+                    "import_no_private_key",
+                    msg="No private key in package - Qube imported as read-only"
+                )
+
+            # Step 8: Create target qube directory and derive encryption key
+            qube_dir_name = f"{qube_name}_{qube_id}"
+            qube_dir = Path(target_user_dir) / qube_dir_name
+
+            # Derive encryption key from master password for chain_state encryption
+            import secrets as _secrets
+            salt = _secrets.token_bytes(16)
+            encryption_key = derive_master_key_from_password(master_password, salt)
+
             # Step 9: Restore Qube from package
             print("  📦 Restoring Qube...", file=sys.stderr)
-            qube_dir = restore_qube_from_package(
+            restore_qube_from_package(
                 package_data=package_data,
-                package_metadata=package_metadata,
-                target_user_dir=target_user_dir,
-                master_password=master_password
+                target_dir=qube_dir,
+                new_encrypted_private_key=new_encrypted_private_key,
+                encryption_key=encryption_key
             )
 
             logger.info(
@@ -635,7 +721,7 @@ class ChainSyncService:
                 success=True,
                 qube_id=qube_id,
                 qube_name=qube_name,
-                qube_dir=qube_dir
+                qube_dir=str(qube_dir)
             )
 
         except Exception as e:

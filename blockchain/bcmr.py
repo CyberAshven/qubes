@@ -373,7 +373,8 @@ class BCMRGenerator:
         encrypted_key: str,
         chain_length: int,
         merkle_root: str,
-        key_version: int = 1
+        key_version: int = 1,
+        password_wrapped_key: Optional[str] = None
     ) -> str:
         """
         Update BCMR with chain sync metadata for NFT-bundled storage.
@@ -437,7 +438,7 @@ class BCMRGenerator:
             new_snapshot["extensions"] = {}
 
         # Add/update chain_sync extension
-        new_snapshot["extensions"]["chain_sync"] = {
+        chain_sync_ext = {
             "ipfs_cid": ipfs_cid,
             "encrypted_key": encrypted_key,
             "key_version": key_version,
@@ -446,6 +447,12 @@ class BCMRGenerator:
             "merkle_root": merkle_root,
             "package_version": "1.0"
         }
+
+        # Include password-wrapped key if provided (Option A: password-based import)
+        if password_wrapped_key:
+            chain_sync_ext["password_wrapped_key"] = password_wrapped_key
+
+        new_snapshot["extensions"]["chain_sync"] = chain_sync_ext
 
         # Add new revision
         bcmr_metadata["identities"][category_id][revision_timestamp] = new_snapshot
