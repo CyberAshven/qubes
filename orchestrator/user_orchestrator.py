@@ -15,7 +15,7 @@ from dataclasses import dataclass
 
 from core.qube import Qube
 from core.multi_qube_conversation import MultiQubeConversation
-from crypto.keys import generate_key_pair, derive_qube_id, serialize_public_key, serialize_private_key, deserialize_private_key
+from crypto.keys import generate_key_pair, derive_qube_id, derive_commitment, serialize_public_key, serialize_private_key, deserialize_private_key
 from blockchain.manager import BlockchainManager
 from blockchain.minting_api import MintingAPIClient, MintingAPIError, RegistrationResult, MintingResult
 from config import SecureSettingsManager, APIKeys
@@ -45,6 +45,21 @@ class PendingQubeCreation:
     op_return_data: str = ""
     op_return_hex: str = ""
     qube_wallet_address: str = ""  # P2SH wallet address for Qube earnings
+
+
+@dataclass
+class PendingWcMint:
+    """Temp data held between prepare_qube_mint and finalize_qube_mint"""
+    config: Dict[str, Any]
+    private_key: Any          # EC private key object
+    public_key: Any           # EC public key object
+    qube_id: str
+    commitment: str
+    category_id: str
+    recipient_address: str
+    covenant_address: str
+    avatar_data: Dict[str, Any]
+    voice_model: str
 
 
 class UserOrchestrator:
@@ -85,6 +100,7 @@ class UserOrchestrator:
         self.master_key: Optional[bytes] = None
         self.active_conversations: Dict[str, MultiQubeConversation] = {}  # conversation_id -> conversation
         self.pending_minting: Dict[str, PendingQubeCreation] = {}  # registration_id -> pending creation
+        self.pending_wc_mints: Dict[str, PendingWcMint] = {}  # pending_id -> WC mint temp data
 
         # Initialize secure settings manager (password will be set via set_master_key)
         self.secure_settings = SecureSettingsManager(self.data_dir)
@@ -351,6 +367,256 @@ class UserOrchestrator:
             raise QubesError(
                 f"Failed to create Qube: {str(e)}",
                 context={"config": config},
+                cause=e
+            )
+
+    async def prepare_qube_mint(self, config: Dict[str, Any], user_address: str) -> Dict[str, Any]:
+        """
+        Prepare a Qube for WalletConnect-based minting.
+
+        Generates keys, handles avatar, builds unsigned WC transaction.
+        Stores temp data in pending_wc_mints. No Qube is created yet —
+        that happens in finalize_qube_mint() after the wallet signs.
+
+        Args:
+            config: Qube configuration (same fields as create_qube)
+            user_address: User's BCH address from WalletConnect session
+
+        Returns:
+            {
+                "pending_id": str,
+                "qube_id": str,
+                "wc_transaction": str,
+                "category_id": str,
+                "commitment": str
+            }
+        """
+        try:
+            logger.info("preparing_wc_qube_mint", name=config.get("name"))
+
+            # Validate required fields
+            required_fields = ["name", "genesis_prompt", "ai_model", "owner_pubkey"]
+            for field in required_fields:
+                if field not in config:
+                    raise QubesError(f"Missing required field: {field}")
+
+            # Validate owner_pubkey format
+            owner_pubkey = config["owner_pubkey"]
+            if not owner_pubkey.startswith(('02', '03')) or len(owner_pubkey) != 66:
+                raise QubesError("Invalid owner_pubkey format")
+
+            # Derive token-aware address for NFT recipient
+            from crypto.bch_script import pubkey_to_token_address
+            config["wallet_address"] = pubkey_to_token_address(owner_pubkey, network="mainnet")
+
+            # Generate keys
+            private_key, public_key = generate_key_pair()
+            qube_id = derive_qube_id(public_key)
+            commitment = derive_commitment(public_key)
+
+            logger.debug("wc_mint_keys_generated", qube_id=qube_id[:16] + "...")
+
+            # Handle avatar
+            avatar_data = await self._handle_avatar_creation(config, qube_id)
+
+            # Determine voice model
+            voice_model = config.get("voice_model") or self._default_voice_for_model(config["ai_model"])
+
+            # Build unsigned WC transaction via blockchain manager
+            # We create a minimal object with public_key and qube_id for the minter
+            class TempQubeRef:
+                pass
+            temp_ref = TempQubeRef()
+            temp_ref.public_key = public_key
+            temp_ref.qube_id = qube_id
+
+            blockchain_manager = BlockchainManager(network="mainnet")
+            wc_result = await blockchain_manager.prepare_mint_transaction(
+                qube=temp_ref,
+                recipient_address=config["wallet_address"],
+                user_address=user_address
+            )
+
+            # Generate a unique pending ID
+            import uuid
+            pending_id = str(uuid.uuid4())[:8]
+
+            # Store temp data
+            self.pending_wc_mints[pending_id] = PendingWcMint(
+                config=config,
+                private_key=private_key,
+                public_key=public_key,
+                qube_id=qube_id,
+                commitment=commitment,
+                category_id=wc_result["category_id"],
+                recipient_address=config["wallet_address"],
+                covenant_address=wc_result["covenant_address"],
+                avatar_data=avatar_data,
+                voice_model=voice_model
+            )
+
+            logger.info(
+                "wc_mint_prepared",
+                pending_id=pending_id,
+                qube_id=qube_id[:16] + "..."
+            )
+
+            return {
+                "pending_id": pending_id,
+                "qube_id": qube_id,
+                "wc_transaction": wc_result["wc_transaction"],
+                "category_id": wc_result["category_id"],
+                "commitment": commitment
+            }
+
+        except Exception as e:
+            logger.error("prepare_wc_mint_failed", error=str(e), exc_info=True)
+            raise QubesError(
+                f"Failed to prepare WC mint: {str(e)}",
+                context={"config": config},
+                cause=e
+            )
+
+    async def finalize_qube_mint(self, pending_id: str, mint_txid: str, password: str) -> "Qube":
+        """
+        Finalize a WalletConnect-minted Qube.
+
+        Called after the wallet has signed and broadcast the mint transaction.
+        Creates the actual Qube object, updates genesis with NFT info,
+        generates BCMR, uploads to IPFS, registers in orchestrator.
+
+        Args:
+            pending_id: ID from prepare_qube_mint
+            mint_txid: Transaction ID from the wallet's broadcast
+            password: User's master password (for saving encrypted private key)
+
+        Returns:
+            Created Qube instance
+        """
+        try:
+            pending = self.pending_wc_mints.get(pending_id)
+            if not pending:
+                raise QubesError(f"No pending WC mint found for ID: {pending_id}")
+
+            logger.info(
+                "finalizing_wc_qube_mint",
+                pending_id=pending_id,
+                qube_id=pending.qube_id[:16] + "...",
+                mint_txid=mint_txid
+            )
+
+            config = pending.config
+
+            # Create genesis block
+            creator_name = config.get("creator", self.user_id)
+            genesis_block = {
+                "block_type": "GENESIS",
+                "block_number": 0,
+                "qube_id": pending.qube_id,
+                "qube_name": config["name"],
+                "creator": creator_name,
+                "public_key": serialize_public_key(pending.public_key),
+                "birth_timestamp": int(datetime.now().timestamp()),
+                "genesis_prompt": config["genesis_prompt"],
+                "genesis_prompt_encrypted": config.get("encrypt_genesis", False),
+                "ai_provider": config.get("ai_provider", "openai"),
+                "ai_model": config["ai_model"],
+                "voice_model": pending.voice_model,
+                "avatar": pending.avatar_data,
+                "favorite_color": config.get("favorite_color", "#4A90E2"),
+                "home_blockchain": config.get("home_blockchain", "bitcoincash"),
+                "default_trust_level": config.get("default_trust_level", 50),
+                "temporary": False,
+                "merkle_root": None,
+                "previous_hash": "0" * 64,
+                # NFT info — included at creation time
+                "nft_category_id": pending.category_id,
+                "mint_txid": mint_txid,
+                "bcmr_uri": ""  # Will be updated after IPFS upload
+            }
+
+            # Optionally encrypt genesis prompt
+            if genesis_block["genesis_prompt_encrypted"]:
+                from crypto.encryption import encrypt_data
+                import hashlib
+                private_key_bytes = serialize_private_key(pending.private_key)
+                encryption_key = hashlib.sha256(private_key_bytes).digest()
+                encrypted_prompt = encrypt_data(
+                    genesis_block["genesis_prompt"].encode(),
+                    encryption_key
+                )
+                genesis_block["genesis_prompt"] = encrypted_prompt.hex()
+
+            # Create Qube instance
+            qubes_dir = self.data_dir / "qubes"
+            qubes_dir.mkdir(parents=True, exist_ok=True)
+
+            qube = Qube(
+                qube_id=pending.qube_id,
+                private_key=pending.private_key,
+                public_key=pending.public_key,
+                genesis_block=genesis_block,
+                data_dir=qubes_dir,
+                user_name=self.user_id
+            )
+
+            # Finalize NFT (BCMR, IPFS, registry)
+            blockchain_manager = BlockchainManager(network="mainnet")
+            finalize_result = await blockchain_manager.finalize_qube_nft(
+                qube=qube,
+                mint_txid=mint_txid,
+                category_id=pending.category_id,
+                commitment=pending.commitment,
+                recipient_address=pending.recipient_address,
+                upload_to_ipfs=True
+            )
+
+            # Update genesis with BCMR URI
+            if finalize_result.get("ipfs_uri"):
+                qube.genesis_block.bcmr_uri = finalize_result["ipfs_uri"]
+                genesis_dict = qube.genesis_block.to_dict()
+                genesis_dict["bcmr_uri"] = finalize_result["ipfs_uri"]
+
+            # Start P2P network (optional, non-blocking)
+            try:
+                await qube.start_network()
+            except Exception as e:
+                logger.warning("p2p_network_start_failed", error=str(e))
+
+            # Register in orchestrator
+            self.qubes[pending.qube_id] = qube
+            qube._orchestrator = self
+
+            # Save Qube to storage
+            await self._save_qube(qube, pending.private_key)
+
+            # Initialize skills
+            self._initialize_qube_skills(qube)
+
+            # Apply auto-anchor preferences
+            prefs = self.preferences_manager.get_block_preferences()
+            qube.chain_state.set_auto_anchor(
+                individual_enabled=prefs.individual_auto_anchor,
+                individual_threshold=prefs.individual_anchor_threshold
+            )
+
+            # Clean up pending data
+            del self.pending_wc_mints[pending_id]
+
+            logger.info(
+                "wc_qube_mint_finalized",
+                qube_id=pending.qube_id[:16] + "...",
+                mint_txid=mint_txid,
+                name=config["name"]
+            )
+
+            return qube
+
+        except Exception as e:
+            logger.error("finalize_wc_mint_failed", error=str(e), exc_info=True)
+            raise QubesError(
+                f"Failed to finalize WC mint: {str(e)}",
+                context={"pending_id": pending_id, "mint_txid": mint_txid},
                 cause=e
             )
 
@@ -1831,11 +2097,33 @@ class UserOrchestrator:
             # Create chain directory
             chain_dir.mkdir(parents=True, exist_ok=True)
 
+            # Resize avatar to 512x512 max (preserving aspect ratio)
+            try:
+                from PIL import Image
+                img = Image.open(str(avatar_file))
+                if img.width > 512 or img.height > 512:
+                    img.thumbnail((512, 512), Image.LANCZOS)
+                if img.mode in ("RGBA", "P"):
+                    # Save as PNG to preserve transparency
+                    resized_path = chain_dir / f"{qube_id[:8]}_avatar.png"
+                    img.save(str(resized_path), format="PNG", optimize=True)
+                    avatar_file = resized_path
+                elif img.width > 512 or img.height > 512 or avatar_file.suffix.lower() not in ('.png', '.jpg', '.jpeg'):
+                    resized_path = chain_dir / f"{qube_id[:8]}_avatar.jpg"
+                    if img.mode != "RGB":
+                        img = img.convert("RGB")
+                    img.save(str(resized_path), format="JPEG", quality=90, optimize=True)
+                    avatar_file = resized_path
+                logger.info("avatar_resized", width=img.width, height=img.height)
+            except Exception as e:
+                logger.warning(f"avatar_resize_failed: {e}, using original")
+
             # Copy avatar to chain directory with local filename
             local_avatar_filename = f"{qube_id[:8]}_avatar{avatar_file.suffix}"
             local_avatar_path = chain_dir / local_avatar_filename
 
-            shutil.copy2(avatar_file, local_avatar_path)
+            if local_avatar_path != avatar_file:
+                shutil.copy2(avatar_file, local_avatar_path)
 
             logger.info("uploading_avatar", path=str(local_avatar_path))
 
@@ -2075,7 +2363,9 @@ class UserOrchestrator:
         individual_anchor_threshold: Optional[int] = None,
         group_auto_anchor: Optional[bool] = None,
         group_anchor_threshold: Optional[int] = None,
-        auto_sync_ipfs_on_anchor: Optional[bool] = None
+        auto_sync_ipfs_on_anchor: Optional[bool] = None,
+        auto_sync_ipfs_periodic: Optional[bool] = None,
+        auto_sync_ipfs_interval: Optional[int] = None
     ) -> BlockPreferences:
         """
         Update block-related preferences
@@ -2086,6 +2376,8 @@ class UserOrchestrator:
             group_auto_anchor: Enable/disable auto-anchor for group chats
             group_anchor_threshold: Blocks between anchors for group chats
             auto_sync_ipfs_on_anchor: Enable/disable auto-sync to IPFS after auto-anchor
+            auto_sync_ipfs_periodic: Enable/disable periodic background IPFS sync
+            auto_sync_ipfs_interval: Interval in minutes for periodic sync (15, 30, 45, 60)
 
         Returns:
             Updated BlockPreferences
@@ -2095,7 +2387,9 @@ class UserOrchestrator:
             individual_anchor_threshold=individual_anchor_threshold,
             group_auto_anchor=group_auto_anchor,
             group_anchor_threshold=group_anchor_threshold,
-            auto_sync_ipfs_on_anchor=auto_sync_ipfs_on_anchor
+            auto_sync_ipfs_on_anchor=auto_sync_ipfs_on_anchor,
+            auto_sync_ipfs_periodic=auto_sync_ipfs_periodic,
+            auto_sync_ipfs_interval=auto_sync_ipfs_interval
         )
         logger.info(
             "block_preferences_updated",

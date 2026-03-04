@@ -1,13 +1,45 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { open } from '@tauri-apps/plugin-dialog';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
+import Cropper, { Area } from 'react-easy-crop';
 import { GlassCard, GlassButton, GlassInput } from '../glass';
 import DarkSelect from '../DarkSelect';
 import { Qube } from '../../types';
 import { useAuth } from '../../hooks/useAuth';
 import { useModels } from '../../hooks/useModels';
 import { useVoiceLibrary } from '../../contexts/VoiceLibraryContext';
+import { useWallet } from '../../contexts/WalletContext';
+import WalletConnectButton from '../WalletConnectButton';
+
+// Helper: create a cropped image from canvas and return base64 PNG
+async function getCroppedImg(imageSrc: string, croppedAreaPixels: Area): Promise<string> {
+  const image = new Image();
+  image.crossOrigin = 'anonymous';
+  await new Promise<void>((resolve, reject) => {
+    image.onload = () => resolve();
+    image.onerror = reject;
+    image.src = imageSrc;
+  });
+
+  const canvas = document.createElement('canvas');
+  const size = Math.min(croppedAreaPixels.width, croppedAreaPixels.height, 512);
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d')!;
+
+  ctx.drawImage(
+    image,
+    croppedAreaPixels.x,
+    croppedAreaPixels.y,
+    croppedAreaPixels.width,
+    croppedAreaPixels.height,
+    0, 0, size, size
+  );
+
+  // Return raw base64 (no data: prefix)
+  return canvas.toDataURL('image/png').replace(/^data:image\/png;base64,/, '');
+}
 
 interface CreateQubeModalProps {
   isOpen: boolean;
@@ -284,6 +316,32 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
 
   // Minting state
   const [mintError, setMintError] = useState<string | null>(null);
+
+  // Avatar crop state
+  const [cropImageSrc, setCropImageSrc] = useState<string | null>(null);
+  const [crop, setCrop] = useState({ x: 0, y: 0 });
+  const [zoom, setZoom] = useState(1);
+  const [croppedAreaPixels, setCroppedAreaPixels] = useState<Area | null>(null);
+  const [isCropping, setIsCropping] = useState(false);
+
+  const onCropComplete = useCallback((_croppedArea: Area, croppedPixels: Area) => {
+    setCroppedAreaPixels(croppedPixels);
+  }, []);
+
+  const handleCropConfirm = async () => {
+    if (!cropImageSrc || !croppedAreaPixels) return;
+    setIsCropping(true);
+    try {
+      const base64 = await getCroppedImg(cropImageSrc, croppedAreaPixels);
+      const tempPath = await invoke<string>('save_cropped_avatar', { base64Data: base64 });
+      setFormData({ ...formData, avatarFile: tempPath, generateAvatar: false });
+      setCropImageSrc(null);
+    } catch (err) {
+      console.error('Failed to crop avatar:', err);
+    } finally {
+      setIsCropping(false);
+    }
+  };
   const [voiceDropdownOpen, setVoiceDropdownOpen] = useState(false);
   const voiceDropdownRef = useRef<HTMLDivElement>(null);
   const voiceButtonRef = useRef<HTMLButtonElement>(null);
@@ -387,13 +445,31 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
 
   // Custom voices now come from VoiceLibraryContext - no need for local loading
 
-  // Create qube via covenant minting (single step)
+  const wallet = useWallet();
+
+  // Mint status for multi-step WC flow
+  const [mintStatus, setMintStatus] = useState<string>('');
+
+  // Create qube via WalletConnect covenant minting
   const handleCreateQube = async () => {
+    if (!wallet.connected || !wallet.address) {
+      setMintError('Please connect your wallet first');
+      return;
+    }
+
     setLoading(true);
     setMintError(null);
 
     try {
-      const result = await invoke<Qube>('create_qube', {
+      // Step 1: Prepare mint (generate keys, build unsigned WC transaction)
+      setMintStatus('Preparing transaction...');
+      const prepResult = await invoke<{
+        pending_id: string;
+        qube_id: string;
+        wc_transaction: string;
+        category_id: string;
+        commitment: string;
+      }>('prepare_qube_mint', {
         userId,
         name: formData.name,
         genesisPrompt: formData.genesisPrompt,
@@ -401,6 +477,7 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
         aiModel: formData.aiModel,
         voiceModel: formData.voiceModel || '',
         ownerPubkey: formData.ownerPubkey,
+        userAddress: wallet.address,
         password,
         encryptGenesis: formData.encryptGenesis || false,
         favoriteColor: formData.favoriteColor,
@@ -409,12 +486,39 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
         avatarStyle: formData.avatarStyle || null,
       });
 
-      // Success — show celebration screen
-      console.log('[Minting] Qube created via covenant:', result.qube_id);
+      console.log('[Minting] WC transaction prepared:', prepResult.qube_id);
+
+      // Step 2: Send to wallet for signing
+      setMintStatus('Approve in your wallet...');
+      const signResult = await wallet.signTransaction(prepResult.wc_transaction);
+
+      if (!signResult.signedTransactionHash) {
+        throw new Error('Wallet did not return a transaction hash');
+      }
+
+      console.log('[Minting] Wallet signed tx:', signResult.signedTransactionHash);
+
+      // Step 3: Finalize (create Qube with txid, BCMR, IPFS)
+      setMintStatus('Finalizing...');
+      const qube = await invoke<Qube>('finalize_qube_mint', {
+        userId,
+        pendingId: prepResult.pending_id,
+        mintTxid: signResult.signedTransactionHash,
+        password,
+      });
+
+      console.log('[Minting] Qube created via WC covenant:', qube.qube_id);
+      setMintStatus('');
       setSuccess(true);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to create qube:', error);
-      setMintError(`Failed to create Qube: ${error}`);
+      const msg = error?.message || String(error);
+      if (msg.includes('User rejected') || msg.includes('rejected')) {
+        setMintError('Transaction rejected by wallet');
+      } else {
+        setMintError(`Failed to create Qube: ${msg}`);
+      }
+      setMintStatus('');
     } finally {
       setLoading(false);
     }
@@ -988,6 +1092,26 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
               )}
             </div>
 
+            {/* WalletConnect — required for minting */}
+            <div className="mt-4 p-4 bg-glass-bg border border-glass-border rounded-lg">
+              <label className="block text-sm font-medium text-text-secondary mb-2">
+                Connect Wallet for Minting *
+              </label>
+              <p className="text-xs text-text-tertiary mb-3">
+                Your wallet signs the mint transaction. Your private keys never leave the wallet.
+                <br />
+                Supported: Cashonize, Paytaca, Zapit, Electron Cash
+              </p>
+              <WalletConnectButton />
+              {wallet.connected && wallet.address && (
+                <p className="text-xs text-accent-primary mt-2">
+                  Connected: {wallet.address.length > 30
+                    ? wallet.address.slice(0, 20) + '...' + wallet.address.slice(-8)
+                    : wallet.address}
+                </p>
+              )}
+            </div>
+
             <div>
               <label className="flex items-center gap-2 cursor-pointer">
                 <input
@@ -1057,11 +1181,10 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
                       });
 
                       if (filePath && typeof filePath === 'string') {
-                        setFormData({
-                          ...formData,
-                          avatarFile: filePath,
-                          generateAvatar: false
-                        });
+                        // Open crop modal with the selected image
+                        setCropImageSrc(convertFileSrc(filePath));
+                        setCrop({ x: 0, y: 0 });
+                        setZoom(1);
                       }
                     } catch (err) {
                       console.error('Error opening file dialog:', err);
@@ -1213,7 +1336,7 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
 
             <div className="bg-accent-primary/10 border border-accent-primary/30 rounded-lg p-4">
               <p className="text-text-primary text-sm">
-                This will create your Qube and mint its identity as an immutable NFT on Bitcoin Cash via the on-chain covenant.
+                Your connected wallet will sign the mint transaction. This creates your Qube's identity as an immutable NFT on Bitcoin Cash via the on-chain covenant.
               </p>
             </div>
 
@@ -1246,8 +1369,14 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
                     Next
                   </GlassButton>
                 ) : (
-                  <GlassButton variant="primary" onClick={handleCreateQube} loading={loading}>
-                    Create & Mint Qube
+                  <GlassButton
+                    variant="primary"
+                    onClick={handleCreateQube}
+                    loading={loading}
+                    disabled={!wallet.connected}
+                    title={!wallet.connected ? 'Connect your wallet first' : ''}
+                  >
+                    {mintStatus || 'Create & Mint Qube'}
                   </GlassButton>
                 )}
               </div>
@@ -1256,6 +1385,51 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
           </>
         )}
       </GlassCard>
+
+      {/* Avatar Crop Modal */}
+      {cropImageSrc && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 backdrop-blur-sm">
+          <div className="bg-surface-primary border border-border-subtle rounded-xl w-full max-w-lg p-4">
+            <h3 className="text-lg font-display text-text-primary mb-3 text-center">Crop Avatar</h3>
+            <div className="relative w-full" style={{ height: '400px' }}>
+              <Cropper
+                image={cropImageSrc}
+                crop={crop}
+                zoom={zoom}
+                aspect={1}
+                cropShape="round"
+                showGrid={false}
+                onCropChange={setCrop}
+                onZoomChange={setZoom}
+                onCropComplete={onCropComplete}
+              />
+            </div>
+            <div className="flex items-center gap-2 mt-3 px-2">
+              <span className="text-xs text-text-tertiary">Zoom</span>
+              <input
+                type="range"
+                min={1}
+                max={3}
+                step={0.1}
+                value={zoom}
+                onChange={(e) => setZoom(Number(e.target.value))}
+                className="flex-1 accent-accent-primary"
+              />
+            </div>
+            <div className="flex gap-3 mt-4 justify-end">
+              <button
+                onClick={() => setCropImageSrc(null)}
+                className="px-4 py-2 text-sm text-text-secondary hover:text-text-primary transition-colors"
+              >
+                Cancel
+              </button>
+              <GlassButton variant="primary" onClick={handleCropConfirm} loading={isCropping}>
+                Apply Crop
+              </GlassButton>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

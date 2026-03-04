@@ -87,8 +87,8 @@ PRE_BRIDGE_COMMANDS = {
 # Commands that invalidate qube cache after execution
 CACHE_INVALIDATING = {
     "delete-qube", "reset-qube", "anchor-session", "discard-session",
-    "create-qube", "transfer-qube", "update-qube-config",
-    "delete-session-block", "discard-last-block",
+    "create-qube", "transfer-qube", "update-qube-config", "import-qube",
+    "delete-session-block", "discard-last-block", "finalize-qube-mint",
 }
 
 # Map commands to their positional arg names (from Rust args vec).
@@ -203,6 +203,9 @@ POSITIONAL_ARG_NAMES = {
     "check-minting-status": ["user_id", "registration_id"],
     "submit-payment-txid": ["user_id", "registration_id", "txid"],
     "cancel-pending-minting": ["user_id", "registration_id"],
+    # Export / Import
+    "export-qube": ["qube_id", "export_path"],
+    "import-qube": ["import_path"],
     # API key batch
     "save-api-keys": ["user_id"],
     "update-qube-nft": ["user_id", "qube_id"],
@@ -297,12 +300,16 @@ class SidecarState:
 class SidecarServer:
     """JSONL server: reads requests from stdin, writes responses to stdout."""
 
+    AUTO_SYNC_CHECK_INTERVAL = 60  # Check preferences every 60 seconds
+
     def __init__(self):
         self.state = SidecarState()
         self._output_lock = asyncio.Lock()
         self._running = True
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._pending_tasks: set = set()  # Track in-flight request tasks
+        self._auto_sync_task: Optional[asyncio.Task] = None
+        self._last_sync_times: Dict[str, float] = {}  # qube_id -> last sync timestamp
 
     # ------------------------------------------------------------------
     # Main loop
@@ -322,6 +329,9 @@ class SidecarServer:
         # Signal ready to Rust
         await self.send_response({"id": None, "ready": True})
         logger.info("sidecar_server_ready")
+
+        # Launch auto-sync background task
+        self._auto_sync_task = asyncio.create_task(self._auto_sync_loop())
 
         # Read stdin lines in executor (non-blocking)
         while self._running:
@@ -352,6 +362,14 @@ class SidecarServer:
             self._pending_tasks.add(task)
             task.add_done_callback(self._pending_tasks.discard)
 
+        # Cancel auto-sync
+        if self._auto_sync_task:
+            self._auto_sync_task.cancel()
+            try:
+                await self._auto_sync_task
+            except asyncio.CancelledError:
+                pass
+
         # Drain in-flight tasks before exiting
         if self._pending_tasks:
             logger.info(f"draining_pending_tasks count={len(self._pending_tasks)}")
@@ -373,6 +391,109 @@ class SidecarServer:
         except Exception as e:
             logger.error(f"unhandled_error request_id={request_id} error={e}", exc_info=True)
             await self.send_response({"id": request_id, "error": str(e)})
+
+    # ------------------------------------------------------------------
+    # Auto-sync background task (every 15 minutes)
+    # ------------------------------------------------------------------
+
+    def _get_sync_preferences(self):
+        """Read periodic sync preferences from user settings."""
+        bridge = self.state.bridge
+        if not bridge or not bridge.orchestrator:
+            return False, 900  # disabled, 15 min default
+        try:
+            prefs = bridge.orchestrator.get_block_preferences()
+            enabled = getattr(prefs, 'auto_sync_ipfs_periodic', False)
+            interval_min = getattr(prefs, 'auto_sync_ipfs_interval', 15)
+            return enabled, interval_min * 60  # convert to seconds
+        except Exception:
+            return False, 900
+
+    async def _auto_sync_loop(self):
+        """Background task: sync loaded qubes with NFTs to IPFS on user-configured interval."""
+        import time
+
+        # Wait 60 seconds before first check (let app stabilize)
+        await asyncio.sleep(60)
+
+        while self._running:
+            try:
+                enabled, interval_secs = self._get_sync_preferences()
+                if enabled:
+                    await self._run_auto_sync(interval_secs)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.error(f"auto_sync_error: {e}")
+
+            try:
+                await asyncio.sleep(self.AUTO_SYNC_CHECK_INTERVAL)
+            except asyncio.CancelledError:
+                raise
+
+    async def _run_auto_sync(self, interval_secs: int = 900):
+        """Sync all eligible qubes to IPFS."""
+        import time
+
+        # Need an active bridge with master key set
+        bridge = self.state.bridge
+        if not bridge or not bridge.orchestrator:
+            return
+
+        orchestrator = bridge.orchestrator
+        if not orchestrator.qubes:
+            return
+
+        # Check if master key is available (user must have authenticated)
+        password = os.environ.get("QUBES_PASSWORD")
+        if not password:
+            return
+
+        now = time.time()
+        synced_count = 0
+
+        for qube_id, qube in list(orchestrator.qubes.items()):
+            # Skip if synced recently
+            last_sync = self._last_sync_times.get(qube_id, 0)
+            if now - last_sync < interval_secs:
+                continue
+
+            # Skip qubes without NFT
+            qube_dir = self._find_qube_dir(orchestrator, qube_id)
+            if not qube_dir:
+                continue
+
+            nft_file = qube_dir / "chain" / "nft_metadata.json"
+            if not nft_file.exists():
+                continue
+
+            try:
+                # Reuse the bridge's sync method (handles anchoring, IPFS upload, etc.)
+                result = await bridge.sync_to_chain(
+                    qube_id=qube_id,
+                    password=password
+                )
+                if result.get("success"):
+                    self._last_sync_times[qube_id] = now
+                    synced_count += 1
+                    logger.info(f"auto_sync_success qube={qube_id} cid={result.get('ipfs_cid', '?')[:16]}...")
+                else:
+                    logger.warning(f"auto_sync_failed qube={qube_id} error={result.get('error', '?')}")
+            except Exception as e:
+                logger.error(f"auto_sync_exception qube={qube_id} error={e}")
+
+        if synced_count > 0:
+            logger.info(f"auto_sync_cycle_complete synced={synced_count}")
+
+    def _find_qube_dir(self, orchestrator, qube_id: str) -> Optional[Path]:
+        """Find a qube's data directory."""
+        qubes_dir = orchestrator.data_dir / "qubes"
+        if not qubes_dir.exists():
+            return None
+        for entry in qubes_dir.iterdir():
+            if entry.is_dir() and qube_id in entry.name:
+                return entry
+        return None
 
     # ------------------------------------------------------------------
     # Output

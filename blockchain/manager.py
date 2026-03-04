@@ -82,6 +82,151 @@ class BlockchainManager:
                 category_id=self.minter.category_id[:16] + "..."
             )
 
+    async def prepare_mint_transaction(
+        self,
+        qube,
+        recipient_address: str,
+        user_address: str
+    ) -> Dict[str, Any]:
+        """
+        Build an unsigned WalletConnect transaction for minting.
+
+        Returns the WC transaction object that the frontend sends to the
+        user's wallet for signing. No Qube is created yet.
+
+        Args:
+            qube: Qube-like object with public_key (or temp key holder)
+            recipient_address: BCH cashaddr (token-aware)
+            user_address: User's BCH address from WalletConnect session
+
+        Returns:
+            {
+                "wc_transaction": str,
+                "category_id": str,
+                "commitment": str,
+                "covenant_address": str,
+                "recipient_address": str
+            }
+        """
+        if self.dev_mode:
+            import hashlib
+            mock_commitment = derive_commitment(qube.public_key)
+            return {
+                "wc_transaction": "{}",
+                "category_id": hashlib.sha256(f"mock_{qube.qube_id}".encode()).hexdigest(),
+                "commitment": mock_commitment,
+                "covenant_address": "mock_covenant",
+                "recipient_address": recipient_address
+            }
+
+        return await self.minter.prepare_mint_transaction(
+            qube, recipient_address, user_address
+        )
+
+    async def finalize_qube_nft(
+        self,
+        qube,
+        mint_txid: str,
+        category_id: str,
+        commitment: str,
+        recipient_address: str,
+        upload_to_ipfs: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Finalize a minted Qube NFT — BCMR, IPFS, registry.
+
+        Called after the wallet has signed and broadcast the mint transaction.
+        This does steps 2-5 of the full mint_qube_nft workflow.
+
+        Args:
+            qube: Qube instance
+            mint_txid: Transaction ID from the wallet's broadcast
+            category_id: NFT category ID
+            commitment: NFT commitment hex
+            recipient_address: BCH cashaddr
+            upload_to_ipfs: Whether to upload BCMR to IPFS
+
+        Returns:
+            Same structure as mint_qube_nft
+        """
+        logger.info(
+            "finalizing_qube_nft",
+            qube_id=qube.qube_id,
+            mint_txid=mint_txid
+        )
+
+        mint_result = {
+            "category_id": category_id,
+            "mint_txid": mint_txid,
+            "commitment": commitment,
+            "recipient_address": recipient_address,
+            "network": self.network
+        }
+
+        # Step 2: Generate BCMR metadata
+        commitment_data = {
+            "qube_id": qube.qube_id,
+            "genesis_block_hash": qube.genesis_block.block_hash,
+            "creator_public_key": getattr(qube.genesis_block, "creator", ""),
+            "birth_timestamp": qube.genesis_block.birth_timestamp,
+            "name": getattr(qube, 'name', qube.qube_id),
+            "version": "1.0"
+        }
+
+        qube_name = getattr(qube, 'name', qube.qube_id)
+        qube_bcmr_generator = BCMRGenerator(qube_dir=qube.data_dir, qube_name=qube_name)
+
+        bcmr_metadata = qube_bcmr_generator.generate_bcmr_metadata(
+            category_id=category_id,
+            qube=qube,
+            commitment_data=commitment_data
+        )
+
+        bcmr_path = qube_bcmr_generator.save_bcmr_locally(
+            category_id=category_id,
+            bcmr_metadata=bcmr_metadata
+        )
+
+        result = {
+            **mint_result,
+            "bcmr_local_path": bcmr_path
+        }
+
+        # Step 3: Upload to IPFS
+        if upload_to_ipfs:
+            ipfs_uri = await self.ipfs_uploader.upload_bcmr(
+                bcmr_metadata,
+                qube_name=qube_name,
+                qube_id=qube.qube_id
+            )
+            if ipfs_uri:
+                result["ipfs_uri"] = ipfs_uri
+                result["ipfs_gateway_url"] = self.ipfs_uploader.get_gateway_url(ipfs_uri)
+            else:
+                logger.warning("ipfs_upload_skipped")
+                result["ipfs_uri"] = None
+
+        # Step 4: Save NFT metadata to qube
+        self._save_nft_metadata_to_qube(qube, mint_result)
+
+        # Step 5: Register in local registry
+        self.registry.register_nft(
+            qube_id=qube.qube_id,
+            category_id=category_id,
+            mint_txid=mint_txid,
+            recipient_address=recipient_address,
+            commitment=commitment,
+            network=self.network
+        )
+
+        logger.info(
+            "qube_nft_finalized",
+            qube_id=qube.qube_id,
+            category_id=category_id[:16] + "..."
+        )
+
+        return result
+
     async def mint_qube_nft(
         self,
         qube,

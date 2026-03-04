@@ -6,7 +6,7 @@
  *
  * Usage: tsx mint-cli.ts '<json_args>'
  *
- * JSON args:
+ * JSON args (broadcast mode — default):
  *   {
  *     "commitment": "64-char hex (32 bytes)",
  *     "recipient_address": "bitcoincash:z... (token-aware cashaddr)",
@@ -14,10 +14,29 @@
  *     "platform_public_key": "66-char compressed hex pubkey"
  *   }
  *
- * Output (JSON to stdout):
+ * JSON args (walletconnect mode):
+ *   {
+ *     "commitment": "64-char hex (32 bytes)",
+ *     "recipient_address": "bitcoincash:z... (token-aware cashaddr)",
+ *     "user_address": "bitcoincash:z... (user's token-aware address from WC)",
+ *     "platform_public_key": "66-char compressed hex pubkey",
+ *     "mode": "walletconnect"
+ *   }
+ *
+ * Output — broadcast mode (JSON to stdout):
  *   {
  *     "success": true,
  *     "mint_txid": "...",
+ *     "category_id": "...",
+ *     "commitment": "...",
+ *     "covenant_address": "..."
+ *   }
+ *
+ * Output — walletconnect mode (JSON to stdout):
+ *   {
+ *     "success": true,
+ *     "mode": "walletconnect",
+ *     "wc_transaction": "...stringified WC transaction object...",
  *     "category_id": "...",
  *     "commitment": "...",
  *     "covenant_address": "..."
@@ -28,11 +47,12 @@
  */
 
 import {
-  Contract, ElectrumNetworkProvider, TransactionBuilder, SignatureTemplate
+  Contract, ElectrumNetworkProvider, TransactionBuilder, SignatureTemplate,
+  placeholderP2PKHUnlocker
 } from 'cashscript';
 import artifact from './qubes_mint.json' with { type: 'json' };
 import { createHash } from 'crypto';
-import { lockingBytecodeToCashAddress } from '@bitauth/libauth';
+import { lockingBytecodeToCashAddress, stringify } from '@bitauth/libauth';
 
 // ── Constants ──────────────────────────────────────────────────────
 
@@ -60,8 +80,10 @@ if (!rawArgs) {
 let args: {
   commitment: string;
   recipient_address: string;
-  wallet_wif: string;
+  wallet_wif?: string;
+  user_address?: string;
   platform_public_key: string;
+  mode?: 'walletconnect';
 };
 
 try {
@@ -71,7 +93,9 @@ try {
   process.exit(1);
 }
 
-// Validate
+const isWcMode = args.mode === 'walletconnect';
+
+// Validate common fields
 if (!args.commitment || args.commitment.length !== 64) {
   output({ success: false, error: 'commitment must be 64-char hex (32 bytes)' });
   process.exit(1);
@@ -80,13 +104,22 @@ if (!args.recipient_address) {
   output({ success: false, error: 'recipient_address is required' });
   process.exit(1);
 }
-if (!args.wallet_wif) {
-  output({ success: false, error: 'wallet_wif is required' });
-  process.exit(1);
-}
 if (!args.platform_public_key || args.platform_public_key.length !== 66) {
   output({ success: false, error: 'platform_public_key must be 66-char compressed hex' });
   process.exit(1);
+}
+
+// Mode-specific validation
+if (isWcMode) {
+  if (!args.user_address) {
+    output({ success: false, error: 'user_address is required in walletconnect mode' });
+    process.exit(1);
+  }
+} else {
+  if (!args.wallet_wif) {
+    output({ success: false, error: 'wallet_wif is required in broadcast mode' });
+    process.exit(1);
+  }
 }
 
 // ── Set up contract ────────────────────────────────────────────────
@@ -119,22 +152,30 @@ try {
     process.exit(1);
   }
 
-  // ── Get user's funding UTXOs ───────────────────────────────────
+  // ── Resolve user address ─────────────────────────────────────────
 
-  const userTemplate = new SignatureTemplate(args.wallet_wif);
+  let userAddress: string;
 
-  // Derive user's P2PKH address from public key
-  const userPubkey = userTemplate.getPublicKey();
-  const userPkh = hash160(Buffer.from(userPubkey));
-  const userLockingBytecode = Uint8Array.from([
-    0x76, 0xa9, 0x14, ...userPkh, 0x88, 0xac
-  ]);
-  const userAddrResult = lockingBytecodeToCashAddress({ bytecode: userLockingBytecode, prefix: 'bitcoincash', tokenSupport: true });
-  if (typeof userAddrResult !== 'string') {
-    output({ success: false, error: 'Could not derive user address from WIF' });
-    process.exit(1);
+  if (isWcMode) {
+    // WalletConnect mode: address provided directly by the connected wallet
+    userAddress = args.user_address!;
+  } else {
+    // Broadcast mode: derive address from WIF
+    const userTemplate = new SignatureTemplate(args.wallet_wif!);
+    const userPubkey = userTemplate.getPublicKey();
+    const userPkh = hash160(Buffer.from(userPubkey));
+    const userLockingBytecode = Uint8Array.from([
+      0x76, 0xa9, 0x14, ...userPkh, 0x88, 0xac
+    ]);
+    const userAddrResult = lockingBytecodeToCashAddress({ bytecode: userLockingBytecode, prefix: 'bitcoincash', tokenSupport: true }) as any;
+    userAddress = typeof userAddrResult === 'string' ? userAddrResult : userAddrResult?.address;
+    if (!userAddress) {
+      output({ success: false, error: `Could not derive user address from WIF: ${JSON.stringify(userAddrResult)}` });
+      process.exit(1);
+    }
   }
-  const userAddress = userAddrResult;
+
+  // ── Get user's funding UTXOs ───────────────────────────────────
 
   const userUtxos = await provider.getUtxos(userAddress);
 
@@ -162,8 +203,17 @@ try {
   );
 
   // Input 1+: user's funding UTXOs
-  for (const utxo of fundingUtxos) {
-    txBuilder.addInput(utxo, userTemplate.unlockP2PKH());
+  if (isWcMode) {
+    // WalletConnect: use placeholder unlocker — wallet will substitute real sig
+    for (const utxo of fundingUtxos) {
+      txBuilder.addInput(utxo, placeholderP2PKHUnlocker(userAddress));
+    }
+  } else {
+    // Broadcast: use real signature template
+    const userTemplate = new SignatureTemplate(args.wallet_wif!);
+    for (const utxo of fundingUtxos) {
+      txBuilder.addInput(utxo, userTemplate.unlockP2PKH());
+    }
   }
 
   // Output 0: minting token returned to covenant
@@ -195,7 +245,6 @@ try {
   });
 
   // Output 2: change back to user (if any)
-  // Total input = covenant value + user funding
   const totalInput = mintingTokenUtxo.satoshis + totalFunding;
   const totalOutputs = 1000n + 1000n; // covenant dust + NFT dust
   const estimatedFee = 500n; // conservative mining fee
@@ -208,18 +257,37 @@ try {
     });
   }
 
-  // ── Broadcast ──────────────────────────────────────────────────
+  // ── Execute ──────────────────────────────────────────────────────
 
-  const tx = await txBuilder.send();
+  if (isWcMode) {
+    // WalletConnect mode: return unsigned transaction object for wallet signing
+    const wcTxObj = txBuilder.generateWcTransactionObject({
+      broadcast: true,
+      userPrompt: 'Mint Qube NFT'
+    });
 
-  output({
-    success: true,
-    mint_txid: tx.txid,
-    category_id: OFFICIAL_CATEGORY,
-    commitment: args.commitment,
-    covenant_address: contract.tokenAddress,
-    recipient_address: args.recipient_address
-  });
+    output({
+      success: true,
+      mode: 'walletconnect',
+      wc_transaction: stringify(wcTxObj),
+      category_id: OFFICIAL_CATEGORY,
+      commitment: args.commitment,
+      covenant_address: contract.tokenAddress,
+      recipient_address: args.recipient_address
+    });
+  } else {
+    // Broadcast mode: sign and broadcast immediately
+    const tx = await txBuilder.send();
+
+    output({
+      success: true,
+      mint_txid: tx.txid,
+      category_id: OFFICIAL_CATEGORY,
+      commitment: args.commitment,
+      covenant_address: contract.tokenAddress,
+      recipient_address: args.recipient_address
+    });
+  }
 
 } catch (e: any) {
   output({

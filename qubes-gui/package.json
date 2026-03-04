@@ -23,6 +23,8 @@
     "@tauri-apps/plugin-shell": "^2.3.1",
     "@tauri-apps/plugin-updater": "^2",
     "@types/d3": "^7.4.3",
+    "@walletconnect/modal": "^2.7.0",
+    "@walletconnect/sign-client": "^2.23.7",
     "@xyflow/react": "^12.9.0",
     "chess.js": "^1.4.0",
     "d3": "^7.9.0",
@@ -32,6 +34,7 @@
     "react": "^19.1.0",
     "react-chessboard": "^5.8.6",
     "react-dom": "^19.1.0",
+    "react-easy-crop": "^5.5.6",
     "recharts": "^3.3.0",
     "zustand": "^5.0.8"
   },

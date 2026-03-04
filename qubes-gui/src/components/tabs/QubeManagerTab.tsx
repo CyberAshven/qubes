@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
-import { open } from '@tauri-apps/plugin-shell';
+import { open as openShell } from '@tauri-apps/plugin-shell';
 import { readTextFile } from '@tauri-apps/plugin-fs';
+import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
 import { Qube, Tab } from '../../types';
 import { GlassCard, GlassButton } from '../glass';
 import DarkSelect from '../DarkSelect';
@@ -94,6 +95,16 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
   const [importWalletWif, setImportWalletWif] = useState('');
   const [importWalletAddress, setImportWalletAddress] = useState('');
   const [isScanning, setIsScanning] = useState(false);
+
+  // Export/Import file state
+  const [isExporting, setIsExporting] = useState(false);
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [exportPassword, setExportPassword] = useState('');
+  const [exportConfirmPassword, setExportConfirmPassword] = useState('');
+  const [showImportFileModal, setShowImportFileModal] = useState(false);
+  const [importFilePath, setImportFilePath] = useState('');
+  const [importFilePassword, setImportFilePassword] = useState('');
+  const [isImportingFile, setIsImportingFile] = useState(false);
 
   // Pinata configuration check
   const [pinataConfigured, setPinataConfigured] = useState<boolean | null>(null);
@@ -237,6 +248,74 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
     const projectRoot = 'C:/Users/bit_f/Projects/Qubes';
     const filePath = `${projectRoot}/data/users/${userId}/qubes/${qube.name}_${qube.qube_id}/chain/${qube.qube_id}_avatar.png`;
     return convertFileSrc(filePath);
+  };
+
+  // Export Qube to .qube file
+  const handleExportQube = async () => {
+    const selectedId = selectedQubeIds[0];
+    if (!selectedId) { alert('Please select a Qube to export'); return; }
+    if (exportPassword !== exportConfirmPassword) { alert('Passwords do not match'); return; }
+    if (exportPassword.length < 8) { alert('Password must be at least 8 characters'); return; }
+
+    try {
+      const filePath = await saveDialog({
+        defaultPath: `${selectedId.slice(0, 8)}.qube`,
+        filters: [{ name: 'Qube Package', extensions: ['qube'] }],
+      });
+      if (!filePath) return;
+
+      setIsExporting(true);
+      const result = await invoke<{ success: boolean; file_path?: string; block_count?: number; error?: string }>('export_qube', {
+        qubeId: selectedId,
+        exportPath: filePath,
+        exportPassword: exportPassword,
+        masterPassword: masterPassword,
+      });
+
+      if (result.success) {
+        alert(`Exported ${result.block_count || 0} blocks to:\n${result.file_path}`);
+        setShowExportModal(false);
+        setExportPassword('');
+        setExportConfirmPassword('');
+      } else {
+        alert(`Export failed: ${result.error}`);
+      }
+    } catch (error) {
+      console.error('Export failed:', error);
+      alert(`Export failed: ${String(error)}`);
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  // Import Qube from .qube file
+  const handleImportFromFile = async () => {
+    if (!importFilePath) { alert('Please select a .qube file'); return; }
+    if (!importFilePassword) { alert('Please enter the export password'); return; }
+
+    try {
+      setIsImportingFile(true);
+      const result = await invoke<{ success: boolean; qube_id?: string; qube_name?: string; block_count?: number; error?: string }>('import_qube', {
+        importPath: importFilePath,
+        importPassword: importFilePassword,
+        masterPassword: masterPassword,
+      });
+
+      if (result.success) {
+        alert(`Imported "${result.qube_name}" (${result.block_count || 0} blocks)`);
+        setShowImportFileModal(false);
+        setImportFilePath('');
+        setImportFilePassword('');
+        window.dispatchEvent(new CustomEvent('qube-created', { detail: { qube_id: result.qube_id } }));
+      } else {
+        alert(`Import failed: ${result.error}`);
+      }
+    } catch (error) {
+      console.error('Import failed:', error);
+      alert(`Import failed: ${String(error)}`);
+    } finally {
+      setIsImportingFile(false);
+    }
   };
 
   // Sync to IPFS handler - syncs selected Qube to IPFS via Pinata
@@ -543,6 +622,21 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
 
         {/* Action Buttons */}
         <div className="ml-auto flex gap-2">
+          <GlassButton
+            variant="secondary"
+            onClick={() => setShowImportFileModal(true)}
+            title="Import a Qube from a .qube file"
+          >
+            Import File
+          </GlassButton>
+          <GlassButton
+            variant="secondary"
+            onClick={() => { if (selectedQubeIds.length > 0) setShowExportModal(true); else alert('Select a Qube to export'); }}
+            disabled={selectedQubeIds.length === 0}
+            title="Export selected Qube to a portable .qube file"
+          >
+            Export
+          </GlassButton>
           <GlassButton
             variant="secondary"
             onClick={handleImportFromWalletClick}
@@ -932,6 +1026,104 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
           </div>
         </div>
       )}
+
+      {/* Export Qube Modal */}
+      {showExportModal && (
+        <div className="fixed inset-0 bg-black/95 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="glass-card p-6 max-w-md w-full mx-4">
+            <h2 className="text-xl font-bold text-text-primary mb-4">Export Qube</h2>
+            <p className="text-text-secondary text-sm mb-4">
+              Export this Qube to a portable .qube file. The file will be encrypted with the password you set below.
+              You can import it on any device or share it via USB.
+            </p>
+            <div className="space-y-3">
+              <div>
+                <label className="block text-sm text-text-secondary mb-1">Export Password</label>
+                <input
+                  type="password"
+                  value={exportPassword}
+                  onChange={(e) => setExportPassword(e.target.value)}
+                  placeholder="Set a password for this export"
+                  className="w-full px-3 py-2 bg-glass-bg border border-glass-border rounded-lg text-text-primary text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-text-secondary mb-1">Confirm Password</label>
+                <input
+                  type="password"
+                  value={exportConfirmPassword}
+                  onChange={(e) => setExportConfirmPassword(e.target.value)}
+                  placeholder="Confirm password"
+                  className="w-full px-3 py-2 bg-glass-bg border border-glass-border rounded-lg text-text-primary text-sm"
+                />
+              </div>
+            </div>
+            <div className="flex gap-3 mt-4">
+              <GlassButton variant="secondary" onClick={() => { setShowExportModal(false); setExportPassword(''); setExportConfirmPassword(''); }}>
+                Cancel
+              </GlassButton>
+              <GlassButton
+                variant="primary"
+                onClick={handleExportQube}
+                disabled={isExporting || !exportPassword || exportPassword !== exportConfirmPassword}
+              >
+                {isExporting ? 'Exporting...' : 'Export'}
+              </GlassButton>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Import from File Modal */}
+      {showImportFileModal && (
+        <div className="fixed inset-0 bg-black/95 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="glass-card p-6 max-w-md w-full mx-4">
+            <h2 className="text-xl font-bold text-text-primary mb-4">Import from File</h2>
+            <p className="text-text-secondary text-sm mb-4">
+              Import a Qube from a .qube package file. You'll need the password that was used to export it.
+            </p>
+            <div className="space-y-3">
+              <div>
+                <label className="block text-sm text-text-secondary mb-1">Select File</label>
+                <button
+                  onClick={async () => {
+                    const path = await openDialog({
+                      multiple: false,
+                      filters: [{ name: 'Qube Package', extensions: ['qube'] }],
+                    });
+                    if (path && typeof path === 'string') setImportFilePath(path);
+                  }}
+                  className="w-full px-3 py-2 bg-glass-bg border border-glass-border rounded-lg text-text-primary text-sm text-left hover:border-accent-primary/50 transition-colors"
+                >
+                  {importFilePath || 'Choose .qube file...'}
+                </button>
+              </div>
+              <div>
+                <label className="block text-sm text-text-secondary mb-1">Export Password</label>
+                <input
+                  type="password"
+                  value={importFilePassword}
+                  onChange={(e) => setImportFilePassword(e.target.value)}
+                  placeholder="Password used during export"
+                  className="w-full px-3 py-2 bg-glass-bg border border-glass-border rounded-lg text-text-primary text-sm"
+                />
+              </div>
+            </div>
+            <div className="flex gap-3 mt-4">
+              <GlassButton variant="secondary" onClick={() => { setShowImportFileModal(false); setImportFilePath(''); setImportFilePassword(''); }}>
+                Cancel
+              </GlassButton>
+              <GlassButton
+                variant="primary"
+                onClick={handleImportFromFile}
+                disabled={isImportingFile || !importFilePath || !importFilePassword}
+              >
+                {isImportingFile ? 'Importing...' : 'Import'}
+              </GlassButton>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -993,7 +1185,7 @@ const BlockchainLink: React.FC<BlockchainLinkProps> = ({ value, type, network = 
     const url = getUrl();
     if (url) {
       try {
-        await open(url);
+        await openShell(url);
       } catch (error) {
         console.error('Failed to open URL:', error);
       }

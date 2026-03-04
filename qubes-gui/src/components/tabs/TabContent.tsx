@@ -151,7 +151,7 @@ export const TabContent: React.FC<TabContentProps> = ({ qubes, setQubes, onQubes
       aiProvider: data.aiProvider,
       aiModel: data.aiModel,
       voiceModel: data.voiceModel,
-      walletAddress: data.walletAddress,
+      ownerPubkey: data.ownerPubkey,
       password: password,
       encryptGenesis: data.encryptGenesis || false,
       favoriteColor: data.favoriteColor,

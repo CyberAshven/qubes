@@ -77,12 +77,12 @@ const platformPkhFromKey = hash160(Buffer.from(platformPubkey));
 const lockingBytecode = Uint8Array.from([
   0x76, 0xa9, 0x14, ...platformPkhFromKey, 0x88, 0xac
 ]);
-const addressResult = lockingBytecodeToCashAddress({ bytecode: lockingBytecode, prefix: 'bitcoincash', tokenSupport: true });
-if (typeof addressResult !== 'string') {
-  console.error('Error: Could not derive platform address');
+const addressResult = lockingBytecodeToCashAddress({ bytecode: lockingBytecode, prefix: 'bitcoincash', tokenSupport: true }) as any;
+const platformAddress: string = typeof addressResult === 'string' ? addressResult : addressResult.address;
+if (!platformAddress) {
+  console.error('Error: Could not derive platform address', addressResult);
   process.exit(1);
 }
-const platformAddress = addressResult;
 
 console.log(`Platform address: ${platformAddress}`);
 console.log('Looking up UTXOs...');

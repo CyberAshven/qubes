@@ -30,6 +30,8 @@ class BlockPreferences:
 
     # IPFS backup settings
     auto_sync_ipfs_on_anchor: bool = False  # Auto-sync to IPFS after auto-anchor
+    auto_sync_ipfs_periodic: bool = False  # Periodic background sync to IPFS
+    auto_sync_ipfs_interval: int = 15  # Interval in minutes (15, 30, 45, 60)
 
 
 @dataclass
@@ -272,7 +274,9 @@ class UserPreferencesManager:
         individual_anchor_threshold: Optional[int] = None,
         group_auto_anchor: Optional[bool] = None,
         group_anchor_threshold: Optional[int] = None,
-        auto_sync_ipfs_on_anchor: Optional[bool] = None
+        auto_sync_ipfs_on_anchor: Optional[bool] = None,
+        auto_sync_ipfs_periodic: Optional[bool] = None,
+        auto_sync_ipfs_interval: Optional[int] = None
     ) -> UserPreferences:
         """
         Update block-related preferences.
@@ -307,6 +311,14 @@ class UserPreferencesManager:
 
         if auto_sync_ipfs_on_anchor is not None:
             prefs.blocks.auto_sync_ipfs_on_anchor = auto_sync_ipfs_on_anchor
+
+        if auto_sync_ipfs_periodic is not None:
+            prefs.blocks.auto_sync_ipfs_periodic = auto_sync_ipfs_periodic
+
+        if auto_sync_ipfs_interval is not None:
+            if auto_sync_ipfs_interval not in (15, 30, 45, 60):
+                raise ValueError("Sync interval must be 15, 30, 45, or 60 minutes")
+            prefs.blocks.auto_sync_ipfs_interval = auto_sync_ipfs_interval
 
         self.save_preferences(prefs)
         return prefs

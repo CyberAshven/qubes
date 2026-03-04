@@ -756,6 +756,92 @@ class GUIBridge:
             logger.error(f"Failed to create qube: {e}")
             raise
 
+    async def prepare_qube_mint(
+        self,
+        name: str,
+        genesis_prompt: str,
+        ai_provider: str,
+        ai_model: str,
+        voice_model: str,
+        owner_pubkey: str,
+        user_address: str,
+        password: str,
+        encrypt_genesis: bool = False,
+        favorite_color: str = "#00ff88",
+        avatar_file: str = None,
+        generate_avatar: bool = False,
+        avatar_style: str = "cyberpunk"
+    ) -> Dict[str, Any]:
+        """Prepare a WalletConnect-based Qube mint. Returns unsigned WC transaction."""
+        try:
+            self.orchestrator.set_master_key(password)
+
+            config = {
+                "name": name,
+                "genesis_prompt": genesis_prompt,
+                "ai_provider": ai_provider,
+                "ai_model": ai_model,
+                "voice_model": voice_model,
+                "owner_pubkey": owner_pubkey,
+                "encrypt_genesis": encrypt_genesis,
+                "favorite_color": favorite_color,
+                "generate_avatar": generate_avatar,
+                "avatar_style": avatar_style,
+            }
+            if avatar_file is not None:
+                config["avatar_file"] = avatar_file
+
+            result = await self.orchestrator.prepare_qube_mint(config, user_address)
+            return result
+
+        except Exception as e:
+            logger.error(f"Failed to prepare qube mint: {e}")
+            raise
+
+    async def finalize_qube_mint(
+        self,
+        pending_id: str,
+        mint_txid: str,
+        password: str
+    ) -> Dict[str, Any]:
+        """Finalize a WC-minted Qube after wallet has signed and broadcast."""
+        try:
+            self.orchestrator.set_master_key(password)
+
+            qube = await self.orchestrator.finalize_qube_mint(
+                pending_id=pending_id,
+                mint_txid=mint_txid,
+                password=password
+            )
+
+            # Transform to GUI format (must match Rust Qube struct fields)
+            genesis_dict = qube.genesis_block.to_dict()
+            gui_qube = {
+                "qube_id": qube.qube_id,
+                "name": qube.name,
+                "ai_provider": genesis_dict.get("ai_provider", ""),
+                "ai_model": genesis_dict.get("ai_model", ""),
+                "voice_model": genesis_dict.get("voice_model", ""),
+                "genesis_prompt": genesis_dict.get("genesis_prompt", ""),
+                "creator": self.orchestrator.user_id,
+                "birth_timestamp": qube.genesis_block.birth_timestamp,
+                "home_blockchain": qube.genesis_block.home_blockchain,
+                "favorite_color": genesis_dict.get("favorite_color", "#4A90E2"),
+                "created_at": datetime.fromtimestamp(qube.genesis_block.birth_timestamp).isoformat(),
+                "trust_score": 50.0,
+                "memory_blocks_count": 0,
+                "friends_count": 0,
+                "status": "active",
+                "mint_txid": mint_txid,
+                "nft_category_id": genesis_dict.get("nft_category_id", ""),
+            }
+
+            return gui_qube
+
+        except Exception as e:
+            logger.error(f"Failed to finalize qube mint: {e}")
+            raise
+
     async def prepare_qube_for_minting(
         self,
         name: str,
@@ -11644,7 +11730,9 @@ async def main():
                     "individual_anchor_threshold": prefs.individual_anchor_threshold,
                     "group_auto_anchor": prefs.group_auto_anchor,
                     "group_anchor_threshold": prefs.group_anchor_threshold,
-                    "auto_sync_ipfs_on_anchor": prefs.auto_sync_ipfs_on_anchor
+                    "auto_sync_ipfs_on_anchor": prefs.auto_sync_ipfs_on_anchor,
+                    "auto_sync_ipfs_periodic": prefs.auto_sync_ipfs_periodic,
+                    "auto_sync_ipfs_interval": prefs.auto_sync_ipfs_interval
                 }))
             except Exception as e:
                 logger.error(f"Failed to get block preferences: {e}", exc_info=True)
@@ -11664,6 +11752,8 @@ async def main():
             group_auto_anchor = None
             group_anchor_threshold = None
             auto_sync_ipfs_on_anchor = None
+            auto_sync_ipfs_periodic = None
+            auto_sync_ipfs_interval = None
 
             i = 3
             while i < len(sys.argv):
@@ -11682,6 +11772,12 @@ async def main():
                 elif sys.argv[i] == "--auto-sync-ipfs":
                     auto_sync_ipfs_on_anchor = sys.argv[i + 1].lower() == "true"
                     i += 2
+                elif sys.argv[i] == "--auto-sync-ipfs-periodic":
+                    auto_sync_ipfs_periodic = sys.argv[i + 1].lower() == "true"
+                    i += 2
+                elif sys.argv[i] == "--auto-sync-ipfs-interval":
+                    auto_sync_ipfs_interval = int(sys.argv[i + 1])
+                    i += 2
                 else:
                     i += 1
 
@@ -11694,14 +11790,18 @@ async def main():
                     individual_anchor_threshold=individual_anchor_threshold,
                     group_auto_anchor=group_auto_anchor,
                     group_anchor_threshold=group_anchor_threshold,
-                    auto_sync_ipfs_on_anchor=auto_sync_ipfs_on_anchor
+                    auto_sync_ipfs_on_anchor=auto_sync_ipfs_on_anchor,
+                    auto_sync_ipfs_periodic=auto_sync_ipfs_periodic,
+                    auto_sync_ipfs_interval=auto_sync_ipfs_interval
                 )
                 print(json.dumps({
                     "individual_auto_anchor": prefs.individual_auto_anchor,
                     "individual_anchor_threshold": prefs.individual_anchor_threshold,
                     "group_auto_anchor": prefs.group_auto_anchor,
                     "group_anchor_threshold": prefs.group_anchor_threshold,
-                    "auto_sync_ipfs_on_anchor": prefs.auto_sync_ipfs_on_anchor
+                    "auto_sync_ipfs_on_anchor": prefs.auto_sync_ipfs_on_anchor,
+                    "auto_sync_ipfs_periodic": prefs.auto_sync_ipfs_periodic,
+                    "auto_sync_ipfs_interval": prefs.auto_sync_ipfs_interval
                 }))
             except Exception as e:
                 logger.error(f"Failed to update block preferences: {e}", exc_info=True)

@@ -82,6 +82,75 @@ class CovenantMinter:
             "covenant_dir": str(self.covenant_dir),
         }
 
+    async def prepare_mint_transaction(
+        self,
+        qube,
+        recipient_address: str,
+        user_address: str
+    ) -> Dict[str, Any]:
+        """
+        Build an unsigned WalletConnect transaction object for minting.
+
+        The wallet will sign and broadcast this transaction.
+        No private keys are needed — only the user's address from WalletConnect.
+
+        Args:
+            qube: Qube instance with public_key
+            recipient_address: BCH cashaddr (token-aware, bitcoincash:z...)
+            user_address: User's BCH address from WalletConnect session
+
+        Returns:
+            {
+                "wc_transaction": str (stringified WC transaction object),
+                "category_id": str,
+                "commitment": str,
+                "covenant_address": str,
+                "recipient_address": str
+            }
+        """
+        commitment = derive_commitment(qube.public_key)
+
+        logger.info(
+            "covenant_preparing_wc_mint",
+            qube_id=qube.qube_id,
+            commitment=commitment[:16] + "...",
+            recipient=recipient_address,
+            user_address=user_address[:20] + "..."
+        )
+
+        cli_args = {
+            "commitment": commitment,
+            "recipient_address": recipient_address,
+            "user_address": user_address,
+            "platform_public_key": self.platform_public_key,
+            "mode": "walletconnect"
+        }
+
+        result = await self._call_mint_cli(cli_args)
+
+        if not result.get("success"):
+            error_msg = result.get("error", "Unknown covenant error")
+            logger.error(
+                "covenant_prepare_mint_failed",
+                qube_id=qube.qube_id,
+                error=error_msg
+            )
+            raise RuntimeError(f"Covenant prepare mint failed: {error_msg}")
+
+        logger.info(
+            "covenant_wc_tx_prepared",
+            qube_id=qube.qube_id,
+            category_id=result["category_id"][:16] + "..."
+        )
+
+        return {
+            "wc_transaction": result["wc_transaction"],
+            "category_id": result["category_id"],
+            "commitment": result["commitment"],
+            "covenant_address": result["covenant_address"],
+            "recipient_address": result["recipient_address"]
+        }
+
     async def mint_qube_nft(
         self,
         qube,

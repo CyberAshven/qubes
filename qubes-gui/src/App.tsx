@@ -17,6 +17,7 @@ import { AudioProvider } from './contexts/AudioContext';
 import { ChainStateProvider } from './contexts/ChainStateContext';
 import { VoiceLibraryProvider } from './contexts/VoiceLibraryContext';
 import { CelebrationProvider } from './contexts/CelebrationContext';
+import { WalletProvider } from './contexts/WalletContext';
 import { CelebrationOverlay } from './components/celebrations';
 import { Qube } from './types';
 
@@ -476,6 +477,7 @@ function App() {
 
   return (
     <AudioProvider>
+      <WalletProvider>
       <ChainStateProvider>
       <VoiceLibraryProvider>
       <CelebrationProvider>
@@ -538,6 +540,7 @@ function App() {
       </CelebrationProvider>
       </VoiceLibraryProvider>
       </ChainStateProvider>
+      </WalletProvider>
     </AudioProvider>
   );
 }

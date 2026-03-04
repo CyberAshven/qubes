@@ -29,6 +29,8 @@ interface BlockPreferences {
   group_auto_anchor: boolean;
   group_anchor_threshold: number;
   auto_sync_ipfs_on_anchor: boolean;
+  auto_sync_ipfs_periodic: boolean;
+  auto_sync_ipfs_interval: number;
 }
 
 interface RelationshipSettings {
@@ -124,6 +126,8 @@ export const SettingsTab: React.FC = () => {
     group_auto_anchor: true,
     group_anchor_threshold: 5,
     auto_sync_ipfs_on_anchor: false,
+    auto_sync_ipfs_periodic: false,
+    auto_sync_ipfs_interval: 15,
   });
   const [loadingPreferences, setLoadingPreferences] = useState(true);
   const [savingPreferences, setSavingPreferences] = useState(false);
@@ -770,7 +774,7 @@ export const SettingsTab: React.FC = () => {
   };
 
   const handleToggleChange = async (
-    field: 'individual_auto_anchor' | 'group_auto_anchor' | 'auto_sync_ipfs_on_anchor',
+    field: 'individual_auto_anchor' | 'group_auto_anchor' | 'auto_sync_ipfs_on_anchor' | 'auto_sync_ipfs_periodic',
     value: boolean
   ) => {
     try {
@@ -784,6 +788,7 @@ export const SettingsTab: React.FC = () => {
         individualAutoAnchor: field === 'individual_auto_anchor' ? value : undefined,
         groupAutoAnchor: field === 'group_auto_anchor' ? value : undefined,
         autoSyncIpfsOnAnchor: field === 'auto_sync_ipfs_on_anchor' ? value : undefined,
+        autoSyncIpfsPeriodic: field === 'auto_sync_ipfs_periodic' ? value : undefined,
       });
 
       // Update with server response
@@ -1240,6 +1245,54 @@ export const SettingsTab: React.FC = () => {
                       <p className="text-[10px] text-text-tertiary">
                         Automatically upload .qube package to IPFS after each auto-anchor
                       </p>
+
+                      <label className="flex items-center justify-between text-xs pt-2">
+                        <span className="text-text-secondary">Periodic background sync</span>
+                        <input
+                          type="checkbox"
+                          checked={blockPreferences.auto_sync_ipfs_periodic}
+                          onChange={(e) => handleToggleChange('auto_sync_ipfs_periodic', e.target.checked)}
+                          disabled={savingPreferences}
+                          className="w-4 h-4 rounded bg-surface-secondary border-border-subtle accent-accent-primary"
+                        />
+                      </label>
+                      <p className="text-[10px] text-text-tertiary">
+                        Automatically sync all Qubes to IPFS on a timer
+                      </p>
+
+                      {blockPreferences.auto_sync_ipfs_periodic && (
+                        <label className="flex items-center justify-between text-xs pt-1">
+                          <span className="text-text-secondary">Sync interval</span>
+                          <select
+                            value={blockPreferences.auto_sync_ipfs_interval}
+                            onChange={async (e) => {
+                              const interval = parseInt(e.target.value);
+                              setSavingPreferences(true);
+                              setBlockPreferences(prev => ({ ...prev, auto_sync_ipfs_interval: interval }));
+                              try {
+                                const result = await invoke<BlockPreferences>('update_block_preferences', {
+                                  userId,
+                                  autoSyncIpfsInterval: interval,
+                                });
+                                setBlockPreferences(result);
+                              } catch (error) {
+                                console.error('Failed to update sync interval:', error);
+                                alert(`Error updating sync interval: ${String(error)}`);
+                                await loadBlockPreferences();
+                              } finally {
+                                setSavingPreferences(false);
+                              }
+                            }}
+                            disabled={savingPreferences}
+                            className="bg-surface-secondary border border-border-subtle rounded px-2 py-1 text-xs text-text-primary"
+                          >
+                            <option value={15}>15 minutes</option>
+                            <option value={30}>30 minutes</option>
+                            <option value={45}>45 minutes</option>
+                            <option value={60}>60 minutes</option>
+                          </select>
+                        </label>
+                      )}
                     </div>
                   </div>
                 </div>

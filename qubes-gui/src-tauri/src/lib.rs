@@ -745,6 +745,8 @@ struct BlockPreferencesResponse {
     group_auto_anchor: bool,
     group_anchor_threshold: i32,
     auto_sync_ipfs_on_anchor: bool,
+    auto_sync_ipfs_periodic: bool,
+    auto_sync_ipfs_interval: i32,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1160,6 +1162,34 @@ struct ImportFromWalletResponse {
     qube_name: Option<String>,
     qube_dir: Option<String>,
     error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ExportQubeResponse {
+    success: bool,
+    file_path: Option<String>,
+    block_count: Option<u32>,
+    qube_name: Option<String>,
+    qube_id: Option<String>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ImportQubeResponse {
+    success: bool,
+    qube_id: Option<String>,
+    qube_name: Option<String>,
+    block_count: Option<u32>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PrepareQubeMintResponse {
+    pending_id: String,
+    qube_id: String,
+    wc_transaction: String,
+    category_id: String,
+    commitment: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1932,7 +1962,27 @@ async fn list_qubes(app_handle: AppHandle, user_id: String, password: String) ->
 }
 
 #[tauri::command]
-async fn create_qube(app_handle: AppHandle, 
+async fn save_cropped_avatar(base64_data: String) -> Result<String, String> {
+    use std::io::Write;
+    use base64::{Engine as _, engine::general_purpose};
+    let bytes = general_purpose::STANDARD
+        .decode(&base64_data)
+        .map_err(|e| format!("Invalid base64: {}", e))?;
+    let temp_dir = std::env::temp_dir().join("qubes_avatars");
+    std::fs::create_dir_all(&temp_dir)
+        .map_err(|e| format!("Failed to create temp dir: {}", e))?;
+    let filename = format!("cropped_{}.png", std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis());
+    let path = temp_dir.join(&filename);
+    let mut file = std::fs::File::create(&path)
+        .map_err(|e| format!("Failed to create temp file: {}", e))?;
+    file.write_all(&bytes)
+        .map_err(|e| format!("Failed to write temp file: {}", e))?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+async fn create_qube(app_handle: AppHandle,
     user_id: String,
     name: String,
     genesis_prompt: String,
@@ -1980,7 +2030,91 @@ async fn create_qube(app_handle: AppHandle,
 }
 
 #[tauri::command]
-async fn prepare_qube_for_minting(app_handle: AppHandle, 
+async fn prepare_qube_mint(app_handle: AppHandle,
+    user_id: String,
+    name: String,
+    genesis_prompt: String,
+    ai_provider: String,
+    ai_model: String,
+    voice_model: String,
+    owner_pubkey: String,
+    user_address: String,
+    password: String,
+    encrypt_genesis: bool,
+    favorite_color: String,
+    avatar_file: Option<String>,
+    generate_avatar: bool,
+    avatar_style: Option<String>,
+) -> Result<PrepareQubeMintResponse, String> {
+
+    check_rate_limit("prepare_qube_mint")?;
+    validate_identifier(&user_id, "user_id")?;
+
+    let mut args = vec![
+        user_id,
+        "--name".to_string(), name,
+        "--genesis-prompt".to_string(), genesis_prompt,
+        "--ai-provider".to_string(), ai_provider,
+        "--ai-model".to_string(), ai_model,
+        "--voice-model".to_string(), voice_model,
+        "--owner-pubkey".to_string(), owner_pubkey,
+        "--user-address".to_string(), user_address,
+        "--encrypt-genesis".to_string(), (if encrypt_genesis { "true" } else { "false" }).to_string(),
+        "--favorite-color".to_string(), favorite_color,
+    ];
+
+    if let Some(avatar_path) = avatar_file {
+        args.push("--avatar-file".to_string());
+        args.push(avatar_path);
+    } else if generate_avatar {
+        args.push("--generate-avatar".to_string());
+        if let Some(style) = avatar_style {
+            args.push("--avatar-style".to_string());
+            args.push(style);
+        }
+    }
+
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
+
+    let result = sidecar_execute_with_retry("prepare-qube-mint", args, secrets, Some(&app_handle), None).await?;
+
+    let response: PrepareQubeMintResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse prepare-qube-mint response: {}", e))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn finalize_qube_mint(app_handle: AppHandle,
+    user_id: String,
+    pending_id: String,
+    mint_txid: String,
+    password: String,
+) -> Result<Qube, String> {
+
+    check_rate_limit("finalize_qube_mint")?;
+    validate_identifier(&user_id, "user_id")?;
+
+    let args = vec![
+        user_id,
+        "--pending-id".to_string(), pending_id,
+        "--mint-txid".to_string(), mint_txid,
+    ];
+
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
+
+    let result = sidecar_execute_with_retry("finalize-qube-mint", args, secrets, Some(&app_handle), None).await?;
+
+    let qube: Qube = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse finalize-qube-mint response: {}", e))?;
+
+    Ok(qube)
+}
+
+#[tauri::command]
+async fn prepare_qube_for_minting(app_handle: AppHandle,
     user_id: String,
     name: String,
     genesis_prompt: String,
@@ -3577,7 +3711,9 @@ async fn update_block_preferences(app_handle: AppHandle,
     individual_anchor_threshold: Option<i32>,
     group_auto_anchor: Option<bool>,
     group_anchor_threshold: Option<i32>,
-    auto_sync_ipfs_on_anchor: Option<bool>
+    auto_sync_ipfs_on_anchor: Option<bool>,
+    auto_sync_ipfs_periodic: Option<bool>,
+    auto_sync_ipfs_interval: Option<i32>
 ) -> Result<BlockPreferencesResponse, String> {
 
     // Validate inputs
@@ -3607,6 +3743,16 @@ async fn update_block_preferences(app_handle: AppHandle,
 
     if let Some(val) = auto_sync_ipfs_on_anchor {
         args.push("--auto-sync-ipfs".to_string());
+        args.push(val.to_string());
+    }
+
+    if let Some(val) = auto_sync_ipfs_periodic {
+        args.push("--auto-sync-ipfs-periodic".to_string());
+        args.push(val.to_string());
+    }
+
+    if let Some(val) = auto_sync_ipfs_interval {
+        args.push("--auto-sync-ipfs-interval".to_string());
         args.push(val.to_string());
     }
 
@@ -6059,6 +6205,51 @@ async fn import_from_wallet(app_handle: AppHandle,
 
 }
 
+#[tauri::command]
+async fn export_qube(app_handle: AppHandle,
+    qube_id: String,
+    export_path: String,
+    export_password: String,
+    master_password: String
+) -> Result<ExportQubeResponse, String> {
+
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let args = vec![qube_id, export_path];
+
+    let mut secrets = HashMap::new();
+    secrets.insert("export_password".to_string(), export_password);
+    secrets.insert("master_password".to_string(), master_password);
+
+    let result = sidecar_execute_with_retry("export-qube", args, secrets, Some(&app_handle), None).await?;
+
+    let response: ExportQubeResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse export-qube response: {}", e))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn import_qube(app_handle: AppHandle,
+    import_path: String,
+    import_password: String,
+    master_password: String
+) -> Result<ImportQubeResponse, String> {
+
+    let args = vec![import_path];
+
+    let mut secrets = HashMap::new();
+    secrets.insert("import_password".to_string(), import_password);
+    secrets.insert("master_password".to_string(), master_password);
+
+    let result = sidecar_execute_with_retry("import-qube", args, secrets, Some(&app_handle), None).await?;
+
+    let response: ImportQubeResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse import-qube response: {}", e))?;
+
+    Ok(response)
+}
+
 /// Scan wallet for Qube NFTs
 #[tauri::command]
 async fn scan_wallet(
@@ -7245,6 +7436,9 @@ pub fn run() {
             get_available_models,
             list_qubes,
             create_qube,
+            prepare_qube_mint,
+            finalize_qube_mint,
+            save_cropped_avatar,
             prepare_qube_for_minting,
             check_minting_status,
             submit_payment_txid,
@@ -7376,6 +7570,8 @@ pub fn run() {
             sync_to_chain,
             transfer_qube,
             import_from_wallet,
+            export_qube,
+            import_qube,
             scan_wallet,
             resolve_public_key,
             // Dev debugging
