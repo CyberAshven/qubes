@@ -6218,8 +6218,8 @@ async fn export_qube(app_handle: AppHandle,
     let args = vec![qube_id, export_path];
 
     let mut secrets = HashMap::new();
-    secrets.insert("export_password".to_string(), export_password);
-    secrets.insert("master_password".to_string(), master_password);
+    secrets.insert("export_password", export_password.as_str());
+    secrets.insert("master_password", master_password.as_str());
 
     let result = sidecar_execute_with_retry("export-qube", args, secrets, Some(&app_handle), None).await?;
 
@@ -6239,8 +6239,8 @@ async fn import_qube(app_handle: AppHandle,
     let args = vec![import_path];
 
     let mut secrets = HashMap::new();
-    secrets.insert("import_password".to_string(), import_password);
-    secrets.insert("master_password".to_string(), master_password);
+    secrets.insert("import_password", import_password.as_str());
+    secrets.insert("master_password", master_password.as_str());
 
     let result = sidecar_execute_with_retry("import-qube", args, secrets, Some(&app_handle), None).await?;
 
