@@ -11,6 +11,7 @@ from blockchain.platform_init import (
     load_minting_token_config
 )
 from blockchain.manager import BlockchainManager
+from blockchain.covenant_client import CovenantMinter
 from blockchain.nft_minter import OptimizedNFTMinter
 from blockchain.bcmr import BCMRGenerator
 from blockchain.ipfs import IPFSUploader, upload_to_ipfs
@@ -33,7 +34,10 @@ __all__ = [
     # Main interface
     "BlockchainManager",
 
-    # Individual components
+    # Covenant minting
+    "CovenantMinter",
+
+    # Legacy minter (deprecated)
     "OptimizedNFTMinter",
     "BCMRGenerator",
     "IPFSUploader",

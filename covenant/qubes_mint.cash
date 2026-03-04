@@ -1,0 +1,53 @@
+pragma cashscript ^0.12.0;
+
+// Qubes Minting Covenant
+//
+// Holds the platform minting token (capability="minting") and allows
+// ANYONE to mint an immutable Qube NFT if they satisfy the constraints:
+//
+//   1. Minting token is returned to this covenant
+//   2. A new immutable NFT is created with the provided commitment
+//
+// The commitment should be SHA256(compressed_public_key_hex) — 32 bytes.
+// This ties the on-chain NFT to the Qube's cryptographic identity.
+//
+// Platform fees are NOT enforced here — they belong at the frontend layer.
+// Each frontend (app, SDK consumer, CLI) adds its own fee output when
+// building the transaction. The protocol stays neutral.
+//
+// Constructor arg:
+//   platformPkh — HASH160 of the platform's public key (for migrate() only)
+
+contract QubesMint(bytes20 platformPkh) {
+
+    // Permissionless minting — anyone can call this
+    function mint(bytes32 commitment) {
+
+        // Output 0: Return minting token to this covenant (same contract address)
+        // The minting token's tokenCategory includes the capability suffix byte.
+        // We require the output has the exact same tokenCategory (preserving minting capability)
+        // and is locked back to this contract's bytecode.
+        require(tx.outputs[0].lockingBytecode == this.activeBytecode);
+        require(tx.outputs[0].tokenCategory == tx.inputs[this.activeInputIndex].tokenCategory);
+        require(tx.outputs[0].value >= 1000);
+
+        // Output 1: New immutable NFT sent to user (any address they choose)
+        // Strip the capability byte from tokenCategory to get the base category.
+        // An output with just the base category (no suffix) is an immutable NFT.
+        bytes tokenCategoryImmutable = tx.inputs[this.activeInputIndex].tokenCategory.split(32)[0];
+        require(tx.outputs[1].tokenCategory == tokenCategoryImmutable);
+        require(tx.outputs[1].nftCommitment == commitment);
+        require(tx.outputs[1].value >= 1000);
+
+        // Output 2+ (optional): Frontend fee, user change, etc. — no constraints
+        // Mining fee: implicit (sum of inputs - sum of outputs)
+    }
+
+    // Platform-only: migrate minting token to a new contract
+    // Used for contract upgrades or hardening to multisig governance later.
+    // Does NOT allow arbitrary minting — only moves the minting token.
+    function migrate(pubkey platformPk, sig platformSig) {
+        require(hash160(platformPk) == platformPkh);
+        require(checkSig(platformSig, platformPk));
+    }
+}

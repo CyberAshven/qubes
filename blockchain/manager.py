@@ -8,12 +8,11 @@ From docs/10_Blockchain_Integration.md Section 7
 
 from typing import Dict, Any, Optional
 
-from blockchain.nft_minter import OptimizedNFTMinter
+from blockchain.covenant_client import CovenantMinter
 from blockchain.bcmr import BCMRGenerator
 from blockchain.ipfs import IPFSUploader
 from blockchain.verifier import NFTVerifier
 from blockchain.registry import QubeNFTRegistry
-from blockchain.platform_init import check_minting_token_exists
 from crypto.keys import derive_commitment
 from utils.logging import get_logger
 
@@ -52,18 +51,11 @@ class BlockchainManager:
                 message="QUBES_DEV_MODE=true, using mock blockchain operations"
             )
             self.dev_mode = True
-            self.minter = None  # Will be set to mock in mint_qube_nft
-        elif not check_minting_token_exists():
-            # Production mode but token doesn't exist: error
-            raise ValueError(
-                "Platform minting token not initialized.\n"
-                "Run: python -m blockchain.platform_init\n"
-                "OR set QUBES_DEV_MODE=true for development (uses mock blockchain)"
-            )
+            self.minter = None
         else:
-            # Production mode with valid token
+            # Production mode: use CashScript covenant for permissionless minting
             self.dev_mode = False
-            self.minter = OptimizedNFTMinter(network=network)
+            self.minter = CovenantMinter(network=network)
 
         # Initialize other components (work in both dev and production modes)
         self.bcmr_generator = BCMRGenerator()
@@ -86,6 +78,7 @@ class BlockchainManager:
             logger.info(
                 "blockchain_manager_initialized",
                 network=network,
+                mode="covenant",
                 category_id=self.minter.category_id[:16] + "..."
             )
 
@@ -93,13 +86,14 @@ class BlockchainManager:
         self,
         qube,
         recipient_address: str,
-        upload_to_ipfs: bool = True
+        upload_to_ipfs: bool = True,
+        wallet_wif: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Mint a Qube as an NFT (complete workflow)
 
         Process:
-        1. Mint NFT on-chain (1 transaction)
+        1. Mint NFT on-chain via CashScript covenant (1 transaction)
         2. Generate BCMR metadata (saved to qube's blockchain/ folder)
         3. Upload to IPFS (optional)
         4. Register in local registry
@@ -110,6 +104,7 @@ class BlockchainManager:
             qube: Qube instance
             recipient_address: Recipient's BCH address (cashaddr)
             upload_to_ipfs: Whether to upload BCMR to IPFS
+            wallet_wif: WIF private key for funding (defaults to PLATFORM_BCH_MINTING_KEY env)
 
         Returns:
             {
@@ -154,7 +149,9 @@ class BlockchainManager:
                 message="DEV MODE: Using mock blockchain data"
             )
         else:
-            mint_result = await self.minter.mint_qube_nft(qube, recipient_address)
+            mint_result = await self.minter.mint_qube_nft(
+                qube, recipient_address, wallet_wif=wallet_wif
+            )
 
         # Step 2: Generate BCMR metadata (qube-specific storage)
         commitment_data = {

@@ -1,11 +1,10 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { open } from '@tauri-apps/plugin-dialog';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
-import { QRCodeSVG } from 'qrcode.react';
 import { GlassCard, GlassButton, GlassInput } from '../glass';
 import DarkSelect from '../DarkSelect';
-import { PendingMintingResult, MintingStatusResult, MintingStatus } from '../../types';
+import { Qube } from '../../types';
 import { useAuth } from '../../hooks/useAuth';
 import { useModels } from '../../hooks/useModels';
 import { useVoiceLibrary } from '../../contexts/VoiceLibraryContext';
@@ -283,14 +282,8 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
   const [success, setSuccess] = useState(false);
   const [voiceProvider, setVoiceProvider] = useState('kokoro');
 
-  // Fee-based minting state
-  const [pendingMinting, setPendingMinting] = useState<PendingMintingResult | null>(null);
-  const [mintingStatus, setMintingStatus] = useState<MintingStatus | null>(null);
-  const [statusPollingInterval, setStatusPollingInterval] = useState<ReturnType<typeof setInterval> | null>(null);
-  const [paymentError, setPaymentError] = useState<string | null>(null);
-  const [expiresIn, setExpiresIn] = useState<number>(0);
-  const [txidInput, setTxidInput] = useState<string>('');
-  const [submittingTxid, setSubmittingTxid] = useState<boolean>(false);
+  // Minting state
+  const [mintError, setMintError] = useState<string | null>(null);
   const [voiceDropdownOpen, setVoiceDropdownOpen] = useState(false);
   const voiceDropdownRef = useRef<HTMLDivElement>(null);
   const voiceButtonRef = useRef<HTMLButtonElement>(null);
@@ -394,92 +387,20 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
 
   // Custom voices now come from VoiceLibraryContext - no need for local loading
 
-  // Cleanup polling on unmount or close
-  useEffect(() => {
-    return () => {
-      if (statusPollingInterval) {
-        clearInterval(statusPollingInterval);
-      }
-    };
-  }, [statusPollingInterval]);
-
-  // Countdown timer for payment expiry
-  useEffect(() => {
-    if (expiresIn > 0 && step === 6) {
-      const timer = setTimeout(() => {
-        setExpiresIn(prev => Math.max(0, prev - 1));
-      }, 1000);
-      return () => clearTimeout(timer);
-    }
-  }, [expiresIn, step]);
-
-  // Poll minting status
-  const pollMintingStatus = useCallback(async (registrationId: string) => {
-    try {
-      console.log('[Minting] Polling status for:', registrationId);
-      const result = await invoke<MintingStatusResult>('check_minting_status', {
-        userId,
-        registrationId,
-        password,
-      });
-      console.log('[Minting] Poll result:', JSON.stringify(result, null, 2));
-
-      if (result.success) {
-        setMintingStatus(result.status || null);
-
-        if (result.status === 'complete') {
-          console.log('[Minting] Status is COMPLETE! Transitioning to success step.');
-          // Stop polling FIRST before any state changes
-          if (statusPollingInterval) {
-            console.log('[Minting] Clearing polling interval');
-            clearInterval(statusPollingInterval);
-            setStatusPollingInterval(null);
-          }
-          // Set states to show success screen
-          // NOTE: Don't call onQubesChange here - it causes parent re-render that
-          // closes the modal before the success screen can display.
-          // onQubesChange will be called in handleClose instead.
-          console.log('[Minting] Setting success=true, step=7');
-          setSuccess(true);
-          setStep(7);  // Success step
-          console.log('[Minting] Success screen should now be visible.');
-        } else if (result.status === 'failed') {
-          console.log('[Minting] Status is FAILED:', result.error_message);
-          if (statusPollingInterval) {
-            clearInterval(statusPollingInterval);
-            setStatusPollingInterval(null);
-          }
-          setPaymentError(result.error_message || 'Minting failed');
-        } else if (result.status === 'expired') {
-          console.log('[Minting] Status is EXPIRED');
-          if (statusPollingInterval) {
-            clearInterval(statusPollingInterval);
-            setStatusPollingInterval(null);
-          }
-          setPaymentError('Payment window expired. Please try again.');
-        }
-      } else {
-        console.warn('[Minting] Poll returned success=false. Error:', result.error, 'Full result:', JSON.stringify(result, null, 2));
-      }
-    } catch (error) {
-      console.error('[Minting] Failed to check minting status:', error);
-    }
-  }, [userId, password, statusPollingInterval, onQubesChange]);
-
-  // Start fee-based minting
-  const handleStartMinting = async () => {
+  // Create qube via covenant minting (single step)
+  const handleCreateQube = async () => {
     setLoading(true);
-    setPaymentError(null);
+    setMintError(null);
 
     try {
-      const result = await invoke<PendingMintingResult>('prepare_qube_for_minting', {
+      const result = await invoke<Qube>('create_qube', {
         userId,
         name: formData.name,
         genesisPrompt: formData.genesisPrompt,
         aiProvider: formData.aiProvider,
         aiModel: formData.aiModel,
-        voiceModel: formData.voiceModel,
-        ownerPubkey: formData.ownerPubkey,  // NFT address derived from this by backend
+        voiceModel: formData.voiceModel || '',
+        ownerPubkey: formData.ownerPubkey,
         password,
         encryptGenesis: formData.encryptGenesis || false,
         favoriteColor: formData.favoriteColor,
@@ -488,94 +409,20 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
         avatarStyle: formData.avatarStyle || null,
       });
 
-      if (result.success && result.registration_id) {
-        setPendingMinting(result);
-        setExpiresIn(result.expires_in_seconds || 1800);
-        setStep(6);  // Payment step
-
-        // Start polling for status
-        const interval = setInterval(() => {
-          pollMintingStatus(result.registration_id!);
-        }, 5000);  // Poll every 5 seconds
-        setStatusPollingInterval(interval);
-      } else {
-        setPaymentError(result.error || 'Failed to prepare minting');
-      }
+      // Success — show celebration screen
+      console.log('[Minting] Qube created via covenant:', result.qube_id);
+      setSuccess(true);
     } catch (error) {
-      console.error('Failed to prepare minting:', error);
-      setPaymentError(`Failed to prepare minting: ${error}`);
+      console.error('Failed to create qube:', error);
+      setMintError(`Failed to create Qube: ${error}`);
     } finally {
       setLoading(false);
     }
   };
 
-  // Submit transaction ID
-  const handleSubmitTxid = async () => {
-    if (!pendingMinting?.registration_id || !txidInput.trim()) return;
-
-    setSubmittingTxid(true);
-    setPaymentError(null);
-
-    try {
-      const result = await invoke<{ success: boolean; status?: string; error?: string }>('submit_payment_txid', {
-        userId,
-        registrationId: pendingMinting.registration_id,
-        txid: txidInput.trim(),
-      });
-
-      if (result.success) {
-        setMintingStatus('paid');
-        // Continue polling - the status will update to 'minting' then 'complete'
-      } else {
-        setPaymentError(result.error || 'Failed to verify payment');
-      }
-    } catch (error) {
-      console.error('Failed to submit txid:', error);
-      setPaymentError(`Failed to submit transaction: ${error}`);
-    } finally {
-      setSubmittingTxid(false);
-    }
-  };
-
-  // Cancel pending minting
-  const handleCancelMinting = async () => {
-    if (!pendingMinting?.registration_id) return;
-
-    try {
-      await invoke('cancel_pending_minting', {
-        userId,
-        registrationId: pendingMinting.registration_id,
-      });
-    } catch (error) {
-      console.error('Failed to cancel minting:', error);
-    }
-
-    // Stop polling
-    if (statusPollingInterval) {
-      clearInterval(statusPollingInterval);
-      setStatusPollingInterval(null);
-    }
-
-    setPendingMinting(null);
-    setMintingStatus(null);
-    setStep(5);  // Go back to confirmation
-  };
-
   if (!isOpen) return null;
 
-  // Legacy submit handler (for dev mode if needed)
-  const handleSubmit = async () => {
-    // Use fee-based minting flow
-    await handleStartMinting();
-  };
-
   const handleClose = () => {
-    // Stop any polling
-    if (statusPollingInterval) {
-      clearInterval(statusPollingInterval);
-      setStatusPollingInterval(null);
-    }
-
     // If minting was successful, refresh the qube list NOW (after user saw success screen)
     if (success) {
       console.log('[Minting] Closing after successful minting - refreshing qube list');
@@ -588,11 +435,11 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
       genesisPrompt: '',
       aiProvider: 'ollama',
       aiModel: 'deepseek-r1:8b',
-      voiceModel: 'kokoro:af_heart',  // Default to Kokoro local TTS (bundled, no API key needed)
-      ownerPubkey: '',  // NFT address derived automatically from this
+      voiceModel: 'kokoro:af_heart',
+      ownerPubkey: '',
       encryptGenesis: false,
       favoriteColor: '#00ff88',
-      generateAvatar: false, // AI avatar generation temporarily disabled
+      generateAvatar: false,
       avatarStyle: 'cyberpunk',
       avatarFile: undefined,
     });
@@ -600,14 +447,7 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
     setStep(1);
     setSuccess(false);
     setErrors({});
-
-    // Reset minting state
-    setPendingMinting(null);
-    setMintingStatus(null);
-    setPaymentError(null);
-    setExpiresIn(0);
-    setTxidInput('');
-    setSubmittingTxid(false);
+    setMintError(null);
 
     onClose();
   };
@@ -760,10 +600,10 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
             {/* Header */}
             <div className="mb-6">
               <h2 className="text-3xl font-display text-accent-primary mb-2">
-                {step === 6 ? 'Payment Required' : step === 7 ? 'Success!' : 'Create New Qube'}
+                Create New Qube
               </h2>
               <div className="flex gap-2">
-                {[1, 2, 3, 4, 5, 6].map((s) => (
+                {[1, 2, 3, 4, 5].map((s) => (
                   <div
                     key={s}
                     className={`h-1 flex-1 rounded ${
@@ -1373,176 +1213,23 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
 
             <div className="bg-accent-primary/10 border border-accent-primary/30 rounded-lg p-4">
               <p className="text-text-primary text-sm">
-                ⚠️ Creating this Qube requires a minting fee (0.01 BCH / 1,000,000 sats).
-                You'll be shown payment details on the next step.
+                This will create your Qube and mint its identity as an immutable NFT on Bitcoin Cash via the on-chain covenant.
               </p>
             </div>
 
-            {paymentError && (
+            {mintError && (
               <div className="bg-accent-danger/10 border border-accent-danger/30 rounded-lg p-4">
-                <p className="text-accent-danger text-sm">{paymentError}</p>
+                <p className="text-accent-danger text-sm">{mintError}</p>
               </div>
             )}
           </div>
         )}
 
-        {/* Step 6: Payment */}
-        {step === 6 && pendingMinting && (
-          <div className="space-y-4">
-            <h3 className="text-xl text-text-primary font-medium mb-4">
-              Complete Payment to Mint NFT
-            </h3>
-
-            <div className="text-center mb-6">
-              <div className="text-text-tertiary text-sm mb-2">Time remaining</div>
-              <div className="text-3xl font-mono text-accent-primary">
-                {Math.floor(expiresIn / 60)}:{(expiresIn % 60).toString().padStart(2, '0')}
-              </div>
-            </div>
-
-            <GlassCard className="p-6 bg-bg-secondary/50">
-              <div className="text-center space-y-4">
-                <div className="text-text-tertiary text-sm">Send exactly</div>
-                <div className="text-4xl font-display text-accent-primary">
-                  {pendingMinting.payment?.amount_bch} BCH
-                </div>
-                <div className="text-text-secondary text-sm">
-                  ({pendingMinting.payment?.amount_satoshis.toLocaleString()} satoshis)
-                </div>
-
-                <div className="text-text-tertiary text-sm mt-4">to this address:</div>
-                <div className="bg-bg-primary/50 p-3 rounded-lg">
-                  <code className="text-accent-primary text-xs break-all font-mono">
-                    {pendingMinting.payment?.address}
-                  </code>
-                </div>
-
-                {/* QR Code */}
-                {pendingMinting.payment?.qr_data && (
-                  <div className="bg-white p-3 rounded-lg inline-block mt-4">
-                    <QRCodeSVG
-                      value={pendingMinting.payment.qr_data}
-                      size={192}
-                      level="M"
-                      includeMargin={false}
-                    />
-                  </div>
-                )}
-
-                {/* Payment URI button */}
-                {pendingMinting.payment?.payment_uri && (
-                  <div className="mt-4">
-                    <a
-                      href={pendingMinting.payment.payment_uri}
-                      className="inline-flex items-center gap-2 px-4 py-2 bg-accent-primary/10 border border-accent-primary/30 rounded-lg text-accent-primary hover:bg-accent-primary/20 transition-colors"
-                    >
-                      Open in Wallet App
-                    </a>
-                  </div>
-                )}
-              </div>
-            </GlassCard>
-
-            {/* Transaction ID Input */}
-            <GlassCard className="p-4 bg-bg-secondary/30 mt-4">
-              <div className="space-y-3">
-                <div className="text-text-secondary text-sm text-center">
-                  Already paid? Enter your transaction ID:
-                </div>
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    placeholder="Enter transaction ID (txid)..."
-                    value={txidInput}
-                    onChange={(e) => setTxidInput(e.target.value)}
-                    className="flex-1 px-3 py-2 bg-glass-bg backdrop-blur-glass border border-glass-border rounded-lg text-text-primary font-mono text-xs placeholder-text-tertiary focus:outline-none focus:ring-2 focus:ring-accent-primary/50"
-                  />
-                  <GlassButton
-                    variant="primary"
-                    onClick={handleSubmitTxid}
-                    loading={submittingTxid}
-                    disabled={!txidInput.trim() || submittingTxid}
-                  >
-                    Verify
-                  </GlassButton>
-                </div>
-              </div>
-            </GlassCard>
-
-            {/* Status indicator */}
-            <div className="text-center mt-4">
-              <div className="text-text-secondary text-sm">
-                Status: <span className="font-medium text-text-primary capitalize">{mintingStatus || 'Waiting for payment...'}</span>
-              </div>
-              {mintingStatus === 'paid' && (
-                <div className="text-accent-primary text-sm mt-1">
-                  Payment received! Minting NFT...
-                </div>
-              )}
-              {mintingStatus === 'minting' && (
-                <div className="text-accent-primary text-sm mt-1 flex items-center justify-center gap-2">
-                  <span className="animate-spin">⟳</span>
-                  Minting in progress...
-                </div>
-              )}
-            </div>
-
-            {paymentError && (
-              <div className="bg-accent-danger/10 border border-accent-danger/30 rounded-lg p-4 mt-4">
-                <p className="text-accent-danger text-sm">{paymentError}</p>
-              </div>
-            )}
-
-            <p className="text-text-tertiary text-xs text-center mt-4">
-              Creating: <span className="text-text-primary">{pendingMinting.qube_name}</span>
-            </p>
-          </div>
-        )}
-
-        {/* Step 7: Success (after minting completes) */}
-        {step === 7 && (
-          <div className="text-center py-8">
-            <div className="text-6xl mb-6">🎉</div>
-            <h2 className="text-3xl font-display text-accent-primary mb-4">
-              Qube Created Successfully!
-            </h2>
-            <p className="text-text-secondary mb-2">
-              {formData.name} has been created and their NFT has been minted on Bitcoin Cash.
-            </p>
-            <p className="text-text-tertiary text-sm mb-8">
-              Your new Qube is ready to chat!
-            </p>
-          </div>
-        )}
+        {/* Steps 6-7 removed: Covenant minting is single-step (no payment QR / polling).
+            Success is handled by the 'success' state view above. */}
 
         {/* Actions */}
         <div className="flex justify-between mt-8">
-          {step === 6 ? (
-            <>
-              <GlassButton variant="ghost" onClick={handleCancelMinting}>
-                Cancel & Go Back
-              </GlassButton>
-              <div className="flex gap-2">
-                <GlassButton
-                  variant="secondary"
-                  onClick={() => {
-                    // Copy address to clipboard
-                    if (pendingMinting?.payment?.address) {
-                      navigator.clipboard.writeText(pendingMinting.payment.address);
-                    }
-                  }}
-                >
-                  Copy Address
-                </GlassButton>
-              </div>
-            </>
-          ) : step === 7 ? (
-            <div className="w-full flex justify-center">
-              <GlassButton variant="primary" onClick={handleClose}>
-                Done
-              </GlassButton>
-            </div>
-          ) : (
             <>
               <GlassButton variant="ghost" onClick={handleClose}>
                 Cancel
@@ -1559,13 +1246,12 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
                     Next
                   </GlassButton>
                 ) : (
-                  <GlassButton variant="primary" onClick={handleSubmit} loading={loading}>
-                    Pay & Create Qube
+                  <GlassButton variant="primary" onClick={handleCreateQube} loading={loading}>
+                    Create & Mint Qube
                   </GlassButton>
                 )}
               </div>
             </>
-          )}
         </div>
           </>
         )}

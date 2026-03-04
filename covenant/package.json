@@ -1,0 +1,20 @@
+{
+  "name": "qubes-covenant",
+  "version": "1.0.0",
+  "private": true,
+  "description": "CashScript covenant for permissionless Qube NFT minting",
+  "type": "module",
+  "scripts": {
+    "compile": "cashc qubes_mint.cash --output qubes_mint.json",
+    "deploy": "tsx deploy.ts",
+    "migrate": "tsx migrate.ts",
+    "mint": "tsx mint-cli.ts"
+  },
+  "dependencies": {
+    "cashscript": "^0.12.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  }
+}
