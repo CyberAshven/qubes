@@ -26,7 +26,7 @@ fn get_rate_limit_ms(command: &str) -> Option<u64> {
         "create_qube" => Some(5000),
         "anchor_session" => Some(2000),
         "analyze_image" => Some(1000),
-        "mint_qube" | "prepare_qube_for_minting" => Some(5000),
+        "mint_qube" => Some(5000),
         "save_api_key" => Some(1000),
         _ => None, // No rate limit for other commands
     }
@@ -2111,120 +2111,6 @@ async fn finalize_qube_mint(app_handle: AppHandle,
         .map_err(|e| format!("Failed to parse finalize-qube-mint response: {}", e))?;
 
     Ok(qube)
-}
-
-#[tauri::command]
-async fn prepare_qube_for_minting(app_handle: AppHandle,
-    user_id: String,
-    name: String,
-    genesis_prompt: String,
-    ai_provider: String,
-    ai_model: String,
-    voice_model: String,
-    owner_pubkey: String,  // NFT address derived from this by backend
-    password: String,
-    encrypt_genesis: bool,
-    favorite_color: String,
-    avatar_file: Option<String>,
-    generate_avatar: bool,
-    avatar_style: Option<String>,
-) -> Result<serde_json::Value, String> {
-
-    // Validate inputs
-    validate_identifier(&user_id, "user_id")?;
-
-    let mut args = vec![user_id, "--name".to_string(), name, "--genesis-prompt".to_string(), genesis_prompt, "--ai-provider".to_string(), ai_provider, "--ai-model".to_string(), ai_model, "--voice-model".to_string(), voice_model, "--owner-pubkey".to_string(), owner_pubkey, "--encrypt-genesis".to_string(), (if encrypt_genesis { "true" } else { "false" }).to_string(), "--favorite-color".to_string(), favorite_color];
-
-    if let Some(avatar_path) = avatar_file {
-        args.push("--avatar-file".to_string());
-        args.push(avatar_path);
-    } else if generate_avatar {
-        args.push("--generate-avatar".to_string());
-        if let Some(style) = avatar_style {
-            args.push("--avatar-style".to_string());
-            args.push(style);
-        }
-    }
-
-    let mut secrets = HashMap::new();
-    secrets.insert("password", password.as_str());
-
-    let result = sidecar_execute_with_retry("prepare-qube-for-minting", args, secrets, Some(&app_handle), None).await?;
-
-    let result: serde_json::Value = serde_json::from_value(result)
-        .map_err(|e| format!("Failed to parse prepare-qube-for-minting response: {}", e))?;
-
-    Ok(result)
-
-}
-
-#[tauri::command]
-async fn check_minting_status(app_handle: AppHandle, 
-    user_id: String,
-    registration_id: String,
-    password: String,
-) -> Result<serde_json::Value, String> {
-
-    // Validate inputs
-    validate_identifier(&user_id, "user_id")?;
-
-    let args = vec![user_id, registration_id];
-
-    let mut secrets = HashMap::new();
-    secrets.insert("password", password.as_str());
-
-    let result = sidecar_execute_with_retry("check-minting-status", args, secrets, Some(&app_handle), None).await?;
-
-    let result: serde_json::Value = serde_json::from_value(result)
-        .map_err(|e| format!("Failed to parse check-minting-status response: {}", e))?;
-
-    Ok(result)
-
-}
-
-#[tauri::command]
-async fn submit_payment_txid(app_handle: AppHandle, 
-    user_id: String,
-    registration_id: String,
-    txid: String,
-) -> Result<serde_json::Value, String> {
-
-    // Validate inputs
-    validate_identifier(&user_id, "user_id")?;
-
-    let args = vec![user_id, registration_id, txid];
-
-    let secrets = HashMap::new();
-
-    let result = sidecar_execute_with_retry("submit-payment-txid", args, secrets, Some(&app_handle), None).await?;
-
-    let result: serde_json::Value = serde_json::from_value(result)
-        .map_err(|e| format!("Failed to parse submit-payment-txid response: {}", e))?;
-
-    Ok(result)
-
-}
-
-#[tauri::command]
-async fn cancel_pending_minting(app_handle: AppHandle, 
-    user_id: String,
-    registration_id: String,
-) -> Result<serde_json::Value, String> {
-
-    // Validate inputs
-    validate_identifier(&user_id, "user_id")?;
-
-    let args = vec![user_id, registration_id];
-
-    let secrets = HashMap::new();
-
-    let result = sidecar_execute_with_retry("cancel-pending-minting", args, secrets, Some(&app_handle), None).await?;
-
-    let result: serde_json::Value = serde_json::from_value(result)
-        .map_err(|e| format!("Failed to parse cancel-pending-minting response: {}", e))?;
-
-    Ok(result)
-
 }
 
 #[tauri::command]
@@ -5580,33 +5466,6 @@ struct OllamaStatusResponse {
     models: Vec<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct CreateQubeForMintingResponse {
-    success: bool,
-    qube_id: Option<String>,
-    public_key: Option<String>,
-    genesis_block_hash: Option<String>,
-    recipient_address: Option<String>,
-    error: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct PreRegisterResponse {
-    success: bool,
-    registration_id: Option<String>,
-    payment_amount_satoshis: Option<i64>,
-    payment_amount_bch: Option<String>,
-    error: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct RegistrationStatusResponse {
-    status: String,
-    payment_detected: Option<bool>,
-    mint_result: Option<serde_json::Value>,
-    error: Option<String>,
-}
-
 /// Response from check_first_run
 #[derive(Debug, Serialize, Deserialize)]
 struct FirstRunResponse {
@@ -5952,157 +5811,6 @@ async fn start_ollama() -> Result<bool, String> {
     }
 
     Ok(true)
-}
-
-/// Create a Qube locally and prepare for minting
-#[tauri::command]
-async fn create_qube_for_minting(
-    app_handle: AppHandle,
-    user_id: String,
-    password: String,
-    qube_name: String,
-    genesis_prompt: String,
-    favorite_color: String,
-    ai_provider: String,
-    ai_model: String,
-    evaluation_model: String,
-) -> Result<CreateQubeForMintingResponse, String> {
-    validate_identifier(&user_id, "user_id")?;
-    validate_identifier(&qube_name, "qube_name")?;
-
-    let args = vec![
-        user_id,
-        "--name".to_string(), qube_name,
-        "--genesis-prompt".to_string(), genesis_prompt,
-        "--favorite-color".to_string(), favorite_color,
-        "--ai-provider".to_string(), ai_provider,
-        "--ai-model".to_string(), ai_model,
-        "--evaluation-model".to_string(), evaluation_model,
-    ];
-
-    let mut secrets = HashMap::new();
-    secrets.insert("password", password.as_str());
-
-    match sidecar_execute_with_retry("create-qube-for-minting", args, secrets, Some(&app_handle), None).await {
-        Ok(result) => {
-            serde_json::from_value(result)
-                .map_err(|e| format!("Failed to parse create-qube-for-minting response: {}", e))
-        }
-        Err(e) => {
-            Ok(CreateQubeForMintingResponse {
-                success: false,
-                qube_id: None,
-                public_key: None,
-                genesis_block_hash: None,
-                recipient_address: None,
-                error: Some(format!("Failed to create qube: {}", e)),
-            })
-        }
-    }
-}
-
-/// Pre-register Qube with minting server
-#[tauri::command]
-async fn pre_register_qube(
-    qube_id: String,
-    qube_name: String,
-    public_key: String,
-    genesis_block_hash: String,
-    recipient_address: String,
-    creator_public_key: String,
-) -> Result<PreRegisterResponse, String> {
-    let client = reqwest::Client::new();
-
-    let payload = serde_json::json!({
-        "qube_id": qube_id,
-        "qube_name": qube_name,
-        "public_key": public_key,
-        "genesis_block_hash": genesis_block_hash,
-        "recipient_address": recipient_address,
-        "creator": creator_public_key,
-        "birth_timestamp": std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs(),
-    });
-
-    match client
-        .post("https://qube.cash/api/register/pre-register")
-        .json(&payload)
-        .send()
-        .await
-    {
-        Ok(response) => {
-            let status = response.status();
-            let response_text = response.text().await.unwrap_or_default();
-
-            if status.is_success() {
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&response_text) {
-                    return Ok(PreRegisterResponse {
-                        success: true,
-                        registration_id: json.get("registration_id").and_then(|v| v.as_str()).map(String::from),
-                        payment_amount_satoshis: json.get("amount_satoshis").and_then(|v| v.as_i64()),
-                        payment_amount_bch: json.get("amount_bch").and_then(|v| v.as_str()).map(String::from),
-                        error: None,
-                    });
-                }
-            }
-            Ok(PreRegisterResponse {
-                success: false,
-                registration_id: None,
-                payment_amount_satoshis: None,
-                payment_amount_bch: None,
-                error: Some(format!("Server error: {}", response_text)),
-            })
-        }
-        Err(e) => Ok(PreRegisterResponse {
-            success: false,
-            registration_id: None,
-            payment_amount_satoshis: None,
-            payment_amount_bch: None,
-            error: Some(format!("Request failed: {}", e)),
-        }),
-    }
-}
-
-/// Check registration status with server
-#[tauri::command]
-async fn check_registration_status(registration_id: String) -> Result<RegistrationStatusResponse, String> {
-    let client = reqwest::Client::new();
-
-    match client
-        .get(&format!("https://qube.cash/api/register/status/{}", registration_id))
-        .send()
-        .await
-    {
-        Ok(response) => {
-            let status = response.status();
-            let response_text = response.text().await.unwrap_or_default();
-
-            if status.is_success() {
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&response_text) {
-                    return Ok(RegistrationStatusResponse {
-                        status: json.get("status").and_then(|v| v.as_str()).unwrap_or("unknown").to_string(),
-                        payment_detected: json.get("payment_detected").and_then(|v| v.as_bool()),
-                        mint_result: json.get("mint_result").cloned(),
-                        error: None,
-                    });
-                }
-            }
-            Ok(RegistrationStatusResponse {
-                status: "error".to_string(),
-                payment_detected: None,
-                mint_result: None,
-                error: Some(format!("Failed to get status: {}", response_text)),
-            })
-        }
-        Err(e) => Ok(RegistrationStatusResponse {
-            status: "error".to_string(),
-            payment_detected: None,
-            mint_result: None,
-            error: Some(format!("Request failed: {}", e)),
-        }),
-    }
 }
 
 /// Open external URL in default browser (using safe opener plugin)
@@ -7439,10 +7147,6 @@ pub fn run() {
             prepare_qube_mint,
             finalize_qube_mint,
             save_cropped_avatar,
-            prepare_qube_for_minting,
-            check_minting_status,
-            submit_payment_txid,
-            cancel_pending_minting,
             list_pending_registrations,
             send_message,
             generate_speech,
@@ -7562,9 +7266,6 @@ pub fn run() {
             check_ollama_status,
             get_backend_diagnostics,
             start_ollama,
-            create_qube_for_minting,
-            pre_register_qube,
-            check_registration_status,
             open_external_url,
             // Chain Sync (NFT-Bundled Storage)
             sync_to_chain,

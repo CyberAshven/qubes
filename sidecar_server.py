@@ -199,10 +199,6 @@ POSITIONAL_ARG_NAMES = {
     "get-auth-status": ["qube_id"],
     "authenticate-nft": ["user_id", "qube_id"],
     "get-debug-prompt": ["qube_id"],
-    # Minting
-    "check-minting-status": ["user_id", "registration_id"],
-    "submit-payment-txid": ["user_id", "registration_id", "txid"],
-    "cancel-pending-minting": ["user_id", "registration_id"],
     # Export / Import
     "export-qube": ["qube_id", "export_path"],
     "import-qube": ["import_path"],

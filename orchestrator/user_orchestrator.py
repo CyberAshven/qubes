@@ -17,7 +17,6 @@ from core.qube import Qube
 from core.multi_qube_conversation import MultiQubeConversation
 from crypto.keys import generate_key_pair, derive_qube_id, derive_commitment, serialize_public_key, serialize_private_key, deserialize_private_key
 from blockchain.manager import BlockchainManager
-from blockchain.minting_api import MintingAPIClient, MintingAPIError, RegistrationResult, MintingResult
 from config import SecureSettingsManager, APIKeys
 from config.user_preferences import UserPreferencesManager, UserPreferences, BlockPreferences
 from utils.logging import get_logger
@@ -26,25 +25,6 @@ from utils.paths import get_user_data_dir
 from core.exceptions import QubesError
 
 logger = get_logger(__name__)
-
-
-@dataclass
-class PendingQubeCreation:
-    """Result of preparing a Qube for fee-based minting"""
-    qube: "Qube"
-    qube_id: str
-    registration_id: str
-    payment_address: str
-    payment_amount_bch: float
-    payment_amount_satoshis: int
-    payment_uri: str
-    qr_data: str
-    websocket_url: str
-    expires_at: datetime
-    expires_in_seconds: int
-    op_return_data: str = ""
-    op_return_hex: str = ""
-    qube_wallet_address: str = ""  # P2SH wallet address for Qube earnings
 
 
 @dataclass
@@ -99,7 +79,6 @@ class UserOrchestrator:
         # User preferences are managed by UserPreferencesManager (preferences.json)
         self.master_key: Optional[bytes] = None
         self.active_conversations: Dict[str, MultiQubeConversation] = {}  # conversation_id -> conversation
-        self.pending_minting: Dict[str, PendingQubeCreation] = {}  # registration_id -> pending creation
         self.pending_wc_mints: Dict[str, PendingWcMint] = {}  # pending_id -> WC mint temp data
 
         # Initialize secure settings manager (password will be set via set_master_key)
@@ -180,7 +159,6 @@ class UserOrchestrator:
                 - name: str
                 - genesis_prompt: str
                 - ai_model: str
-                - wallet_address: str (for NFT minting)
                 - voice_model: str (optional, defaults based on ai_model)
                 - avatar_file: Path (optional, uploaded avatar)
                 - generate_avatar: bool (optional, default False - generate with AI)
@@ -200,25 +178,13 @@ class UserOrchestrator:
             logger.info("creating_qube", name=config.get("name"))
 
             # Validate required fields
-            required_fields = ["name", "genesis_prompt", "ai_model", "owner_pubkey"]
+            required_fields = ["name", "genesis_prompt", "ai_model"]
             for field in required_fields:
                 if field not in config:
                     raise QubesError(
-                        f"Missing required field: {field}. All qubes must have a blockchain identity (NFT) and wallet.",
+                        f"Missing required field: {field}",
                         context={"config": config}
                     )
-
-            # Validate owner_pubkey format (compressed secp256k1 public key)
-            owner_pubkey = config["owner_pubkey"]
-            if not owner_pubkey.startswith(('02', '03')) or len(owner_pubkey) != 66:
-                raise QubesError(
-                    "Invalid owner_pubkey format. Must be compressed public key (02.../03... + 64 hex chars)",
-                    context={"owner_pubkey": owner_pubkey[:20] + "..."}
-                )
-
-            # Derive token-aware 'z' address from owner's public key (for NFT recipient)
-            from crypto.bch_script import pubkey_to_token_address
-            config["wallet_address"] = pubkey_to_token_address(owner_pubkey, network="mainnet")
 
             # Generate cryptographic keys
             private_key, public_key = generate_key_pair()
@@ -286,41 +252,6 @@ class UserOrchestrator:
                 user_name=self.user_id
             )
 
-            # Mint NFT on Bitcoin Cash (REQUIRED - every qube needs blockchain identity)
-            wallet_address = config["wallet_address"]  # Now required field
-
-            logger.info("minting_nft", qube_id=qube_id[:16] + "...", wallet=wallet_address[:20] + "...")
-
-            try:
-                blockchain_manager = BlockchainManager(network="mainnet")
-
-                # Mint NFT
-                mint_result = await blockchain_manager.mint_qube_nft(
-                    qube=qube,
-                    recipient_address=wallet_address,
-                    upload_to_ipfs=True
-                )
-
-                # Update genesis block with NFT info
-                qube.genesis_block.nft_category_id = mint_result["category_id"]
-                qube.genesis_block.mint_txid = mint_result["mint_txid"]
-                qube.genesis_block.bcmr_uri = mint_result.get("ipfs_uri", "")
-                # Also update the underlying dict
-                genesis_dict = qube.genesis_block.to_dict()
-                genesis_dict["nft_category_id"] = mint_result["category_id"]
-                genesis_dict["mint_txid"] = mint_result["mint_txid"]
-                genesis_dict["bcmr_uri"] = mint_result.get("ipfs_uri", "")
-
-                logger.info("nft_minted_successfully", category_id=mint_result["category_id"][:16] + "...")
-            except Exception as e:
-                logger.error("nft_minting_failed", error=str(e))
-                # NFT minting is now mandatory - fail qube creation
-                raise QubesError(
-                    f"Failed to mint NFT for qube. NFT is required for blockchain identity: {str(e)}",
-                    context={"qube_id": qube_id, "wallet": wallet_address},
-                    cause=e
-                )
-
             # Start P2P network node (optional)
             try:
                 logger.info("starting_p2p_network", qube_id=qube_id[:16] + "...")
@@ -340,9 +271,6 @@ class UserOrchestrator:
             # Initialize skills for the new Qube
             self._initialize_qube_skills(qube)
 
-            # Get NFT category from genesis block (might be "not_minted")
-            nft_category = qube.genesis_block.to_dict().get("nft_category_id", "not_minted")
-
             # Apply user's auto-anchor preferences to newly created qube
             prefs = self.preferences_manager.get_block_preferences()
             qube.chain_state.set_auto_anchor(
@@ -356,7 +284,6 @@ class UserOrchestrator:
                 "qube_created_successfully",
                 qube_id=qube_id[:16] + "...",
                 name=config["name"],
-                nft_category=nft_category[:16] + "..." if nft_category != "not_minted" else nft_category,
                 auto_anchor_threshold=prefs.individual_anchor_threshold
             )
 
@@ -620,566 +547,6 @@ class UserOrchestrator:
                 cause=e
             )
 
-    async def prepare_qube_for_minting(self, config: Dict[str, Any]) -> PendingQubeCreation:
-        """
-        Prepare a Qube for fee-based minting via the qube.cash API
-
-        This method creates the Qube locally and registers it with the minting
-        service, returning payment details. The Qube is saved but marked as
-        pending until payment is confirmed and NFT is minted.
-
-        Args:
-            config: Qube configuration (same as create_qube)
-
-        Returns:
-            PendingQubeCreation with payment details
-
-        Raises:
-            QubesError: If preparation fails
-        """
-        import os
-
-        try:
-            logger.info("preparing_qube_for_minting", name=config.get("name"))
-
-            # Validate required fields
-            required_fields = ["name", "genesis_prompt", "ai_model", "owner_pubkey"]
-            for field in required_fields:
-                if field not in config:
-                    raise QubesError(
-                        f"Missing required field: {field}",
-                        context={"config": config}
-                    )
-
-            # Validate owner_pubkey format (compressed secp256k1 public key)
-            owner_pubkey = config["owner_pubkey"]
-            if not owner_pubkey.startswith(('02', '03')) or len(owner_pubkey) != 66:
-                raise QubesError(
-                    "Invalid owner_pubkey format. Must be compressed public key (02.../03... + 64 hex chars)",
-                    context={"owner_pubkey": owner_pubkey[:20] + "..."}
-                )
-
-            # Derive token-aware 'z' address from owner's public key (for NFT recipient)
-            from crypto.bch_script import pubkey_to_token_address
-            token_address = pubkey_to_token_address(owner_pubkey, network="mainnet")
-            config["wallet_address"] = token_address
-
-            logger.info(
-                "nft_recipient_derived",
-                owner_pubkey=owner_pubkey[:16] + "...",
-                token_address=token_address
-            )
-
-            # Generate cryptographic keys
-            private_key, public_key = generate_key_pair()
-            qube_id = derive_qube_id(public_key)
-
-            logger.debug("qube_keys_generated", qube_id=qube_id[:16] + "...")
-
-            # Extract raw 32-byte private key for wallet (not PEM format)
-            from crypto.keys import get_raw_private_key_bytes
-            raw_private_key = get_raw_private_key_bytes(private_key)
-
-            # Create P2SH wallet with owner's public key (mandatory)
-            from crypto.wallet import QubeWallet
-            qube_wallet = QubeWallet(
-                qube_private_key=raw_private_key,
-                owner_pubkey_hex=owner_pubkey,
-                network="mainnet"
-            )
-
-            logger.info(
-                "qube_wallet_created",
-                qube_id=qube_id[:8],
-                p2sh_address=qube_wallet.p2sh_address
-            )
-
-            # Handle avatar (upload or generate)
-            avatar_data = await self._handle_avatar_creation(config, qube_id)
-
-            # Get avatar base64 for API if we have a local file
-            avatar_base64 = None
-            avatar_format = "png"
-            avatar_source = avatar_data.get("source", "generated") if avatar_data else "default"
-            avatar_ipfs_cid = avatar_data.get("ipfs_cid") if avatar_data else None
-
-            if avatar_data and avatar_data.get("local_path"):
-                avatar_path = Path(avatar_data["local_path"])
-                if avatar_path.exists():
-                    with open(avatar_path, "rb") as f:
-                        import base64
-                        avatar_base64 = base64.b64encode(f.read()).decode("utf-8")
-                    avatar_format = avatar_path.suffix.lstrip(".").lower()
-                    if avatar_format == "jpg":
-                        avatar_format = "jpeg"
-
-            # Determine voice model
-            voice_model = config.get("voice_model") or self._default_voice_for_model(config["ai_model"])
-
-            # Create genesis block
-            creator_name = config.get("creator", self.user_id)
-            birth_timestamp = int(datetime.now().timestamp())
-
-            genesis_block = {
-                "block_type": "GENESIS",
-                "block_number": 0,
-                "qube_id": qube_id,
-                "qube_name": config["name"],
-                "creator": creator_name,
-                "public_key": serialize_public_key(public_key),
-                "birth_timestamp": birth_timestamp,
-                "genesis_prompt": config["genesis_prompt"],
-                "genesis_prompt_encrypted": config.get("encrypt_genesis", False),
-                "ai_provider": config.get("ai_provider", "openai"),
-                "ai_model": config["ai_model"],
-                "voice_model": voice_model,
-                "avatar": avatar_data,
-                "favorite_color": config.get("favorite_color", "#4A90E2"),
-                "home_blockchain": config.get("home_blockchain", "bitcoincash"),
-                "default_trust_level": config.get("default_trust_level", 50),
-                "temporary": False,
-                "merkle_root": None,
-                "previous_hash": "0" * 64,
-                # Qube wallet (P2SH multi-sig with asymmetric control)
-                "wallet": {
-                    "owner_pubkey": owner_pubkey,
-                    "p2sh_address": qube_wallet.p2sh_address,
-                    "redeem_script_hash": qube_wallet.script_hash,
-                    "qube_pubkey": qube_wallet.qube_pubkey_hex
-                },
-                # Mark as pending minting
-                "nft_category_id": "pending_minting",
-                "mint_txid": None,
-                "bcmr_uri": None
-            }
-
-            # Optionally encrypt genesis prompt
-            if genesis_block["genesis_prompt_encrypted"]:
-                from crypto.encryption import encrypt_data
-                import hashlib
-                private_key_bytes = serialize_private_key(private_key)
-                encryption_key = hashlib.sha256(private_key_bytes).digest()
-                encrypted_prompt = encrypt_data(
-                    genesis_block["genesis_prompt"].encode(),
-                    encryption_key
-                )
-                genesis_block["genesis_prompt"] = encrypted_prompt.hex()
-
-            # Create Qube instance
-            qubes_dir = self.data_dir / "qubes"
-            qubes_dir.mkdir(parents=True, exist_ok=True)
-
-            qube = Qube(
-                qube_id=qube_id,
-                private_key=private_key,
-                public_key=public_key,
-                genesis_block=genesis_block,
-                data_dir=qubes_dir,
-                user_name=self.user_id
-            )
-
-            # Get genesis block hash for API registration
-            # Use the block_hash attribute (set during Qube initialization)
-            genesis_block_hash = qube.genesis_block.block_hash
-
-            # Register with minting API
-            logger.info("registering_with_minting_api", qube_id=qube_id[:16] + "...")
-
-            # Get user's Pinata JWT to pass to server for BCMR upload
-            api_keys = self.get_api_keys()
-            user_pinata_jwt = api_keys.pinata_jwt if api_keys else None
-
-            async with MintingAPIClient() as api_client:
-                registration = await api_client.register_qube(
-                    qube_id=qube_id,
-                    qube_name=config["name"],
-                    genesis_block_hash=genesis_block_hash,
-                    public_key=serialize_public_key(public_key),
-                    recipient_address=config["wallet_address"],
-                    creator=creator_name,
-                    birth_timestamp=birth_timestamp,
-                    genesis_prompt=config["genesis_prompt"] if not genesis_block["genesis_prompt_encrypted"] else None,
-                    ai_model=config["ai_model"],
-                    avatar_base64=avatar_base64,
-                    avatar_format=avatar_format,
-                    avatar_source=avatar_source,
-                    avatar_ipfs_cid=avatar_ipfs_cid,  # Pass the IPFS CID from client upload
-                    favorite_color=config.get("favorite_color"),
-                    pinata_jwt=user_pinata_jwt  # User's Pinata JWT for server-side BCMR upload
-                )
-
-            # Save Qube to storage (marked as pending)
-            await self._save_qube(qube, private_key)
-
-            # Initialize skills for the new Qube
-            self._initialize_qube_skills(qube)
-
-            # Create pending creation result
-            pending = PendingQubeCreation(
-                qube=qube,
-                qube_id=qube_id,
-                registration_id=registration.registration_id,
-                payment_address=registration.payment.address,
-                payment_amount_bch=registration.payment.amount_bch,
-                payment_amount_satoshis=registration.payment.amount_satoshis,
-                payment_uri=registration.payment.payment_uri,
-                qr_data=registration.payment.qr_data,
-                websocket_url=registration.websocket_url,
-                expires_at=registration.expires_at,
-                expires_in_seconds=registration.expires_in_seconds,
-                op_return_data=registration.payment.op_return_data,
-                op_return_hex=registration.payment.op_return_hex,
-                qube_wallet_address=qube_wallet.p2sh_address
-            )
-
-            # Track pending minting
-            self.pending_minting[registration.registration_id] = pending
-
-            # Also save registration info to disk for recovery
-            await self._save_pending_registration(pending, private_key)
-
-            logger.info(
-                "qube_prepared_for_minting",
-                qube_id=qube_id[:16] + "...",
-                registration_id=registration.registration_id,
-                payment_address=registration.payment.address,
-                amount_bch=registration.payment.amount_bch
-            )
-
-            return pending
-
-        except MintingAPIError as e:
-            logger.error("minting_api_error", error=str(e), status_code=e.status_code)
-            raise QubesError(
-                f"Minting API error: {str(e)}",
-                context={"config": config, "status_code": e.status_code},
-                cause=e
-            )
-        except Exception as e:
-            logger.error("prepare_qube_failed", error=str(e), exc_info=True)
-            raise QubesError(
-                f"Failed to prepare Qube for minting: {str(e)}",
-                context={"config": config},
-                cause=e
-            )
-
-    async def check_minting_status(self, registration_id: str) -> Dict[str, Any]:
-        """
-        Check the minting status for a pending registration
-
-        Args:
-            registration_id: Registration ID from prepare_qube_for_minting
-
-        Returns:
-            Status dict with fields like:
-            - status: pending, paid, minting, complete, failed, expired
-            - category_id (if complete)
-            - mint_txid (if complete)
-            - error_message (if failed)
-        """
-        logger.info("checking_minting_status", registration_id=registration_id)
-
-        async with MintingAPIClient() as api_client:
-            status = await api_client.get_status(registration_id)
-
-        # If complete, finalize the qube
-        if status.get("status") == "complete":
-            await self._finalize_minted_qube(registration_id, status)
-
-        return status
-
-    async def wait_for_minting_completion(
-        self,
-        registration_id: str,
-        poll_interval: float = 5.0,
-        timeout: float = 300.0,
-        on_status_change: Optional[callable] = None
-    ) -> Qube:
-        """
-        Wait for minting to complete (blocking with polling)
-
-        Args:
-            registration_id: Registration ID from prepare_qube_for_minting
-            poll_interval: Seconds between polls
-            timeout: Maximum time to wait
-            on_status_change: Optional callback for status updates
-
-        Returns:
-            Finalized Qube with NFT info
-
-        Raises:
-            QubesError: On failure, timeout, or expiration
-        """
-        logger.info(
-            "waiting_for_minting",
-            registration_id=registration_id,
-            timeout=timeout
-        )
-
-        async with MintingAPIClient() as api_client:
-            result = await api_client.wait_for_completion(
-                registration_id=registration_id,
-                poll_interval=poll_interval,
-                timeout=timeout,
-                on_status_change=on_status_change
-            )
-
-        # Finalize the qube with NFT info
-        qube = await self._finalize_minted_qube(registration_id, {
-            "category_id": result.category_id,
-            "mint_txid": result.mint_txid,
-            "bcmr_ipfs_cid": result.bcmr_ipfs_cid,
-            "avatar_ipfs_cid": result.avatar_ipfs_cid,
-            "commitment": result.commitment
-        })
-
-        return qube
-
-    async def cancel_pending_minting(self, registration_id: str) -> bool:
-        """
-        Cancel a pending minting registration
-
-        Only works if payment hasn't been received yet.
-
-        Args:
-            registration_id: Registration ID to cancel
-
-        Returns:
-            True if cancelled successfully
-        """
-        logger.info("cancelling_pending_minting", registration_id=registration_id)
-
-        try:
-            async with MintingAPIClient() as api_client:
-                await api_client.cancel_registration(registration_id)
-
-            # Remove from pending
-            if registration_id in self.pending_minting:
-                pending = self.pending_minting.pop(registration_id)
-                # Optionally delete the pending qube files
-                await self._cleanup_pending_qube(pending.qube_id)
-
-            # Remove saved registration
-            await self._remove_pending_registration(registration_id)
-
-            logger.info("pending_minting_cancelled", registration_id=registration_id)
-            return True
-
-        except MintingAPIError as e:
-            logger.error("cancel_minting_failed", error=str(e))
-            return False
-
-    async def _finalize_minted_qube(
-        self,
-        registration_id: str,
-        mint_info: Dict[str, Any]
-    ) -> Qube:
-        """
-        Finalize a Qube after successful minting
-
-        Updates the genesis block with NFT info and registers the qube.
-        """
-        logger.info(
-            "finalizing_minted_qube",
-            registration_id=registration_id,
-            category_id=mint_info.get("category_id", "")[:16] + "..."
-        )
-
-        # Get pending creation
-        pending = self.pending_minting.get(registration_id)
-
-        if not pending:
-            # Try to load from disk
-            pending = await self._load_pending_registration(registration_id)
-
-        if not pending:
-            raise QubesError(
-                f"No pending registration found for {registration_id}",
-                context={"registration_id": registration_id}
-            )
-
-        qube = pending.qube
-
-        # Update genesis block with NFT info
-        qube.genesis_block.nft_category_id = mint_info.get("category_id")
-        qube.genesis_block.mint_txid = mint_info.get("mint_txid")
-
-        bcmr_cid = mint_info.get("bcmr_ipfs_cid")
-        if bcmr_cid:
-            qube.genesis_block.bcmr_uri = f"ipfs://{bcmr_cid}"
-
-        # Set commitment on genesis block
-        commitment = mint_info.get("commitment")
-        if commitment:
-            qube.genesis_block.commitment = commitment
-
-        # Create nft_metadata.json with additional blockchain fields
-        nft_metadata = {
-            "qube_id": qube.qube_id,
-            "category_id": mint_info.get("category_id"),
-            "mint_txid": mint_info.get("mint_txid"),
-            "recipient_address": mint_info.get("recipient_address"),
-            "bcmr_ipfs_cid": bcmr_cid,
-            "avatar_ipfs_cid": mint_info.get("avatar_ipfs_cid"),
-            "commitment": mint_info.get("commitment", qube.qube_id),  # SHA-256 hash commitment from minter
-            "network": os.getenv("BCH_NETWORK", "mainnet")
-        }
-
-        # Save nft_metadata.json
-        qube_dir = self.data_dir / "qubes" / f"{qube.name}_{qube.qube_id}"
-        nft_metadata_path = qube_dir / "chain" / "nft_metadata.json"
-        with open(nft_metadata_path, "w", encoding="utf-8") as f:
-            json.dump(nft_metadata, f, indent=2)
-        logger.info("nft_metadata_saved", path=str(nft_metadata_path))
-
-        # Re-save the qube with updated NFT info
-        # Need to get private key from storage
-        qube_data, _ = await self._load_qube_data(qube.qube_id)
-        if self.master_key:
-            private_key = self._decrypt_private_key(
-                qube_data["encrypted_private_key"],
-                self.master_key
-            )
-            await self._save_qube(qube, private_key)
-
-        # Register in orchestrator
-        self.qubes[qube.qube_id] = qube
-
-        # Start P2P network (optional)
-        try:
-            await qube.start_network()
-            logger.info("p2p_network_started", qube_id=qube.qube_id[:16] + "...")
-        except Exception as e:
-            logger.warning("p2p_network_start_failed", error=str(e))
-
-        # Apply user preferences
-        prefs = self.preferences_manager.get_block_preferences()
-        qube.chain_state.set_auto_anchor(
-            individual_enabled=prefs.individual_auto_anchor,
-            individual_threshold=prefs.individual_anchor_threshold
-        )
-        # Note: auto_anchor_enabled/threshold are now dynamic properties
-
-        # Clean up pending
-        if registration_id in self.pending_minting:
-            del self.pending_minting[registration_id]
-        await self._remove_pending_registration(registration_id)
-
-        logger.info(
-            "qube_minting_finalized",
-            qube_id=qube.qube_id[:16] + "...",
-            category_id=mint_info.get("category_id", "")[:16] + "..."
-        )
-
-        return qube
-
-    async def _save_pending_registration(
-        self,
-        pending: PendingQubeCreation,
-        private_key
-    ) -> None:
-        """Save pending registration info to disk for recovery"""
-        pending_dir = self.data_dir / "pending_minting"
-        pending_dir.mkdir(parents=True, exist_ok=True)
-
-        pending_file = pending_dir / f"{pending.registration_id}.json"
-
-        data = {
-            "qube_id": pending.qube_id,
-            "registration_id": pending.registration_id,
-            "payment_address": pending.payment_address,
-            "payment_amount_bch": pending.payment_amount_bch,
-            "payment_amount_satoshis": pending.payment_amount_satoshis,
-            "payment_uri": pending.payment_uri,
-            "qr_data": pending.qr_data,
-            "websocket_url": pending.websocket_url,
-            "expires_at": pending.expires_at.isoformat(),
-            "expires_in_seconds": pending.expires_in_seconds,
-            "op_return_data": pending.op_return_data,
-            "op_return_hex": pending.op_return_hex,
-            "created_at": datetime.now().isoformat()
-        }
-
-        with open(pending_file, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-
-        logger.debug("pending_registration_saved", registration_id=pending.registration_id)
-
-    async def _load_pending_registration(
-        self,
-        registration_id: str
-    ) -> Optional[PendingQubeCreation]:
-        """Load pending registration from disk"""
-        pending_file = self.data_dir / "pending_minting" / f"{registration_id}.json"
-
-        logger.debug("loading_pending_registration", path=str(pending_file), exists=pending_file.exists())
-
-        if not pending_file.exists():
-            logger.warning("pending_file_not_found", path=str(pending_file))
-            return None
-
-        with open(pending_file, "r", encoding="utf-8") as f:
-            data = json.load(f)
-
-        logger.debug("pending_data_loaded", qube_id=data.get("qube_id"))
-
-        # Load the associated qube (skip NFT validation since it's still pending_minting)
-        try:
-            qube = await self.load_qube(data["qube_id"], skip_nft_validation=True)
-        except Exception as e:
-            import traceback
-            logger.error("failed_to_load_pending_qube", error=str(e), traceback=traceback.format_exc())
-            return None
-
-        # Parse expires_at
-        expires_at = datetime.fromisoformat(data["expires_at"])
-
-        return PendingQubeCreation(
-            qube=qube,
-            qube_id=data["qube_id"],
-            registration_id=registration_id,
-            payment_address=data["payment_address"],
-            payment_amount_bch=data["payment_amount_bch"],
-            payment_amount_satoshis=data["payment_amount_satoshis"],
-            payment_uri=data["payment_uri"],
-            qr_data=data["qr_data"],
-            websocket_url=data["websocket_url"],
-            expires_at=expires_at,
-            expires_in_seconds=data["expires_in_seconds"],
-            op_return_data=data.get("op_return_data", ""),
-            op_return_hex=data.get("op_return_hex", "")
-        )
-
-    async def _remove_pending_registration(self, registration_id: str) -> None:
-        """Remove pending registration file"""
-        pending_file = self.data_dir / "pending_minting" / f"{registration_id}.json"
-        if pending_file.exists():
-            pending_file.unlink()
-            logger.debug("pending_registration_removed", registration_id=registration_id)
-
-    async def _cleanup_pending_qube(self, qube_id: str) -> None:
-        """Clean up a cancelled pending qube's files"""
-        # This is a soft cleanup - we don't delete, just mark
-        # The user might want to retry
-        logger.debug("cleanup_pending_qube", qube_id=qube_id[:16] + "...")
-
-    async def list_pending_registrations(self) -> List[Dict[str, Any]]:
-        """List all pending minting registrations"""
-        pending_dir = self.data_dir / "pending_minting"
-        if not pending_dir.exists():
-            return []
-
-        registrations = []
-        for pending_file in pending_dir.glob("*.json"):
-            try:
-                with open(pending_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                registrations.append(data)
-            except Exception as e:
-                logger.warning("failed_to_load_pending", file=str(pending_file), error=str(e))
-
-        return registrations
-
     async def load_qube(self, qube_id: str, force_reload: bool = False, skip_nft_validation: bool = False) -> Qube:
         """
         Load existing Qube from storage
@@ -1244,7 +611,6 @@ class UserOrchestrator:
             # Defense-in-depth: Validate official Qubes category
             # This should never trigger since minting is mandatory at creation,
             # but protects against corrupted data or tampering
-            # Skip validation during finalization (when qube still has pending_minting status)
             if not skip_nft_validation:
                 from core.official_category import is_official_qube
                 nft_category_id = qube.genesis_block.nft_category_id if hasattr(qube.genesis_block, 'nft_category_id') else None
@@ -1630,15 +996,6 @@ class UserOrchestrator:
                     logger.debug("deleted_debug_prompt_cache")
             except Exception as e:
                 logger.debug(f"Could not delete debug prompt cache: {e}")
-
-            # Remove from BCMR registry via minting API
-            try:
-                async with MintingAPIClient() as client:
-                    await client.unregister_qube(qube_id)
-                    logger.info("qube_unregistered_from_bcmr", qube_id=qube_id[:16] + "...")
-            except Exception as bcmr_error:
-                # Don't fail deletion if BCMR removal fails
-                logger.warning("bcmr_unregister_failed", qube_id=qube_id[:16] + "...", error=str(bcmr_error))
 
             logger.info("qube_deleted_successfully", qube_id=qube_id[:16] + "...")
 
