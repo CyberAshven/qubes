@@ -93,7 +93,7 @@ class Block(BaseModel):
     creator: Optional[str] = None
     public_key: Optional[str] = None
     birth_timestamp: Optional[int] = None
-    genesis_prompt: Optional[str] = None
+    genesis_prompt: Optional[str] = ""
     genesis_prompt_encrypted: Optional[bool] = None
     ai_provider: Optional[str] = None
     ai_model: Optional[str] = None

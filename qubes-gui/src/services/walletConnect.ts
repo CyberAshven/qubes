@@ -29,7 +29,14 @@ const BCH_CHAIN_ID = 'bch:bitcoincash';
 const BCH_NAMESPACE = {
   bch: {
     chains: [BCH_CHAIN_ID],
-    methods: ['bch_getAddresses', 'bch_signTransaction', 'bch_signMessage'],
+    methods: [
+      'bch_getAddresses',
+      'bch_signTransaction',
+      'bch_signMessage',
+      'bch_getTokens_V0',
+      'bch_getBalance_V0',
+      'bch_getChangeLockingBytecode_V0',
+    ],
     events: ['addressesChanged'],
   },
 };
@@ -108,6 +115,23 @@ async function getClient() {
   signClient.on('session_delete', () => {
     currentSession = null;
     notifyListeners();
+  });
+
+  // Handle addressesChanged events — update current session address in place
+  signClient.on('session_event', (event: any) => {
+    if (event.params?.event?.name === 'addressesChanged') {
+      // Re-fetch addresses when wallet notifies of change
+      const newAddresses = event.params.event.data;
+      if (Array.isArray(newAddresses) && newAddresses.length > 0) {
+        const addr = typeof newAddresses[0] === 'string'
+          ? newAddresses[0]
+          : newAddresses[0]?.address;
+        if (addr && currentSession) {
+          currentSession.address = addr;
+          notifyListeners();
+        }
+      }
+    }
   });
 
   return signClient;
@@ -249,4 +273,109 @@ export async function signTransaction(
   });
 
   return result;
+}
+
+/**
+ * Sign an arbitrary message via bch_signMessage.
+ * Returns base64-encoded signature (Electron Cash compatible).
+ */
+export async function signMessage(message: string, userPrompt?: string): Promise<string> {
+  const client = await getClient();
+  if (!currentSession) throw new Error('No active WalletConnect session');
+
+  const result = await client.request({
+    topic: currentSession.topic,
+    chainId: BCH_CHAIN_ID,
+    request: {
+      method: 'bch_signMessage',
+      params: { message, userPrompt },
+    },
+  });
+
+  return result as string;
+}
+
+/**
+ * Get token UTXOs held by the connected wallet (CashRPC).
+ * Returns null if the wallet doesn't support this method.
+ */
+export async function getTokens(): Promise<Array<{
+  txid: string;
+  vout: number;
+  satoshis: number;
+  token: {
+    amount: string;
+    category: string;
+    nft?: { capability: string; commitment: string };
+  };
+}> | null> {
+  const client = await getClient();
+  if (!currentSession) throw new Error('No active WalletConnect session');
+
+  try {
+    const result = await client.request({
+      topic: currentSession.topic,
+      chainId: BCH_CHAIN_ID,
+      request: {
+        method: 'bch_getTokens_V0',
+        params: {},
+      },
+    });
+    return result as any[];
+  } catch {
+    // Wallet doesn't support this method
+    return null;
+  }
+}
+
+/**
+ * Get the BCH balance of the connected wallet (CashRPC).
+ * Returns null if the wallet doesn't support this method.
+ */
+export async function getBalance(): Promise<{
+  confirmed: number;
+  unconfirmed?: number;
+} | null> {
+  const client = await getClient();
+  if (!currentSession) throw new Error('No active WalletConnect session');
+
+  try {
+    const result = await client.request({
+      topic: currentSession.topic,
+      chainId: BCH_CHAIN_ID,
+      request: {
+        method: 'bch_getBalance_V0',
+        params: {},
+      },
+    });
+    return result as { confirmed: number; unconfirmed?: number };
+  } catch {
+    // Wallet doesn't support this method
+    return null;
+  }
+}
+
+/**
+ * Get the wallet's change locking bytecode (CashRPC).
+ * Useful for building transactions with proper change outputs.
+ * Returns null if the wallet doesn't support this method.
+ */
+export async function getChangeLockingBytecode(): Promise<string | null> {
+  const client = await getClient();
+  if (!currentSession) throw new Error('No active WalletConnect session');
+
+  try {
+    const result = await client.request({
+      topic: currentSession.topic,
+      chainId: BCH_CHAIN_ID,
+      request: {
+        method: 'bch_getChangeLockingBytecode_V0',
+        params: {},
+      },
+    });
+    return result as string;
+  } catch {
+    // Wallet doesn't support this method
+    return null;
+  }
 }

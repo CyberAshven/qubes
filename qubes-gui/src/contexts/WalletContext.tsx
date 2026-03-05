@@ -17,6 +17,9 @@ interface WalletState {
   connect: () => Promise<void>;
   disconnect: () => Promise<void>;
   signTransaction: (wcTransaction: string) => Promise<wc.WcSignResult>;
+  signMessage: (message: string, userPrompt?: string) => Promise<string>;
+  getTokens: () => Promise<any[] | null>;
+  getBalance: () => Promise<{ confirmed: number; unconfirmed?: number } | null>;
 }
 
 const WalletContext = createContext<WalletState>({
@@ -28,6 +31,9 @@ const WalletContext = createContext<WalletState>({
   connect: async () => {},
   disconnect: async () => {},
   signTransaction: async () => ({ signedTransaction: '', signedTransactionHash: '' }),
+  signMessage: async () => '',
+  getTokens: async () => null,
+  getBalance: async () => null,
 });
 
 export function WalletProvider({ children }: { children: React.ReactNode }) {
@@ -104,9 +110,21 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     return wc.signTransaction(wcTransaction);
   }, []);
 
+  const signMessage = useCallback(async (message: string, userPrompt?: string) => {
+    return wc.signMessage(message, userPrompt);
+  }, []);
+
+  const getTokens = useCallback(async () => {
+    return wc.getTokens();
+  }, []);
+
+  const getBalance = useCallback(async () => {
+    return wc.getBalance();
+  }, []);
+
   return (
     <WalletContext.Provider
-      value={{ connected, address, publicKey, connecting, error, connect, disconnect, signTransaction }}
+      value={{ connected, address, publicKey, connecting, error, connect, disconnect, signTransaction, signMessage, getTokens, getBalance }}
     >
       {children}
     </WalletContext.Provider>

@@ -1,0 +1,203 @@
+{
+  "keyDerivation": {
+    "privateKeyHex": "e8f32e723decf4051aefac8e2c93c9c5b214313817cdb01a1494b917c8436b35",
+    "publicKeyHex": "0339a36013301597daef41fbe593a02cc513d0b55527ec2df1050e2e8ff49c85c2",
+    "description": "From fixed private key scalar, derive compressed secp256k1 public key"
+  },
+  "commitment": {
+    "publicKeyHex": "0339a36013301597daef41fbe593a02cc513d0b55527ec2df1050e2e8ff49c85c2",
+    "commitment": "f909521ddd38df95d0bb67c5f99960f558a1eeb19936702a383a23d792162ab6",
+    "description": "SHA-256 of the public key hex STRING (not raw bytes)"
+  },
+  "qubeId": {
+    "publicKeyHex": "0339a36013301597daef41fbe593a02cc513d0b55527ec2df1050e2e8ff49c85c2",
+    "qubeId": "F909521D",
+    "description": "First 8 chars of commitment, uppercased"
+  },
+  "canonicalStringify": {
+    "input": {
+      "zebra": 1,
+      "alpha": {
+        "delta": true,
+        "beta": [
+          3,
+          2,
+          1
+        ]
+      },
+      "middle": "hello",
+      "numbers": 42
+    },
+    "canonical": "{\"alpha\": {\"beta\": [3, 2, 1], \"delta\": true}, \"middle\": \"hello\", \"numbers\": 42, \"zebra\": 1}",
+    "canonicalWithSeparators": "{\"alpha\": {\"beta\": [3, 2, 1], \"delta\": true}, \"middle\": \"hello\", \"numbers\": 42, \"zebra\": 1}",
+    "description": "json.dumps(sort_keys=True) - Python default separators are ', ' and ': ' which matches the SDK's canonicalStringify"
+  },
+  "blockHashing": {
+    "block": {
+      "block_number": 0,
+      "timestamp": "2025-01-01T00:00:00Z",
+      "qube_id": "F909521D",
+      "data": {
+        "message": "genesis"
+      },
+      "previous_hash": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "canonicalJson": "{\"block_number\": 0, \"data\": {\"message\": \"genesis\"}, \"previous_hash\": \"0000000000000000000000000000000000000000000000000000000000000000\", \"qube_id\": \"F909521D\", \"timestamp\": \"2025-01-01T00:00:00Z\"}",
+    "blockHash": "5d67be372c67d2925abe720cc3252d152fb02cd7e746d4c7b7884bf0e90135a0",
+    "description": "SHA-256 of canonical JSON (block_hash and signature fields excluded)"
+  },
+  "blockSigningGenesis": {
+    "block": {
+      "block_number": 0,
+      "timestamp": "2025-01-01T00:00:00Z",
+      "qube_id": "F909521D",
+      "data": {
+        "message": "genesis"
+      },
+      "previous_hash": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "blockHash": "5d67be372c67d2925abe720cc3252d152fb02cd7e746d4c7b7884bf0e90135a0",
+    "signedData": "5d67be372c67d2925abe720cc3252d152fb02cd7e746d4c7b7884bf0e90135a0",
+    "signedDataDescription": "Genesis blocks sign the block hash hex string (UTF-8 encoded)",
+    "signature": "304502202fcb8017400986341c9f215f40e338b9813570ac3234be309ce57e239a0db887022100a2f0da0d856e619f8873fb5a18d0550992b26359fe78c873f20952009b2b6c9e",
+    "publicKeyHex": "0339a36013301597daef41fbe593a02cc513d0b55527ec2df1050e2e8ff49c85c2",
+    "description": "Genesis (block_number=0): sign(hash_hex.encode('utf-8'), ECDSA+SHA256). ECDSA signatures are non-deterministic; verify with public key instead of comparing bytes."
+  },
+  "blockSigningStandard": {
+    "block": {
+      "block_number": 1,
+      "timestamp": "2025-01-01T00:01:00Z",
+      "qube_id": "F909521D",
+      "data": {
+        "message": "hello world"
+      },
+      "previous_hash": "5d67be372c67d2925abe720cc3252d152fb02cd7e746d4c7b7884bf0e90135a0"
+    },
+    "blockHash": "23f449eac9e2376c588ab3cf7a77454fae5c7fdb6b6b2f7e501b01730e587443",
+    "signedData": "{\"block_number\": 1, \"data\": {\"message\": \"hello world\"}, \"previous_hash\": \"5d67be372c67d2925abe720cc3252d152fb02cd7e746d4c7b7884bf0e90135a0\", \"qube_id\": \"F909521D\", \"timestamp\": \"2025-01-01T00:01:00Z\"}",
+    "signedDataDescription": "Standard blocks sign the canonical JSON string (UTF-8 encoded)",
+    "signature": "3044022039d896cbf2838d21382b169516e2f4277c0d422152188c4dddda1047df2fcdda02206098a749cfd9c159b2f41d54c8e71894be8e0ffa2134a3027af372f8b41135ac",
+    "publicKeyHex": "0339a36013301597daef41fbe593a02cc513d0b55527ec2df1050e2e8ff49c85c2",
+    "description": "Standard (block_number>0): sign(json.dumps(block, sort_keys=True).encode('utf-8'), ECDSA+SHA256). ECDSA signatures are non-deterministic; verify with public key instead of comparing bytes."
+  },
+  "aes256gcm": {
+    "keyHex": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "nonceHex": "000102030405060708090a0b",
+    "plaintext": {
+      "message": "hello world",
+      "count": 42
+    },
+    "plaintextJson": "{\"count\": 42, \"message\": \"hello world\"}",
+    "ciphertextHex": "fa26f9727389562aa0ebfd215b9f80ad2dbf67dfbc95082788f8efa831bf162134a4fb0a129a92af8d62778c9ce5c890166082afa7861a",
+    "result": {
+      "ciphertext": "fa26f9727389562aa0ebfd215b9f80ad2dbf67dfbc95082788f8efa831bf162134a4fb0a129a92af8d62778c9ce5c890166082afa7861a",
+      "nonce": "000102030405060708090a0b",
+      "algorithm": "AES-256-GCM"
+    },
+    "description": "AES-256-GCM encrypt: plaintext is json.dumps(data, sort_keys=True).encode(). Ciphertext includes 16-byte auth tag appended."
+  },
+  "hkdf": {
+    "masterKeyHex": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+    "blockKeys": [
+      {
+        "blockNumber": 0,
+        "info": "block_0",
+        "derivedKeyHex": "9bec9053ec77dbb9a48cd6d7fbe51db2937058cd5a6b63ae8576d85a06f47a42"
+      },
+      {
+        "blockNumber": 1,
+        "info": "block_1",
+        "derivedKeyHex": "b60505ec293c310af5a33aec04d2fd849b9b1635c22b2a8f3358dd2be0a91f20"
+      },
+      {
+        "blockNumber": 42,
+        "info": "block_42",
+        "derivedKeyHex": "66ec7e416b1ec1f206dd2cd0ff297ab97e89ae468e1874f3068d4e340d46dae4"
+      }
+    ],
+    "chainStateKey": {
+      "info": "chain_state",
+      "derivedKeyHex": "cc912d6902da344c8c37c4f450eaeeb29318a7428133d25d33f63f6e47b28ffd"
+    },
+    "description": "HKDF-SHA256 with salt=None, length=32. Info strings: 'block_{n}' for block keys, 'chain_state' for chain state key."
+  },
+  "pbkdf2": {
+    "password": "test-password-123",
+    "saltHex": "deadbeefcafebabe1234567890abcdef",
+    "vectors": [
+      {
+        "iterations": 1000,
+        "derivedKeyBase64url": "Pv9UnVuzy0l-yTKRVYArYU8-O5wwQnz2Ei_0ucF39hs=",
+        "description": "Fast test vector (1000 iterations)"
+      },
+      {
+        "iterations": 600000,
+        "derivedKeyBase64url": "Jt9UOIhDhIbI-kbdJ_JjjQxvYKISyfbUAAK1GtIj0E4=",
+        "description": "Production vector (600000 iterations, OWASP 2025)"
+      }
+    ],
+    "description": "PBKDF2-SHA256, length=32, output is base64url-encoded (for Fernet compatibility). Password is UTF-8 encoded."
+  },
+  "merkleRoot": {
+    "cases": [
+      {
+        "name": "empty",
+        "hashes": [],
+        "root": "0000000000000000000000000000000000000000000000000000000000000000",
+        "description": "Empty list returns 64 zeros"
+      },
+      {
+        "name": "single",
+        "hashes": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ],
+        "root": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "description": "Single hash returns itself"
+      },
+      {
+        "name": "two",
+        "hashes": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ],
+        "root": "fa0dafbf43f1f551e536353e9d1a942a8e86e41a0b58dfeaf264ef217f6b862a",
+        "description": "Two hashes: SHA-256(left + right) where + is string concatenation"
+      },
+      {
+        "name": "three_odd",
+        "hashes": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        ],
+        "root": "f372961e0178fea099eb05057b8b6a363a21f7ee2456e6e17a8f92990d01d1f9",
+        "description": "Odd count: last hash is duplicated"
+      },
+      {
+        "name": "four",
+        "hashes": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        ],
+        "root": "05a6d4566f0f17d31a6db0d9f7fad315ca3106d00e3f691a42fd92628d1293df",
+        "description": "Four hashes: balanced binary tree"
+      }
+    ],
+    "description": "Merkle tree: bottom-up, pairs concatenated as strings (not bytes), SHA-256 of concatenated hex string. Odd levels duplicate the last hash."
+  },
+  "ecies": {
+    "recipientPrivateKeyHex": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
+    "recipientPublicKeyHex": "02555a14d855d2bb43117e50a9783bdc573c23a3e6999029ddae7347490dbed3b2",
+    "ephemeralPrivateKeyHex": "1111111111111111111111111111111111111111111111111111111111111111",
+    "ephemeralPublicKeyHex": "034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+    "nonceHex": "aabbccddeeff00112233aabb",
+    "plaintext": "secret message for ECIES test",
+    "plaintextHex": "736563726574206d65737361676520666f722045434945532074657374",
+    "ciphertextHex": "034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aaaabbccddeeff00112233aabba8c958e3e0c28bd70a3cd25d5da042cf61cd7132d4f05a96a13c0be6617bb59c7dc6f8d12852faadcbaa23179d",
+    "format": "ephemeral_pubkey(33) || nonce(12) || ciphertext+tag",
+    "hkdfInfo": "qubes-ecies-v1",
+    "description": "ECIES: ECDH shared secret \u2192 HKDF-SHA256(info='qubes-ecies-v1') \u2192 AES-256-GCM. Deterministic test uses fixed ephemeral key and nonce. In production, both are random. SDK tests should verify round-trip."
+  }
+}
