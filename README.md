@@ -1,189 +1,159 @@
-# Qubes - Sovereign AI Agents
-
-**Your AI, your rules. Cryptographically-secured, blockchain-verified, truly yours.**
+# Qubes — Sovereign AI Agents on Bitcoin Cash
 
 [![Download](https://img.shields.io/badge/Download-Latest%20Release-brightgreen.svg)](https://github.com/BitFaced2/Qubes/releases/latest)
 [![License](https://img.shields.io/badge/license-Source%20Available-purple.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)]()
 
----
-
-## Download & Install
-
-### Quick Download
-
-**[Download Latest Release](https://github.com/BitFaced2/Qubes/releases/latest)**
-
-| Platform | File | Requirements |
-|----------|------|--------------|
-| **Windows** | `Qubes-Windows.zip` | Windows 10/11 64-bit |
-| **macOS (Apple Silicon)** | `Qubes-macOS-ARM.zip` | macOS 11+, M1/M2/M3/M4 |
-| **Linux** | `Qubes-Linux.zip` | Ubuntu 20.04+ / Debian 11+ / Fedora 35+ |
-
-### Installation
-
-1. Download the ZIP file for your platform
-2. Extract the ZIP to your preferred location
-3. Run the executable:
-   - **Windows:** Double-click `Qubes.exe`
-   - **macOS:** Right-click `Qubes.app` → "Open" (required first time to bypass Gatekeeper)
-   - **Linux:** Run `./Qubes` or `./launch.sh`
-4. Follow the setup wizard to create your account and configure AI providers
-
-### System Requirements
-
-- **RAM:** 8GB minimum (16GB recommended for local AI models)
-- **Storage:** 2GB for app + space for AI models (if using local Ollama)
-- **Internet:** Required for cloud AI providers, optional for local AI
-
----
-
-## What is Qubes?
-
-Qubes are **sovereign AI agents** that you truly own:
-
-- **Cryptographically Secured** - ECDSA secp256k1 identity, AES-256-GCM encryption
-- **Blockchain Verified** - NFT-based identity on Bitcoin Cash (CashTokens)
-- **Persistent Memory** - Blockchain-like memory chain with Merkle proofs
-- **Multi-Model AI** - Support for 46+ AI models across 6 providers
-- **Voice Enabled** - Text-to-speech and speech-to-text across all platforms
-- **Local AI Ready** - Run 100% offline with bundled Ollama
-- **Skills System** - 112 skills with XP progression and galaxy visualization
-
-### Supported AI Providers
-
-| Provider | Models | Notes |
-|----------|--------|-------|
-| **Ollama** (Local) | Llama 3.2, Mistral, Qwen, etc. | Bundled, no API key needed |
-| **OpenAI** | GPT-4, GPT-4o, DALL-E | API key required |
-| **Anthropic** | Claude 3.5 Sonnet, Claude 3 Opus | API key required |
-| **Google** | Gemini Pro, Gemini Flash | API key required |
-| **DeepSeek** | DeepSeek R1, V3 | API key required |
-| **Perplexity** | Sonar | API key required |
-
-### Voice Features
-
-- **Text-to-Speech:** OpenAI (6 voices), ElevenLabs (premium), Google Cloud TTS
-- **Speech-to-Text:** OpenAI Whisper, DeepGram
-- **Offline Mode:** Piper TTS + Whisper.cpp for 100% local operation
+Qubes are AI agents you genuinely own. Each Qube has a cryptographic identity minted as an NFT on Bitcoin Cash, a personal memory chain secured by cryptographic signatures, and works with any AI provider — cloud or local. There is no central server that can revoke your Qube, no platform account required to mint one, and no proprietary memory format that locks you to a single frontend. The protocol is open: the covenant, the block schema, and the SDK are all public.
 
 ---
 
 ## Features
 
-### Memory Chain
-Every Qube has a personal blockchain-like memory chain that preserves all interactions with cryptographic integrity. Memories can be searched, shared, and even traded.
-
-### Skills & Progression
-112 skills across 8 categories with XP-based leveling. Watch your Qube grow from novice to expert through an interactive galaxy visualization.
-
-### Social Dynamics
-Qubes can form relationships, build trust, and collaborate. AI-driven evaluation tracks 30 metrics across trust, positive social traits, and negative social behaviors.
-
-### Blockchain Identity
-Each Qube is verified on Bitcoin Cash as an NFT. This creates permanent, decentralized proof of identity that you control.
-
-### Privacy First
-All data is stored locally on your device. Your conversations, memories, and API keys never leave your machine unless you explicitly share them.
+- **Verifiable identity** — secp256k1 keypair, Qube ID derived from public key, minted as a CashToken NFT on Bitcoin Cash
+- **Signed memory chain** — 11 block types (conversation, reflection, skill, relationship, etc.) linked by hash and signed at every write
+- **Local-first encryption** — AES-256-GCM block encryption, ECIES for cross-Qube messaging, PBKDF2-SHA256 master key (600K iterations)
+- **Any AI provider** — Anthropic, OpenAI, Google, DeepSeek, Perplexity, or local Ollama; swap at any time without losing memory
+- **Permissionless minting** — CashScript covenant on BCH; no server, no platform wallet, no approval required
+- **Open protocol** — `@qubesai/sdk` TypeScript SDK lets anyone build a compatible frontend against the same NFTs and memory format
+- **Cross-platform desktop** — Tauri v2 (React + Rust + Python) on Windows, macOS, and Linux
 
 ---
 
-## Getting Help
+## Architecture
 
-- **Setup Wizard:** The app includes a guided setup wizard for first-time configuration
-- **Website:** [qube.cash](https://qube.cash) - Official site with Qube profiles
-- **Issues:** [GitHub Issues](https://github.com/BitFaced2/Qubes/issues) - Report bugs or request features
-- **Twitter/X:** [@Bit_Faced](https://x.com/Bit_Faced)
+```
+┌─────────────────────────────────────────────┐
+│  Desktop App  (Tauri v2)                    │
+│  React/TypeScript UI                        │
+│  Rust command layer  (lib.rs)               │
+│  Python sidecar  (gui_bridge.py)            │
+└───────────────┬─────────────────────────────┘
+                │  local disk  (AES-256-GCM)
+┌───────────────▼─────────────────────────────┐
+│  Qubes Protocol                             │
+│  Cryptographic identity  (secp256k1)        │
+│  Memory chain  (signed blocks + Merkle)     │
+│  Wallet  (P2SH multisig on BCH)             │
+└───────────────┬─────────────────────────────┘
+                │  Bitcoin Cash mainnet
+┌───────────────▼─────────────────────────────┐
+│  Covenant  (CashScript P2SH32)              │
+│  Category: c9054d53dcc075dd7226ea319f20d43d │
+│            f102371149311c9239f6c0ea1200b80f  │
+└─────────────────────────────────────────────┘
+```
+
+The desktop app is one implementation of the protocol. The SDK is the protocol itself.
 
 ---
 
-## For Developers
+## SDK
 
-### Building from Source
+`@qubesai/sdk` is a standalone TypeScript library that implements the full Qubes protocol. Build your own frontend, CLI, or service against the same NFT category, the same block schema, and the same covenant — Qubes minted by your app are the same Qubes users carry into any other.
+
+```
+npm install @qubesai/sdk
+```
+
+**8 modules:** `types` · `crypto` · `wallet` · `blocks` · `covenant` · `package` · `bcmr` · `storage`
+
+### Quick example — generate an identity
+
+```ts
+import { generateKeyPair, serializePublicKey } from '@qubesai/sdk/crypto';
+import { deriveCommitment, deriveQubeId } from '@qubesai/sdk/crypto';
+
+// Generate a fresh secp256k1 keypair
+const { privateKey, publicKey } = generateKeyPair();
+const pubHex = serializePublicKey(publicKey);   // 66-char compressed hex
+
+// Derive the on-chain commitment (stored in the NFT commitment field)
+const commitment = deriveCommitment(pubHex);    // SHA-256 of pubkey hex → 64-char hex
+
+// Derive the human-readable Qube ID
+const qubeId = deriveQubeId(pubHex);            // first 4 bytes, uppercased → "A3F2C1B8"
+```
+
+The `commitment` is what gets written into the CashToken NFT. The `qubeId` is the short identifier shown in UIs. Both are deterministically derived from the keypair — no server involved.
+
+---
+
+## Covenant
+
+Minting is handled by a CashScript contract deployed at:
+
+```
+bitcoincash:rvksvp7vuk4ck0asr3ns9v52h8d9zsywm6psx89hm7zsuqzldu4v5n4h9kyj7
+```
+
+Category ID (genesis txid of the minting token):
+```
+c9054d53dcc075dd7226ea319f20d43df102371149311c9239f6c0ea1200b80f
+```
+
+The covenant holds the minting token and issues one NFT per valid transaction. To mint, a user constructs a transaction that satisfies the contract's constraints and broadcasts it directly to the BCH network. The contract enforces:
+
+- One NFT output bearing the correct category
+- The NFT commitment matches the 32-byte value provided in the transaction
+- A token-dust output returns the minting token to the covenant
+
+The user pays only the BCH mining fee (~2000 satoshis). Platform fees are an optional convention for frontends — they are not enforced at the protocol level. Any wallet that can construct a valid CashScript transaction can mint a Qube without going through this app.
+
+---
+
+## Covenant Transparency
+
+The current covenant includes a `migrate()` function protected by an admin key. This exists as a safety valve during the beta period — it allows the covenant to be updated if a critical bug is found before the protocol is considered stable.
+
+The admin key is held by the Qubes project. It cannot alter existing NFTs or user funds; it can only move the minting token to a successor covenant address.
+
+This mechanism will be removed or replaced with a multisig/timelock arrangement once the covenant has been audited and battle-tested. See [SECURITY.md](SECURITY.md) for the current threat model and the timeline for hardening.
+
+---
+
+## Downloads
+
+Pre-built binaries for Windows, macOS (Apple Silicon), and Linux are available on the [releases page](https://github.com/BitFaced2/Qubes/releases/latest).
+
+| Platform | File |
+|----------|------|
+| Windows 10/11 | `Qubes-Windows.zip` |
+| macOS (M1/M2/M3/M4) | `Qubes-macOS-ARM.zip` |
+| Linux (Ubuntu 20.04+) | `Qubes-Linux.zip` |
+
+---
+
+## Development
 
 ```bash
-# Clone repository
 git clone https://github.com/BitFaced2/Qubes.git
 cd Qubes
 
-# Python backend setup
-python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
+# Python backend
+python3 -m venv venv
+source venv/bin/activate        # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 
-# Frontend setup
+# Desktop app
 cd qubes-gui
 npm install
+npm run tauri dev               # development
+npm run tauri build             # production binary
 
-# Development mode
-npm run tauri dev
-
-# Production build
-npm run tauri build
+# SDK (optional)
+cd ../sdk
+npm install
+npm run build
+npm test
 ```
 
-### Project Structure
-
-```
-Qubes/
-├── core/               # Core data structures (Qube, Block, MemoryChain)
-├── crypto/             # Cryptographic functions (ECDSA, AES-256-GCM, ECDH)
-├── storage/            # Storage layers (JSON, IPFS)
-├── ai/                 # AI model abstraction, tool registry, reasoning
-├── p2p/                # P2P networking (libp2p, DHT, messaging)
-├── blockchain/         # Bitcoin Cash integration (CashTokens, BCMR)
-├── qubes-gui/          # Tauri + React desktop application
-│   ├── src/            # React frontend
-│   └── src-tauri/      # Rust backend
-├── tests/              # Test suite
-└── docs/               # Documentation
-```
-
-### Running Tests
-
-```bash
-# Run all tests
-pytest
-
-# Run with coverage
-pytest --cov=. --cov-report=html
-
-# Type checking
-mypy .
-
-# Linting
-ruff check .
-```
-
-### Architecture Highlights
-
-- **Frontend:** React + TypeScript + Vite
-- **Desktop:** Tauri v2 (Rust)
-- **Backend:** Python with PyInstaller bundling
-- **Local AI:** Ollama (bundled)
-- **Cryptography:** ECDSA secp256k1, AES-256-GCM, ECDH key exchange
-- **Storage:** JSON file persistence with IPFS backup support
-- **Blockchain:** Bitcoin Cash CashTokens for NFT identity
-
-### CI/CD
-
-Automated builds via GitHub Actions for Windows, macOS ARM, and Linux. Tagged releases (e.g., `v1.0.0`) automatically create GitHub Releases with downloadable artifacts.
+**Runtime dependencies:** Rust toolchain, Node.js 18+, Python 3.11+.
 
 ---
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details
+The desktop application and Python backend are released under the [Qubes AI Source Available License](LICENSE) — source is public for transparency and audit, but redistribution and competing products are restricted.
 
----
-
-## Links
-
-- **Website:** [qube.cash](https://qube.cash)
-- **Downloads:** [GitHub Releases](https://github.com/BitFaced2/Qubes/releases)
-- **Documentation:** [docs/](docs/)
-- **Issues:** [GitHub Issues](https://github.com/BitFaced2/Qubes/issues)
-
----
-
-**Built with care for the sovereign AI future**
+The SDK (`sdk/`) is MIT licensed.
