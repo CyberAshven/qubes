@@ -5,10 +5,10 @@
  * BCH wallets (Cashonize, Paytaca, Zapit, Electron Cash).
  *
  * The app never sees private keys. The wallet handles all signing.
+ *
+ * All WC imports are dynamic to avoid crashing the app on platforms
+ * where the WC packages have issues (e.g. WebKitGTK web components).
  */
-
-import SignClient from '@walletconnect/sign-client';
-import { WalletConnectModal } from '@walletconnect/modal';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -36,8 +36,8 @@ const BCH_NAMESPACE = {
 
 // ── Singleton State ────────────────────────────────────────────────
 
-let signClient: SignClient | null = null;
-let modal: WalletConnectModal | null = null;
+let signClient: any | null = null;
+let modal: any | null = null;
 let currentSession: WcSession | null = null;
 
 // Event listeners
@@ -57,22 +57,26 @@ export function onSessionChange(fn: Listener): () => void {
 
 /**
  * Get the WalletConnect project ID from environment.
- * Register at https://cloud.walletconnect.com (free).
+ * Register at https://cloud.reown.com (free).
  */
 function getProjectId(): string {
   const id = import.meta.env.VITE_WC_PROJECT_ID;
   if (!id) {
     throw new Error(
-      'VITE_WC_PROJECT_ID not set. Register at https://cloud.walletconnect.com'
+      'VITE_WC_PROJECT_ID not set. Register at https://cloud.reown.com'
     );
   }
   return id;
 }
 
-async function getClient(): Promise<SignClient> {
+async function getClient() {
   if (signClient) return signClient;
 
   const projectId = getProjectId();
+
+  // Dynamic imports — only load WC packages when actually needed
+  const { default: SignClient } = await import('@walletconnect/sign-client');
+  const { WalletConnectModal } = await import('@walletconnect/modal');
 
   signClient = await SignClient.init({
     projectId,
@@ -88,7 +92,7 @@ async function getClient(): Promise<SignClient> {
 
   // Restore existing session if any
   const sessions = signClient.session.getAll();
-  const bchSession = sessions.find((s) =>
+  const bchSession = sessions.find((s: any) =>
     Object.keys(s.namespaces).includes('bch')
   );
 
@@ -188,6 +192,37 @@ export function getSession(): WcSession | null {
 }
 
 /**
+ * Request addresses (and possibly public keys) from the connected wallet.
+ * Uses bch_getAddresses from the wc2-bch-bcr spec.
+ *
+ * @returns Array of address info objects. May include publicKey if wallet supports it.
+ */
+export async function getAddresses(): Promise<Array<{ address: string; publicKey?: string }>> {
+  if (!currentSession || !signClient) {
+    throw new Error('No wallet connected');
+  }
+
+  try {
+    const result = await signClient.request({
+      topic: currentSession.topic,
+      chainId: BCH_CHAIN_ID,
+      request: {
+        method: 'bch_getAddresses',
+        params: {},
+      },
+    });
+
+    // Response format varies by wallet. Normalize to array.
+    if (Array.isArray(result)) return result;
+    if (result?.addresses && Array.isArray(result.addresses)) return result.addresses;
+    return [];
+  } catch {
+    // Wallet may not support bch_getAddresses — return empty
+    return [];
+  }
+}
+
+/**
  * Send a transaction to the connected wallet for signing.
  *
  * @param wcTransaction - The stringified WC transaction object from mint-cli.ts
@@ -204,7 +239,7 @@ export async function signTransaction(
   // This comes from libauth's stringify() via mint-cli.ts
   const txObj = JSON.parse(wcTransaction);
 
-  const result = await signClient.request<WcSignResult>({
+  const result: WcSignResult = await signClient.request({
     topic: currentSession.topic,
     chainId: BCH_CHAIN_ID,
     request: {

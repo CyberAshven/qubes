@@ -11,6 +11,7 @@ import * as wc from '../services/walletConnect';
 interface WalletState {
   connected: boolean;
   address: string | null;
+  publicKey: string | null;
   connecting: boolean;
   error: string | null;
   connect: () => Promise<void>;
@@ -21,6 +22,7 @@ interface WalletState {
 const WalletContext = createContext<WalletState>({
   connected: false,
   address: null,
+  publicKey: null,
   connecting: false,
   error: null,
   connect: async () => {},
@@ -31,6 +33,7 @@ const WalletContext = createContext<WalletState>({
 export function WalletProvider({ children }: { children: React.ReactNode }) {
   const [connected, setConnected] = useState(false);
   const [address, setAddress] = useState<string | null>(null);
+  const [publicKey, setPublicKey] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -43,6 +46,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       } else {
         setConnected(false);
         setAddress(null);
+        setPublicKey(null);
       }
     });
 
@@ -55,6 +59,26 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
 
     return unsub;
   }, []);
+
+  // When connected, try to fetch the public key via bch_getAddresses
+  useEffect(() => {
+    if (!connected) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const addrs = await wc.getAddresses();
+        if (cancelled) return;
+        // Look for a publicKey in the response
+        const withPubkey = addrs.find((a) => a.publicKey);
+        if (withPubkey?.publicKey) {
+          setPublicKey(withPubkey.publicKey);
+        }
+      } catch {
+        // Wallet doesn't support getAddresses — that's fine
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [connected]);
 
   const connect = useCallback(async () => {
     setConnecting(true);
@@ -73,6 +97,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
 
   const disconnect = useCallback(async () => {
     await wc.disconnect();
+    setPublicKey(null);
   }, []);
 
   const signTransaction = useCallback(async (wcTransaction: string) => {
@@ -81,7 +106,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <WalletContext.Provider
-      value={{ connected, address, connecting, error, connect, disconnect, signTransaction }}
+      value={{ connected, address, publicKey, connecting, error, connect, disconnect, signTransaction }}
     >
       {children}
     </WalletContext.Provider>

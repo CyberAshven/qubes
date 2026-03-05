@@ -447,6 +447,13 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
 
   const wallet = useWallet();
 
+  // Auto-populate ownerPubkey when wallet provides it
+  useEffect(() => {
+    if (wallet.publicKey && !formData.ownerPubkey) {
+      setFormData((prev) => ({ ...prev, ownerPubkey: wallet.publicKey! }));
+    }
+  }, [wallet.publicKey]);
+
   // Mint status for multi-step WC flow
   const [mintStatus, setMintStatus] = useState<string>('');
 
@@ -1058,6 +1065,9 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
             <div>
               <label className="block text-sm font-medium text-text-secondary mb-2">
                 Your BCH Public Key *
+                {wallet.publicKey && (
+                  <span className="ml-2 text-xs text-accent-primary font-normal">(auto-filled from wallet)</span>
+                )}
               </label>
               <input
                 type="text"
@@ -1074,9 +1084,23 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
                 <span className="text-sm text-accent-danger">{errors.ownerPubkey}</span>
               )}
               <p className="text-xs text-text-tertiary mt-1">
-                Your compressed public key (66 hex characters starting with 02 or 03).
-                <br />
-                <strong>In Electron Cash:</strong> Addresses tab → Right-click address → Details → Public key
+                {wallet.connected && !wallet.publicKey ? (
+                  <>
+                    Your wallet is connected but didn't provide a public key.
+                    <br />
+                    <strong>In Cashonize:</strong> Settings → Wallet Info → Copy public key
+                    <br />
+                    <strong>In Electron Cash:</strong> Addresses tab → Right-click address → Details → Public key
+                  </>
+                ) : (
+                  <>
+                    Your compressed public key (66 hex characters starting with 02 or 03).
+                    <br />
+                    <strong>In Cashonize:</strong> Settings → Wallet Info → Copy public key
+                    <br />
+                    <strong>In Electron Cash:</strong> Addresses tab → Right-click address → Details → Public key
+                  </>
+                )}
               </p>
 
               {/* Show what this pubkey does */}

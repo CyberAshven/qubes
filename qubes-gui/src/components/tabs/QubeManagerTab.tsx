@@ -627,7 +627,7 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
             onClick={() => setShowImportFileModal(true)}
             title="Import a Qube from a .qube file"
           >
-            Import File
+            Import from Disk
           </GlassButton>
           <GlassButton
             variant="secondary"

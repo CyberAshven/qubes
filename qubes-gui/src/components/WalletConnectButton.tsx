@@ -2,6 +2,7 @@
  * WalletConnect Button
  *
  * Shows "Connect Wallet" when disconnected, truncated address when connected.
+ * Displays user-friendly error messages for configuration issues.
  */
 
 import React from 'react';
@@ -23,9 +24,20 @@ export default function WalletConnectButton({ className = '', compact = false }:
     return `${prefix}${hash.slice(0, 6)}...${hash.slice(-4)}`;
   };
 
+  // Make error messages user-friendly
+  const friendlyError = (msg: string) => {
+    if (msg.includes('VITE_WC_PROJECT_ID')) {
+      return 'WalletConnect not configured. A project ID is required — register free at cloud.reown.com';
+    }
+    return msg;
+  };
+
   if (connecting) {
     return (
-      <button className={`wallet-connect-btn connecting ${className}`} disabled>
+      <button
+        className={`px-4 py-2 rounded-lg bg-glass-bg border border-glass-border text-text-tertiary text-sm cursor-wait ${className}`}
+        disabled
+      >
         Connecting...
       </button>
     );
@@ -33,28 +45,37 @@ export default function WalletConnectButton({ className = '', compact = false }:
 
   if (connected && address) {
     return (
-      <div className={`wallet-connected ${className}`}>
-        <span className="wallet-address" title={address}>
-          {compact ? truncateAddress(address) : address}
+      <div className={`flex items-center gap-2 ${className}`}>
+        <span
+          className="px-3 py-1.5 rounded-lg bg-accent-primary/10 border border-accent-primary/30 text-accent-primary text-sm font-mono"
+          title={address}
+        >
+          {compact ? truncateAddress(address) : truncateAddress(address)}
         </span>
         <button
-          className="wallet-disconnect-btn"
+          className="px-2 py-1.5 rounded-lg bg-glass-bg border border-glass-border text-text-tertiary hover:text-accent-danger text-xs transition-colors"
           onClick={disconnect}
           title="Disconnect wallet"
         >
-          x
+          Disconnect
         </button>
-        {error && <span className="wallet-error">{error}</span>}
       </div>
     );
   }
 
   return (
     <div className={className}>
-      <button className="wallet-connect-btn" onClick={connect}>
+      <button
+        className="px-4 py-2 rounded-lg bg-accent-primary/20 border border-accent-primary/40 text-accent-primary text-sm font-medium hover:bg-accent-primary/30 transition-colors"
+        onClick={connect}
+      >
         Connect Wallet
       </button>
-      {error && <span className="wallet-error">{error}</span>}
+      {error && (
+        <p className="text-xs text-accent-danger mt-2">
+          {friendlyError(error)}
+        </p>
+      )}
     </div>
   );
 }
