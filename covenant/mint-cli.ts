@@ -183,7 +183,7 @@ try {
   const fundingUtxos = userUtxos.filter(u => !u.token);
   const totalFunding = fundingUtxos.reduce((sum, u) => sum + u.satoshis, 0n);
 
-  const MIN_FUNDING = 2000n; // 1000 NFT dust + ~1000 mining fee
+  const MIN_FUNDING = 3000n; // 1000 NFT dust + ~2000 mining fee (covenant txs are large)
   if (totalFunding < MIN_FUNDING) {
     output({
       success: false,
@@ -245,9 +245,21 @@ try {
   });
 
   // Output 2: change back to user (if any)
+  // Fee estimation: P2SH32 covenant input is large (~300 bytes for redeem script),
+  // each P2PKH input ~148 bytes, token outputs ~90 bytes, change ~34 bytes.
+  // Use 2 sat/byte for safety margin above the 1 sat/byte minimum relay fee.
+  const estimatedSize = BigInt(
+    10                          // tx overhead
+    + 300                       // covenant P2SH32 input (with redeem script)
+    + fundingUtxos.length * 148 // P2PKH funding inputs
+    + 90 * 2                    // 2 token outputs (covenant return + NFT)
+    + 34                        // change output
+  );
+  const feeRate = 2n; // sats per byte
+  const estimatedFee = estimatedSize * feeRate;
+
   const totalInput = mintingTokenUtxo.satoshis + totalFunding;
   const totalOutputs = 1000n + 1000n; // covenant dust + NFT dust
-  const estimatedFee = 500n; // conservative mining fee
   const change = totalInput - totalOutputs - estimatedFee;
 
   if (change >= 546n) {
@@ -260,11 +272,24 @@ try {
   // ── Execute ──────────────────────────────────────────────────────
 
   if (isWcMode) {
-    // WalletConnect mode: return unsigned transaction object for wallet signing
+    // WalletConnect mode: return transaction object for wallet signing.
+    // The covenant input (input 0) is fully unlocked by CashScript — no wallet
+    // interaction needed. Only the user's P2PKH inputs (1+) need wallet signatures.
+    //
+    // We strip the `contract` metadata from sourceOutputs because:
+    // - Our mint() function is permissionless (no sig/pubkey args from wallet)
+    // - The unlock script is already complete with the commitment value
+    // - Contract metadata causes wallets to try to re-process the covenant input
+    // The wallet will see input 0 as a non-wallet input and leave it unchanged.
     const wcTxObj = txBuilder.generateWcTransactionObject({
-      broadcast: true,
+      broadcast: false,
       userPrompt: 'Mint Qube NFT'
     });
+
+    // Remove contract metadata — covenant input is already fully unlocked
+    for (const so of (wcTxObj as any).sourceOutputs) {
+      delete so.contract;
+    }
 
     output({
       success: true,

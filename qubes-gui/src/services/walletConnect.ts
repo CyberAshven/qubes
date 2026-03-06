@@ -44,7 +44,6 @@ const BCH_NAMESPACE = {
 // ── Singleton State ────────────────────────────────────────────────
 
 let signClient: any | null = null;
-let modal: any | null = null;
 let currentSession: WcSession | null = null;
 
 // Event listeners
@@ -62,28 +61,16 @@ export function onSessionChange(fn: Listener): () => void {
 
 // ── Initialization ─────────────────────────────────────────────────
 
-/**
- * Get the WalletConnect project ID from environment.
- * Register at https://cloud.reown.com (free).
- */
-function getProjectId(): string {
-  const id = import.meta.env.VITE_WC_PROJECT_ID;
-  if (!id) {
-    throw new Error(
-      'VITE_WC_PROJECT_ID not set. Register at https://cloud.reown.com'
-    );
-  }
-  return id;
-}
+/** Official Qubes WalletConnect project ID (registered at cloud.reown.com) */
+const WC_PROJECT_ID = '1aaaf275500b1ad21b22b33edf354983';
 
 async function getClient() {
   if (signClient) return signClient;
 
-  const projectId = getProjectId();
+  const projectId = WC_PROJECT_ID;
 
   // Dynamic imports — only load WC packages when actually needed
   const { default: SignClient } = await import('@walletconnect/sign-client');
-  const { WalletConnectModal } = await import('@walletconnect/modal');
 
   signClient = await SignClient.init({
     projectId,
@@ -95,19 +82,33 @@ async function getClient() {
     },
   });
 
-  modal = new WalletConnectModal({ projectId });
-
-  // Restore existing session if any
+  // Restore existing session if any — clean up stale sessions
   const sessions = signClient.session.getAll();
   const bchSession = sessions.find((s: any) =>
     Object.keys(s.namespaces).includes('bch')
   );
 
   if (bchSession) {
-    const address = extractAddress(bchSession);
-    if (address) {
-      currentSession = { topic: bchSession.topic, address };
-      notifyListeners();
+    try {
+      // Ping the session to verify it's still alive on the relay
+      await signClient.ping({ topic: bchSession.topic });
+      const address = extractAddress(bchSession);
+      if (address) {
+        currentSession = { topic: bchSession.topic, address };
+        notifyListeners();
+      }
+    } catch {
+      // Session is stale (deleted on relay or wallet side) — clean up locally
+      console.warn('[WC] Stale session detected, cleaning up:', bchSession.topic);
+      try {
+        await signClient.disconnect({
+          topic: bchSession.topic,
+          reason: { code: 6000, message: 'Stale session cleanup' },
+        });
+      } catch {
+        // Force-remove from local storage if disconnect also fails
+        signClient.session.delete(bchSession.topic, { code: 6000, message: 'Stale session cleanup' });
+      }
     }
   }
 
@@ -156,10 +157,10 @@ function extractAddress(session: any): string | null {
 // ── Public API ─────────────────────────────────────────────────────
 
 /**
- * Connect to a BCH wallet via WalletConnect QR code.
- * Opens the WC modal for the user to scan.
+ * Connect to a BCH wallet via WalletConnect.
+ * Calls onUri with the WC URI so the caller can display it (QR code, copy button, etc.).
  */
-export async function connect(): Promise<WcSession> {
+export async function connect(onUri?: (uri: string) => void): Promise<WcSession> {
   const client = await getClient();
 
   const { uri, approval } = await client.connect({
@@ -168,25 +169,19 @@ export async function connect(): Promise<WcSession> {
 
   if (!uri) throw new Error('Failed to generate WalletConnect URI');
 
-  // Show QR modal
-  modal!.openModal({ uri });
+  // Pass URI to caller for display (QR code + copy button)
+  onUri?.(uri);
 
-  try {
-    const session = await approval();
-    modal!.closeModal();
+  const session = await approval();
 
-    const address = extractAddress(session);
-    if (!address) {
-      throw new Error('Wallet did not provide a BCH address');
-    }
-
-    currentSession = { topic: session.topic, address };
-    notifyListeners();
-    return currentSession;
-  } catch (e) {
-    modal!.closeModal();
-    throw e;
+  const address = extractAddress(session);
+  if (!address) {
+    throw new Error('Wallet did not provide a BCH address');
   }
+
+  currentSession = { topic: session.topic, address };
+  notifyListeners();
+  return currentSession;
 }
 
 /**
@@ -247,7 +242,272 @@ export async function getAddresses(): Promise<Array<{ address: string; publicKey
 }
 
 /**
- * Send a transaction to the connected wallet for signing.
+ * Broadcast a raw transaction via Fulcrum Electrum WebSocket.
+ * Handles the required server.version negotiation before broadcasting.
+ */
+function broadcastViaElectrum(txHex: string, server: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(server);
+    let reqId = 0;
+    const timeout = setTimeout(() => {
+      ws.close();
+      reject(new Error(`Timeout connecting to ${server}`));
+    }, 15000);
+
+    ws.onopen = () => {
+      // Fulcrum requires server.version negotiation first
+      ws.send(JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'server.version',
+        params: ['Qubes', '1.4'],
+        id: ++reqId,
+      }));
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.id === 1) {
+          // Version negotiation done, now broadcast
+          ws.send(JSON.stringify({
+            jsonrpc: '2.0',
+            method: 'blockchain.transaction.broadcast',
+            params: [txHex],
+            id: ++reqId,
+          }));
+        } else if (data.id === 2) {
+          // Broadcast response
+          clearTimeout(timeout);
+          ws.close();
+          if (data.error) {
+            reject(new Error(data.error.message || JSON.stringify(data.error)));
+          } else if (typeof data.result === 'string' && data.result.length === 64) {
+            resolve(data.result);
+          } else {
+            // Fulcrum returns error string directly in result field on failure
+            reject(new Error(String(data.result)));
+          }
+        }
+      } catch (e) {
+        clearTimeout(timeout);
+        ws.close();
+        reject(new Error(`Invalid response from ${server}`));
+      }
+    };
+
+    ws.onerror = () => {
+      clearTimeout(timeout);
+      reject(new Error(`WebSocket error connecting to ${server}`));
+    };
+  });
+}
+
+/**
+ * Broadcast a raw transaction to the BCH network.
+ * Tries Fulcrum WebSocket servers, falls back to REST API.
+ * Returns the txid on success, throws on failure with the exact network error.
+ */
+async function broadcastRawTransaction(txHex: string): Promise<string> {
+  const electrumServers = [
+    'wss://bch.imaginary.cash:50004',
+    'wss://electroncash.de:60004',
+  ];
+
+  let lastError: Error | null = null;
+
+  // Try Electrum WebSocket servers
+  for (const server of electrumServers) {
+    try {
+      return await broadcastViaElectrum(txHex, server);
+    } catch (e: any) {
+      console.error(`[WC] Broadcast via ${server} failed:`, e.message);
+      lastError = e;
+      // If we got a script validation error, don't retry — the tx is invalid
+      if (e.message?.includes('mandatory-script') || e.message?.includes('scriptpubkey')) {
+        throw e;
+      }
+    }
+  }
+
+  // REST API fallback
+  try {
+    console.log('[WC] Trying REST API fallback...');
+    const resp = await fetch('https://api.blockchair.com/bitcoin-cash/push/transaction', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ data: txHex }),
+    });
+    const data = await resp.json();
+    if (!resp.ok || !data?.data?.transaction_hash) {
+      throw new Error(data?.context?.error || data?.error || 'REST broadcast failed');
+    }
+    return data.data.transaction_hash;
+  } catch (e: any) {
+    console.error('[WC] REST broadcast failed:', e.message);
+    // Return the more specific Electrum error if we have one
+    if (lastError && !lastError.message?.includes('Timeout') && !lastError.message?.includes('WebSocket error')) {
+      throw lastError;
+    }
+    throw e;
+  }
+}
+
+/**
+ * Parse libauth's extended JSON format.
+ * Converts "<Uint8Array: 0x...>" strings to Uint8Array and "<bigint: ...n>" to BigInt.
+ */
+function parseExtendedJson(jsonString: string): any {
+  const uint8ArrayRegex = /^<Uint8Array: 0x(?<hex>[0-9a-f]*)>$/u;
+  const bigIntRegex = /^<bigint: (?<bigint>[0-9]*)n>$/;
+
+  return JSON.parse(jsonString, (_key, value) => {
+    if (typeof value === 'string') {
+      const bigintMatch = value.match(bigIntRegex);
+      if (bigintMatch?.groups?.bigint !== undefined) {
+        return BigInt(bigintMatch.groups.bigint);
+      }
+      const uint8ArrayMatch = value.match(uint8ArrayRegex);
+      if (uint8ArrayMatch?.groups?.hex !== undefined) {
+        const hex = uint8ArrayMatch.groups.hex;
+        const bytes = new Uint8Array(hex.length / 2);
+        for (let i = 0; i < hex.length; i += 2) {
+          bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16);
+        }
+        return bytes;
+      }
+    }
+    return value;
+  });
+}
+
+/**
+ * Validate the signed transaction against the original WC transaction.
+ * Returns a diagnostic report showing any differences.
+ */
+async function validateSignedTransaction(
+  signedTxHex: string,
+  originalWcTransaction: any
+): Promise<{ valid: boolean; report: string }> {
+  try {
+    const { decodeTransaction, hexToBin, binToHex } = await import('@bitauth/libauth');
+
+    const signedBytes = hexToBin(signedTxHex);
+    const decoded = decodeTransaction(signedBytes);
+    if (typeof decoded === 'string') {
+      return { valid: false, report: `Failed to decode signed tx: ${decoded}` };
+    }
+
+    const lines: string[] = [];
+    lines.push(`Signed tx: ${signedTxHex.length / 2} bytes, ${decoded.inputs.length} inputs, ${decoded.outputs.length} outputs`);
+
+    // Compare with original WC transaction outputs
+    const origTx = originalWcTransaction.transaction;
+    if (!origTx) {
+      lines.push('WARNING: No original transaction for comparison');
+      // Still report signed tx structure
+      for (let i = 0; i < decoded.outputs.length; i++) {
+        const out = decoded.outputs[i];
+        lines.push(`Out${i}: lock=${binToHex(out.lockingBytecode).substring(0, 40)}... val=${out.valueSatoshis}`);
+        if (out.token) {
+          lines.push(`  token: cat=${binToHex(out.token.category).substring(0, 16)}... cap=${out.token.nft?.capability || 'ft'}`);
+        }
+      }
+      return { valid: true, report: lines.join('\n') };
+    }
+
+    // Compare outputs
+    const origOutputs = origTx.outputs;
+    if (decoded.outputs.length !== origOutputs.length) {
+      lines.push(`OUTPUT COUNT MISMATCH: signed=${decoded.outputs.length} orig=${origOutputs.length}`);
+    }
+
+    for (let i = 0; i < Math.max(decoded.outputs.length, origOutputs.length); i++) {
+      const signed = decoded.outputs[i];
+      const orig = origOutputs[i];
+
+      if (!signed) { lines.push(`Out${i}: MISSING in signed tx`); continue; }
+      if (!orig) { lines.push(`Out${i}: EXTRA in signed tx`); continue; }
+
+      const sLock = binToHex(signed.lockingBytecode);
+      const oLock = orig.lockingBytecode instanceof Uint8Array ? binToHex(orig.lockingBytecode) : String(orig.lockingBytecode);
+
+      const lockMatch = sLock === oLock;
+      const valMatch = signed.valueSatoshis === (typeof orig.valueSatoshis === 'bigint' ? orig.valueSatoshis : BigInt(orig.valueSatoshis));
+
+      if (!lockMatch) {
+        lines.push(`Out${i} LOCK MISMATCH: signed=${sLock.substring(0, 40)} orig=${oLock.substring(0, 40)}`);
+      }
+      if (!valMatch) {
+        lines.push(`Out${i} VALUE MISMATCH: signed=${signed.valueSatoshis} orig=${orig.valueSatoshis}`);
+      }
+
+      // Compare token data
+      const sToken = signed.token;
+      const oToken = orig.token;
+      if (sToken && oToken) {
+        const sCat = binToHex(sToken.category);
+        const oCat = oToken.category instanceof Uint8Array ? binToHex(oToken.category) : String(oToken.category);
+        if (sCat !== oCat) {
+          lines.push(`Out${i} TOKEN CAT MISMATCH: signed=${sCat} orig=${oCat}`);
+        }
+        const sCap = sToken.nft?.capability || 'none';
+        const oCap = oToken.nft?.capability || 'none';
+        if (sCap !== oCap) {
+          lines.push(`Out${i} NFT CAP MISMATCH: signed=${sCap} orig=${oCap}`);
+        }
+        if (sToken.nft?.commitment && oToken.nft?.commitment) {
+          const sComm = binToHex(sToken.nft.commitment);
+          const oComm = oToken.nft.commitment instanceof Uint8Array ? binToHex(oToken.nft.commitment) : String(oToken.nft.commitment);
+          if (sComm !== oComm) {
+            lines.push(`Out${i} COMMITMENT MISMATCH: signed=${sComm} orig=${oComm}`);
+          }
+        }
+      } else if (sToken && !oToken) {
+        lines.push(`Out${i}: signed has token, orig does not`);
+      } else if (!sToken && oToken) {
+        lines.push(`Out${i}: signed MISSING token (orig has one)`);
+      }
+
+      if (lockMatch && valMatch) {
+        lines.push(`Out${i}: OK (lock=${sLock.substring(0, 20)}... val=${signed.valueSatoshis})`);
+      }
+    }
+
+    // Compare covenant input (input 0) unlocking bytecode
+    if (decoded.inputs.length > 0 && origTx.inputs?.length > 0) {
+      const signedUnlock = binToHex(decoded.inputs[0].unlockingBytecode);
+      const origInput = origTx.inputs[0];
+      const origUnlock = origInput.unlockingBytecode instanceof Uint8Array
+        ? binToHex(origInput.unlockingBytecode)
+        : String(origInput.unlockingBytecode);
+
+      if (signedUnlock === origUnlock) {
+        lines.push(`In0 (covenant): OK (${signedUnlock.length / 2} bytes)`);
+      } else {
+        lines.push(`In0 UNLOCK MISMATCH: signed=${signedUnlock.length / 2}B orig=${origUnlock.length / 2}B`);
+        lines.push(`  signed: ${signedUnlock.substring(0, 60)}...`);
+        lines.push(`  orig:   ${origUnlock.substring(0, 60)}...`);
+      }
+    }
+
+    // Report P2PKH inputs
+    for (let i = 1; i < decoded.inputs.length; i++) {
+      const unlock = decoded.inputs[i].unlockingBytecode;
+      lines.push(`In${i} (P2PKH): ${unlock.length} bytes ${unlock.length > 0 ? 'signed' : 'EMPTY!'}`);
+    }
+
+    const hasMismatch = lines.some(l => l.includes('MISMATCH') || l.includes('MISSING') || l.includes('EMPTY!'));
+    return { valid: !hasMismatch, report: lines.join('\n') };
+  } catch (e: any) {
+    return { valid: false, report: `Validation error: ${e.message}` };
+  }
+}
+
+/**
+ * Send a transaction to the connected wallet for signing, then broadcast.
+ *
+ * The WC transaction uses broadcast: false so we get the signed tx back.
+ * We then broadcast ourselves for better error reporting and diagnostics.
  *
  * @param wcTransaction - The stringified WC transaction object from mint-cli.ts
  * @returns The signed transaction hash (txid) and hex
@@ -260,8 +520,17 @@ export async function signTransaction(
   }
 
   // Parse the stringified WC transaction object
-  // This comes from libauth's stringify() via mint-cli.ts
   const txObj = JSON.parse(wcTransaction);
+
+  // Also parse with extended JSON to get proper Uint8Arrays for comparison
+  let parsedWcObj: any = null;
+  try {
+    parsedWcObj = parseExtendedJson(wcTransaction);
+  } catch {
+    // If parsing fails, we'll skip validation
+  }
+
+  console.log('[WC] Sending transaction to wallet for signing (broadcast: false)...');
 
   const result: WcSignResult = await signClient.request({
     topic: currentSession.topic,
@@ -272,7 +541,56 @@ export async function signTransaction(
     },
   });
 
-  return result;
+  if (!result.signedTransaction) {
+    throw new Error('Wallet did not return a signed transaction');
+  }
+
+  console.log('[WC] Signed tx received:', result.signedTransactionHash);
+
+  // Save signed tx hex to localStorage for debugging
+  try {
+    localStorage.setItem('debug_signed_tx_hex', result.signedTransaction);
+    localStorage.setItem('debug_signed_tx_time', new Date().toISOString());
+  } catch { /* ignore */ }
+
+  // Validate signed tx against original before broadcasting
+  let validationReport = '';
+  if (parsedWcObj) {
+    const validation = await validateSignedTransaction(result.signedTransaction, parsedWcObj);
+    validationReport = validation.report;
+    console.log('[WC] Validation:', validationReport);
+  }
+
+  // Save signed tx to file for debugging (before broadcast attempt)
+  try {
+    const { writeTextFile, BaseDirectory } = await import('@tauri-apps/plugin-fs');
+    await writeTextFile('signed-mint-tx.hex', result.signedTransaction, { baseDir: BaseDirectory.AppLocalData });
+    console.log('[WC] Saved signed tx hex to AppLocalData/signed-mint-tx.hex');
+  } catch {
+    // Ignore file write errors
+  }
+
+  // Broadcast the signed transaction ourselves
+  console.log('[WC] Broadcasting signed transaction...');
+  try {
+    const txid = await broadcastRawTransaction(result.signedTransaction);
+    console.log('[WC] Broadcast successful! txid:', txid);
+    return { signedTransaction: result.signedTransaction, signedTransactionHash: txid };
+  } catch (broadcastError: any) {
+    // Include validation report and full signed tx hex in the error for debugging
+    const debugInfo = [
+      `Broadcast error: ${broadcastError.message}`,
+      '',
+      'Transaction validation:',
+      validationReport || '(no validation data)',
+      '',
+      `Full signed tx hex (${result.signedTransaction.length / 2} bytes):`,
+      result.signedTransaction,
+    ].join('\n');
+
+    console.error('[WC] Broadcast failed with diagnostics:\n', debugInfo);
+    throw new Error(`Transaction signed but broadcast failed:\n${debugInfo}`);
+  }
 }
 
 /**

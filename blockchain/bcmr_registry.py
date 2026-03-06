@@ -193,46 +193,31 @@ class BCMRRegistryManager:
             }
         }
 
-    def _extract_attributes(self, qube) -> Dict[str, str]:
+    def _extract_attributes(self, qube) -> List[Dict[str, str]]:
         """
-        Extract attributes for a Qube
-
-        Args:
-            qube: Qube instance
+        Extract attributes for a Qube in BCMR array format.
 
         Returns:
-            Attributes dictionary
+            List of {"trait_type": ..., "value": ...} dicts
+            (matches server BCMRService format and registry.html expectations)
         """
-        attributes = {}
-
-        # Basic attributes
-        attributes["Qube ID"] = qube.qube_id
+        attributes = [
+            {"trait_type": "Qube ID", "value": qube.qube_id},
+            {"trait_type": "Category", "value": "AI Agent"},
+        ]
 
         if hasattr(qube, 'genesis_block'):
-            attributes["Genesis Block Hash"] = qube.genesis_block.block_hash
-
             creator = getattr(qube.genesis_block, 'creator', None)
             if creator:
-                attributes["Creator"] = creator
+                attributes.append({"trait_type": "Creator", "value": creator})
 
             birth_timestamp = getattr(qube.genesis_block, 'birth_timestamp', None)
             if birth_timestamp:
-                attributes["Birth Date"] = str(birth_timestamp)
+                attributes.append({"trait_type": "Birth", "value": str(birth_timestamp)})
 
-            ai_model = getattr(qube.genesis_block, 'ai_model', None)
-            if ai_model:
-                attributes["AI Model"] = ai_model
-
-        # Blockchain attributes
-        attributes["Home Blockchain"] = "Bitcoin Cash"
-
-        # Memory block count
-        if hasattr(qube, 'memory_chain') and hasattr(qube.memory_chain, 'get_block_count'):
-            try:
-                block_count = qube.memory_chain.get_block_count()
-                attributes["Memory Blocks"] = str(block_count)
-            except:
-                pass
+            genesis_hash = getattr(qube.genesis_block, 'block_hash', None)
+            if genesis_hash:
+                attributes.append({"trait_type": "Genesis Hash", "value": genesis_hash[:16] + "..."})
 
         return attributes
 

@@ -134,8 +134,9 @@ class Qube:
             filename = f"{genesis_obj.block_number}_{block_type_str}_{genesis_obj.timestamp}.json"
             genesis_file = permanent_dir / filename
 
-            # Only save and add to chain if this is a NEW Qube (file doesn't exist yet)
-            is_new_qube = not genesis_file.exists()
+            # Check if ANY genesis block exists (handles retry with different timestamp)
+            existing_genesis = list(permanent_dir.glob("0_GENESIS_*.json"))
+            is_new_qube = not genesis_file.exists() and not existing_genesis
             if is_new_qube:
                 import json
                 with open(genesis_file, 'w') as f:
@@ -145,7 +146,19 @@ class Qube:
                 self.memory_chain.add_block(genesis_obj, skip_signature=True)
             else:
                 # Loading existing Qube - genesis already in chain index from _load_block_index()
-                logger.debug("genesis_block_already_exists", qube_id=qube_id, file=str(genesis_file))
+                # If an old genesis file exists with different timestamp (retry scenario),
+                # use the existing one's data for consistency
+                if existing_genesis and not genesis_file.exists():
+                    import json
+                    with open(existing_genesis[0], 'r') as f:
+                        old_genesis = json.load(f)
+                    # Update genesis_obj with the original timestamp for consistency
+                    genesis_obj.timestamp = old_genesis.get("timestamp", old_genesis.get("birth_timestamp"))
+                    genesis_obj.birth_timestamp = old_genesis.get("birth_timestamp", genesis_obj.birth_timestamp)
+                    genesis_obj.block_hash = old_genesis.get("block_hash", genesis_obj.block_hash)
+                    genesis_obj.signature = old_genesis.get("signature", genesis_obj.signature)
+                    self.genesis_block = genesis_obj
+                logger.debug("genesis_block_already_exists", qube_id=qube_id, file=str(existing_genesis[0] if existing_genesis else genesis_file))
 
         else:
             # Object-based genesis block

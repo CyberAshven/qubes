@@ -195,7 +195,8 @@ fn start_sidecar(app_handle: &AppHandle) -> Result<(), String> {
                     let mut pguard = match pending_clone.lock() { Ok(g) => g, Err(_) => continue };
                     if let Some(pending_req) = pguard.remove(&req_id) {
                         if let Some(error) = parsed.get("error") {
-                            let err_msg = error.as_str().unwrap_or("Unknown sidecar error").to_string();
+                            // Tag as application error so retry logic doesn't mask it
+                            let err_msg = format!("[APP] {}", error.as_str().unwrap_or("Unknown sidecar error"));
                             let _ = pending_req.response_tx.send(Err(err_msg));
                         } else if let Some(result) = parsed.get("result") {
                             let _ = pending_req.response_tx.send(Ok(result.clone()));
@@ -315,7 +316,14 @@ async fn sidecar_execute_with_retry(
 ) -> Result<serde_json::Value, String> {
     match sidecar_execute(command, &args, &secrets, app_handle, timeout_secs).await {
         Ok(result) => return Ok(result),
-        Err(e) => eprintln!("[SIDECAR] Command '{}' failed: {} — retrying...", command, e),
+        Err(e) => {
+            // Application errors (from Python handler raising) should propagate directly.
+            // Only retry/fallback on sidecar infrastructure errors.
+            if e.starts_with("[APP] ") {
+                return Err(e[6..].to_string());
+            }
+            eprintln!("[SIDECAR] Command '{}' failed: {} — retrying...", command, e);
+        }
     }
 
     if let Some(handle) = app_handle {
@@ -326,7 +334,12 @@ async fn sidecar_execute_with_retry(
         }
         match sidecar_execute(command, &args, &secrets, app_handle, timeout_secs).await {
             Ok(result) => return Ok(result),
-            Err(e) => eprintln!("[SIDECAR] Retry failed: {} — falling back to subprocess", e),
+            Err(e) => {
+                if e.starts_with("[APP] ") {
+                    return Err(e[6..].to_string());
+                }
+                eprintln!("[SIDECAR] Retry failed: {} — falling back to subprocess", e);
+            }
         }
     }
 
@@ -2105,7 +2118,8 @@ async fn finalize_qube_mint(app_handle: AppHandle,
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let result = sidecar_execute_with_retry("finalize-qube-mint", args, secrets, Some(&app_handle), None).await?;
+    // 180s timeout: finalize includes BCMR generation, IPFS upload, and server sync
+    let result = sidecar_execute_with_retry("finalize-qube-mint", args, secrets, Some(&app_handle), Some(180)).await?;
 
     let qube: Qube = serde_json::from_value(result)
         .map_err(|e| format!("Failed to parse finalize-qube-mint response: {}", e))?;

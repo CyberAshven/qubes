@@ -15,9 +15,9 @@
 export const OFFICIAL_CATEGORY =
   'c9054d53dcc075dd7226ea319f20d43df102371149311c9239f6c0ea1200b80f';
 
-/** Official covenant P2SH32 address holding the minting token. */
+/** Official covenant P2SH32 address holding the minting token (v2). */
 export const OFFICIAL_COVENANT_ADDRESS =
-  'bitcoincash:rvksvp7vuk4ck0asr3ns9v52h8d9zsywm6psx89hm7zsuqzldu4v5n4h9kyj7';
+  'bitcoincash:rdlqc0y2ulzyp0ulk3t6gn56lzrxt2fq7s2j232vzghww6m8mtqr7h0rx97sy';
 
 // ---------------------------------------------------------------------------
 // Transaction limits

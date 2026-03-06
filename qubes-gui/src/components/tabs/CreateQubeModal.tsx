@@ -446,13 +446,14 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
   // Custom voices now come from VoiceLibraryContext - no need for local loading
 
   const wallet = useWallet();
+  const [pubkeyOverride, setPubkeyOverride] = useState(false);
 
   // Auto-populate ownerPubkey when wallet provides it
   useEffect(() => {
-    if (wallet.publicKey && !formData.ownerPubkey) {
+    if (wallet.publicKey && !formData.ownerPubkey && !pubkeyOverride) {
       setFormData((prev) => ({ ...prev, ownerPubkey: wallet.publicKey! }));
     }
-  }, [wallet.publicKey]);
+  }, [wallet.publicKey, pubkeyOverride]);
 
   // Mint status for multi-step WC flow
   const [mintStatus, setMintStatus] = useState<string>('');
@@ -495,7 +496,7 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
 
       console.log('[Minting] WC transaction prepared:', prepResult.qube_id);
 
-      // Step 2: Send to wallet for signing
+      // Step 2: Send to wallet for signing + broadcast
       setMintStatus('Approve in your wallet...');
       const signResult = await wallet.signTransaction(prepResult.wc_transaction);
 
@@ -503,7 +504,7 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
         throw new Error('Wallet did not return a transaction hash');
       }
 
-      console.log('[Minting] Wallet signed tx:', signResult.signedTransactionHash);
+      console.log('[Minting] Transaction broadcast:', signResult.signedTransactionHash);
 
       // Step 3: Finalize (create Qube with txid, BCMR, IPFS)
       setMintStatus('Finalizing...');
@@ -520,7 +521,11 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
     } catch (error: any) {
       console.error('Failed to create qube:', error);
       const msg = error?.message || String(error);
-      if (msg.includes('User rejected') || msg.includes('rejected')) {
+      if (msg.includes('broadcast failed')) {
+        // Show the full broadcast error for diagnostics (check before 'rejected' —
+        // network rejection errors also contain the word "rejected")
+        setMintError(msg);
+      } else if (msg.includes('User rejected') || msg.includes('USER_REJECTED')) {
         setMintError('Transaction rejected by wallet');
       } else {
         setMintError(`Failed to create Qube: ${msg}`);
@@ -559,6 +564,7 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
     setSuccess(false);
     setErrors({});
     setMintError(null);
+    setPubkeyOverride(false);
 
     onClose();
   };
@@ -576,8 +582,9 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
     }
 
     if (currentStep === 3) {
-      // Only ownerPubkey is required - NFT address is derived automatically
-      if (!formData.ownerPubkey.trim()) {
+      if (!wallet.connected) {
+        newErrors.ownerPubkey = 'Please connect your wallet first';
+      } else if (!formData.ownerPubkey.trim()) {
         newErrors.ownerPubkey = 'BCH public key is required for Qube wallet and NFT minting';
       } else if (!/^(02|03)[a-fA-F0-9]{64}$/.test(formData.ownerPubkey.trim())) {
         newErrors.ownerPubkey = 'Must be compressed public key (02... or 03... + 64 hex chars)';
@@ -1061,46 +1068,78 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
               </p>
             </div>
 
-            {/* Owner Public Key - NFT address derived automatically */}
-            <div>
+            {/* WalletConnect — required for minting (connect first, pubkey derived automatically) */}
+            <div className="p-4 bg-glass-bg border border-glass-border rounded-lg">
+              <label className="block text-sm font-medium text-text-secondary mb-2">
+                Connect Wallet *
+              </label>
+              <p className="text-xs text-text-tertiary mb-3">
+                Your wallet signs the mint transaction. Your public key is detected automatically.
+                <br />
+                Supported: Cashonize, Paytaca, Zapit, Electron Cash
+              </p>
+              <WalletConnectButton />
+              {wallet.connected && wallet.address && (
+                <p className="text-xs text-accent-primary mt-2">
+                  Connected: {wallet.address.length > 30
+                    ? wallet.address.slice(0, 20) + '...' + wallet.address.slice(-8)
+                    : wallet.address}
+                </p>
+              )}
+            </div>
+
+            {/* Owner Public Key — auto-filled from wallet connection */}
+            <div className="mt-4">
               <label className="block text-sm font-medium text-text-secondary mb-2">
                 Your BCH Public Key *
-                {wallet.publicKey && (
-                  <span className="ml-2 text-xs text-accent-primary font-normal">(auto-filled from wallet)</span>
+                {wallet.publicKeySource === 'wallet' && (
+                  <span className="ml-2 text-xs text-green-400 font-normal">(provided by wallet)</span>
+                )}
+                {wallet.publicKeySource === 'recovered' && (
+                  <span className="ml-2 text-xs text-green-400 font-normal">(verified from wallet)</span>
+                )}
+                {wallet.recoveringPubkey && (
+                  <span className="ml-2 text-xs text-amber-400 font-normal animate-pulse">(verifying with wallet...)</span>
                 )}
               </label>
               <input
                 type="text"
-                placeholder="02abc123... or 03def456..."
+                placeholder={wallet.connected ? 'Detecting from wallet...' : 'Connect your wallet above'}
                 value={formData.ownerPubkey}
                 onChange={(e) => setFormData({ ...formData, ownerPubkey: e.target.value })}
+                readOnly={!!wallet.publicKey && !pubkeyOverride}
                 className={`w-full px-4 py-2 bg-glass-bg backdrop-blur-glass border rounded-lg text-text-primary font-mono text-sm placeholder-text-tertiary focus:outline-none focus:ring-2 ${
+                  wallet.publicKey && !pubkeyOverride ? 'cursor-not-allowed opacity-80' : ''
+                } ${
                   errors.ownerPubkey
                     ? 'border-accent-danger focus:ring-accent-danger'
                     : 'border-glass-border focus:ring-accent-primary/50'
                 }`}
               />
+              {wallet.publicKey && !pubkeyOverride && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPubkeyOverride(true);
+                    setFormData((prev) => ({ ...prev, ownerPubkey: '' }));
+                  }}
+                  className="text-xs text-text-tertiary hover:text-accent-primary mt-1 underline"
+                >
+                  Use a different key
+                </button>
+              )}
               {errors.ownerPubkey && (
-                <span className="text-sm text-accent-danger">{errors.ownerPubkey}</span>
+                <span className="text-sm text-accent-danger block mt-1">{errors.ownerPubkey}</span>
               )}
               <p className="text-xs text-text-tertiary mt-1">
-                {wallet.connected && !wallet.publicKey ? (
+                {wallet.connected && !wallet.publicKey && !wallet.recoveringPubkey ? (
                   <>
-                    Your wallet is connected but didn't provide a public key.
-                    <br />
-                    <strong>In Cashonize:</strong> Settings → Wallet Info → Copy public key
-                    <br />
-                    <strong>In Electron Cash:</strong> Addresses tab → Right-click address → Details → Public key
+                    Automatic key detection was not supported by your wallet.
+                    Enter your compressed public key manually (66 hex characters starting with 02 or 03).
                   </>
-                ) : (
-                  <>
-                    Your compressed public key (66 hex characters starting with 02 or 03).
-                    <br />
-                    <strong>In Cashonize:</strong> Settings → Wallet Info → Copy public key
-                    <br />
-                    <strong>In Electron Cash:</strong> Addresses tab → Right-click address → Details → Public key
-                  </>
-                )}
+                ) : !wallet.connected ? (
+                  <>Connect your wallet above to auto-detect your public key.</>
+                ) : null}
               </p>
 
               {/* Show what this pubkey does */}
@@ -1113,26 +1152,6 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
                     <li>• Co-sign any spending the Qube proposes</li>
                   </ul>
                 </div>
-              )}
-            </div>
-
-            {/* WalletConnect — required for minting */}
-            <div className="mt-4 p-4 bg-glass-bg border border-glass-border rounded-lg">
-              <label className="block text-sm font-medium text-text-secondary mb-2">
-                Connect Wallet for Minting *
-              </label>
-              <p className="text-xs text-text-tertiary mb-3">
-                Your wallet signs the mint transaction. Your private keys never leave the wallet.
-                <br />
-                Supported: Cashonize, Paytaca, Zapit, Electron Cash
-              </p>
-              <WalletConnectButton />
-              {wallet.connected && wallet.address && (
-                <p className="text-xs text-accent-primary mt-2">
-                  Connected: {wallet.address.length > 30
-                    ? wallet.address.slice(0, 20) + '...' + wallet.address.slice(-8)
-                    : wallet.address}
-                </p>
               )}
             </div>
 
@@ -1366,7 +1385,7 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
 
             {mintError && (
               <div className="bg-accent-danger/10 border border-accent-danger/30 rounded-lg p-4">
-                <p className="text-accent-danger text-sm">{mintError}</p>
+                <pre className="text-accent-danger text-xs whitespace-pre-wrap break-all font-mono max-h-64 overflow-y-auto select-all">{mintError}</pre>
               </div>
             )}
           </div>

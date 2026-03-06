@@ -24,10 +24,9 @@ contract QubesMint(bytes20 platformPkh) {
     function mint(bytes32 commitment) {
 
         // Output 0: Return minting token to this covenant (same contract address)
-        // The minting token's tokenCategory includes the capability suffix byte.
-        // We require the output has the exact same tokenCategory (preserving minting capability)
-        // and is locked back to this contract's bytecode.
-        require(tx.outputs[0].lockingBytecode == this.activeBytecode);
+        // Compare against the input's lockingBytecode (the P2SH32 pattern) rather than
+        // this.activeBytecode (which returns the redeem script in P2SH context).
+        require(tx.outputs[0].lockingBytecode == tx.inputs[this.activeInputIndex].lockingBytecode);
         require(tx.outputs[0].tokenCategory == tx.inputs[this.activeInputIndex].tokenCategory);
         require(tx.outputs[0].value >= 1000);
 

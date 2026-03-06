@@ -15,7 +15,7 @@ from dataclasses import dataclass
 
 from core.qube import Qube
 from core.multi_qube_conversation import MultiQubeConversation
-from crypto.keys import generate_key_pair, derive_qube_id, derive_commitment, serialize_public_key, serialize_private_key, deserialize_private_key
+from crypto.keys import generate_key_pair, derive_qube_id, derive_commitment, serialize_public_key, serialize_private_key, deserialize_private_key, deserialize_public_key
 from blockchain.manager import BlockchainManager
 from config import SecureSettingsManager, APIKeys
 from config.user_preferences import UserPreferencesManager, UserPreferences, BlockPreferences
@@ -223,6 +223,21 @@ class UserOrchestrator:
                 "previous_hash": "0" * 64
             }
 
+            # Build wallet info if owner_pubkey provided
+            if config.get("owner_pubkey"):
+                qube_pubkey_hex = serialize_public_key(public_key)
+                from crypto.bch_script import create_wallet_address
+                wallet_data = create_wallet_address(
+                    owner_pubkey_hex=config["owner_pubkey"],
+                    qube_pubkey_hex=qube_pubkey_hex,
+                    network="mainnet"
+                )
+                genesis_block["wallet"] = {
+                    "owner_pubkey": config["owner_pubkey"],
+                    "qube_pubkey": qube_pubkey_hex,
+                    "p2sh_address": wallet_data["p2sh_address"],
+                }
+
             # Optionally encrypt genesis prompt
             if genesis_block["genesis_prompt_encrypted"]:
                 from crypto.encryption import encrypt_data
@@ -368,8 +383,8 @@ class UserOrchestrator:
             import uuid
             pending_id = str(uuid.uuid4())[:8]
 
-            # Store temp data
-            self.pending_wc_mints[pending_id] = PendingWcMint(
+            # Store temp data (in memory + disk for crash recovery)
+            pending = PendingWcMint(
                 config=config,
                 private_key=private_key,
                 public_key=public_key,
@@ -381,6 +396,8 @@ class UserOrchestrator:
                 avatar_data=avatar_data,
                 voice_model=voice_model
             )
+            self.pending_wc_mints[pending_id] = pending
+            self._save_pending_mint(pending_id, pending)
 
             logger.info(
                 "wc_mint_prepared",
@@ -423,6 +440,11 @@ class UserOrchestrator:
         try:
             pending = self.pending_wc_mints.get(pending_id)
             if not pending:
+                # Fall back to disk (survives sidecar restarts)
+                pending = self._load_pending_mint(pending_id)
+                if pending:
+                    self.pending_wc_mints[pending_id] = pending
+            if not pending:
                 raise QubesError(f"No pending WC mint found for ID: {pending_id}")
 
             logger.info(
@@ -462,6 +484,21 @@ class UserOrchestrator:
                 "bcmr_uri": ""  # Will be updated after IPFS upload
             }
 
+            # Build wallet info (P2SH multisig address from owner + qube keys)
+            owner_pubkey = config["owner_pubkey"]
+            qube_pubkey_hex = serialize_public_key(pending.public_key)
+            from crypto.bch_script import create_wallet_address
+            wallet_data = create_wallet_address(
+                owner_pubkey_hex=owner_pubkey,
+                qube_pubkey_hex=qube_pubkey_hex,
+                network="mainnet"
+            )
+            genesis_block["wallet"] = {
+                "owner_pubkey": owner_pubkey,
+                "qube_pubkey": qube_pubkey_hex,
+                "p2sh_address": wallet_data["p2sh_address"],
+            }
+
             # Optionally encrypt genesis prompt
             if genesis_block["genesis_prompt_encrypted"]:
                 from crypto.encryption import encrypt_data
@@ -478,6 +515,18 @@ class UserOrchestrator:
             qubes_dir = self.data_dir / "qubes"
             qubes_dir.mkdir(parents=True, exist_ok=True)
 
+            # Retry cleanup: if a previous timed-out attempt left stale encrypted
+            # chain_state files (encrypted with a lost key), remove them so the
+            # Qube constructor can start fresh. Genesis block files are preserved.
+            qube_dir_name = f"{config['name']}_{pending.qube_id}"
+            stale_chain_dir = qubes_dir / qube_dir_name / "chain"
+            if stale_chain_dir.exists():
+                for stale_file in ["chain_state.json", ".chain_state.backup.json", ".chain_state.lock"]:
+                    sf = stale_chain_dir / stale_file
+                    if sf.exists():
+                        sf.unlink()
+                        logger.info("cleaned_stale_chain_file", file=str(sf))
+
             qube = Qube(
                 qube_id=pending.qube_id,
                 private_key=pending.private_key,
@@ -487,38 +536,60 @@ class UserOrchestrator:
                 user_name=self.user_id
             )
 
-            # Finalize NFT (BCMR, IPFS, registry)
-            blockchain_manager = BlockchainManager(network="mainnet")
-            finalize_result = await blockchain_manager.finalize_qube_nft(
-                qube=qube,
-                mint_txid=mint_txid,
-                category_id=pending.category_id,
-                commitment=pending.commitment,
-                recipient_address=pending.recipient_address,
-                upload_to_ipfs=True
-            )
-
-            # Update genesis with BCMR URI
-            if finalize_result.get("ipfs_uri"):
-                qube.genesis_block.bcmr_uri = finalize_result["ipfs_uri"]
-                genesis_dict = qube.genesis_block.to_dict()
-                genesis_dict["bcmr_uri"] = finalize_result["ipfs_uri"]
-
-            # Start P2P network (optional, non-blocking)
-            try:
-                await qube.start_network()
-            except Exception as e:
-                logger.warning("p2p_network_start_failed", error=str(e))
-
-            # Register in orchestrator
+            # CRITICAL: Save Qube immediately so encryption key is persisted.
+            # This prevents "Failed to decrypt" on retry if BCMR/IPFS times out.
             self.qubes[pending.qube_id] = qube
             qube._orchestrator = self
-
-            # Save Qube to storage
             await self._save_qube(qube, pending.private_key)
-
-            # Initialize skills
             self._initialize_qube_skills(qube)
+
+            # Fire-and-forget: BCMR, IPFS, registry, P2P in background.
+            # The Qube is already saved — these are optional enhancements.
+            # IMPORTANT: All blocking I/O (subprocess, requests) must use
+            # asyncio.to_thread() to avoid freezing the sidecar event loop.
+            async def _background_finalize():
+                try:
+                    blockchain_manager = BlockchainManager(network="mainnet")
+                    finalize_result = await blockchain_manager.finalize_qube_nft(
+                        qube=qube,
+                        mint_txid=mint_txid,
+                        category_id=pending.category_id,
+                        commitment=pending.commitment,
+                        recipient_address=pending.recipient_address,
+                        upload_to_ipfs=True
+                    )
+                    if finalize_result.get("ipfs_uri"):
+                        qube.genesis_block.bcmr_uri = finalize_result["ipfs_uri"]
+                        await self._save_qube(qube, pending.private_key)
+                except Exception as e:
+                    logger.warning("background_finalize_nft_failed", error=str(e), exc_info=True)
+
+                try:
+                    from core.official_category import OFFICIAL_QUBES_CATEGORY
+                    from blockchain.bcmr_registry import BCMRRegistryManager
+                    registry_mgr = BCMRRegistryManager(category_id=OFFICIAL_QUBES_CATEGORY)
+                    registry_mgr.add_qube_to_registry(qube)
+                    # sync_to_server uses blocking subprocess.run (SCP) —
+                    # run in thread to avoid blocking the event loop
+                    await asyncio.to_thread(
+                        registry_mgr.sync_to_server,
+                        server_host="167.71.100.232",
+                        server_user="bit_faced",
+                        server_path="/var/www/qube.cash/.well-known/bitcoin-cash-metadata-registry.json"
+                    )
+                    await registry_mgr.upload_to_ipfs()
+                    # trigger_paytaca_reindex uses blocking requests.post —
+                    # run in thread to avoid blocking the event loop
+                    await asyncio.to_thread(registry_mgr.trigger_paytaca_reindex)
+                except Exception as e:
+                    logger.warning("background_bcmr_registry_failed", error=str(e), exc_info=True)
+
+                try:
+                    await qube.start_network()
+                except Exception as e:
+                    logger.warning("background_p2p_start_failed", error=str(e))
+
+            asyncio.create_task(_background_finalize())
 
             # Apply auto-anchor preferences
             prefs = self.preferences_manager.get_block_preferences()
@@ -527,8 +598,9 @@ class UserOrchestrator:
                 individual_threshold=prefs.individual_anchor_threshold
             )
 
-            # Clean up pending data
-            del self.pending_wc_mints[pending_id]
+            # Clean up pending data (memory + disk)
+            self.pending_wc_mints.pop(pending_id, None)
+            self._delete_pending_mint(pending_id)
 
             logger.info(
                 "wc_qube_mint_finalized",
@@ -996,6 +1068,22 @@ class UserOrchestrator:
                     logger.debug("deleted_debug_prompt_cache")
             except Exception as e:
                 logger.debug(f"Could not delete debug prompt cache: {e}")
+
+            # Remove from BCMR registry + sync
+            try:
+                from core.official_category import OFFICIAL_QUBES_CATEGORY
+                from blockchain.bcmr_registry import BCMRRegistryManager
+
+                registry_mgr = BCMRRegistryManager(category_id=OFFICIAL_QUBES_CATEGORY)
+                if registry_mgr.remove_qube_from_registry(qube_id):
+                    registry_mgr.sync_to_server(
+                        server_host="167.71.100.232",
+                        server_user="bit_faced",
+                        server_path="/var/www/qube.cash/.well-known/bitcoin-cash-metadata-registry.json"
+                    )
+                    logger.info("qube_removed_from_bcmr_registry", qube_id=qube_id[:16] + "...")
+            except Exception as e:
+                logger.warning("bcmr_registry_removal_failed", error=str(e))
 
             logger.info("qube_deleted_successfully", qube_id=qube_id[:16] + "...")
 
@@ -2111,6 +2199,66 @@ class UserOrchestrator:
         private_key = deserialize_private_key(decrypted)
 
         return private_key
+
+    def _save_pending_mint(self, pending_id: str, pending: PendingWcMint) -> None:
+        """Persist pending WC mint to disk so it survives sidecar restarts."""
+        pending_dir = self.data_dir / "pending_wc_mints"
+        pending_dir.mkdir(parents=True, exist_ok=True)
+
+        encrypted_key = self._encrypt_private_key(pending.private_key, self.master_key)
+        data = {
+            "config": pending.config,
+            "encrypted_private_key": encrypted_key.hex(),
+            "public_key": serialize_public_key(pending.public_key),
+            "qube_id": pending.qube_id,
+            "commitment": pending.commitment,
+            "category_id": pending.category_id,
+            "recipient_address": pending.recipient_address,
+            "covenant_address": pending.covenant_address,
+            "avatar_data": pending.avatar_data,
+            "voice_model": pending.voice_model,
+        }
+        with open(pending_dir / f"{pending_id}.json", "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        logger.debug("pending_mint_saved_to_disk", pending_id=pending_id)
+
+    def _load_pending_mint(self, pending_id: str) -> Optional[PendingWcMint]:
+        """Load a pending WC mint from disk. Returns None if not found."""
+        pending_file = self.data_dir / "pending_wc_mints" / f"{pending_id}.json"
+        if not pending_file.exists():
+            return None
+
+        try:
+            with open(pending_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            private_key = self._decrypt_private_key(data["encrypted_private_key"], self.master_key)
+            public_key = deserialize_public_key(data["public_key"])
+
+            pending = PendingWcMint(
+                config=data["config"],
+                private_key=private_key,
+                public_key=public_key,
+                qube_id=data["qube_id"],
+                commitment=data["commitment"],
+                category_id=data["category_id"],
+                recipient_address=data["recipient_address"],
+                covenant_address=data["covenant_address"],
+                avatar_data=data["avatar_data"],
+                voice_model=data["voice_model"],
+            )
+            logger.info("pending_mint_loaded_from_disk", pending_id=pending_id)
+            return pending
+        except Exception as e:
+            logger.error("pending_mint_load_failed", pending_id=pending_id, error=str(e))
+            return None
+
+    def _delete_pending_mint(self, pending_id: str) -> None:
+        """Remove pending WC mint file from disk."""
+        pending_file = self.data_dir / "pending_wc_mints" / f"{pending_id}.json"
+        if pending_file.exists():
+            pending_file.unlink()
+            logger.debug("pending_mint_deleted_from_disk", pending_id=pending_id)
 
     def _save_encryption_key(self, qube_dir: Path, encryption_key: bytes) -> None:
         """

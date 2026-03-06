@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 
 from crypto.keys import derive_commitment, serialize_public_key
-from core.official_category import OFFICIAL_QUBES_CATEGORY
+from core.official_category import OFFICIAL_QUBES_CATEGORY, OFFICIAL_PLATFORM_PUBLIC_KEY
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -52,19 +52,7 @@ class CovenantMinter:
         self.category_id = OFFICIAL_QUBES_CATEGORY
         self.covenant_dir = _find_covenant_dir()
 
-        # Platform public key for contract instantiation
-        # Read from env if not provided
-        if platform_public_key:
-            self.platform_public_key = platform_public_key
-        else:
-            import os
-            self.platform_public_key = os.getenv("PLATFORM_PUBLIC_KEY", "")
-
-        if not self.platform_public_key or len(self.platform_public_key) != 66:
-            logger.warning(
-                "covenant_minter_no_platform_key",
-                message="PLATFORM_PUBLIC_KEY not set or invalid. Minting will fail."
-            )
+        self.platform_public_key = platform_public_key or OFFICIAL_PLATFORM_PUBLIC_KEY
 
         logger.info(
             "covenant_minter_initialized",

@@ -84,7 +84,7 @@ The `commitment` is what gets written into the CashToken NFT. The `qubeId` is th
 Minting is handled by a CashScript contract deployed at:
 
 ```
-bitcoincash:rvksvp7vuk4ck0asr3ns9v52h8d9zsywm6psx89hm7zsuqzldu4v5n4h9kyj7
+bitcoincash:rdlqc0y2ulzyp0ulk3t6gn56lzrxt2fq7s2j232vzghww6m8mtqr7h0rx97sy
 ```
 
 Category ID (genesis txid of the minting token):

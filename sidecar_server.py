@@ -366,10 +366,16 @@ class SidecarServer:
             except asyncio.CancelledError:
                 pass
 
-        # Drain in-flight tasks before exiting
+        # Drain in-flight tasks before exiting (with timeout to avoid hanging)
         if self._pending_tasks:
             logger.info(f"draining_pending_tasks count={len(self._pending_tasks)}")
-            await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*self._pending_tasks, return_exceptions=True),
+                    timeout=5.0
+                )
+            except asyncio.TimeoutError:
+                logger.warning(f"drain_timeout remaining={len(self._pending_tasks)}")
 
         self._running = False
         # Cleanup event subscriptions

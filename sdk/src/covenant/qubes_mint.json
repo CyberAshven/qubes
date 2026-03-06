@@ -30,44 +30,44 @@
       ]
     }
   ],
-  "bytecode": "OP_OVER OP_0 OP_NUMEQUAL OP_IF OP_0 OP_OUTPUTBYTECODE OP_ACTIVEBYTECODE OP_EQUALVERIFY OP_0 OP_OUTPUTTOKENCATEGORY OP_INPUTINDEX OP_UTXOTOKENCATEGORY OP_EQUALVERIFY OP_0 OP_OUTPUTVALUE e803 OP_GREATERTHANOREQUAL OP_VERIFY OP_INPUTINDEX OP_UTXOTOKENCATEGORY 20 OP_SPLIT OP_DROP OP_1 OP_OUTPUTTOKENCATEGORY OP_EQUALVERIFY OP_1 OP_OUTPUTTOKENCOMMITMENT OP_3 OP_ROLL OP_EQUALVERIFY OP_1 OP_OUTPUTVALUE e803 OP_GREATERTHANOREQUAL OP_NIP OP_NIP OP_ELSE OP_SWAP OP_1 OP_NUMEQUALVERIFY OP_OVER OP_HASH160 OP_EQUALVERIFY OP_CHECKSIG OP_ENDIF",
-  "source": "pragma cashscript ^0.12.0;\r\n\r\n// Qubes Minting Covenant\r\n//\r\n// Holds the platform minting token (capability=\"minting\") and allows\r\n// ANYONE to mint an immutable Qube NFT if they satisfy the constraints:\r\n//\r\n//   1. Minting token is returned to this covenant\r\n//   2. A new immutable NFT is created with the provided commitment\r\n//\r\n// The commitment should be SHA256(compressed_public_key_hex) — 32 bytes.\r\n// This ties the on-chain NFT to the Qube's cryptographic identity.\r\n//\r\n// Platform fees are NOT enforced here — they belong at the frontend layer.\r\n// Each frontend (app, SDK consumer, CLI) adds its own fee output when\r\n// building the transaction. The protocol stays neutral.\r\n//\r\n// Constructor arg:\r\n//   platformPkh — HASH160 of the platform's public key (for migrate() only)\r\n\r\ncontract QubesMint(bytes20 platformPkh) {\r\n\r\n    // Permissionless minting — anyone can call this\r\n    function mint(bytes32 commitment) {\r\n\r\n        // Output 0: Return minting token to this covenant (same contract address)\r\n        // The minting token's tokenCategory includes the capability suffix byte.\r\n        // We require the output has the exact same tokenCategory (preserving minting capability)\r\n        // and is locked back to this contract's bytecode.\r\n        require(tx.outputs[0].lockingBytecode == this.activeBytecode);\r\n        require(tx.outputs[0].tokenCategory == tx.inputs[this.activeInputIndex].tokenCategory);\r\n        require(tx.outputs[0].value >= 1000);\r\n\r\n        // Output 1: New immutable NFT sent to user (any address they choose)\r\n        // Strip the capability byte from tokenCategory to get the base category.\r\n        // An output with just the base category (no suffix) is an immutable NFT.\r\n        bytes tokenCategoryImmutable = tx.inputs[this.activeInputIndex].tokenCategory.split(32)[0];\r\n        require(tx.outputs[1].tokenCategory == tokenCategoryImmutable);\r\n        require(tx.outputs[1].nftCommitment == commitment);\r\n        require(tx.outputs[1].value >= 1000);\r\n\r\n        // Output 2+ (optional): Frontend fee, user change, etc. — no constraints\r\n        // Mining fee: implicit (sum of inputs - sum of outputs)\r\n    }\r\n\r\n    // Platform-only: migrate minting token to a new contract\r\n    // Used for contract upgrades or hardening to multisig governance later.\r\n    // Does NOT allow arbitrary minting — only moves the minting token.\r\n    function migrate(pubkey platformPk, sig platformSig) {\r\n        require(hash160(platformPk) == platformPkh);\r\n        require(checkSig(platformSig, platformPk));\r\n    }\r\n}\r\n",
+  "bytecode": "OP_OVER OP_0 OP_NUMEQUAL OP_IF OP_0 OP_OUTPUTBYTECODE OP_INPUTINDEX OP_UTXOBYTECODE OP_EQUALVERIFY OP_0 OP_OUTPUTTOKENCATEGORY OP_INPUTINDEX OP_UTXOTOKENCATEGORY OP_EQUALVERIFY OP_0 OP_OUTPUTVALUE e803 OP_GREATERTHANOREQUAL OP_VERIFY OP_INPUTINDEX OP_UTXOTOKENCATEGORY 20 OP_SPLIT OP_DROP OP_1 OP_OUTPUTTOKENCATEGORY OP_EQUALVERIFY OP_1 OP_OUTPUTTOKENCOMMITMENT OP_3 OP_ROLL OP_EQUALVERIFY OP_1 OP_OUTPUTVALUE e803 OP_GREATERTHANOREQUAL OP_NIP OP_NIP OP_ELSE OP_SWAP OP_1 OP_NUMEQUALVERIFY OP_OVER OP_HASH160 OP_EQUALVERIFY OP_CHECKSIG OP_ENDIF",
+  "source": "pragma cashscript ^0.12.0;\r\n\r\n// Qubes Minting Covenant\r\n//\r\n// Holds the platform minting token (capability=\"minting\") and allows\r\n// ANYONE to mint an immutable Qube NFT if they satisfy the constraints:\r\n//\r\n//   1. Minting token is returned to this covenant\r\n//   2. A new immutable NFT is created with the provided commitment\r\n//\r\n// The commitment should be SHA256(compressed_public_key_hex) — 32 bytes.\r\n// This ties the on-chain NFT to the Qube's cryptographic identity.\r\n//\r\n// Platform fees are NOT enforced here — they belong at the frontend layer.\r\n// Each frontend (app, SDK consumer, CLI) adds its own fee output when\r\n// building the transaction. The protocol stays neutral.\r\n//\r\n// Constructor arg:\r\n//   platformPkh — HASH160 of the platform's public key (for migrate() only)\r\n\r\ncontract QubesMint(bytes20 platformPkh) {\r\n\r\n    // Permissionless minting — anyone can call this\r\n    function mint(bytes32 commitment) {\r\n\r\n        // Output 0: Return minting token to this covenant (same contract address)\r\n        // Compare against the input's lockingBytecode (the P2SH32 pattern) rather than\r\n        // this.activeBytecode (which returns the redeem script in P2SH context).\r\n        require(tx.outputs[0].lockingBytecode == tx.inputs[this.activeInputIndex].lockingBytecode);\r\n        require(tx.outputs[0].tokenCategory == tx.inputs[this.activeInputIndex].tokenCategory);\r\n        require(tx.outputs[0].value >= 1000);\r\n\r\n        // Output 1: New immutable NFT sent to user (any address they choose)\r\n        // Strip the capability byte from tokenCategory to get the base category.\r\n        // An output with just the base category (no suffix) is an immutable NFT.\r\n        bytes tokenCategoryImmutable = tx.inputs[this.activeInputIndex].tokenCategory.split(32)[0];\r\n        require(tx.outputs[1].tokenCategory == tokenCategoryImmutable);\r\n        require(tx.outputs[1].nftCommitment == commitment);\r\n        require(tx.outputs[1].value >= 1000);\r\n\r\n        // Output 2+ (optional): Frontend fee, user change, etc. — no constraints\r\n        // Mining fee: implicit (sum of inputs - sum of outputs)\r\n    }\r\n\r\n    // Platform-only: migrate minting token to a new contract\r\n    // Used for contract upgrades or hardening to multisig governance later.\r\n    // Does NOT allow arbitrary minting — only moves the minting token.\r\n    function migrate(pubkey platformPk, sig platformSig) {\r\n        require(hash160(platformPk) == platformPkh);\r\n        require(checkSig(platformSig, platformPk));\r\n    }\r\n}\r\n",
   "debug": {
-    "bytecode": "78009c6300cdc18800d1c0ce8800cc02e803a269c0ce01207f7551d18851d2537a8851cc02e803a27777677c519d78a988ac68",
-    "sourceMap": "24:4:44:5;;;;30:27:30:28;:16::45:1;:49::68:0;:8::70:1;31:27:31:28:0;:16::43:1;:57::78:0;:47::93:1;:8::95;32:27:32:28:0;:16::35:1;:39::43:0;:16:::1;:8::45;37:49:37:70:0;:39::85:1;:92::94:0;:39::95:1;:::98;38:27:38:28:0;:16::43:1;:8::71;39:27:39:28:0;:16::43:1;:47::57:0;;:8::59:1;40:27:40:28:0;:16::35:1;:39::43:0;:8::45:1;24:4:44:5;;;49::52::0;;;50:24:50:34;:16::35:1;:8::52;51::51:51;21:0:53:1",
+    "bytecode": "78009c6300cdc0c78800d1c0ce8800cc02e803a269c0ce01207f7551d18851d2537a8851cc02e803a27777677c519d78a988ac68",
+    "sourceMap": "24:4:43:5;;;;29:27:29:28;:16::45:1;:59::80:0;:49::97:1;:8::99;30:27:30:28:0;:16::43:1;:57::78:0;:47::93:1;:8::95;31:27:31:28:0;:16::35:1;:39::43:0;:16:::1;:8::45;36:49:36:70:0;:39::85:1;:92::94:0;:39::95:1;:::98;37:27:37:28:0;:16::43:1;:8::71;38:27:38:28:0;:16::43:1;:47::57:0;;:8::59:1;39:27:39:28:0;:16::35:1;:39::43:0;:8::45:1;24:4:43:5;;;48::51::0;;;49:24:49:34;:16::35:1;:8::52;50::50:51;21:0:52:1",
     "logs": [],
     "requires": [
       {
-        "ip": 8,
+        "ip": 9,
+        "line": 29
+      },
+      {
+        "ip": 14,
         "line": 30
       },
       {
-        "ip": 13,
+        "ip": 19,
         "line": 31
       },
       {
-        "ip": 18,
-        "line": 32
+        "ip": 27,
+        "line": 37
       },
       {
-        "ip": 26,
+        "ip": 32,
         "line": 38
       },
       {
-        "ip": 31,
+        "ip": 37,
         "line": 39
       },
       {
-        "ip": 36,
-        "line": 40
+        "ip": 45,
+        "line": 49
       },
       {
-        "ip": 44,
+        "ip": 47,
         "line": 50
-      },
-      {
-        "ip": 46,
-        "line": 51
       }
     ]
   },
@@ -75,5 +75,5 @@
     "name": "cashc",
     "version": "0.12.1"
   },
-  "updatedAt": "2026-03-04T20:16:37.685Z"
+  "updatedAt": "2026-03-06T01:08:54.190Z"
 }
