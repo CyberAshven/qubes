@@ -1,4 +1,6 @@
 import React, { useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { GlassCard } from '../glass/GlassCard';
 import { GlassInput } from '../glass/GlassInput';
 import { GlassButton } from '../glass/GlassButton';
@@ -15,6 +17,15 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
 
+  // Restore from backup state
+  const [showRestoreModal, setShowRestoreModal] = useState(false);
+  const [restoreFilePath, setRestoreFilePath] = useState('');
+  const [restorePassword, setRestorePassword] = useState('');
+  const [restoreMasterPassword, setRestoreMasterPassword] = useState('');
+  const [restoreMasterPasswordConfirm, setRestoreMasterPasswordConfirm] = useState('');
+  const [isRestoring, setIsRestoring] = useState(false);
+  const [restoreError, setRestoreError] = useState<string | null>(null);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!username.trim() || !password.trim()) return;
@@ -26,6 +37,69 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
       // Error handled by parent
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleRestorePickFile = async () => {
+    const selected = await openDialog({
+      title: 'Select Account Backup',
+      filters: [{ name: 'Qube Backup', extensions: ['qube-backup'] }],
+      multiple: false,
+      directory: false,
+    });
+    if (selected) {
+      setRestoreFilePath(selected as string);
+    }
+  };
+
+  const handleRestore = async () => {
+    if (!restoreFilePath || !restorePassword || !restoreMasterPassword) return;
+
+    if (restoreMasterPassword !== restoreMasterPasswordConfirm) {
+      setRestoreError('Master passwords do not match.');
+      return;
+    }
+
+    if (restoreMasterPassword.length < 8) {
+      setRestoreError('Master password must be at least 8 characters.');
+      return;
+    }
+
+    setIsRestoring(true);
+    setRestoreError(null);
+
+    try {
+      const result = await invoke<{
+        success: boolean;
+        imported_count?: number;
+        skipped_count?: number;
+        user_id?: string;
+        error?: string;
+      }>('import_account_backup', {
+        importPath: restoreFilePath,
+        importPassword: restorePassword,
+        masterPassword: restoreMasterPassword,
+      });
+
+      if (result.success) {
+        alert(`Account restored successfully!\n\n${result.imported_count} Qube(s) imported, ${result.skipped_count} skipped.\n\nPlease sign in with your master password.`);
+        setShowRestoreModal(false);
+        setRestoreFilePath('');
+        setRestorePassword('');
+        setRestoreMasterPassword('');
+        setRestoreMasterPasswordConfirm('');
+        // Pre-fill username if available
+        if (result.user_id) {
+          setUsername(result.user_id);
+          setPassword(restoreMasterPassword);
+        }
+      } else {
+        setRestoreError(result.error || 'Restore failed');
+      }
+    } catch (err) {
+      setRestoreError(`${err}`);
+    } finally {
+      setIsRestoring(false);
     }
   };
 
@@ -102,15 +176,110 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
           <p>Secured with end-to-end encryption</p>
         </div>
 
-        <div className="mt-4 text-center">
+        <div className="mt-4 flex justify-center gap-4">
           <button
             onClick={onCreateAccount}
             className="text-accent-primary hover:text-accent-primary/80 text-sm font-medium transition-colors"
           >
             Create New Account
           </button>
+          <span className="text-text-tertiary">|</span>
+          <button
+            onClick={() => setShowRestoreModal(true)}
+            className="text-accent-secondary hover:text-accent-secondary/80 text-sm font-medium transition-colors"
+          >
+            Restore from Backup
+          </button>
         </div>
       </GlassCard>
+
+      {/* Restore from Backup Modal */}
+      {showRestoreModal && (
+        <div className="fixed inset-0 bg-black/95 backdrop-blur-sm flex items-center justify-center z-50">
+          <GlassCard variant="elevated" className="w-full max-w-md p-6 mx-4">
+            <h2 className="text-xl font-bold text-text-primary mb-4">Restore from Backup</h2>
+            <p className="text-text-secondary text-sm mb-4">
+              Select a <code>.qube-backup</code> file to restore your account and all Qubes.
+            </p>
+
+            {/* File picker */}
+            <div className="mb-4">
+              <label className="block text-text-secondary text-sm mb-1">Backup File</label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={restoreFilePath}
+                  readOnly
+                  placeholder="No file selected"
+                  className="flex-1 bg-surface-secondary border border-border-primary rounded-lg px-3 py-2 text-text-primary text-sm truncate"
+                />
+                <GlassButton variant="secondary" onClick={handleRestorePickFile}>
+                  Browse
+                </GlassButton>
+              </div>
+            </div>
+
+            {/* Backup password */}
+            <div className="mb-4">
+              <label className="block text-text-secondary text-sm mb-1">Backup Password</label>
+              <input
+                type="password"
+                value={restorePassword}
+                onChange={(e) => setRestorePassword(e.target.value)}
+                placeholder="Password used when creating the backup"
+                className="w-full bg-surface-secondary border border-border-primary rounded-lg px-3 py-2 text-text-primary text-sm"
+              />
+            </div>
+
+            {/* New master password */}
+            <div className="mb-4">
+              <label className="block text-text-secondary text-sm mb-1">Master Password</label>
+              <input
+                type="password"
+                value={restoreMasterPassword}
+                onChange={(e) => setRestoreMasterPassword(e.target.value)}
+                placeholder="Master password for this device"
+                className="w-full bg-surface-secondary border border-border-primary rounded-lg px-3 py-2 text-text-primary text-sm"
+              />
+            </div>
+
+            <div className="mb-4">
+              <label className="block text-text-secondary text-sm mb-1">Confirm Master Password</label>
+              <input
+                type="password"
+                value={restoreMasterPasswordConfirm}
+                onChange={(e) => setRestoreMasterPasswordConfirm(e.target.value)}
+                placeholder="Confirm master password"
+                className="w-full bg-surface-secondary border border-border-primary rounded-lg px-3 py-2 text-text-primary text-sm"
+              />
+            </div>
+
+            {restoreError && (
+              <div className="mb-4 p-3 bg-accent-danger/10 border border-accent-danger/30 rounded-lg">
+                <p className="text-accent-danger text-sm">{restoreError}</p>
+              </div>
+            )}
+
+            <div className="flex gap-3 justify-end">
+              <GlassButton
+                variant="secondary"
+                onClick={() => { setShowRestoreModal(false); setRestoreError(null); }}
+                disabled={isRestoring}
+              >
+                Cancel
+              </GlassButton>
+              <GlassButton
+                variant="primary"
+                onClick={handleRestore}
+                disabled={!restoreFilePath || !restorePassword || !restoreMasterPassword || !restoreMasterPasswordConfirm || isRestoring}
+                loading={isRestoring}
+              >
+                {isRestoring ? 'Restoring...' : 'Restore Account'}
+              </GlassButton>
+            </div>
+          </GlassCard>
+        </div>
+      )}
     </div>
   );
 };

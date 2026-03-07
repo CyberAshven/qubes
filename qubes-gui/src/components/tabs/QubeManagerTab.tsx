@@ -13,6 +13,8 @@ import { useAuth } from '../../hooks/useAuth';
 import { useQubeOrder } from '../../hooks/useQubeOrder';
 import { useQubeSelection } from '../../hooks/useQubeSelection';
 import { useWalletCache } from '../../hooks/useWalletCache';
+import { useWallet } from '../../contexts/WalletContext';
+import WalletConnectButton from '../WalletConnectButton';
 import { useModels } from '../../hooks/useModels';
 import { useChainState } from '../../contexts/ChainStateContext';
 import { useVoiceLibrary } from '../../contexts/VoiceLibraryContext';
@@ -49,7 +51,8 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
   onDeleteQube,
   onUpdateQubeConfig,
 }) => {
-  const { userId, password: masterPassword } = useAuth();
+  const { userId, password: masterPassword, dataDir } = useAuth();
+  const wallet = useWallet();
 
   // Check Pinata configuration on mount
   useEffect(() => {
@@ -91,10 +94,9 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
   const [isResolvingPublicKey, setIsResolvingPublicKey] = useState(false);
   const [transferConfirmed, setTransferConfirmed] = useState(false);
 
-  // Import from wallet modal state
-  const [importWalletWif, setImportWalletWif] = useState('');
-  const [importWalletAddress, setImportWalletAddress] = useState('');
+  // Import from wallet modal state (WalletConnect-based, no WIF)
   const [isScanning, setIsScanning] = useState(false);
+  const [importProgress, setImportProgress] = useState<{ current: number; total: number; name: string } | null>(null);
 
   // Export/Import file state
   const [isExporting, setIsExporting] = useState(false);
@@ -106,6 +108,12 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
   const [importFilePassword, setImportFilePassword] = useState('');
   const [isImportingFile, setIsImportingFile] = useState(false);
 
+  // Account backup state
+  const [showBackupModal, setShowBackupModal] = useState(false);
+  const [backupPassword, setBackupPassword] = useState('');
+  const [backupConfirmPassword, setBackupConfirmPassword] = useState('');
+  const [isBackingUp, setIsBackingUp] = useState(false);
+
   // Pinata configuration check
   const [pinataConfigured, setPinataConfigured] = useState<boolean | null>(null);
   const [walletQubes, setWalletQubes] = useState<Array<{
@@ -116,7 +124,6 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
     chain_length: number;
     sync_timestamp: number;
   }>>([]);
-  const [selectedWalletQube, setSelectedWalletQube] = useState<string | null>(null);
 
   // Reset qube state (new save slot)
   const [qubeToReset, setQubeToReset] = useState<Qube | null>(null);
@@ -318,6 +325,53 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
     }
   };
 
+  // Backup entire account
+  const handleBackupAccount = async () => {
+    if (backupPassword !== backupConfirmPassword) { alert('Passwords do not match'); return; }
+    if (backupPassword.length < 8) { alert('Password must be at least 8 characters'); return; }
+
+    try {
+      // Default to backups/ folder next to the app binary (portable),
+      // fallback to the Qubes data directory
+      const filename = `${userId || 'qubes'}-backup.qube-backup`;
+      let defaultPath = filename;
+      try {
+        const bundleDir = await invoke<string>('get_bundle_dir');
+        defaultPath = `${bundleDir}/backups/${filename}`;
+      } catch {
+        if (dataDir) defaultPath = `${dataDir}/backups/${filename}`;
+      }
+
+      const filePath = await saveDialog({
+        title: 'Save Account Backup',
+        defaultPath,
+        filters: [{ name: 'Qube Backup', extensions: ['qube-backup'] }],
+      });
+      if (!filePath) return;
+
+      setIsBackingUp(true);
+      const result = await invoke<{ success: boolean; file_path?: string; qube_count?: number; error?: string }>('export_account_backup', {
+        exportPath: filePath,
+        exportPassword: backupPassword,
+        masterPassword: masterPassword,
+      });
+
+      if (result.success) {
+        alert(`Account backup saved!\n\n${result.qube_count} Qube(s) exported to:\n${result.file_path}`);
+        setShowBackupModal(false);
+        setBackupPassword('');
+        setBackupConfirmPassword('');
+      } else {
+        alert(`Backup failed: ${result.error}`);
+      }
+    } catch (error) {
+      console.error('Backup failed:', error);
+      alert(`Backup failed: ${String(error)}`);
+    } finally {
+      setIsBackingUp(false);
+    }
+  };
+
   // Sync to IPFS handler - syncs selected Qube to IPFS via Pinata
   const handleSyncToChain = async () => {
     const selectedId = selectedQubeIds[0];
@@ -482,16 +536,12 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
     setTransferConfirmed(false);
   };
 
-  // Scan wallet for Qubes
+  // Scan wallet for Qubes (uses WalletConnect address)
   const handleScanWallet = async () => {
-    if (!importWalletAddress || !userId) {
-      alert('Please enter a wallet address');
-      return;
-    }
+    if (!wallet.address || !userId) return;
 
     setIsScanning(true);
     setWalletQubes([]);
-    setSelectedWalletQube(null);
 
     try {
       const result = await invoke<{
@@ -507,14 +557,11 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
         error?: string;
       }>('scan_wallet', {
         userId,
-        walletAddress: importWalletAddress,
+        walletAddress: wallet.address,
       });
 
       if (result.success && result.qubes) {
         setWalletQubes(result.qubes);
-        if (result.qubes.length === 0) {
-          alert('No Qubes found in this wallet');
-        }
       } else {
         alert(`Scan failed: ${result.error}`);
       }
@@ -525,57 +572,68 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
     }
   };
 
-  // Execute import from wallet
-  const handleExecuteImport = async () => {
-    if (!selectedWalletQube || !importWalletWif || !userId || !masterPassword) {
-      alert('Please select a Qube and enter your wallet WIF');
-      return;
-    }
-
-    const qubeToImport = walletQubes.find(q => q.category_id === selectedWalletQube);
-    if (!qubeToImport) {
-      alert('Selected Qube not found');
-      return;
-    }
+  // Bulk import all Qubes from wallet (no WIF — password-based decryption)
+  const handleBulkImport = async () => {
+    if (!walletQubes.length || !userId || !masterPassword) return;
 
     setIsImporting(true);
-    try {
-      const result = await invoke<{
-        success: boolean;
-        qube_id?: string;
-        qube_name?: string;
-        qube_dir?: string;
-        error?: string;
-      }>('import_from_wallet', {
-        userId,
-        walletWif: importWalletWif,
-        categoryId: selectedWalletQube,
-        password: masterPassword,
-      });
+    setImportProgress(null);
+    let imported = 0;
+    let failed = 0;
+    const errors: string[] = [];
 
-      if (result.success) {
-        alert(`Import successful!\n\n${result.qube_name} (${result.qube_id}) has been imported.`);
-        // Close modal and reset state
+    try {
+      for (let i = 0; i < walletQubes.length; i++) {
+        const q = walletQubes[i];
+        setImportProgress({ current: i + 1, total: walletQubes.length, name: q.qube_name });
+
+        try {
+          const result = await invoke<{
+            success: boolean;
+            qube_id?: string;
+            qube_name?: string;
+            qube_dir?: string;
+            error?: string;
+          }>('import_from_wallet', {
+            userId,
+            walletWif: '',  // Empty = password-based decryption
+            categoryId: q.category_id,
+            password: masterPassword,
+          });
+
+          if (result.success) {
+            imported++;
+            window.dispatchEvent(new CustomEvent('qube-created', { detail: { qube_id: result.qube_id } }));
+          } else {
+            failed++;
+            errors.push(`${q.qube_name}: ${result.error}`);
+          }
+        } catch (err) {
+          failed++;
+          errors.push(`${q.qube_name}: ${err}`);
+        }
+      }
+
+      const summary = [`Imported ${imported} of ${walletQubes.length} Qube(s).`];
+      if (failed > 0) summary.push(`\n${failed} failed:\n${errors.join('\n')}`);
+      alert(summary.join(''));
+
+      if (imported > 0) {
         setShowImportFromWalletModal(false);
         resetImportState();
-        // Emit event to refresh qubes list
-        window.dispatchEvent(new CustomEvent('qube-created', { detail: { qube_id: result.qube_id } }));
-      } else {
-        alert(`Import failed: ${result.error}`);
       }
     } catch (error) {
       alert(`Import failed: ${error}`);
     } finally {
       setIsImporting(false);
+      setImportProgress(null);
     }
   };
 
   // Reset import modal state
   const resetImportState = () => {
-    setImportWalletWif('');
-    setImportWalletAddress('');
     setWalletQubes([]);
-    setSelectedWalletQube(null);
+    setImportProgress(null);
   };
 
   return (
@@ -672,6 +730,13 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
             }
           >
             {isTransferring ? 'Transferring...' : 'Transfer'}
+          </GlassButton>
+          <GlassButton
+            variant="secondary"
+            onClick={() => setShowBackupModal(true)}
+            title="Backup your entire account and all Qubes to a portable file"
+          >
+            Backup Account
           </GlassButton>
           <GlassButton variant="primary" onClick={onCreateQube}>
             + Create New Qube
@@ -931,42 +996,40 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
         <div className="fixed inset-0 bg-black/95 backdrop-blur-sm flex items-center justify-center z-50">
           <div className="glass-card p-6 max-w-lg w-full mx-4 max-h-[90vh] overflow-y-auto">
             <h2 className="text-xl font-bold text-text-primary mb-4">Import from Wallet</h2>
+            <p className="text-text-secondary text-sm mb-4">
+              Connect your wallet to scan for Qubes and import them all at once.
+              Your master password decrypts the data — no private key needed.
+            </p>
 
-            {/* Step 1: Scan Wallet */}
-            <div className="mb-4">
-              <label className="block text-text-secondary text-sm mb-1">Wallet Address</label>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={importWalletAddress}
-                  onChange={(e) => setImportWalletAddress(e.target.value)}
-                  placeholder="bitcoincash:qz..."
-                  className="flex-1 bg-surface-secondary border border-border-primary rounded-lg px-3 py-2 text-text-primary text-sm"
-                />
+            {/* Step 1: Connect Wallet */}
+            <div className="mb-4 p-4 bg-glass-bg border border-glass-border rounded-lg">
+              <label className="block text-text-secondary text-sm mb-2">Connect Wallet</label>
+              <WalletConnectButton />
+              {wallet.connected && wallet.address && !isScanning && walletQubes.length === 0 && !importProgress && (
                 <GlassButton
                   variant="secondary"
+                  className="mt-3"
                   onClick={handleScanWallet}
-                  disabled={!importWalletAddress || isScanning}
                 >
-                  {isScanning ? 'Scanning...' : 'Scan'}
+                  Scan for Qubes
                 </GlassButton>
-              </div>
+              )}
+              {isScanning && (
+                <p className="text-text-tertiary text-sm mt-2 animate-pulse">Scanning wallet for Qubes...</p>
+              )}
             </div>
 
-            {/* Step 2: Select Qube */}
+            {/* Step 2: Found Qubes */}
             {walletQubes.length > 0 && (
               <div className="mb-4">
-                <label className="block text-text-secondary text-sm mb-2">Select Qube to Import</label>
+                <label className="block text-text-secondary text-sm mb-2">
+                  Found {walletQubes.length} Qube(s)
+                </label>
                 <div className="space-y-2 max-h-48 overflow-y-auto">
                   {walletQubes.map((q) => (
                     <div
                       key={q.category_id}
-                      onClick={() => setSelectedWalletQube(q.category_id)}
-                      className={`p-3 rounded-lg border cursor-pointer transition-all ${
-                        selectedWalletQube === q.category_id
-                          ? 'border-accent-primary bg-accent-primary/10'
-                          : 'border-border-primary bg-surface-secondary hover:border-border-secondary'
-                      }`}
+                      className="p-3 rounded-lg border border-border-primary bg-surface-secondary"
                     >
                       <div className="flex justify-between items-start">
                         <div>
@@ -984,19 +1047,11 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
               </div>
             )}
 
-            {/* Step 3: Wallet WIF */}
-            {selectedWalletQube && (
-              <div className="mb-4">
-                <label className="block text-text-secondary text-sm mb-1">Wallet WIF (Private Key)</label>
-                <input
-                  type="password"
-                  value={importWalletWif}
-                  onChange={(e) => setImportWalletWif(e.target.value)}
-                  placeholder="Starts with K, L, or 5..."
-                  className="w-full bg-surface-secondary border border-border-primary rounded-lg px-3 py-2 text-text-primary text-sm font-mono"
-                />
-                <p className="text-text-tertiary text-xs mt-1">
-                  Required to decrypt the Qube data from IPFS
+            {/* Import progress */}
+            {importProgress && (
+              <div className="mb-4 p-3 bg-accent-primary/10 border border-accent-primary/30 rounded-lg">
+                <p className="text-accent-primary text-sm">
+                  Importing {importProgress.current} of {importProgress.total}: {importProgress.name}...
                 </p>
               </div>
             )}
@@ -1013,13 +1068,14 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
               >
                 Cancel
               </GlassButton>
-              {selectedWalletQube && (
+              {walletQubes.length > 0 && (
                 <GlassButton
                   variant="primary"
-                  onClick={handleExecuteImport}
-                  disabled={isImporting || !importWalletWif}
+                  onClick={handleBulkImport}
+                  disabled={isImporting}
+                  loading={isImporting}
                 >
-                  {isImporting ? 'Importing...' : 'Import Qube'}
+                  {isImporting ? 'Importing...' : `Import All (${walletQubes.length})`}
                 </GlassButton>
               )}
             </div>
@@ -1119,6 +1175,58 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
                 disabled={isImportingFile || !importFilePath || !importFilePassword}
               >
                 {isImportingFile ? 'Importing...' : 'Import'}
+              </GlassButton>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Account Backup Modal */}
+      {showBackupModal && (
+        <div className="fixed inset-0 bg-black/95 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="glass-card p-6 max-w-md w-full mx-4">
+            <h2 className="text-xl font-bold text-text-primary mb-4">Backup Account</h2>
+            <p className="text-text-secondary text-sm mb-4">
+              Export your entire account (credentials + all Qubes) to a portable <code>.qube-backup</code> file.
+              Protect it with a password you'll need when restoring.
+            </p>
+            <div className="space-y-3">
+              <div>
+                <label className="block text-sm text-text-secondary mb-1">Backup Password</label>
+                <input
+                  type="password"
+                  value={backupPassword}
+                  onChange={(e) => setBackupPassword(e.target.value)}
+                  placeholder="At least 8 characters"
+                  className="w-full px-3 py-2 bg-glass-bg border border-glass-border rounded-lg text-text-primary text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-text-secondary mb-1">Confirm Password</label>
+                <input
+                  type="password"
+                  value={backupConfirmPassword}
+                  onChange={(e) => setBackupConfirmPassword(e.target.value)}
+                  placeholder="Re-enter password"
+                  className="w-full px-3 py-2 bg-glass-bg border border-glass-border rounded-lg text-text-primary text-sm"
+                />
+              </div>
+            </div>
+            <div className="flex gap-3 mt-4">
+              <GlassButton
+                variant="secondary"
+                onClick={() => { setShowBackupModal(false); setBackupPassword(''); setBackupConfirmPassword(''); }}
+                disabled={isBackingUp}
+              >
+                Cancel
+              </GlassButton>
+              <GlassButton
+                variant="primary"
+                onClick={handleBackupAccount}
+                disabled={isBackingUp || !backupPassword || !backupConfirmPassword}
+                loading={isBackingUp}
+              >
+                {isBackingUp ? 'Backing up...' : 'Create Backup'}
               </GlassButton>
             </div>
           </div>

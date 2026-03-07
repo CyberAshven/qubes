@@ -1197,6 +1197,23 @@ struct ImportQubeResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+struct ExportAccountBackupResponse {
+    success: bool,
+    file_path: Option<String>,
+    qube_count: Option<u32>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ImportAccountBackupResponse {
+    success: bool,
+    imported_count: Option<u32>,
+    skipped_count: Option<u32>,
+    user_id: Option<String>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 struct PrepareQubeMintResponse {
     pending_id: String,
     qube_id: String,
@@ -5491,6 +5508,18 @@ struct FirstRunResponse {
     legacy_users: Option<Vec<String>>,
 }
 
+/// Get the directory containing the application binary (for portable backups)
+#[tauri::command]
+fn get_bundle_dir() -> Result<String, String> {
+    std::env::current_exe()
+        .map_err(|e| format!("Failed to get exe path: {}", e))
+        .and_then(|p| {
+            p.parent()
+                .map(|d| d.display().to_string())
+                .ok_or_else(|| "No parent directory".to_string())
+        })
+}
+
 /// Check if this is the first run (no users exist)
 #[tauri::command]
 async fn check_first_run() -> Result<FirstRunResponse, String> {
@@ -5598,6 +5627,21 @@ async fn delete_user_account(app_handle: AppHandle, user_id: String) -> Result<s
     let secrets = HashMap::new();
 
     sidecar_execute_with_retry("delete-user-account", args, secrets, Some(&app_handle), None).await
+}
+
+/// Change the user's master password (re-encrypts all data)
+#[tauri::command]
+async fn change_master_password(
+    app_handle: AppHandle,
+    old_password: String,
+    new_password: String,
+) -> Result<serde_json::Value, String> {
+    let args: Vec<String> = vec![];
+    let mut secrets = HashMap::new();
+    secrets.insert("old_password", old_password.as_str());
+    secrets.insert("new_password", new_password.as_str());
+
+    sidecar_execute_with_retry("change-master-password", args, secrets, Some(&app_handle), Some(120000)).await
 }
 
 /// Migrate user data from old ./data/ path to platform-aware path
@@ -5968,6 +6012,48 @@ async fn import_qube(app_handle: AppHandle,
 
     let response: ImportQubeResponse = serde_json::from_value(result)
         .map_err(|e| format!("Failed to parse import-qube response: {}", e))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn export_account_backup(app_handle: AppHandle,
+    export_path: String,
+    export_password: String,
+    master_password: String
+) -> Result<ExportAccountBackupResponse, String> {
+
+    let args = vec![export_path];
+
+    let mut secrets = HashMap::new();
+    secrets.insert("export_password", export_password.as_str());
+    secrets.insert("master_password", master_password.as_str());
+
+    let result = sidecar_execute_with_retry("export-account-backup", args, secrets, Some(&app_handle), Some(300)).await?;
+
+    let response: ExportAccountBackupResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse export-account-backup response: {}", e))?;
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn import_account_backup(app_handle: AppHandle,
+    import_path: String,
+    import_password: String,
+    master_password: String
+) -> Result<ImportAccountBackupResponse, String> {
+
+    let args = vec![import_path];
+
+    let mut secrets = HashMap::new();
+    secrets.insert("import_password", import_password.as_str());
+    secrets.insert("master_password", master_password.as_str());
+
+    let result = sidecar_execute_with_retry("import-account-backup", args, secrets, Some(&app_handle), Some(300)).await?;
+
+    let response: ImportAccountBackupResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse import-account-backup response: {}", e))?;
 
     Ok(response)
 }
@@ -7273,9 +7359,11 @@ pub fn run() {
             inject_p2p_block,
             send_p2p_user_message,
             // Setup Wizard
+            get_bundle_dir,
             check_first_run,
             create_user_account,
             delete_user_account,
+            change_master_password,
             migrate_user_data,
             check_ollama_status,
             get_backend_diagnostics,
@@ -7287,6 +7375,8 @@ pub fn run() {
             import_from_wallet,
             export_qube,
             import_qube,
+            export_account_backup,
+            import_account_backup,
             scan_wallet,
             resolve_public_key,
             // Dev debugging

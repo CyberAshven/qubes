@@ -87,7 +87,7 @@ PRE_BRIDGE_COMMANDS = {
 # Commands that invalidate qube cache after execution
 CACHE_INVALIDATING = {
     "delete-qube", "reset-qube", "anchor-session", "discard-session",
-    "create-qube", "transfer-qube", "update-qube-config", "import-qube",
+    "create-qube", "transfer-qube", "update-qube-config", "import-qube", "import-account-backup",
     "delete-session-block", "discard-last-block", "finalize-qube-mint",
 }
 
@@ -202,6 +202,8 @@ POSITIONAL_ARG_NAMES = {
     # Export / Import
     "export-qube": ["qube_id", "export_path"],
     "import-qube": ["import_path"],
+    "export-account-backup": ["export_path"],
+    "import-account-backup": ["import_path"],
     # API key batch
     "save-api-keys": ["user_id"],
     "update-qube-nft": ["user_id", "qube_id"],

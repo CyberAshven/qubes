@@ -201,6 +201,14 @@ export const SettingsTab: React.FC = () => {
   const [savingMemoryConfig, setSavingMemoryConfig] = useState(false);
   const [showAdvancedRecall, setShowAdvancedRecall] = useState(false);
 
+  // Change password state
+  const [changePwOld, setChangePwOld] = useState('');
+  const [changePwNew, setChangePwNew] = useState('');
+  const [changePwConfirm, setChangePwConfirm] = useState('');
+  const [isChangingPw, setIsChangingPw] = useState(false);
+  const [changePwError, setChangePwError] = useState<string | null>(null);
+  const [changePwSuccess, setChangePwSuccess] = useState<string | null>(null);
+
   // Collapsible panel state (all collapsed by default)
   const [collapsedPanels, setCollapsedPanels] = useState<Record<string, boolean>>({
     apiKeys: true,
@@ -216,6 +224,45 @@ export const SettingsTab: React.FC = () => {
     celebrationSettings: true,
     softwareUpdates: true,
   });
+
+  const handleChangePassword = async () => {
+    setChangePwError(null);
+    setChangePwSuccess(null);
+
+    if (changePwNew !== changePwConfirm) {
+      setChangePwError('New passwords do not match.');
+      return;
+    }
+    if (changePwNew.length < 8) {
+      setChangePwError('New password must be at least 8 characters.');
+      return;
+    }
+    if (changePwOld === changePwNew) {
+      setChangePwError('New password must be different from current password.');
+      return;
+    }
+
+    setIsChangingPw(true);
+    try {
+      const result = await invoke<{ success: boolean; re_encrypted_count?: number; error?: string }>('change_master_password', {
+        oldPassword: changePwOld,
+        newPassword: changePwNew,
+      });
+
+      if (result.success) {
+        setChangePwSuccess(`Password changed successfully. ${result.re_encrypted_count} items re-encrypted.`);
+        setChangePwOld('');
+        setChangePwNew('');
+        setChangePwConfirm('');
+      } else {
+        setChangePwError(result.error || 'Password change failed.');
+      }
+    } catch (err) {
+      setChangePwError(`${err}`);
+    } finally {
+      setIsChangingPw(false);
+    }
+  };
 
   const togglePanel = (panel: string) => {
     setCollapsedPanels(prev => ({ ...prev, [panel]: !prev[panel] }));
@@ -2226,6 +2273,52 @@ export const SettingsTab: React.FC = () => {
                     </p>
                   </div>
                 )}
+
+                {/* Change Master Password */}
+                <div className="pt-4 border-t border-white/10">
+                  <h3 className="text-sm font-medium text-text-primary mb-1">Change Master Password</h3>
+                  <p className="text-[10px] text-text-tertiary mb-3">
+                    Re-encrypts all account data and Qube keys with the new password.
+                  </p>
+                  <div className="space-y-2">
+                    <input
+                      type="password"
+                      placeholder="Current password"
+                      value={changePwOld}
+                      onChange={(e) => setChangePwOld(e.target.value)}
+                      className="w-full px-3 py-2 bg-glass-bg border border-glass-border rounded-lg text-text-primary text-sm"
+                    />
+                    <input
+                      type="password"
+                      placeholder="New password (min 8 characters)"
+                      value={changePwNew}
+                      onChange={(e) => setChangePwNew(e.target.value)}
+                      className="w-full px-3 py-2 bg-glass-bg border border-glass-border rounded-lg text-text-primary text-sm"
+                    />
+                    <input
+                      type="password"
+                      placeholder="Confirm new password"
+                      value={changePwConfirm}
+                      onChange={(e) => setChangePwConfirm(e.target.value)}
+                      className="w-full px-3 py-2 bg-glass-bg border border-glass-border rounded-lg text-text-primary text-sm"
+                    />
+                    {changePwError && (
+                      <p className="text-accent-danger text-xs">{changePwError}</p>
+                    )}
+                    {changePwSuccess && (
+                      <p className="text-green-400 text-xs">{changePwSuccess}</p>
+                    )}
+                    <GlassButton
+                      variant="primary"
+                      size="sm"
+                      onClick={handleChangePassword}
+                      disabled={isChangingPw || !changePwOld || !changePwNew || !changePwConfirm}
+                      loading={isChangingPw}
+                    >
+                      {isChangingPw ? 'Changing...' : 'Change Password'}
+                    </GlassButton>
+                  </div>
+                </div>
               </div>
                 </>
               )}
