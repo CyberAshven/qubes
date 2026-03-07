@@ -5633,11 +5633,15 @@ async fn delete_user_account(app_handle: AppHandle, user_id: String) -> Result<s
 #[tauri::command]
 async fn change_master_password(
     app_handle: AppHandle,
+    user_id: String,
     old_password: String,
     new_password: String,
 ) -> Result<serde_json::Value, String> {
-    let args: Vec<String> = vec![];
+    validate_identifier(&user_id, "user_id")?;
+
+    let args = vec![user_id];
     let mut secrets = HashMap::new();
+    secrets.insert("password", old_password.as_str());
     secrets.insert("old_password", old_password.as_str());
     secrets.insert("new_password", new_password.as_str());
 
@@ -6018,16 +6022,20 @@ async fn import_qube(app_handle: AppHandle,
 
 #[tauri::command]
 async fn export_account_backup(app_handle: AppHandle,
+    user_id: String,
     export_path: String,
     export_password: String,
     master_password: String
 ) -> Result<ExportAccountBackupResponse, String> {
 
-    let args = vec![export_path];
+    validate_identifier(&user_id, "user_id")?;
+
+    let args = vec![user_id, export_path];
 
     let mut secrets = HashMap::new();
-    secrets.insert("export_password", export_password.as_str());
+    secrets.insert("password", master_password.as_str());
     secrets.insert("master_password", master_password.as_str());
+    secrets.insert("export_password", export_password.as_str());
 
     let result = sidecar_execute_with_retry("export-account-backup", args, secrets, Some(&app_handle), Some(300)).await?;
 
@@ -6039,16 +6047,20 @@ async fn export_account_backup(app_handle: AppHandle,
 
 #[tauri::command]
 async fn import_account_backup(app_handle: AppHandle,
+    user_id: String,
     import_path: String,
     import_password: String,
     master_password: String
 ) -> Result<ImportAccountBackupResponse, String> {
 
-    let args = vec![import_path];
+    validate_identifier(&user_id, "user_id")?;
+
+    let args = vec![user_id, import_path];
 
     let mut secrets = HashMap::new();
-    secrets.insert("import_password", import_password.as_str());
+    secrets.insert("password", master_password.as_str());
     secrets.insert("master_password", master_password.as_str());
+    secrets.insert("import_password", import_password.as_str());
 
     let result = sidecar_execute_with_retry("import-account-backup", args, secrets, Some(&app_handle), Some(300)).await?;
 

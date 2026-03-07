@@ -351,6 +351,7 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
 
       setIsBackingUp(true);
       const result = await invoke<{ success: boolean; file_path?: string; qube_count?: number; error?: string }>('export_account_backup', {
+        userId,
         exportPath: filePath,
         exportPassword: backupPassword,
         masterPassword: masterPassword,

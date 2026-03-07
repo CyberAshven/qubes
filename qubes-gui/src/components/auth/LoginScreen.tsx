@@ -76,6 +76,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
         user_id?: string;
         error?: string;
       }>('import_account_backup', {
+        userId: '_restore',
         importPath: restoreFilePath,
         importPassword: restorePassword,
         masterPassword: restoreMasterPassword,

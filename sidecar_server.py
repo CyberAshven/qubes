@@ -202,8 +202,8 @@ POSITIONAL_ARG_NAMES = {
     # Export / Import
     "export-qube": ["qube_id", "export_path"],
     "import-qube": ["import_path"],
-    "export-account-backup": ["export_path"],
-    "import-account-backup": ["import_path"],
+    "export-account-backup": ["user_id", "export_path"],
+    "import-account-backup": ["user_id", "import_path"],
     # API key batch
     "save-api-keys": ["user_id"],
     "update-qube-nft": ["user_id", "qube_id"],
@@ -811,8 +811,15 @@ class SidecarServer:
 
     async def _pre_get_difficulty_presets(self, params, secrets):
         try:
-            from config.settings import GlobalSettings
-            return getattr(GlobalSettings, "DIFFICULTY_PRESETS", {})
+            from config.global_settings import GlobalSettings
+            presets_response = {}
+            for difficulty, preset in GlobalSettings.PRESETS.items():
+                presets_response[difficulty] = {
+                    "name": preset["name"],
+                    "description": preset["description"],
+                    "min_interactions": preset["min_interactions"]
+                }
+            return presets_response
         except ImportError:
             return {}
 
@@ -890,7 +897,7 @@ class SidecarServer:
         if not qube:
             return {"success": False, "error": f"Qube {qube_id} not found"}
         # Delete session block files
-        session_dir = qube.storage_path / "blocks" / "session"
+        session_dir = qube.data_dir / "blocks" / "session"
         deleted = 0
         if session_dir.exists():
             for f in session_dir.iterdir():
@@ -983,48 +990,61 @@ class SidecarServer:
     # --- Preferences (orchestrator/UserPreferencesManager) ---
 
     async def _handle_get_block_preferences(self, bridge, params, secrets, request_id):
-        return bridge.orchestrator.get_block_preferences()
+        from dataclasses import asdict
+        return asdict(bridge.orchestrator.get_block_preferences())
 
     async def _handle_update_block_preferences(self, bridge, params, secrets, request_id):
-        # params contains the preference fields directly
-        prefs = {k: v for k, v in params.items() if k not in ("user_id", "_positional")}
-        bridge.orchestrator.update_block_preferences(**prefs)
-        return {"success": True}
+        from dataclasses import asdict
+        # params contains the preference fields directly (as strings from --flag parsing)
+        prefs = {}
+        bool_keys = {"individual_auto_anchor", "group_auto_anchor", "auto_sync_ipfs_on_anchor", "auto_sync_ipfs_periodic"}
+        int_keys = {"individual_anchor_threshold", "group_anchor_threshold", "auto_sync_ipfs_interval"}
+        for k, v in params.items():
+            if k in ("user_id", "_positional"):
+                continue
+            if k in bool_keys and isinstance(v, str):
+                v = v.lower() in ("true", "1", "yes")
+            elif k in int_keys and isinstance(v, str):
+                v = int(v)
+            prefs[k] = v
+        result = bridge.orchestrator.update_block_preferences(**prefs)
+        return asdict(result)
 
     async def _handle_get_relationship_difficulty(self, bridge, params, secrets, request_id):
-        from config.settings import GlobalSettings
-        return {"difficulty": GlobalSettings.get_difficulty() if hasattr(GlobalSettings, "get_difficulty") else "normal"}
+        from config.global_settings import get_global_settings
+        gs = get_global_settings()
+        difficulty = gs.get_difficulty()
+        preset = gs.get_preset(difficulty)
+        return {"difficulty": difficulty, "description": preset["description"]}
 
     async def _handle_set_relationship_difficulty(self, bridge, params, secrets, request_id):
-        from config.settings import GlobalSettings
+        from config.global_settings import get_global_settings
+        gs = get_global_settings()
         difficulty = params["difficulty"]
-        if hasattr(GlobalSettings, "set_difficulty"):
-            GlobalSettings.set_difficulty(difficulty)
-        return {"success": True, "difficulty": difficulty}
+        gs.set_difficulty(difficulty)
+        preset = gs.get_preset(difficulty)
+        return {"difficulty": difficulty, "description": preset["description"]}
 
     async def _handle_get_google_tts_path(self, bridge, params, secrets, request_id):
         try:
-            from config.settings import UserPreferencesManager
-            mgr = UserPreferencesManager(params["user_id"])
+            mgr = bridge.orchestrator.preferences_manager
             return {"path": mgr.get_google_tts_path() or ""}
         except Exception as e:
             return {"path": "", "error": str(e)}
 
     async def _handle_set_google_tts_path(self, bridge, params, secrets, request_id):
-        from config.settings import UserPreferencesManager
-        mgr = UserPreferencesManager(params["user_id"])
+        mgr = bridge.orchestrator.preferences_manager
         path = params.get("path", "")
         mgr.update_google_tts_path(path if path not in ("", "none") else None)
         return {"success": True}
 
     async def _handle_get_decision_config(self, bridge, params, secrets, request_id):
-        from config.settings import UserPreferencesManager
-        mgr = UserPreferencesManager(params["user_id"])
-        return mgr.get_decision_config()
+        from dataclasses import asdict
+        mgr = bridge.orchestrator.preferences_manager
+        return asdict(mgr.get_decision_config())
 
     async def _handle_update_decision_config(self, bridge, params, secrets, request_id):
-        from config.settings import UserPreferencesManager
-        mgr = UserPreferencesManager(params["user_id"])
+        mgr = bridge.orchestrator.preferences_manager
         config_json = params.get("config_json", "{}")
         if isinstance(config_json, str):
             config = json.loads(config_json)
@@ -1034,13 +1054,12 @@ class SidecarServer:
         return {"success": True}
 
     async def _handle_get_memory_config(self, bridge, params, secrets, request_id):
-        from config.settings import UserPreferencesManager
-        mgr = UserPreferencesManager(params["user_id"])
-        return mgr.get_memory_config()
+        from dataclasses import asdict
+        mgr = bridge.orchestrator.preferences_manager
+        return asdict(mgr.get_memory_config())
 
     async def _handle_update_memory_config(self, bridge, params, secrets, request_id):
-        from config.settings import UserPreferencesManager
-        mgr = UserPreferencesManager(params["user_id"])
+        mgr = bridge.orchestrator.preferences_manager
         config_json = params.get("config_json", "{}")
         if isinstance(config_json, str):
             config = json.loads(config_json)
@@ -1050,31 +1069,27 @@ class SidecarServer:
         return {"success": True}
 
     async def _handle_get_onboarding_preferences(self, bridge, params, secrets, request_id):
-        from config.settings import UserPreferencesManager
-        mgr = UserPreferencesManager(params["user_id"])
-        return mgr.get_onboarding_preferences()
+        from dataclasses import asdict
+        mgr = bridge.orchestrator.preferences_manager
+        return asdict(mgr.get_onboarding_preferences())
 
     async def _handle_mark_tutorial_seen(self, bridge, params, secrets, request_id):
-        from config.settings import UserPreferencesManager
-        mgr = UserPreferencesManager(params["user_id"])
+        mgr = bridge.orchestrator.preferences_manager
         mgr.mark_tutorial_seen(params["tab_name"])
         return {"success": True}
 
     async def _handle_reset_tutorial(self, bridge, params, secrets, request_id):
-        from config.settings import UserPreferencesManager
-        mgr = UserPreferencesManager(params["user_id"])
+        mgr = bridge.orchestrator.preferences_manager
         mgr.reset_tutorial(params["tab_name"])
         return {"success": True}
 
     async def _handle_reset_all_tutorials(self, bridge, params, secrets, request_id):
-        from config.settings import UserPreferencesManager
-        mgr = UserPreferencesManager(params["user_id"])
+        mgr = bridge.orchestrator.preferences_manager
         mgr.reset_all_tutorials()
         return {"success": True}
 
     async def _handle_update_show_tutorials(self, bridge, params, secrets, request_id):
-        from config.settings import UserPreferencesManager
-        mgr = UserPreferencesManager(params["user_id"])
+        mgr = bridge.orchestrator.preferences_manager
         show = params.get("show", True)
         if isinstance(show, str):
             show = show.lower() == "true"

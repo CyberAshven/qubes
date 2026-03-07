@@ -245,6 +245,7 @@ export const SettingsTab: React.FC = () => {
     setIsChangingPw(true);
     try {
       const result = await invoke<{ success: boolean; re_encrypted_count?: number; error?: string }>('change_master_password', {
+        userId,
         oldPassword: changePwOld,
         newPassword: changePwNew,
       });

@@ -6413,7 +6413,7 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
 
             account_data["account_files"] = account_files
 
-            # Collect all Qubes
+            # Collect all valid Qubes (must have genesis.json to be a real qube)
             qubes_data = []
             qube_count = 0
 
@@ -6426,6 +6426,10 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
                     if len(parts) != 2:
                         continue
 
+                    # Skip broken/incomplete qube directories (failed creation attempts)
+                    if not (dir_entry / "chain" / "genesis.json").exists():
+                        continue
+
                     qube_name, qube_id = parts
 
                     try:
@@ -6436,7 +6440,7 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
                         qube = self.orchestrator.qubes[qube_id]
 
                         # Anchor any active session first
-                        if qube.current_session and len(qube.current_session.blocks) > 0:
+                        if qube.current_session and len(qube.current_session.session_blocks) > 0:
                             await qube.anchor_session()
 
                         qube_export = {
@@ -6609,8 +6613,11 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
 
             account_data = json.loads(decrypted.decode('utf-8'))
 
-            # Restore account files
-            user_dir = self.orchestrator.data_dir
+            # Use user_id from backup to determine correct data directory
+            backup_user_id = account_data.get("user_id", self.orchestrator.user_id)
+            from utils.paths import get_users_dir
+            user_dir = get_users_dir() / backup_user_id
+            user_dir.mkdir(parents=True, exist_ok=True)
             account_files = account_data.get("account_files", {})
 
             for filename, b64data in account_files.items():
