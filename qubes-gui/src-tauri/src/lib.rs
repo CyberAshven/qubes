@@ -3659,7 +3659,7 @@ async fn update_block_preferences(app_handle: AppHandle,
     }
 
     if let Some(val) = auto_sync_ipfs_on_anchor {
-        args.push("--auto-sync-ipfs".to_string());
+        args.push("--auto-sync-ipfs-on-anchor".to_string());
         args.push(val.to_string());
     }
 

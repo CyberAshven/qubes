@@ -987,7 +987,7 @@ class SidecarServer:
 
     async def _handle_update_block_preferences(self, bridge, params, secrets, request_id):
         # params contains the preference fields directly
-        prefs = {k: v for k, v in params.items() if k not in ("user_id",)}
+        prefs = {k: v for k, v in params.items() if k not in ("user_id", "_positional")}
         bridge.orchestrator.update_block_preferences(**prefs)
         return {"success": True}
 
@@ -1204,7 +1204,7 @@ class SidecarServer:
         if password and params["user_id"] not in self.state.master_keys:
             bridge.orchestrator.set_master_key(password)
             self.state.master_keys[params["user_id"]] = bridge.orchestrator.master_key
-        providers = {k: v for k, v in params.items() if k not in ("user_id",) and v}
+        providers = {k: v for k, v in params.items() if k not in ("user_id", "_positional") and v}
         for provider, key in providers.items():
             bridge.orchestrator.update_api_key(provider, key)
         return {"success": True, "saved": list(providers.keys())}
