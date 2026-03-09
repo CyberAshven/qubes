@@ -120,7 +120,7 @@ POSITIONAL_ARG_NAMES = {
     # Qube management
     "get-qube-blocks": ["user_id", "qube_id", "limit", "offset"],
     "recall-last-context": ["user_id", "qube_id"],
-    "delete-qube": ["user_id", "qube_id"],
+    "delete-qube": ["user_id", "qube_id", "--sweep-address"],
     "reset-qube": ["user_id", "qube_id"],
     "save-image": ["user_id", "qube_id", "image_url"],
     "upload-avatar-to-ipfs": ["user_id", "qube_id"],

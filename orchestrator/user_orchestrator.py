@@ -15,7 +15,7 @@ from dataclasses import dataclass
 
 from core.qube import Qube
 from core.multi_qube_conversation import MultiQubeConversation
-from crypto.keys import generate_key_pair, derive_qube_id, derive_commitment, serialize_public_key, serialize_private_key, deserialize_private_key, deserialize_public_key
+from crypto.keys import generate_key_pair, derive_qube_id, derive_commitment, serialize_public_key, serialize_private_key, deserialize_private_key, deserialize_public_key, get_raw_private_key_bytes
 from blockchain.manager import BlockchainManager
 from config import SecureSettingsManager, APIKeys
 from config.user_preferences import UserPreferencesManager, UserPreferences, BlockPreferences
@@ -226,16 +226,20 @@ class UserOrchestrator:
             # Build wallet info if owner_pubkey provided
             if config.get("owner_pubkey"):
                 qube_pubkey_hex = serialize_public_key(public_key)
-                from crypto.bch_script import create_wallet_address
-                wallet_data = create_wallet_address(
-                    owner_pubkey_hex=config["owner_pubkey"],
-                    qube_pubkey_hex=qube_pubkey_hex,
-                    network="mainnet"
-                )
+                from blockchain.wallet_contract_client import WalletContractClient
+                wcc = WalletContractClient()
+                try:
+                    wallet_data = await asyncio.wait_for(
+                        wcc.derive_address(owner_pubkey=config["owner_pubkey"], qube_pubkey=qube_pubkey_hex),
+                        timeout=30
+                    )
+                except asyncio.TimeoutError:
+                    raise RuntimeError("Wallet address derivation timed out (30s). Check that tsx is installed in covenant/.")
                 genesis_block["wallet"] = {
                     "owner_pubkey": config["owner_pubkey"],
                     "qube_pubkey": qube_pubkey_hex,
-                    "p2sh_address": wallet_data["p2sh_address"],
+                    "p2sh_address": wallet_data["contract_address"],
+                    "contract_type": "cashscript",
                 }
 
             # Optionally encrypt genesis prompt
@@ -364,6 +368,10 @@ class UserOrchestrator:
             # Determine voice model
             voice_model = config.get("voice_model") or self._default_voice_for_model(config["ai_model"])
 
+            # Change goes back to the user's wallet address (same as user_address).
+            # The wallet will receive change at the same address it funded from.
+            change_address = user_address
+
             # Build unsigned WC transaction via blockchain manager
             # We create a minimal object with public_key and qube_id for the minter
             class TempQubeRef:
@@ -376,7 +384,8 @@ class UserOrchestrator:
             wc_result = await blockchain_manager.prepare_mint_transaction(
                 qube=temp_ref,
                 recipient_address=config["wallet_address"],
-                user_address=user_address
+                user_address=user_address,
+                change_address=change_address
             )
 
             # Generate a unique pending ID
@@ -484,19 +493,23 @@ class UserOrchestrator:
                 "bcmr_uri": ""  # Will be updated after IPFS upload
             }
 
-            # Build wallet info (P2SH multisig address from owner + qube keys)
+            # Build wallet info (CashScript contract address from owner + qube keys)
             owner_pubkey = config["owner_pubkey"]
             qube_pubkey_hex = serialize_public_key(pending.public_key)
-            from crypto.bch_script import create_wallet_address
-            wallet_data = create_wallet_address(
-                owner_pubkey_hex=owner_pubkey,
-                qube_pubkey_hex=qube_pubkey_hex,
-                network="mainnet"
-            )
+            from blockchain.wallet_contract_client import WalletContractClient
+            wcc = WalletContractClient()
+            try:
+                wallet_data = await asyncio.wait_for(
+                    wcc.derive_address(owner_pubkey=owner_pubkey, qube_pubkey=qube_pubkey_hex),
+                    timeout=30
+                )
+            except asyncio.TimeoutError:
+                raise RuntimeError("Wallet address derivation timed out (30s). Check that tsx is installed in covenant/.")
             genesis_block["wallet"] = {
                 "owner_pubkey": owner_pubkey,
                 "qube_pubkey": qube_pubkey_hex,
-                "p2sh_address": wallet_data["p2sh_address"],
+                "p2sh_address": wallet_data["contract_address"],
+                "contract_type": "cashscript",
             }
 
             # Optionally encrypt genesis prompt
@@ -543,11 +556,25 @@ class UserOrchestrator:
             await self._save_qube(qube, pending.private_key)
             self._initialize_qube_skills(qube)
 
+            # Initialize AI so the qube is immediately usable for chat
+            # (load_qube is skipped since the qube is already in self.qubes)
+            api_keys = self._get_api_keys()
+            if api_keys:
+                qube.init_ai(api_keys)
+                qube.init_audio()
+                logger.info("ai_initialized_after_mint", qube_id=pending.qube_id[:16] + "...")
+
             # Fire-and-forget: BCMR, IPFS, registry, P2P in background.
             # The Qube is already saved — these are optional enhancements.
             # IMPORTANT: All blocking I/O (subprocess, requests) must use
             # asyncio.to_thread() to avoid freezing the sidecar event loop.
             async def _background_finalize():
+                # Verify mint tx exists (best-effort, non-blocking)
+                try:
+                    await self._verify_mint_txid(mint_txid)
+                except Exception as e:
+                    logger.warning("background_mint_verification_failed", error=str(e))
+
                 try:
                     blockchain_manager = BlockchainManager(network="mainnet")
                     finalize_result = await blockchain_manager.finalize_qube_nft(
@@ -569,14 +596,8 @@ class UserOrchestrator:
                     from blockchain.bcmr_registry import BCMRRegistryManager
                     registry_mgr = BCMRRegistryManager(category_id=OFFICIAL_QUBES_CATEGORY)
                     registry_mgr.add_qube_to_registry(qube)
-                    # sync_to_server uses blocking subprocess.run (SCP) —
-                    # run in thread to avoid blocking the event loop
-                    await asyncio.to_thread(
-                        registry_mgr.sync_to_server,
-                        server_host="167.71.100.232",
-                        server_user="bit_faced",
-                        server_path="/var/www/qube.cash/.well-known/bitcoin-cash-metadata-registry.json"
-                    )
+                    # Sync to server via HTTPS API (works for all users, no SSH needed)
+                    await asyncio.to_thread(registry_mgr.add_qube_to_server, qube)
                     await registry_mgr.upload_to_ipfs()
                     # trigger_paytaca_reindex uses blocking requests.post —
                     # run in thread to avoid blocking the event loop
@@ -698,6 +719,43 @@ class UserOrchestrator:
                     )
             else:
                 logger.debug("skipping_nft_validation_for_finalization", qube_id=qube_id[:16] + "...")
+
+            # Migrate legacy P2SH wallets to CashScript contracts
+            wallet_info = None
+            if hasattr(qube.genesis_block, 'wallet') and qube.genesis_block.wallet:
+                wallet_info = qube.genesis_block.wallet
+                if isinstance(wallet_info, dict) and wallet_info.get("contract_type") != "cashscript":
+                    owner_pubkey = wallet_info.get("owner_pubkey")
+                    qube_pubkey = wallet_info.get("qube_pubkey")
+                    if owner_pubkey and qube_pubkey:
+                        try:
+                            import asyncio
+                            from blockchain.wallet_contract_client import WalletContractClient
+                            wcc = WalletContractClient()
+                            wallet_data = await asyncio.wait_for(
+                                wcc.derive_address(owner_pubkey, qube_pubkey),
+                                timeout=30
+                            )
+                            old_address = wallet_info.get("p2sh_address", "?")
+                            wallet_info["p2sh_address"] = wallet_data["contract_address"]
+                            wallet_info["contract_type"] = "cashscript"
+                            qube.genesis_block.wallet = wallet_info
+                            # Clear stale balance cache from old address
+                            financial = qube.chain_state.state.get("financial", {})
+                            if "wallet" in financial:
+                                financial["wallet"] = {}
+                                qube.chain_state.state["financial"] = financial
+                                qube.chain_state._save()
+                            await self._save_qube(qube, private_key)
+                            logger.info(
+                                "wallet_migrated_to_cashscript",
+                                qube_id=qube_id[:16] + "...",
+                                old_address=old_address[:30] + "...",
+                                new_address=wallet_data["contract_address"][:30] + "..."
+                            )
+                        except Exception as e:
+                            logger.warning("wallet_migration_failed", qube_id=qube_id[:16] + "...", error=str(e))
+                            # Non-fatal — qube still loads with old address
 
             # Initialize AI with API keys from secure settings
             api_keys = self._get_api_keys()
@@ -1002,29 +1060,35 @@ class UserOrchestrator:
                             "wallet_address": genesis.get("wallet", {}).get("p2sh_address"),
                             "wallet_owner_pubkey": genesis.get("wallet", {}).get("owner_pubkey"),
                             "wallet_qube_pubkey": genesis.get("wallet", {}).get("qube_pubkey"),
-                            # Derive owner's 'q' address from pubkey
-                            "wallet_owner_q_address": self._derive_q_address(genesis.get("wallet", {}).get("owner_pubkey")),
                         })
 
         logger.debug("qubes_listed", count=len(qube_list))
 
         return qube_list
 
-    async def delete_qube(self, qube_id: str) -> bool:
+    async def delete_qube(self, qube_id: str, password: str = None, sweep_address: str = None) -> int:
         """
-        Delete a Qube and all its data
+        Delete a Qube and all its data, optionally sweeping wallet funds first.
 
         Args:
             qube_id: Qube ID to delete
+            password: Master password (needed to decrypt private key for sweep)
+            sweep_address: BCH address to send remaining funds to
 
         Returns:
-            True if successfully deleted
+            Amount of sats swept (0 if no sweep)
 
         Raises:
             QubesError: If deletion fails
         """
         try:
             logger.info("deleting_qube", qube_id=qube_id[:16] + "...")
+
+            swept_sats = 0
+
+            # Sweep wallet funds before deleting keys
+            if sweep_address and password:
+                swept_sats = await self._sweep_before_delete(qube_id, password, sweep_address)
 
             # Remove from memory if loaded
             if qube_id in self.qubes:
@@ -1054,6 +1118,19 @@ class UserOrchestrator:
                     context={"qube_id": qube_id}
                 )
 
+            # Read the qube's public key before deleting (needed for registry removal)
+            qube_public_key = None
+            try:
+                meta_path = qube_dir / "chain" / "qube_metadata.json"
+                if not meta_path.exists():
+                    meta_path = qube_dir / "qube.json"
+                if meta_path.exists():
+                    with open(meta_path, "r", encoding="utf-8") as f:
+                        meta = json.load(f)
+                    qube_public_key = meta.get("public_key")
+            except Exception:
+                pass
+
             # Delete the entire qube directory
             import shutil
             shutil.rmtree(qube_dir)
@@ -1069,25 +1146,30 @@ class UserOrchestrator:
             except Exception as e:
                 logger.debug(f"Could not delete debug prompt cache: {e}")
 
-            # Remove from BCMR registry + sync
+            # Remove from BCMR registry (local + server)
             try:
                 from core.official_category import OFFICIAL_QUBES_CATEGORY
                 from blockchain.bcmr_registry import BCMRRegistryManager
 
                 registry_mgr = BCMRRegistryManager(category_id=OFFICIAL_QUBES_CATEGORY)
-                if registry_mgr.remove_qube_from_registry(qube_id):
-                    registry_mgr.sync_to_server(
-                        server_host="167.71.100.232",
-                        server_user="bit_faced",
-                        server_path="/var/www/qube.cash/.well-known/bitcoin-cash-metadata-registry.json"
+                registry_mgr.remove_qube_from_registry(qube_id)
+
+                # Derive commitment and remove from server via HTTPS API
+                if qube_public_key:
+                    from crypto.keys import derive_commitment
+                    commitment = derive_commitment(qube_public_key)
+                    await asyncio.to_thread(
+                        registry_mgr.remove_qube_from_server, qube_id, commitment
                     )
                     logger.info("qube_removed_from_bcmr_registry", qube_id=qube_id[:16] + "...")
+                else:
+                    logger.warning("cannot_remove_from_server_registry_no_pubkey", qube_id=qube_id[:16] + "...")
             except Exception as e:
                 logger.warning("bcmr_registry_removal_failed", error=str(e))
 
-            logger.info("qube_deleted_successfully", qube_id=qube_id[:16] + "...")
+            logger.info("qube_deleted_successfully", qube_id=qube_id[:16] + "...", swept_sats=swept_sats)
 
-            return True
+            return swept_sats
 
         except Exception as e:
             logger.error("qube_deletion_failed", qube_id=qube_id, error=str(e), exc_info=True)
@@ -1096,6 +1178,115 @@ class UserOrchestrator:
                 context={"qube_id": qube_id},
                 cause=e
             )
+
+    async def _sweep_before_delete(self, qube_id: str, password: str, sweep_address: str) -> int:
+        """
+        Sweep all BCH funds from a Qube's P2SH wallet before deletion.
+
+        Uses the owner-only spending path (IF branch) so only the owner's
+        private key is needed. The stored owner WIF is retrieved from the
+        wallet security config.
+
+        Args:
+            qube_id: Qube ID to sweep
+            password: Master password (master key must already be set)
+            sweep_address: BCH address to send funds to
+
+        Returns:
+            Total sats swept (0 if no funds or no stored owner key)
+        """
+        from crypto.wallet import create_wallet, TxOutput, UnsignedTransaction
+        from crypto.bch_script import estimate_tx_size
+
+        try:
+            # Load qube (master key already set by caller)
+            qube = await self.load_qube(qube_id)
+
+            # Get wallet info from genesis block
+            genesis = qube.genesis_block
+            if hasattr(genesis, 'content') and isinstance(getattr(genesis, 'content', None), dict):
+                wallet_info = genesis.content.get("wallet")
+            elif hasattr(genesis, 'wallet'):
+                wallet_info = genesis.wallet
+                if hasattr(wallet_info, '__dict__') and not isinstance(wallet_info, dict):
+                    wallet_info = vars(wallet_info)
+            else:
+                wallet_info = None
+
+            if not wallet_info:
+                logger.info("sweep_skip_no_wallet", qube_id=qube_id[:16] + "...")
+                return 0
+
+            owner_pubkey = wallet_info.get("owner_pubkey")
+            qube_pubkey = wallet_info.get("qube_pubkey")
+            contract_type = wallet_info.get("contract_type", "legacy_p2sh")
+            if not owner_pubkey:
+                logger.info("sweep_skip_no_owner_pubkey", qube_id=qube_id[:16] + "...")
+                return 0
+
+            # Get stored owner WIF — required to sign the sweep transaction
+            owner_wif = self.get_owner_wif_for_qube(qube_id)
+            if not owner_wif:
+                raise QubesError(
+                    "Cannot sweep wallet funds: no owner key stored for this Qube. "
+                    "Save your owner key in Wallet Security settings first, "
+                    "or remove the sweep address to delete without sweeping.",
+                    context={"qube_id": qube_id}
+                )
+
+            # Convert WIF to raw 32-byte private key
+            import base58
+            decoded = base58.b58decode_check(owner_wif)
+            if len(decoded) == 34:
+                owner_privkey = decoded[1:33]
+            elif len(decoded) == 33:
+                owner_privkey = decoded[1:]
+            else:
+                raise QubesError(
+                    "Cannot sweep wallet funds: stored owner key is invalid.",
+                    context={"qube_id": qube_id}
+                )
+
+            # Create wallet instance (detects contract type)
+            qube_privkey_bytes = get_raw_private_key_bytes(qube.private_key)
+            wallet = create_wallet(
+                qube_private_key=qube_privkey_bytes,
+                owner_pubkey_hex=owner_pubkey,
+                network="mainnet",
+                qube_pubkey_hex=qube_pubkey,
+                contract_type=contract_type,
+                contract_address=wallet_info.get("p2sh_address")
+            )
+
+            # Check balance
+            utxos = await wallet.get_utxos()
+            if not utxos:
+                logger.info("sweep_no_funds", qube_id=qube_id[:16] + "...")
+                return 0
+
+            total_balance = sum(u.value for u in utxos)
+            logger.info(
+                "sweep_starting",
+                qube_id=qube_id[:16] + "...",
+                utxo_count=len(utxos),
+                total_sats=total_balance
+            )
+
+            # Use owner_withdraw_all for both wallet types
+            txid = await wallet.owner_withdraw_all(sweep_address, owner_privkey)
+            swept_total = total_balance
+            logger.info(
+                "sweep_complete",
+                txid=txid,
+                qube_id=qube_id[:16] + "...",
+                swept_sats=swept_total
+            )
+            return swept_total
+
+        except Exception as e:
+            logger.error("sweep_before_delete_failed", qube_id=qube_id[:16] + "...", error=str(e))
+            # Don't block deletion if sweep fails — just log and return 0
+            return 0
 
     async def reset_qube(self, qube_id: str) -> bool:
         """
@@ -1505,6 +1696,86 @@ class UserOrchestrator:
         result = await from_qube.send_message(to_qube_id, message)
 
         return result
+
+    async def _verify_mint_txid(self, mint_txid: str) -> None:
+        """
+        Verify a mint transaction exists in the mempool or on-chain.
+
+        Races multiple Fulcrum servers concurrently with a short overall timeout.
+        Since the frontend already broadcast the tx, this is just a safety check —
+        failure is logged but does not block finalization.
+        """
+        import asyncio
+        import json
+
+        if not mint_txid or len(mint_txid) != 64:
+            raise QubesError(f"Invalid mint txid format: {mint_txid}")
+
+        servers = [
+            ("bch.imaginary.cash", 50002),
+            ("electroncash.de", 60002),
+            ("bch.loping.net", 50002),
+        ]
+
+        async def _check_server(host: str, port: int) -> str:
+            reader, writer = await asyncio.open_connection(host, port, ssl=True)
+            try:
+                request = json.dumps({
+                    "jsonrpc": "2.0",
+                    "method": "blockchain.transaction.get",
+                    "params": [mint_txid, True],
+                    "id": 1
+                }) + "\n"
+                writer.write(request.encode())
+                await writer.drain()
+                response = await reader.readline()
+                data = json.loads(response.decode())
+                if "error" in data and data["error"]:
+                    raise QubesError(
+                        f"Mint transaction {mint_txid[:16]}... not found on network. "
+                        f"The transaction may not have been broadcast successfully."
+                    )
+                return host
+            finally:
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except Exception:
+                    pass
+
+        # Race all servers concurrently — first success wins
+        tasks = [_check_server(host, port) for host, port in servers]
+        try:
+            done, pending = await asyncio.wait(
+                [asyncio.ensure_future(t) for t in tasks],
+                timeout=8,
+                return_when=asyncio.FIRST_COMPLETED
+            )
+            # Cancel remaining tasks
+            for t in pending:
+                t.cancel()
+
+            # Check if any succeeded
+            for t in done:
+                if not t.exception():
+                    logger.info("mint_txid_verified", txid=mint_txid[:16] + "...", server=t.result())
+                    return
+                # If it was a QubesError (tx not found), re-raise it
+                exc = t.exception()
+                if isinstance(exc, QubesError):
+                    raise exc
+
+        except QubesError:
+            raise
+        except Exception:
+            pass
+
+        # All servers failed or timed out — don't block finalization
+        logger.warning(
+            "mint_txid_verification_skipped",
+            txid=mint_txid[:16] + "...",
+            reason="all servers unreachable or timed out"
+        )
 
     async def _handle_avatar_creation(
         self,
@@ -2684,11 +2955,21 @@ class UserOrchestrator:
             except Exception as e:
                 logger.warning("failed_to_read_nft_metadata", error=str(e))
 
-        if not nft_address:
-            return None
-
         config = self.secure_settings.load_wallet_security()
-        return config.get_key_for_address(nft_address)
+
+        # Try the actual NFT address first
+        if nft_address:
+            wif = config.get_key_for_address(nft_address)
+            if wif:
+                return wif
+
+        # Fallback: check for key stored under empty string
+        # (happens when recipient_address is missing, e.g. recovered qubes)
+        wif = config.get_key_for_address('')
+        if wif:
+            return wif
+
+        return None
 
     def update_whitelist(self, qube_id: str, whitelist: List[str]) -> bool:
         """

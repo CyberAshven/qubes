@@ -82,6 +82,7 @@ let args: {
   recipient_address: string;
   wallet_wif?: string;
   user_address?: string;
+  change_address?: string;
   platform_public_key: string;
   mode?: 'walletconnect';
 };
@@ -244,7 +245,11 @@ try {
     }
   });
 
-  // Output 2: change back to user (if any)
+  // Output 2: change (if any)
+  // Send change to change_address if provided, otherwise back to userAddress.
+  // change_address should differ from recipient_address to avoid inflating the NFT balance.
+  const changeRecipient = args.change_address || userAddress;
+
   // Fee estimation: P2SH32 covenant input is large (~300 bytes for redeem script),
   // each P2PKH input ~148 bytes, token outputs ~90 bytes, change ~34 bytes.
   // Use 2 sat/byte for safety margin above the 1 sat/byte minimum relay fee.
@@ -264,7 +269,7 @@ try {
 
   if (change >= 546n) {
     txBuilder.addOutput({
-      to: userAddress,
+      to: changeRecipient,
       amount: change
     });
   }

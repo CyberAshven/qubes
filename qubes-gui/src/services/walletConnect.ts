@@ -1,8 +1,11 @@
 /**
- * WalletConnect v2 Service for BCH
+ * WalletConnect v2 Service for BCH — Multi-Session
  *
  * Implements the wc2-bch-bcr spec (mainnet-pat) for connecting to
  * BCH wallets (Cashonize, Paytaca, Zapit, Electron Cash).
+ *
+ * Supports multiple simultaneous wallet sessions. Each session is
+ * identified by its topic and tracked in a Map.
  *
  * The app never sees private keys. The wallet handles all signing.
  *
@@ -41,20 +44,20 @@ const BCH_NAMESPACE = {
   },
 };
 
-// ── Singleton State ────────────────────────────────────────────────
+// ── Multi-Session State ───────────────────────────────────────────
 
 let signClient: any | null = null;
-let currentSession: WcSession | null = null;
+const sessions: Map<string, WcSession> = new Map();
 
-// Event listeners
-type Listener = (session: WcSession | null) => void;
+// Event listeners — notified with the full sessions array on any change
+type Listener = (sessions: WcSession[]) => void;
 const listeners: Set<Listener> = new Set();
 
 function notifyListeners() {
-  listeners.forEach((fn) => fn(currentSession));
+  listeners.forEach((fn) => fn(Array.from(sessions.values())));
 }
 
-export function onSessionChange(fn: Listener): () => void {
+export function onSessionsChange(fn: Listener): () => void {
   listeners.add(fn);
   return () => listeners.delete(fn);
 }
@@ -82,23 +85,20 @@ async function getClient() {
     },
   });
 
-  // Restore existing session if any — clean up stale sessions
-  const sessions = signClient.session.getAll();
-  const bchSession = sessions.find((s: any) =>
+  // Restore ALL existing BCH sessions — clean up stale ones
+  const allSessions = signClient.session.getAll();
+  const bchSessions = allSessions.filter((s: any) =>
     Object.keys(s.namespaces).includes('bch')
   );
 
-  if (bchSession) {
+  for (const bchSession of bchSessions) {
     try {
-      // Ping the session to verify it's still alive on the relay
       await signClient.ping({ topic: bchSession.topic });
       const address = extractAddress(bchSession);
       if (address) {
-        currentSession = { topic: bchSession.topic, address };
-        notifyListeners();
+        sessions.set(bchSession.topic, { topic: bchSession.topic, address });
       }
     } catch {
-      // Session is stale (deleted on relay or wallet side) — clean up locally
       console.warn('[WC] Stale session detected, cleaning up:', bchSession.topic);
       try {
         await signClient.disconnect({
@@ -106,29 +106,38 @@ async function getClient() {
           reason: { code: 6000, message: 'Stale session cleanup' },
         });
       } catch {
-        // Force-remove from local storage if disconnect also fails
         signClient.session.delete(bchSession.topic, { code: 6000, message: 'Stale session cleanup' });
       }
     }
   }
 
-  // Handle session delete (wallet disconnected)
-  signClient.on('session_delete', () => {
-    currentSession = null;
+  if (sessions.size > 0) {
     notifyListeners();
+  }
+
+  // Handle session delete (wallet disconnected) — match by topic
+  signClient.on('session_delete', (event: any) => {
+    const topic = event.topic;
+    if (topic && sessions.has(topic)) {
+      sessions.delete(topic);
+      notifyListeners();
+    }
   });
 
-  // Handle addressesChanged events — update current session address in place
+  // Handle addressesChanged events — update matching session
   signClient.on('session_event', (event: any) => {
     if (event.params?.event?.name === 'addressesChanged') {
-      // Re-fetch addresses when wallet notifies of change
+      const topic = event.topic;
+      const session = sessions.get(topic);
+      if (!session) return;
+
       const newAddresses = event.params.event.data;
       if (Array.isArray(newAddresses) && newAddresses.length > 0) {
         const addr = typeof newAddresses[0] === 'string'
           ? newAddresses[0]
           : newAddresses[0]?.address;
-        if (addr && currentSession) {
-          currentSession.address = addr;
+        if (addr) {
+          session.address = addr;
           notifyListeners();
         }
       }
@@ -154,11 +163,31 @@ function extractAddress(session: any): string | null {
   return null;
 }
 
+function getSessionOrThrow(topic?: string): WcSession {
+  if (topic) {
+    const session = sessions.get(topic);
+    if (!session) throw new Error(`No session with topic ${topic}`);
+    return session;
+  }
+  // Default to first session
+  const first = sessions.values().next().value;
+  if (!first) throw new Error('No wallet connected');
+  return first;
+}
+
 // ── Public API ─────────────────────────────────────────────────────
 
 /**
+ * Eagerly initialize the WC SignClient and restore any existing sessions.
+ * Called on app mount so the connection state is available immediately.
+ */
+export async function initClient(): Promise<void> {
+  await getClient();
+}
+
+/**
  * Connect to a BCH wallet via WalletConnect.
- * Calls onUri with the WC URI so the caller can display it (QR code, copy button, etc.).
+ * Adds the new session to the sessions map (does NOT replace existing sessions).
  */
 export async function connect(onUri?: (uri: string) => void): Promise<WcSession> {
   const client = await getClient();
@@ -169,7 +198,6 @@ export async function connect(onUri?: (uri: string) => void): Promise<WcSession>
 
   if (!uri) throw new Error('Failed to generate WalletConnect URI');
 
-  // Pass URI to caller for display (QR code + copy button)
   onUri?.(uri);
 
   const session = await approval();
@@ -179,51 +207,74 @@ export async function connect(onUri?: (uri: string) => void): Promise<WcSession>
     throw new Error('Wallet did not provide a BCH address');
   }
 
-  currentSession = { topic: session.topic, address };
+  const wcSession: WcSession = { topic: session.topic, address };
+  sessions.set(session.topic, wcSession);
   notifyListeners();
-  return currentSession;
+  return wcSession;
 }
 
 /**
- * Disconnect the current wallet session.
+ * Disconnect a specific session by topic, or all sessions if no topic given.
  */
-export async function disconnect(): Promise<void> {
-  if (!currentSession || !signClient) return;
+export async function disconnectSession(topic: string): Promise<void> {
+  if (!signClient) return;
+
+  const session = sessions.get(topic);
+  if (!session) return;
 
   try {
     await signClient.disconnect({
-      topic: currentSession.topic,
+      topic,
       reason: { code: 6000, message: 'User disconnected' },
     });
   } catch {
     // Ignore disconnect errors
   }
 
-  currentSession = null;
+  sessions.delete(topic);
   notifyListeners();
 }
 
 /**
- * Get the current session (if connected).
+ * Disconnect all sessions.
  */
-export function getSession(): WcSession | null {
-  return currentSession;
+export async function disconnectAll(): Promise<void> {
+  const topics = Array.from(sessions.keys());
+  for (const topic of topics) {
+    await disconnectSession(topic);
+  }
 }
 
 /**
- * Request addresses (and possibly public keys) from the connected wallet.
- * Uses bch_getAddresses from the wc2-bch-bcr spec.
- *
- * @returns Array of address info objects. May include publicKey if wallet supports it.
+ * Get all active sessions.
  */
-export async function getAddresses(): Promise<Array<{ address: string; publicKey?: string }>> {
-  if (!currentSession || !signClient) {
-    throw new Error('No wallet connected');
-  }
+export function getAllSessions(): WcSession[] {
+  return Array.from(sessions.values());
+}
+
+/**
+ * Get a session by its topic.
+ */
+export function getSessionByTopic(topic: string): WcSession | null {
+  return sessions.get(topic) || null;
+}
+
+/**
+ * Get the first session (backward compat).
+ */
+export function getSession(): WcSession | null {
+  return sessions.values().next().value || null;
+}
+
+/**
+ * Request addresses (and possibly public keys) from a specific session.
+ */
+export async function getAddresses(topic?: string): Promise<Array<{ address: string; publicKey?: string }>> {
+  const session = getSessionOrThrow(topic);
 
   try {
     const result = await signClient.request({
-      topic: currentSession.topic,
+      topic: session.topic,
       chainId: BCH_CHAIN_ID,
       request: {
         method: 'bch_getAddresses',
@@ -231,12 +282,10 @@ export async function getAddresses(): Promise<Array<{ address: string; publicKey
       },
     });
 
-    // Response format varies by wallet. Normalize to array.
     if (Array.isArray(result)) return result;
     if (result?.addresses && Array.isArray(result.addresses)) return result.addresses;
     return [];
   } catch {
-    // Wallet may not support bch_getAddresses — return empty
     return [];
   }
 }
@@ -255,7 +304,6 @@ function broadcastViaElectrum(txHex: string, server: string): Promise<string> {
     }, 15000);
 
     ws.onopen = () => {
-      // Fulcrum requires server.version negotiation first
       ws.send(JSON.stringify({
         jsonrpc: '2.0',
         method: 'server.version',
@@ -268,7 +316,6 @@ function broadcastViaElectrum(txHex: string, server: string): Promise<string> {
       try {
         const data = JSON.parse(event.data);
         if (data.id === 1) {
-          // Version negotiation done, now broadcast
           ws.send(JSON.stringify({
             jsonrpc: '2.0',
             method: 'blockchain.transaction.broadcast',
@@ -276,7 +323,6 @@ function broadcastViaElectrum(txHex: string, server: string): Promise<string> {
             id: ++reqId,
           }));
         } else if (data.id === 2) {
-          // Broadcast response
           clearTimeout(timeout);
           ws.close();
           if (data.error) {
@@ -284,7 +330,6 @@ function broadcastViaElectrum(txHex: string, server: string): Promise<string> {
           } else if (typeof data.result === 'string' && data.result.length === 64) {
             resolve(data.result);
           } else {
-            // Fulcrum returns error string directly in result field on failure
             reject(new Error(String(data.result)));
           }
         }
@@ -304,32 +349,29 @@ function broadcastViaElectrum(txHex: string, server: string): Promise<string> {
 
 /**
  * Broadcast a raw transaction to the BCH network.
- * Tries Fulcrum WebSocket servers, falls back to REST API.
- * Returns the txid on success, throws on failure with the exact network error.
  */
 async function broadcastRawTransaction(txHex: string): Promise<string> {
   const electrumServers = [
     'wss://bch.imaginary.cash:50004',
     'wss://electroncash.de:60004',
+    'wss://bch.loping.net:50004',
+    'wss://fulcrum.fountainhead.cash:50004',
   ];
 
   let lastError: Error | null = null;
 
-  // Try Electrum WebSocket servers
   for (const server of electrumServers) {
     try {
       return await broadcastViaElectrum(txHex, server);
     } catch (e: any) {
       console.error(`[WC] Broadcast via ${server} failed:`, e.message);
       lastError = e;
-      // If we got a script validation error, don't retry — the tx is invalid
       if (e.message?.includes('mandatory-script') || e.message?.includes('scriptpubkey')) {
         throw e;
       }
     }
   }
 
-  // REST API fallback
   try {
     console.log('[WC] Trying REST API fallback...');
     const resp = await fetch('https://api.blockchair.com/bitcoin-cash/push/transaction', {
@@ -344,7 +386,6 @@ async function broadcastRawTransaction(txHex: string): Promise<string> {
     return data.data.transaction_hash;
   } catch (e: any) {
     console.error('[WC] REST broadcast failed:', e.message);
-    // Return the more specific Electrum error if we have one
     if (lastError && !lastError.message?.includes('Timeout') && !lastError.message?.includes('WebSocket error')) {
       throw lastError;
     }
@@ -354,7 +395,6 @@ async function broadcastRawTransaction(txHex: string): Promise<string> {
 
 /**
  * Parse libauth's extended JSON format.
- * Converts "<Uint8Array: 0x...>" strings to Uint8Array and "<bigint: ...n>" to BigInt.
  */
 function parseExtendedJson(jsonString: string): any {
   const uint8ArrayRegex = /^<Uint8Array: 0x(?<hex>[0-9a-f]*)>$/u;
@@ -382,7 +422,6 @@ function parseExtendedJson(jsonString: string): any {
 
 /**
  * Validate the signed transaction against the original WC transaction.
- * Returns a diagnostic report showing any differences.
  */
 async function validateSignedTransaction(
   signedTxHex: string,
@@ -400,11 +439,9 @@ async function validateSignedTransaction(
     const lines: string[] = [];
     lines.push(`Signed tx: ${signedTxHex.length / 2} bytes, ${decoded.inputs.length} inputs, ${decoded.outputs.length} outputs`);
 
-    // Compare with original WC transaction outputs
     const origTx = originalWcTransaction.transaction;
     if (!origTx) {
       lines.push('WARNING: No original transaction for comparison');
-      // Still report signed tx structure
       for (let i = 0; i < decoded.outputs.length; i++) {
         const out = decoded.outputs[i];
         lines.push(`Out${i}: lock=${binToHex(out.lockingBytecode).substring(0, 40)}... val=${out.valueSatoshis}`);
@@ -415,7 +452,6 @@ async function validateSignedTransaction(
       return { valid: true, report: lines.join('\n') };
     }
 
-    // Compare outputs
     const origOutputs = origTx.outputs;
     if (decoded.outputs.length !== origOutputs.length) {
       lines.push(`OUTPUT COUNT MISMATCH: signed=${decoded.outputs.length} orig=${origOutputs.length}`);
@@ -441,7 +477,6 @@ async function validateSignedTransaction(
         lines.push(`Out${i} VALUE MISMATCH: signed=${signed.valueSatoshis} orig=${orig.valueSatoshis}`);
       }
 
-      // Compare token data
       const sToken = signed.token;
       const oToken = orig.token;
       if (sToken && oToken) {
@@ -473,7 +508,6 @@ async function validateSignedTransaction(
       }
     }
 
-    // Compare covenant input (input 0) unlocking bytecode
     if (decoded.inputs.length > 0 && origTx.inputs?.length > 0) {
       const signedUnlock = binToHex(decoded.inputs[0].unlockingBytecode);
       const origInput = origTx.inputs[0];
@@ -490,7 +524,6 @@ async function validateSignedTransaction(
       }
     }
 
-    // Report P2PKH inputs
     for (let i = 1; i < decoded.inputs.length; i++) {
       const unlock = decoded.inputs[i].unlockingBytecode;
       lines.push(`In${i} (P2PKH): ${unlock.length} bytes ${unlock.length > 0 ? 'signed' : 'EMPTY!'}`);
@@ -504,25 +537,19 @@ async function validateSignedTransaction(
 }
 
 /**
- * Send a transaction to the connected wallet for signing, then broadcast.
+ * Send a transaction to a specific wallet session for signing, then broadcast.
  *
- * The WC transaction uses broadcast: false so we get the signed tx back.
- * We then broadcast ourselves for better error reporting and diagnostics.
- *
- * @param wcTransaction - The stringified WC transaction object from mint-cli.ts
- * @returns The signed transaction hash (txid) and hex
+ * @param wcTransaction - The stringified WC transaction object
+ * @param topic - Optional session topic. Defaults to first session.
  */
 export async function signTransaction(
-  wcTransaction: string
+  wcTransaction: string,
+  topic?: string
 ): Promise<WcSignResult> {
-  if (!currentSession || !signClient) {
-    throw new Error('No wallet connected');
-  }
+  const session = getSessionOrThrow(topic);
 
-  // Parse the stringified WC transaction object
   const txObj = JSON.parse(wcTransaction);
 
-  // Also parse with extended JSON to get proper Uint8Arrays for comparison
   let parsedWcObj: any = null;
   try {
     parsedWcObj = parseExtendedJson(wcTransaction);
@@ -530,10 +557,10 @@ export async function signTransaction(
     // If parsing fails, we'll skip validation
   }
 
-  console.log('[WC] Sending transaction to wallet for signing (broadcast: false)...');
+  console.log(`[WC] Sending transaction to wallet (topic: ${session.topic.slice(0, 8)}...) for signing...`);
 
   const result: WcSignResult = await signClient.request({
-    topic: currentSession.topic,
+    topic: session.topic,
     chainId: BCH_CHAIN_ID,
     request: {
       method: 'bch_signTransaction',
@@ -547,37 +574,39 @@ export async function signTransaction(
 
   console.log('[WC] Signed tx received:', result.signedTransactionHash);
 
-  // Save signed tx hex to localStorage for debugging
   try {
     localStorage.setItem('debug_signed_tx_hex', result.signedTransaction);
     localStorage.setItem('debug_signed_tx_time', new Date().toISOString());
   } catch { /* ignore */ }
 
-  // Validate signed tx against original before broadcasting
   let validationReport = '';
   if (parsedWcObj) {
     const validation = await validateSignedTransaction(result.signedTransaction, parsedWcObj);
     validationReport = validation.report;
     console.log('[WC] Validation:', validationReport);
+
+    if (!validation.valid) {
+      console.error('[WC] Transaction validation FAILED — not broadcasting');
+      throw new Error(
+        `Wallet returned a modified transaction — refusing to broadcast.\n\n` +
+        `Validation report:\n${validationReport}`
+      );
+    }
   }
 
-  // Save signed tx to file for debugging (before broadcast attempt)
   try {
     const { writeTextFile, BaseDirectory } = await import('@tauri-apps/plugin-fs');
     await writeTextFile('signed-mint-tx.hex', result.signedTransaction, { baseDir: BaseDirectory.AppLocalData });
-    console.log('[WC] Saved signed tx hex to AppLocalData/signed-mint-tx.hex');
   } catch {
     // Ignore file write errors
   }
 
-  // Broadcast the signed transaction ourselves
   console.log('[WC] Broadcasting signed transaction...');
   try {
     const txid = await broadcastRawTransaction(result.signedTransaction);
     console.log('[WC] Broadcast successful! txid:', txid);
     return { signedTransaction: result.signedTransaction, signedTransactionHash: txid };
   } catch (broadcastError: any) {
-    // Include validation report and full signed tx hex in the error for debugging
     const debugInfo = [
       `Broadcast error: ${broadcastError.message}`,
       '',
@@ -595,14 +624,13 @@ export async function signTransaction(
 
 /**
  * Sign an arbitrary message via bch_signMessage.
- * Returns base64-encoded signature (Electron Cash compatible).
  */
-export async function signMessage(message: string, userPrompt?: string): Promise<string> {
+export async function signMessage(message: string, userPrompt?: string, topic?: string): Promise<string> {
   const client = await getClient();
-  if (!currentSession) throw new Error('No active WalletConnect session');
+  const session = getSessionOrThrow(topic);
 
   const result = await client.request({
-    topic: currentSession.topic,
+    topic: session.topic,
     chainId: BCH_CHAIN_ID,
     request: {
       method: 'bch_signMessage',
@@ -614,10 +642,9 @@ export async function signMessage(message: string, userPrompt?: string): Promise
 }
 
 /**
- * Get token UTXOs held by the connected wallet (CashRPC).
- * Returns null if the wallet doesn't support this method.
+ * Get token UTXOs held by a wallet session.
  */
-export async function getTokens(): Promise<Array<{
+export async function getTokens(topic?: string): Promise<Array<{
   txid: string;
   vout: number;
   satoshis: number;
@@ -628,11 +655,11 @@ export async function getTokens(): Promise<Array<{
   };
 }> | null> {
   const client = await getClient();
-  if (!currentSession) throw new Error('No active WalletConnect session');
+  const session = getSessionOrThrow(topic);
 
   try {
     const result = await client.request({
-      topic: currentSession.topic,
+      topic: session.topic,
       chainId: BCH_CHAIN_ID,
       request: {
         method: 'bch_getTokens_V0',
@@ -641,25 +668,23 @@ export async function getTokens(): Promise<Array<{
     });
     return result as any[];
   } catch {
-    // Wallet doesn't support this method
     return null;
   }
 }
 
 /**
- * Get the BCH balance of the connected wallet (CashRPC).
- * Returns null if the wallet doesn't support this method.
+ * Get the BCH balance of a wallet session.
  */
-export async function getBalance(): Promise<{
+export async function getBalance(topic?: string): Promise<{
   confirmed: number;
   unconfirmed?: number;
 } | null> {
   const client = await getClient();
-  if (!currentSession) throw new Error('No active WalletConnect session');
+  const session = getSessionOrThrow(topic);
 
   try {
     const result = await client.request({
-      topic: currentSession.topic,
+      topic: session.topic,
       chainId: BCH_CHAIN_ID,
       request: {
         method: 'bch_getBalance_V0',
@@ -668,23 +693,20 @@ export async function getBalance(): Promise<{
     });
     return result as { confirmed: number; unconfirmed?: number };
   } catch {
-    // Wallet doesn't support this method
     return null;
   }
 }
 
 /**
- * Get the wallet's change locking bytecode (CashRPC).
- * Useful for building transactions with proper change outputs.
- * Returns null if the wallet doesn't support this method.
+ * Get the wallet's change locking bytecode.
  */
-export async function getChangeLockingBytecode(): Promise<string | null> {
+export async function getChangeLockingBytecode(topic?: string): Promise<string | null> {
   const client = await getClient();
-  if (!currentSession) throw new Error('No active WalletConnect session');
+  const session = getSessionOrThrow(topic);
 
   try {
     const result = await client.request({
-      topic: currentSession.topic,
+      topic: session.topic,
       chainId: BCH_CHAIN_ID,
       request: {
         method: 'bch_getChangeLockingBytecode_V0',
@@ -693,7 +715,6 @@ export async function getChangeLockingBytecode(): Promise<string | null> {
     });
     return result as string;
   } catch {
-    // Wallet doesn't support this method
     return null;
   }
 }

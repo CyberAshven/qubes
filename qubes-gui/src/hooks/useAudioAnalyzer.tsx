@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { emit, emitTo } from '@tauri-apps/api/event';
 import type { AnimationSmoothness } from '../types';
+import type { AudioPlaybackElement } from '../contexts/AudioContext';
 
 interface AudioAnalyzerOptions {
   fftSize?: 256 | 512 | 1024 | 2048 | 4096;
@@ -17,7 +18,7 @@ interface AudioAnalyzerData {
 }
 
 export function useAudioAnalyzer(
-  audioElement: HTMLAudioElement | null,
+  audioElement: AudioPlaybackElement | null,
   options: AudioAnalyzerOptions = {}
 ) {
   const {
@@ -80,7 +81,7 @@ export function useAudioAnalyzer(
       // Check if the audio element already has a source connected
       if (!sourceRef.current) {
         try {
-          const source = audioContext.createMediaElementSource(audioElement);
+          const source = audioContext.createMediaElementSource(audioElement as unknown as HTMLMediaElement);
           sourceRef.current = source;
 
           // Connect: source -> analyzer -> destination

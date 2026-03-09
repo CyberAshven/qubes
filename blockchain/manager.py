@@ -86,7 +86,8 @@ class BlockchainManager:
         self,
         qube,
         recipient_address: str,
-        user_address: str
+        user_address: str,
+        change_address: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Build an unsigned WalletConnect transaction for minting.
@@ -98,6 +99,7 @@ class BlockchainManager:
             qube: Qube-like object with public_key (or temp key holder)
             recipient_address: BCH cashaddr (token-aware)
             user_address: User's BCH address from WalletConnect session
+            change_address: Where to send change (defaults to user_address if None)
 
         Returns:
             {
@@ -120,7 +122,7 @@ class BlockchainManager:
             }
 
         return await self.minter.prepare_mint_transaction(
-            qube, recipient_address, user_address
+            qube, recipient_address, user_address, change_address=change_address
         )
 
     async def finalize_qube_nft(

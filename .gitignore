@@ -51,6 +51,9 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
+# Runtime settings (user preferences, not source code)
+config/global_settings.json
+
 # Blockchain
 blockchain/test-wallet/
 

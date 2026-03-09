@@ -5,7 +5,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 // Minimal interface matching the HTMLAudioElement properties that TypewriterText uses.
 // Implemented by NativeAudioPlayer (all platforms via Rust native audio playback).
 export interface AudioPlaybackElement {
-  readonly currentTime: number;
+  currentTime: number;
   readonly duration: number;
   readonly paused: boolean;
   readonly ended: boolean;
@@ -14,6 +14,9 @@ export interface AudioPlaybackElement {
   src: string;
   addEventListener(event: string, handler: EventListenerOrEventListenerObject): void;
   removeEventListener(event: string, handler: EventListenerOrEventListenerObject): void;
+  pause(): void;
+  load(): void;
+  removeAttribute(name: string): void;
 }
 
 interface AudioContextType {
@@ -106,6 +109,17 @@ class NativeAudioPlayer extends EventTarget implements AudioPlaybackElement {
   stop(): void {
     this._paused = true;
     this.dispatchEvent(new Event('pause'));
+  }
+
+  // AudioPlaybackElement interface methods
+  pause(): void { this.stop(); }
+  load(): void { this.reset(); }
+  removeAttribute(_name: string): void {
+    if (_name === 'src') this.src = '';
+  }
+
+  set currentTime(value: number) {
+    // Timer-based player doesn't support seeking; ignore assignment
   }
 
   // Reset for new audio

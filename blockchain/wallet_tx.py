@@ -17,7 +17,7 @@ from typing import Dict, Any, List, Optional, Literal, TYPE_CHECKING
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta
 
-from crypto.wallet import QubeWallet, TxOutput, validate_address
+from crypto.wallet import QubeWallet, CashScriptWallet, create_wallet, TxOutput, validate_address
 from crypto.bch_script import pubkey_from_privkey, UTXO, address_to_script_pubkey
 from crypto.keys import get_raw_private_key_bytes
 from utils.logging import get_logger
@@ -164,6 +164,7 @@ class WalletTransactionManager:
         self.owner_pubkey = wallet_info.get("owner_pubkey")
         self.p2sh_address = wallet_info.get("p2sh_address")
         self.qube_pubkey = wallet_info.get("qube_pubkey")
+        self.contract_type = wallet_info.get("contract_type", "legacy_p2sh")
 
         if not self.owner_pubkey or not self.p2sh_address:
             raise ValueError(f"Qube {qube.qube_id} has incomplete wallet info")
@@ -171,11 +172,13 @@ class WalletTransactionManager:
         # Create wallet instance (use raw 32-byte private key, not PEM format)
         private_key_bytes = get_raw_private_key_bytes(qube.private_key)
 
-        self.wallet = QubeWallet(
+        self.wallet = create_wallet(
             qube_private_key=private_key_bytes,
             owner_pubkey_hex=self.owner_pubkey,
             network="mainnet",
-            qube_pubkey_hex=self.qube_pubkey
+            qube_pubkey_hex=self.qube_pubkey,
+            contract_type=self.contract_type,
+            contract_address=self.p2sh_address
         )
 
         # In-memory cache (loaded from chain_state)
@@ -281,13 +284,13 @@ class WalletTransactionManager:
 
     async def sync_balances_to_chain_state(self, owner_pubkey: str = None) -> None:
         """
-        Sync all wallet balances from blockchain to chain_state.
+        Sync wallet balances from blockchain to chain_state.
 
         Called on qube load to ensure chain_state has current data.
         UI reads from chain_state for instant response.
 
         Args:
-            owner_pubkey: Owner's public key for NFT balance lookup
+            owner_pubkey: Unused (kept for backward compatibility)
         """
         import aiohttp
 
@@ -331,24 +334,6 @@ class WalletTransactionManager:
                     utxo_count = len(utxos)
                 except Exception as e:
                     logger.debug(f"UTXO count fetch failed: {e}")
-
-            # Fetch NFT/BCH balance (q address)
-            nft_balance = 0
-            if owner_pubkey:
-                try:
-                    from crypto.bch_script import pubkey_to_p2pkh_address
-                    q_address = pubkey_to_p2pkh_address(owner_pubkey, "mainnet", token_aware=False)
-
-                    timeout = aiohttp.ClientTimeout(total=10)
-                    async with aiohttp.ClientSession(timeout=timeout) as session:
-                        url = f"https://api.blockchair.com/bitcoin-cash/dashboards/address/{q_address}"
-                        async with session.get(url) as resp:
-                            if resp.status == 200:
-                                data = await resp.json()
-                                if "data" in data and q_address in data["data"]:
-                                    nft_balance = data["data"][q_address]["address"]["balance"]
-                except Exception as e:
-                    logger.debug(f"NFT balance sync failed: {e}")
 
             # Fetch recent transactions and sync to chain_state history
             recent_transactions = []
@@ -410,14 +395,8 @@ class WalletTransactionManager:
             wallet_data["recent_transactions"] = recent_transactions
             wallet_data["utxo_count"] = utxo_count
 
-            # NFT/BCH balance
-            nft_data = financial.setdefault("nft_balance", {})
-            nft_data["balance_satoshis"] = nft_balance
-            nft_data["balance_bch"] = nft_balance / 100_000_000
-            nft_data["last_sync"] = time.time()
-
             self.chain_state._save()
-            logger.info("wallet_balances_synced_to_chain_state", p2sh=p2sh_balance, nft=nft_balance, txs=len(recent_transactions), new_txs=new_tx_count)
+            logger.info("wallet_balances_synced_to_chain_state", p2sh=p2sh_balance, txs=len(recent_transactions), new_txs=new_tx_count)
 
         except Exception as e:
             logger.warning(f"Failed to sync wallet balances: {e}")
@@ -688,6 +667,7 @@ class WalletTransactionManager:
         if not validate_address(to_address):
             raise ValueError(f"Invalid address: {to_address}")
 
+        amount_sats = int(amount_sats)
         owner_privkey = self._wif_to_privkey(owner_wif)
 
         txid = await self.wallet.owner_withdraw(to_address, amount_sats, owner_privkey)

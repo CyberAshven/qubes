@@ -4,6 +4,7 @@ import { QRCodeSVG } from 'qrcode.react';
 import { Qube } from '../../types';
 import { GlassCard, GlassButton } from '../glass';
 import { useAuth } from '../../hooks/useAuth';
+import { useWallet } from '../../contexts/WalletContext';
 import { useWalletCache } from '../../hooks/useWalletCache';
 import { TransactionHistory } from '../wallet/TransactionHistory';
 
@@ -17,9 +18,6 @@ interface WalletInfo {
   balance_sats: number;  // P2SH wallet balance
   balance_bch: number;
   wallet_address: string;  // P2SH address
-  nft_address?: string;  // Owner's 'z' address (NFT address)
-  nft_balance_sats?: number;  // NFT address balance
-  nft_balance_bch?: number;
   owner_pubkey: string;
   qube_pubkey: string;
   pending_transactions: PendingTransaction[];
@@ -65,6 +63,7 @@ export const EarningsTab: React.FC<EarningsTabProps> = ({
   onQubeSelect,
 }) => {
   const { userId, password } = useAuth();
+  const wallet = useWallet();
   const { invalidateCache } = useWalletCache();
   const [walletInfo, setWalletInfo] = useState<WalletInfo | null>(null);
   const [loading, setLoading] = useState(false);
@@ -78,22 +77,14 @@ export const EarningsTab: React.FC<EarningsTabProps> = ({
   // Send form state
   const [sendAddress, setSendAddress] = useState('');
   const [sendAmount, setSendAmount] = useState('');
-  const [ownerWif, setOwnerWif] = useState('');
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [sendSuccess, setSendSuccess] = useState<string | null>(null);
   const [refetchTrigger, setRefetchTrigger] = useState(0);
 
-  // Wallet security state (for one-click approval)
-  const [walletSecurity, setWalletSecurity] = useState<{
-    addresses_with_keys: string[];
-    whitelists: Record<string, string[]>;
-  }>({ addresses_with_keys: [], whitelists: {} });
+  // Approval state
   const [approving, setApproving] = useState<string | null>(null);
   const [rejectingTx, setRejectingTx] = useState<string | null>(null);
-  const [wifModalOpen, setWifModalOpen] = useState(false);
-  const [pendingApprovalTx, setPendingApprovalTx] = useState<PendingTransaction | null>(null);
-  const [manualWif, setManualWif] = useState('');
   const [approvalError, setApprovalError] = useState<string | null>(null);
 
   // Handle copy for balance card addresses
@@ -107,6 +98,11 @@ export const EarningsTab: React.FC<EarningsTabProps> = ({
 
   // Get the selected qube (use first selected if multiple)
   const selectedQube = qubes.find((q) => selectedQubeIds.includes(q.qube_id));
+
+  // Find the WC session that owns this qube (by matching owner pubkey)
+  const qubeSession = wallet.getSessionForQube(walletInfo?.owner_pubkey || selectedQube?.wallet_owner_pubkey);
+  const qubeWalletConnected = !!qubeSession;
+  const qubeWalletAddress = qubeSession?.address || null;
 
   // Fetch wallet info when selected qube changes
   useEffect(() => {
@@ -129,9 +125,6 @@ export const EarningsTab: React.FC<EarningsTabProps> = ({
           balance_sats?: number;
           balance_bch?: number;
           wallet_address?: string;
-          nft_address?: string;
-          nft_balance_sats?: number;
-          nft_balance_bch?: number;
           owner_pubkey?: string;
           qube_pubkey?: string;
           pending_transactions?: PendingTransaction[];
@@ -147,9 +140,6 @@ export const EarningsTab: React.FC<EarningsTabProps> = ({
             balance_sats: result.balance_sats || 0,
             balance_bch: result.balance_bch || 0,
             wallet_address: result.wallet_address || selectedQube.wallet_address || '',
-            nft_address: result.nft_address,
-            nft_balance_sats: result.nft_balance_sats || 0,
-            nft_balance_bch: result.nft_balance_bch || 0,
             owner_pubkey: result.owner_pubkey || '',
             qube_pubkey: result.qube_pubkey || '',
             pending_transactions: result.pending_transactions || [],
@@ -200,10 +190,10 @@ export const EarningsTab: React.FC<EarningsTabProps> = ({
     }
   };
 
-  // Handle send/withdraw
+  // Handle send via WalletConnect
   const handleSend = async () => {
-    if (!selectedQube || !userId || !password || !sendAddress || !sendAmount || !ownerWif) {
-      setSendError('Please fill in all fields');
+    if (!selectedQube || !userId || !password || !sendAddress || !sendAmount || !qubeWalletConnected || !qubeWalletAddress || !qubeSession) {
+      setSendError('WalletConnect not connected for this qube, or missing fields');
       return;
     }
 
@@ -218,157 +208,101 @@ export const EarningsTab: React.FC<EarningsTabProps> = ({
     setSendSuccess(null);
 
     try {
-      const result = await invoke<{
+      // Step 1: Prepare WC transaction on backend
+      const prepResult = await invoke<{
         success: boolean;
-        txid?: string;
+        wc_transaction?: string;
         error?: string;
-      }>('owner_withdraw_from_wallet', {
+      }>('prepare_owner_withdraw_wc', {
         userId,
         qubeId: selectedQube.qube_id,
         toAddress: sendAddress,
         amount: amountSats,
-        ownerWif,
+        ownerAddress: qubeWalletAddress,
         password,
       });
 
-      if (result.success && result.txid) {
-        setSendSuccess(`Transaction sent! TXID: ${result.txid}`);
-        setSendAddress('');
-        setSendAmount('');
-        setOwnerWif('');
-        // Invalidate cache and refresh wallet info
-        invalidateCache(selectedQube.qube_id);
-        // Trigger refetch after a short delay to allow blockchain to update
-        setTimeout(() => setRefetchTrigger(prev => prev + 1), 2000);
-      } else {
-        setSendError(result.error || 'Failed to send transaction');
+      if (!prepResult.success || !prepResult.wc_transaction) {
+        setSendError(prepResult.error || 'Failed to prepare WC transaction');
+        return;
       }
+
+      // Step 2: Send to wallet for signing + broadcast via the qube's specific session
+      const signResult = await wallet.signTransactionWith(qubeSession!.topic, prepResult.wc_transaction);
+
+      // Step 3: Record the broadcast in backend
+      await invoke('record_wallet_broadcast', {
+        userId,
+        qubeId: selectedQube.qube_id,
+        txid: signResult.signedTransactionHash,
+        toAddress: sendAddress,
+        amount: amountSats,
+        memo: 'WalletConnect withdrawal',
+        password,
+      });
+
+      setSendSuccess(`Transaction sent via WalletConnect! TXID: ${signResult.signedTransactionHash}`);
+      setSendAddress('');
+      setSendAmount('');
+      invalidateCache(selectedQube.qube_id);
+      setTimeout(() => setRefetchTrigger(prev => prev + 1), 2000);
     } catch (e) {
-      console.error('Failed to send:', e);
-      setSendError(e instanceof Error ? e.message : 'Failed to send transaction');
+      console.error('WC send failed:', e);
+      const msg = e instanceof Error ? e.message : 'WalletConnect transaction failed';
+      setSendError(msg.includes('rejected') ? 'Transaction rejected by wallet' : msg);
     } finally {
       setSending(false);
     }
   };
 
-  // Load wallet security on mount (for one-click approval)
-  useEffect(() => {
-    const loadWalletSecurity = async () => {
-      if (!userId || !password) return;
-      try {
-        const result = await invoke<{
-          success: boolean;
-          addresses_with_keys: string[];
-          whitelists: Record<string, string[]>;
-        }>('get_wallet_security', { userId, password });
-        if (result.success) {
-          setWalletSecurity({
-            addresses_with_keys: result.addresses_with_keys || [],
-            whitelists: result.whitelists || {},
-          });
-        }
-      } catch (e) {
-        console.error('Failed to load wallet security:', e);
-      }
-    };
-    loadWalletSecurity();
-  }, [userId, password]);
-
-  // Check if qube's NFT address (z) has a stored key
-  // Use nft_address from walletInfo or recipient_address from qube
-  const nftAddress = walletInfo?.nft_address || selectedQube?.recipient_address;
-  const hasStoredKey =
-    nftAddress && walletSecurity.addresses_with_keys.includes(nftAddress);
-
-  // Approve handler (one-click or manual)
+  // Handle approve via WalletConnect
   const handleApprove = async (pendingTx: PendingTransaction) => {
-    console.log('[handleApprove] Called with:', { pendingTx, selectedQube: selectedQube?.qube_id, userId, hasPassword: !!password, hasStoredKey, nftAddress });
-    if (!selectedQube || !userId || !password) {
-      console.log('[handleApprove] Early return - missing:', { selectedQube: !selectedQube, userId: !userId, password: !password });
+    if (!selectedQube || !userId || !password || !qubeWalletConnected || !qubeWalletAddress || !qubeSession) {
+      setApprovalError('Connect the wallet that owns this qube to approve transactions');
+      setTimeout(() => setApprovalError(null), 5000);
       return;
     }
 
-    if (hasStoredKey) {
-      // One-click approval using stored key
-      console.log('[handleApprove] Using stored key for one-click approval');
-      setApproving(pendingTx.tx_id);
-      setApprovalError(null); // Clear previous error
-      try {
-        console.log('[handleApprove] Calling approve_wallet_tx_stored_key with:', {
-          userId,
-          qubeId: selectedQube.qube_id,
-          txId: pendingTx.tx_id,
-        });
-        const result = await invoke<{
-          success: boolean;
-          txid?: string;
-          error?: string;
-        }>('approve_wallet_tx_stored_key', {
-          userId,
-          qubeId: selectedQube.qube_id,
-          txId: pendingTx.tx_id,
-          password,
-        });
-        console.log('[handleApprove] Result:', result);
-        if (result.success) {
-          console.log('[handleApprove] Success! TXID:', result.txid);
-          setApprovalError(null);
-          invalidateCache(selectedQube.qube_id);
-          setRefetchTrigger((prev) => prev + 1);
-        } else {
-          console.log('[handleApprove] Failed:', result.error);
-          // Extract meaningful error message
-          const errorMsg = result.error || 'Approval failed';
-          const shortError = errorMsg.includes('mempool-conflict')
-            ? 'Mempool conflict - try again later or use different amount'
-            : errorMsg.length > 60 ? errorMsg.slice(0, 60) + '...' : errorMsg;
-          setApprovalError(shortError);
-          // Auto-clear error after 8 seconds
-          setTimeout(() => setApprovalError(null), 8000);
-        }
-      } catch (e) {
-        console.error('[handleApprove] Exception:', e);
-        const errorMsg = e instanceof Error ? e.message : 'Approval failed';
-        setApprovalError(errorMsg.length > 60 ? errorMsg.slice(0, 60) + '...' : errorMsg);
-        setTimeout(() => setApprovalError(null), 8000);
-      } finally {
-        setApproving(null);
-      }
-    } else {
-      // Show modal to enter WIF manually
-      console.log('[handleApprove] Opening WIF modal');
-      setPendingApprovalTx(pendingTx);
-      setWifModalOpen(true);
-    }
-  };
+    setApproving(pendingTx.tx_id);
+    setApprovalError(null);
 
-  // Manual WIF approval
-  const handleManualApprove = async () => {
-    if (!pendingApprovalTx || !manualWif || !selectedQube || !userId || !password) return;
-    setApproving(pendingApprovalTx.tx_id);
     try {
-      const result = await invoke<{
+      const prepResult = await invoke<{
         success: boolean;
-        txid?: string;
+        wc_transaction?: string;
         error?: string;
-      }>('approve_wallet_transaction', {
+      }>('prepare_approve_tx_wc', {
         userId,
         qubeId: selectedQube.qube_id,
-        txId: pendingApprovalTx.tx_id,
-        ownerWif: manualWif,
+        txId: pendingTx.tx_id,
+        ownerAddress: qubeWalletAddress,
         password,
       });
-      if (result.success) {
-        setWifModalOpen(false);
-        setManualWif('');
-        setPendingApprovalTx(null);
-        invalidateCache(selectedQube.qube_id);
-        setRefetchTrigger((prev) => prev + 1);
-      } else {
-        setSendError(result.error || 'Approval failed');
+
+      if (!prepResult.success || !prepResult.wc_transaction) {
+        setApprovalError(prepResult.error || 'Failed to prepare approval');
+        setTimeout(() => setApprovalError(null), 8000);
+        return;
       }
+
+      const signResult = await wallet.signTransactionWith(qubeSession!.topic, prepResult.wc_transaction);
+
+      await invoke('record_wallet_broadcast', {
+        userId,
+        qubeId: selectedQube.qube_id,
+        txid: signResult.signedTransactionHash,
+        toAddress: pendingTx.outputs[0]?.address || '',
+        amount: pendingTx.total_amount,
+        memo: pendingTx.memo || 'Approved transaction',
+        password,
+      });
+
+      invalidateCache(selectedQube.qube_id);
+      setRefetchTrigger((prev) => prev + 1);
     } catch (e) {
-      setSendError(e instanceof Error ? e.message : 'Approval failed');
+      const msg = e instanceof Error ? e.message : 'Approval failed';
+      setApprovalError(msg.includes('rejected') ? 'Rejected by wallet' : msg.length > 60 ? msg.slice(0, 60) + '...' : msg);
+      setTimeout(() => setApprovalError(null), 8000);
     } finally {
       setApproving(null);
     }
@@ -478,10 +412,11 @@ export const EarningsTab: React.FC<EarningsTabProps> = ({
                     <div className="flex gap-1">
                       <button
                         onClick={() => handleApprove(tx)}
-                        disabled={approving === tx.tx_id || rejectingTx === tx.tx_id}
+                        disabled={approving === tx.tx_id || rejectingTx === tx.tx_id || !qubeWalletConnected}
                         className="flex-1 px-2 py-1 bg-accent-success/20 text-accent-success text-[10px] rounded hover:bg-accent-success/30 disabled:opacity-50"
+                        title={!qubeWalletConnected ? 'Connect the wallet that owns this qube' : ''}
                       >
-                        {approving === tx.tx_id ? '...' : hasStoredKey ? '✓ Approve' : '🔑 Approve'}
+                        {approving === tx.tx_id ? '...' : qubeWalletConnected ? '📱 Approve' : '📱 Connect'}
                       </button>
                       <button
                         onClick={() => handleReject(tx)}
@@ -504,9 +439,8 @@ export const EarningsTab: React.FC<EarningsTabProps> = ({
         )}
       </div>
 
-      {/* Balance Display - Three columns with enhanced styling */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {/* NFT Address Balance */}
+      {/* Wallet Balance */}
+      <div className="max-w-md mx-auto">
         <GlassCard
           className="p-6 text-center relative overflow-hidden"
           style={{
@@ -518,7 +452,7 @@ export const EarningsTab: React.FC<EarningsTabProps> = ({
             background: `radial-gradient(circle at 50% 0%, ${selectedQube.favorite_color}40 0%, transparent 70%)`
           }} />
           <div className="relative z-10">
-            <div className="text-xs text-text-tertiary mb-2 uppercase tracking-wider font-medium">NFT Address</div>
+            <div className="text-xs text-text-tertiary mb-2 uppercase tracking-wider font-medium">Qube Wallet</div>
             {loading ? (
               <div className="text-text-tertiary animate-pulse py-4">Loading...</div>
             ) : error ? (
@@ -531,109 +465,6 @@ export const EarningsTab: React.FC<EarningsTabProps> = ({
                     color: selectedQube.favorite_color,
                     textShadow: `0 0 20px ${selectedQube.favorite_color}60`
                   }}
-                >
-                  {formatBCH(walletInfo?.nft_balance_sats || 0)}
-                </div>
-                <div className="text-text-tertiary text-sm mb-2">BCH</div>
-                <div className="text-text-tertiary text-xs">
-                  {(walletInfo?.nft_balance_sats || 0).toLocaleString()} sats
-                </div>
-              </>
-            )}
-            {(walletInfo?.nft_address || selectedQube.recipient_address) && (
-              <div className="mt-3 pt-3 border-t border-glass-border">
-                <div className="flex items-center justify-center gap-1">
-                  <span className="text-text-tertiary text-[10px] font-mono break-all text-center leading-tight">
-                    {walletInfo?.nft_address || selectedQube.recipient_address}
-                  </span>
-                  <button
-                    onClick={() => handleCopyAddress(walletInfo?.nft_address || selectedQube.recipient_address)}
-                    className="text-text-tertiary hover:text-text-primary transition-colors p-1 hover:bg-white/10 rounded flex-shrink-0"
-                    title="Copy address"
-                  >
-                    {copiedAddress === (walletInfo?.nft_address || selectedQube.recipient_address) ? '✓' : '📋'}
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-        </GlassCard>
-
-        {/* BCH Address Balance */}
-        <GlassCard
-          className="p-6 text-center relative overflow-hidden"
-          style={{
-            background: 'linear-gradient(135deg, rgba(34, 197, 94, 0.1) 0%, transparent 100%)',
-            borderColor: 'rgba(34, 197, 94, 0.3)'
-          }}
-        >
-          <div className="absolute inset-0 opacity-20" style={{
-            background: 'radial-gradient(circle at 50% 0%, rgba(34, 197, 94, 0.4) 0%, transparent 70%)'
-          }} />
-          <div className="relative z-10">
-            <div className="text-xs text-text-tertiary mb-2 uppercase tracking-wider font-medium">BCH Address</div>
-            {loading ? (
-              <div className="text-text-tertiary animate-pulse py-4">Loading...</div>
-            ) : error ? (
-              <div className="text-accent-danger text-sm py-4">{error}</div>
-            ) : (
-              <>
-                <div
-                  className="text-3xl font-display font-bold mb-1"
-                  style={{
-                    color: '#22c55e',
-                    textShadow: '0 0 20px rgba(34, 197, 94, 0.6)'
-                  }}
-                >
-                  {formatBCH(walletInfo?.nft_balance_sats || 0)}
-                </div>
-                <div className="text-text-tertiary text-sm mb-2">BCH</div>
-                <div className="text-text-tertiary text-xs">
-                  {(walletInfo?.nft_balance_sats || 0).toLocaleString()} sats
-                </div>
-              </>
-            )}
-            {selectedQube.wallet_owner_q_address && (
-              <div className="mt-3 pt-3 border-t border-glass-border">
-                <div className="flex items-center justify-center gap-1">
-                  <span className="text-text-tertiary text-[10px] font-mono break-all text-center leading-tight">
-                    {selectedQube.wallet_owner_q_address}
-                  </span>
-                  <button
-                    onClick={() => handleCopyAddress(selectedQube.wallet_owner_q_address)}
-                    className="text-text-tertiary hover:text-text-primary transition-colors p-1 hover:bg-white/10 rounded flex-shrink-0"
-                    title="Copy address"
-                  >
-                    {copiedAddress === selectedQube.wallet_owner_q_address ? '✓' : '📋'}
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-        </GlassCard>
-
-        {/* Qube Wallet Balance */}
-        <GlassCard
-          className="p-6 text-center relative overflow-hidden"
-          style={{
-            background: 'linear-gradient(135deg, rgba(180, 124, 255, 0.1) 0%, transparent 100%)',
-            borderColor: 'rgba(180, 124, 255, 0.3)'
-          }}
-        >
-          <div className="absolute inset-0 opacity-20" style={{
-            background: 'radial-gradient(circle at 50% 0%, rgba(180, 124, 255, 0.4) 0%, transparent 70%)'
-          }} />
-          <div className="relative z-10">
-            <div className="text-xs text-text-tertiary mb-2 uppercase tracking-wider font-medium">Qube Wallet</div>
-            {loading ? (
-              <div className="text-text-tertiary animate-pulse py-4">Loading...</div>
-            ) : error ? (
-              <div className="text-accent-danger text-sm py-4">{error}</div>
-            ) : (
-              <>
-                <div
-                  className="text-3xl font-display font-bold text-accent-secondary mb-1"
-                  style={{ textShadow: '0 0 20px rgba(180, 124, 255, 0.6)' }}
                 >
                   {formatBCH(walletInfo?.balance_sats || 0)}
                 </div>
@@ -758,18 +589,15 @@ export const EarningsTab: React.FC<EarningsTabProps> = ({
                     className="w-full bg-bg-primary border border-glass-border rounded-lg px-3 py-2 text-sm text-text-primary font-mono placeholder:text-text-disabled focus:outline-none focus:border-accent-secondary"
                   />
                 </div>
-                <div>
-                  <label className="text-xs text-text-tertiary uppercase tracking-wide block mb-1">
-                    Owner Private Key (WIF)
-                  </label>
-                  <input
-                    type="password"
-                    value={ownerWif}
-                    onChange={(e) => setOwnerWif(e.target.value)}
-                    placeholder="Enter your WIF private key"
-                    className="w-full bg-bg-primary border border-glass-border rounded-lg px-3 py-2 text-sm text-text-primary font-mono placeholder:text-text-disabled focus:outline-none focus:border-accent-secondary"
-                  />
-                </div>
+                {qubeWalletConnected ? (
+                  <div className="flex items-center gap-2 text-sm text-accent-primary bg-accent-primary/10 p-2 rounded">
+                    <span>Wallet: {qubeWalletAddress?.slice(0, 20)}...</span>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 text-sm text-accent-warning bg-accent-warning/10 p-2 rounded">
+                    <span>Connect the wallet that owns this qube via WalletConnect</span>
+                  </div>
+                )}
                 {sendError && (
                   <div className="text-accent-danger text-sm bg-accent-danger/10 p-2 rounded">
                     {sendError}
@@ -782,13 +610,13 @@ export const EarningsTab: React.FC<EarningsTabProps> = ({
                 )}
                 <GlassButton
                   onClick={handleSend}
-                  disabled={sending || !sendAddress || !sendAmount || !ownerWif}
+                  disabled={sending || !sendAddress || !sendAmount || !qubeWalletConnected}
                   className="w-full"
                 >
-                  {sending ? 'Sending...' : '📤 Send Transaction'}
+                  {sending ? 'Signing...' : '📤 Sign with Wallet'}
                 </GlassButton>
                 <p className="text-xs text-text-tertiary">
-                  This uses the owner-only spending path. No Qube signature required.
+                  Your connected wallet signs the transaction. No private keys needed.
                 </p>
               </div>
             </div>
@@ -827,11 +655,11 @@ export const EarningsTab: React.FC<EarningsTabProps> = ({
               <div className="space-y-2 text-sm">
                 <div className="flex justify-between">
                   <span className="text-text-tertiary">Type:</span>
-                  <span className="text-text-primary">Asymmetric Multi-Sig (2-of-2)</span>
+                  <span className="text-text-primary">CashScript Contract (P2SH32)</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-text-tertiary">Spending Rules:</span>
-                  <span className="text-text-primary">Owner + Qube required</span>
+                  <span className="text-text-tertiary">Spending Paths:</span>
+                  <span className="text-text-primary">Owner-only or Qube+Owner</span>
                 </div>
                 <div className="flex flex-col gap-1">
                   <span className="text-text-tertiary">Owner Pubkey:</span>
@@ -848,8 +676,8 @@ export const EarningsTab: React.FC<EarningsTabProps> = ({
               </div>
               <div className="mt-4 p-3 bg-accent-primary/10 rounded-lg border border-accent-primary/30">
                 <p className="text-xs text-text-secondary">
-                  <strong>Security Note:</strong> The Qube cannot spend funds without your approval.
-                  You can withdraw funds at any time using the owner-only spending path.
+                  <strong>Security Note:</strong> The Qube cannot spend funds without your wallet approval.
+                  You can withdraw funds at any time by signing with your connected wallet.
                 </p>
               </div>
             </div>
@@ -857,51 +685,6 @@ export const EarningsTab: React.FC<EarningsTabProps> = ({
         </GlassCard>
       </div>
 
-      {/* WIF Modal for manual approval */}
-      {wifModalOpen && pendingApprovalTx && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
-          <GlassCard className="p-6 max-w-md w-full mx-4">
-            <h3 className="text-lg font-semibold text-text-primary mb-4 flex items-center gap-2">
-              <span>🔑</span> Enter Owner WIF to Approve
-            </h3>
-            <p className="text-sm text-text-secondary mb-4">
-              Approve sending {formatBCH(pendingApprovalTx.total_amount)} BCH to{' '}
-              {pendingApprovalTx.outputs[0]?.address.slice(0, 20)}...
-            </p>
-            <input
-              type="password"
-              value={manualWif}
-              onChange={(e) => setManualWif(e.target.value)}
-              placeholder="Enter WIF private key"
-              className="w-full bg-bg-primary border border-glass-border rounded-lg px-3 py-2 text-sm text-text-primary font-mono mb-4 focus:outline-none focus:ring-2 focus:ring-accent-primary/50"
-            />
-            <p className="text-[10px] text-text-tertiary mb-4">
-              Tip: Store your key in Dashboard → Qube Card → Wallet Security to enable one-click approvals.
-            </p>
-            <div className="flex gap-2">
-              <GlassButton
-                onClick={() => {
-                  setWifModalOpen(false);
-                  setManualWif('');
-                  setPendingApprovalTx(null);
-                }}
-                variant="secondary"
-                className="flex-1"
-              >
-                Cancel
-              </GlassButton>
-              <GlassButton
-                onClick={handleManualApprove}
-                disabled={!manualWif || approving !== null}
-                className="flex-1"
-                variant="primary"
-              >
-                {approving ? 'Approving...' : 'Approve'}
-              </GlassButton>
-            </div>
-          </GlassCard>
-        </div>
-      )}
     </div>
   );
 };

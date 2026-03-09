@@ -68,6 +68,8 @@ export interface BroadcastMintParams extends MintParams {
 export interface WcMintParams extends MintParams {
   /** User's token-aware address (`bitcoincash:z...`). */
   userAddress: string;
+  /** Optional change address. If omitted, change goes to `userAddress`. */
+  changeAddress?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -340,9 +342,18 @@ export async function broadcastMint(
     });
 
     // Output 2: change back to user (if above dust)
+    // Size-based fee: 2 sat/byte for safety margin above 1 sat/byte relay minimum
+    const estimatedSize = BigInt(
+      10                          // tx overhead
+      + 300                       // covenant P2SH32 input (with redeem script)
+      + fundingUtxos.length * 148 // P2PKH funding inputs
+      + 90 * 2                    // 2 token outputs (covenant return + NFT)
+      + 34                        // change output
+    );
+    const estimatedFee = estimatedSize * 2n;
+
     const totalInput = mintingTokenUtxo.satoshis + totalFunding;
     const totalOutputs = TOKEN_DUST + TOKEN_DUST;
-    const estimatedFee = 500n;
     const change = totalInput - totalOutputs - estimatedFee;
 
     if (change >= DUST_LIMIT) {
@@ -488,24 +499,43 @@ export async function prepareMintTransaction(
       },
     });
 
-    // Output 2: change back to user (if above dust)
+    // Output 2: change (if above dust)
+    // Use changeAddress if provided, otherwise fall back to userAddress.
+    const changeRecipient = params.changeAddress ?? params.userAddress;
+
+    // Size-based fee: 2 sat/byte for safety margin above 1 sat/byte relay minimum
+    const estimatedSize = BigInt(
+      10                          // tx overhead
+      + 300                       // covenant P2SH32 input (with redeem script)
+      + fundingUtxos.length * 148 // P2PKH funding inputs
+      + 90 * 2                    // 2 token outputs (covenant return + NFT)
+      + 34                        // change output
+    );
+    const estimatedFee = estimatedSize * 2n;
+
     const totalInput = mintingTokenUtxo.satoshis + totalFunding;
     const totalOutputs = TOKEN_DUST + TOKEN_DUST;
-    const estimatedFee = 500n;
     const change = totalInput - totalOutputs - estimatedFee;
 
     if (change >= DUST_LIMIT) {
       txBuilder.addOutput({
-        to: params.userAddress,
+        to: changeRecipient,
         amount: change,
       });
     }
 
     // ── Generate WC transaction object ────────────────────────────
     const wcTxObj = txBuilder.generateWcTransactionObject({
-      broadcast: true,
+      broadcast: false,
       userPrompt: 'Mint Qube NFT',
     });
+
+    // Remove contract metadata — covenant input is already fully unlocked
+    // by CashScript. Leaving it causes wallets to try to re-process the
+    // covenant input instead of treating it as a non-wallet input.
+    for (const so of (wcTxObj as any).sourceOutputs) {
+      delete so.contract;
+    }
 
     return {
       success: true,

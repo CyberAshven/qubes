@@ -605,6 +605,7 @@ struct SpeechResponse {
 struct DeleteResponse {
     success: bool,
     qube_id: Option<String>,
+    swept_sats: Option<i64>,
     error: Option<String>,
 }
 
@@ -2597,7 +2598,7 @@ async fn record_voice_clone_audio(app_handle: AppHandle, user_id: String, durati
     let mut args = vec![user_id];
 
     if let Some(duration) = duration_seconds {
-        args.push("--duration".to_string());
+        args.push("--duration-seconds".to_string());
         args.push(duration.to_string());
     }
 
@@ -3232,15 +3233,22 @@ async fn update_qube_config(app_handle: AppHandle,
 }
 
 #[tauri::command]
-async fn delete_qube(app_handle: AppHandle, user_id: String, qube_id: String) -> Result<DeleteResponse, String> {
+async fn delete_qube(app_handle: AppHandle, user_id: String, qube_id: String, password: String, sweep_address: Option<String>) -> Result<DeleteResponse, String> {
 
     // Validate inputs
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let args = vec![user_id, qube_id];
+    let mut args = vec![user_id, qube_id];
+    if let Some(ref addr) = sweep_address {
+        if !addr.is_empty() {
+            args.push("--sweep-address".to_string());
+            args.push(addr.clone());
+        }
+    }
 
-    let secrets = HashMap::new();
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
 
     let result = sidecar_execute_with_retry("delete-qube", args, secrets, Some(&app_handle), None).await?;
 
@@ -6554,7 +6562,7 @@ async fn propose_wallet_transaction(app_handle: AppHandle,
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let args = vec![user_id, "--qube-id".to_string(), qube_id, "--to-address".to_string(), to_address, "--amount".to_string(), amount.to_string(), "--memo".to_string(), memo];
+    let args = vec![user_id, "--qube-id".to_string(), qube_id, "--to-address".to_string(), to_address, "--amount-satoshis".to_string(), amount.to_string(), "--memo".to_string(), memo];
 
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
@@ -6621,23 +6629,24 @@ async fn reject_wallet_transaction(app_handle: AppHandle,
 }
 
 #[tauri::command]
-async fn owner_withdraw_from_wallet(app_handle: AppHandle, 
+async fn owner_withdraw_from_wallet(app_handle: AppHandle,
     user_id: String,
     qube_id: String,
     to_address: String,
     amount: u64,
-    owner_wif: String,
+    owner_wif: Option<String>,
     password: String,
 ) -> Result<serde_json::Value, String> {
 
     validate_identifier(&user_id, "user_id")?;
     validate_identifier(&qube_id, "qube_id")?;
 
-    let args = vec![user_id, "--qube-id".to_string(), qube_id, "--to-address".to_string(), to_address, "--amount".to_string(), amount.to_string()];
+    let args = vec![user_id, "--qube-id".to_string(), qube_id, "--to-address".to_string(), to_address, "--amount-satoshis".to_string(), amount.to_string()];
 
+    let wif_value = owner_wif.unwrap_or_default();
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
-    secrets.insert("owner_wif", owner_wif.as_str());
+    secrets.insert("owner_wif", wif_value.as_str());
 
     let result = sidecar_execute_with_retry("owner-withdraw", args, secrets, Some(&app_handle), None).await?;
 
@@ -6684,10 +6693,119 @@ async fn get_wallet_transactions(app_handle: AppHandle,
 
 }
 
+// ==================== WalletConnect Wallet Commands ====================
+
+#[tauri::command]
+async fn prepare_owner_withdraw_wc(app_handle: AppHandle,
+    user_id: String,
+    qube_id: String,
+    to_address: String,
+    amount: u64,
+    owner_address: String,
+    password: String,
+) -> Result<serde_json::Value, String> {
+
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let args = vec![user_id, "--qube-id".to_string(), qube_id, "--to-address".to_string(), to_address, "--amount-satoshis".to_string(), amount.to_string(), "--owner-address".to_string(), owner_address];
+
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
+
+    let result = sidecar_execute_with_retry("prepare-owner-withdraw-wc", args, secrets, Some(&app_handle), None).await?;
+
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse prepare-owner-withdraw-wc response: {}", e))?;
+
+    Ok(response)
+
+}
+
+#[tauri::command]
+async fn prepare_approve_tx_wc(app_handle: AppHandle,
+    user_id: String,
+    qube_id: String,
+    tx_id: String,
+    owner_address: String,
+    password: String,
+) -> Result<serde_json::Value, String> {
+
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let args = vec![user_id, "--qube-id".to_string(), qube_id, "--tx-id".to_string(), tx_id, "--owner-address".to_string(), owner_address];
+
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
+
+    let result = sidecar_execute_with_retry("prepare-approve-tx-wc", args, secrets, Some(&app_handle), None).await?;
+
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse prepare-approve-tx-wc response: {}", e))?;
+
+    Ok(response)
+
+}
+
+#[tauri::command]
+async fn record_wallet_broadcast(app_handle: AppHandle,
+    user_id: String,
+    qube_id: String,
+    txid: String,
+    to_address: String,
+    amount: u64,
+    memo: String,
+    password: String,
+) -> Result<serde_json::Value, String> {
+
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let args = vec![user_id, "--qube-id".to_string(), qube_id, "--txid".to_string(), txid, "--to-address".to_string(), to_address, "--amount-satoshis".to_string(), amount.to_string(), "--memo".to_string(), memo];
+
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
+
+    let result = sidecar_execute_with_retry("record-wallet-broadcast", args, secrets, Some(&app_handle), None).await?;
+
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse record-wallet-broadcast response: {}", e))?;
+
+    Ok(response)
+
+}
+
 // ==================== Wallet Security Commands ====================
 
 #[tauri::command]
-async fn save_owner_key(app_handle: AppHandle, 
+async fn import_seed_phrase(app_handle: AppHandle,
+    user_id: String,
+    nft_address: String,
+    seed_phrase: String,
+    password: String,
+) -> Result<serde_json::Value, String> {
+
+    check_rate_limit("import_seed_phrase")?;
+    validate_identifier(&user_id, "user_id")?;
+
+    let args = vec![user_id, "--nft-address".to_string(), nft_address];
+
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
+    secrets.insert("seed_phrase", seed_phrase.as_str());
+
+    let result = sidecar_execute_with_retry("import-seed-phrase", args, secrets, Some(&app_handle), None).await?;
+
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse import-seed-phrase response: {}", e))?;
+
+    Ok(response)
+
+}
+
+#[tauri::command]
+async fn save_owner_key(app_handle: AppHandle,
     user_id: String,
     nft_address: String,
     owner_wif: String,
@@ -7414,7 +7532,12 @@ pub fn run() {
             reject_wallet_transaction,
             owner_withdraw_from_wallet,
             get_wallet_transactions,
+            // WalletConnect Wallet Commands
+            prepare_owner_withdraw_wc,
+            prepare_approve_tx_wc,
+            record_wallet_broadcast,
             // Wallet Security Commands
+            import_seed_phrase,
             save_owner_key,
             delete_owner_key,
             get_wallet_security,

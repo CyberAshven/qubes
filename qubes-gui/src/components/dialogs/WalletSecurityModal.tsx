@@ -7,7 +7,6 @@ interface Qube {
   name: string;
   wallet_address?: string;  // P2SH address (p) - for sending BCH
   recipient_address?: string;  // NFT address (z) - owner's token address
-  wallet_owner_q_address?: string;  // Owner's BCH address (q) - for private key
 }
 
 interface WalletSecurityModalProps {
@@ -35,17 +34,18 @@ export const WalletSecurityModal: React.FC<WalletSecurityModalProps> = ({
   onSave,
 }) => {
   const [wifInput, setWifInput] = useState('');
+  const [seedInput, setSeedInput] = useState('');
+  const [importMode, setImportMode] = useState<'wif' | 'seed'>('seed');
   const [showWif, setShowWif] = useState(false);
+  const [showSeed, setShowSeed] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [localWhitelist, setLocalWhitelist] = useState<string[]>([]);
 
-  // NFT address (z) is used for key storage internally
+  // NFT address (z) is used for key storage internally (same key as q-address)
   const nftAddress = qube.recipient_address || '';
   const hasStoredKey = walletSecurity.addresses_with_keys.includes(nftAddress);
-  // BCH address (q) is shown to user - this is the address for their private key
-  const bchAddress = qube.wallet_owner_q_address || '';
 
   // Initialize local whitelist from props
   useEffect(() => {
@@ -79,6 +79,33 @@ export const WalletSecurityModal: React.FC<WalletSecurityModalProps> = ({
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to save key');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleImportSeed = async () => {
+    if (!seedInput.trim()) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const result = await invoke<{ success: boolean; error?: string }>(
+        'import_seed_phrase',
+        {
+          userId,
+          nftAddress,
+          seedPhrase: seedInput.trim(),
+          password,
+        }
+      );
+      if (result.success) {
+        setSeedInput('');
+        onSave();
+      } else {
+        setError(result.error || 'Failed to import seed phrase');
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to import seed phrase');
     } finally {
       setSaving(false);
     }
@@ -151,7 +178,7 @@ export const WalletSecurityModal: React.FC<WalletSecurityModalProps> = ({
             Owner Private Key
           </label>
           <p className="text-[10px] text-text-tertiary mb-2 break-all">
-            Bitcoin Cash (BCH) Address: {bchAddress}
+            Owner Address: {nftAddress}
           </p>
           {hasStoredKey ? (
             <div className="flex items-center gap-3 p-3 bg-glass-bg/30 rounded-lg border border-glass-border">
@@ -169,30 +196,89 @@ export const WalletSecurityModal: React.FC<WalletSecurityModalProps> = ({
               </GlassButton>
             </div>
           ) : (
-            <div className="flex gap-2">
-              <div className="flex-1 relative">
-                <input
-                  type={showWif ? 'text' : 'password'}
-                  value={wifInput}
-                  onChange={(e) => setWifInput(e.target.value)}
-                  placeholder="Enter WIF private key..."
-                  className="w-full px-3 py-2 bg-glass-bg backdrop-blur-glass border border-glass-border rounded-lg text-text-primary text-sm font-mono placeholder-text-tertiary focus:outline-none focus:ring-2 focus:ring-accent-primary/50 pr-10"
-                />
+            <div className="space-y-3">
+              {/* Mode toggle */}
+              <div className="flex gap-1 p-1 bg-glass-bg/30 rounded-lg">
                 <button
-                  type="button"
-                  onClick={() => setShowWif(!showWif)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-text-tertiary hover:text-text-primary text-sm"
+                  onClick={() => setImportMode('seed')}
+                  className={`flex-1 text-xs py-1.5 rounded-md transition-colors ${
+                    importMode === 'seed'
+                      ? 'bg-accent-primary/20 text-accent-primary'
+                      : 'text-text-tertiary hover:text-text-secondary'
+                  }`}
                 >
-                  {showWif ? '🙈' : '👁'}
+                  Seed Phrase
+                </button>
+                <button
+                  onClick={() => setImportMode('wif')}
+                  className={`flex-1 text-xs py-1.5 rounded-md transition-colors ${
+                    importMode === 'wif'
+                      ? 'bg-accent-primary/20 text-accent-primary'
+                      : 'text-text-tertiary hover:text-text-secondary'
+                  }`}
+                >
+                  WIF Key
                 </button>
               </div>
-              <GlassButton
-                onClick={handleSaveKey}
-                disabled={!wifInput || saving}
-                variant="primary"
-              >
-                {saving ? '...' : 'Save'}
-              </GlassButton>
+
+              {importMode === 'seed' ? (
+                <div className="space-y-2">
+                  <div className="relative">
+                    <textarea
+                      value={seedInput}
+                      onChange={(e) => setSeedInput(e.target.value)}
+                      placeholder="Enter your 12-word seed phrase from Cashonize..."
+                      rows={3}
+                      className="w-full px-3 py-2 bg-glass-bg backdrop-blur-glass border border-glass-border rounded-lg text-text-primary text-sm font-mono placeholder-text-tertiary focus:outline-none focus:ring-2 focus:ring-accent-primary/50 resize-none"
+                      style={{ WebkitTextSecurity: showSeed ? 'none' : 'disc' } as React.CSSProperties}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowSeed(!showSeed)}
+                      className="absolute right-3 top-2 text-text-tertiary hover:text-text-primary text-sm"
+                    >
+                      {showSeed ? '🙈' : '👁'}
+                    </button>
+                  </div>
+                  <GlassButton
+                    onClick={handleImportSeed}
+                    disabled={!seedInput.trim() || saving}
+                    variant="primary"
+                    className="w-full"
+                  >
+                    {saving ? 'Deriving key...' : 'Import from Seed Phrase'}
+                  </GlassButton>
+                  <p className="text-[10px] text-text-tertiary">
+                    Your seed phrase is used locally to derive the private key. It is never sent anywhere.
+                  </p>
+                </div>
+              ) : (
+                <div className="flex gap-2">
+                  <div className="flex-1 relative">
+                    <input
+                      type={showWif ? 'text' : 'password'}
+                      value={wifInput}
+                      onChange={(e) => setWifInput(e.target.value)}
+                      placeholder="Enter WIF private key..."
+                      className="w-full px-3 py-2 bg-glass-bg backdrop-blur-glass border border-glass-border rounded-lg text-text-primary text-sm font-mono placeholder-text-tertiary focus:outline-none focus:ring-2 focus:ring-accent-primary/50 pr-10"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowWif(!showWif)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-text-tertiary hover:text-text-primary text-sm"
+                    >
+                      {showWif ? '🙈' : '👁'}
+                    </button>
+                  </div>
+                  <GlassButton
+                    onClick={handleSaveKey}
+                    disabled={!wifInput || saving}
+                    variant="primary"
+                  >
+                    {saving ? '...' : 'Save'}
+                  </GlassButton>
+                </div>
+              )}
             </div>
           )}
         </div>

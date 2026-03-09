@@ -7,8 +7,6 @@ Implements the parsable NFT format with automatic sync to web server.
 
 import json
 import os
-import re
-import subprocess
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timezone
@@ -365,92 +363,138 @@ class BCMRRegistryManager:
             logger.error("failed_to_save_registry", error=str(e))
             return False
 
-    def sync_to_server(
-        self,
-        server_host: str = "",
-        server_user: str = "",
-        server_path: str = "",
-        auto_sync: bool = True
-    ) -> bool:
+    def add_qube_to_server(self, qube) -> bool:
         """
-        Sync BCMR registry to web server via SCP
+        Add a Qube to the server's BCMR registry via HTTPS API.
 
         Args:
-            server_host: Server hostname/IP
-            server_user: SSH username
-            server_path: Destination path on server
-            auto_sync: If True, auto-sync; if False, just print command
+            qube: Qube instance to add
 
         Returns:
-            True if synced successfully, False otherwise
+            True if added successfully, False otherwise
         """
-        from utils.input_validation import validate_ssh_hostname, validate_user_id
-        from core.exceptions import QubesError
+        import requests
 
-        if not self.registry_file.exists():
-            logger.error("cannot_sync_registry_not_found")
+        api_url = self.registry_url.replace(
+            "/.well-known/bitcoin-cash-metadata-registry.json",
+            "/api/v2/bcmr/registry/add"
+        )
+
+        api_key = self._get_api_key()
+        if not api_key:
+            logger.error("bcmr_api_key_not_configured")
             return False
 
-        # Require all server parameters to be explicitly provided
-        if not server_host or not server_user or not server_path:
-            logger.error("sync_requires_server_parameters",
-                        msg="server_host, server_user, and server_path must all be provided")
-            return False
+        # Extract qube data
+        qube_name = getattr(qube, 'name', f"Qube {qube.qube_id}")
+        avatar_cid = getattr(qube, 'avatar_ipfs_cid', '')
 
-        # Validate SSH parameters to prevent command injection
+        description = ""
+        creator = None
+        birth_timestamp = None
+        genesis_block_hash = None
+
+        if hasattr(qube, 'genesis_block'):
+            description = getattr(qube.genesis_block, 'genesis_prompt', '') or f"Sovereign AI agent {qube_name}"
+            creator = getattr(qube.genesis_block, 'creator', None)
+            birth_timestamp = getattr(qube.genesis_block, 'birth_timestamp', None)
+            genesis_block_hash = getattr(qube.genesis_block, 'block_hash', None)
+
+        # Derive commitment from qube's public key
+        from crypto.keys import derive_commitment
+        commitment = derive_commitment(qube.public_key)
+
+        payload = {
+            "commitment": commitment,
+            "qube_id": qube.qube_id,
+            "qube_name": qube_name,
+            "description": description[:1000],
+            "avatar_ipfs_cid": avatar_cid or None,
+            "creator": creator,
+            "birth_timestamp": birth_timestamp,
+            "genesis_block_hash": genesis_block_hash[:16] + "..." if genesis_block_hash else None,
+        }
+
         try:
-            server_host = validate_ssh_hostname(server_host)
-            server_user = validate_user_id(server_user)  # Reuse user_id validation (alphanumeric + dash/underscore)
+            logger.info("adding_qube_to_server_registry", qube_id=qube.qube_id)
+            response = requests.post(
+                api_url,
+                json=payload,
+                headers={"X-API-Key": api_key},
+                timeout=15
+            )
 
-            # Validate server_path (basic check for dangerous characters)
-            if not re.match(r'^[a-zA-Z0-9/_.-]+$', server_path):
-                raise QubesError(f"Invalid server path format: {server_path}")
-        except QubesError as e:
-            logger.error("ssh_parameter_validation_failed", error=str(e))
-            print(f"\n❌ Invalid SSH parameters: {str(e)}\n")
-            return False
-
-        # Build SCP command (now validated)
-        scp_command = [
-            "scp",
-            str(self.registry_file),
-            f"{server_user}@{server_host}:{server_path}"
-        ]
-
-        if auto_sync:
-            try:
-                logger.info("syncing_to_server", host=server_host, path=server_path)
-
-                result = subprocess.run(
-                    scp_command,
-                    check=True,
-                    capture_output=True,
-                    text=True
-                )
-
-                logger.info("registry_synced_to_server", host=server_host)
+            if response.status_code == 200:
+                logger.info("qube_added_to_server_registry", qube_id=qube.qube_id)
                 return True
-
-            except subprocess.CalledProcessError as e:
+            else:
                 logger.error(
-                    "scp_failed",
-                    error=e.stderr,
-                    command=" ".join(scp_command)
+                    "server_registry_add_failed",
+                    status=response.status_code,
+                    response=response.text[:200]
                 )
-                print(f"\n❌ Auto-sync failed. Please run manually:")
-                print(f"   {' '.join(scp_command)}\n")
                 return False
-            except FileNotFoundError:
-                logger.error("scp_not_found")
-                print(f"\n❌ SCP command not found. Please install OpenSSH client.")
-                print(f"   Manual sync command:")
-                print(f"   {' '.join(scp_command)}\n")
-                return False
-        else:
-            # Just print the command
-            print(f"\n📤 To sync BCMR to server, run:")
-            print(f"   {' '.join(scp_command)}\n")
+
+        except Exception as e:
+            logger.error("server_registry_add_error", error=str(e))
             return False
+
+    def remove_qube_from_server(self, qube_id: str, commitment: str) -> bool:
+        """
+        Remove a Qube from the server's BCMR registry via HTTPS API.
+
+        Args:
+            qube_id: Qube ID (for logging)
+            commitment: NFT commitment hex to remove
+
+        Returns:
+            True if removed successfully, False otherwise
+        """
+        import requests
+
+        api_url = self.registry_url.replace(
+            "/.well-known/bitcoin-cash-metadata-registry.json",
+            "/api/v2/bcmr/registry/remove"
+        )
+
+        api_key = self._get_api_key()
+        if not api_key:
+            logger.error("bcmr_api_key_not_configured")
+            return False
+
+        try:
+            logger.info("removing_qube_from_server_registry", qube_id=qube_id)
+            response = requests.post(
+                api_url,
+                json={"commitment": commitment},
+                headers={"X-API-Key": api_key},
+                timeout=15
+            )
+
+            if response.status_code == 200:
+                logger.info("qube_removed_from_server_registry", qube_id=qube_id)
+                return True
+            elif response.status_code == 404:
+                logger.warning("qube_not_found_on_server_registry", qube_id=qube_id)
+                return True  # Not on server = already removed
+            else:
+                logger.error(
+                    "server_registry_remove_failed",
+                    status=response.status_code,
+                    response=response.text[:200]
+                )
+                return False
+
+        except Exception as e:
+            logger.error("server_registry_remove_error", error=str(e))
+            return False
+
+    def _get_api_key(self) -> Optional[str]:
+        """Get BCMR API key for server registry updates."""
+        return os.environ.get(
+            "BCMR_API_KEY",
+            "599e00be12c692a0122ad90da805edb935d1acce3d7b235ca153854ef83f463a"
+        )
 
     async def upload_to_ipfs(self) -> Optional[str]:
         """

@@ -1593,7 +1593,6 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
 
   // Wallet balance state - initialize from cache if available
   const [walletBalance, setWalletBalance] = useState<number | null>(cachedWalletData?.balance ?? null);  // P2SH wallet
-  const [nftBalance, setNftBalance] = useState<number | null>(cachedWalletData?.nftBalance ?? null);  // NFT address ('z')
   const [walletBalanceLoading, setWalletBalanceLoading] = useState(false);
   const [walletBalanceError, setWalletBalanceError] = useState<string | null>(cachedWalletData?.error ?? null);
 
@@ -1624,7 +1623,6 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
         const result = await invoke<{
           success: boolean;
           balance_sats?: number;
-          nft_balance_sats?: number;
           error?: string;
         }>('get_wallet_info', {
           userId,
@@ -1634,14 +1632,12 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
 
         if (result.success) {
           const balance = result.balance_sats ?? 0;
-          const nftBal = result.nft_balance_sats ?? 0;
 
           // Update local state
           setWalletBalance(balance);
-          setNftBalance(nftBal);
 
           // Update cache
-          setCachedBalance(qube.qube_id, balance, nftBal);
+          setCachedBalance(qube.qube_id, balance);
         } else {
           setWalletBalanceError(result.error || 'Failed to fetch balance');
         }
@@ -2833,19 +2829,18 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
               <p className="text-xs text-text-tertiary">Blockchain Data</p>
             </div>
 
-            {/* Wallet Balances - Enhanced Three columns with glow */}
+            {/* Wallet Balance */}
             {qube.wallet_address && (
-              <div className="flex gap-2 mb-3">
-                {/* NFT Balance */}
+              <div className="mb-3">
                 <div
-                  className="flex-1 p-2 rounded-lg text-center relative overflow-hidden"
+                  className="p-2 rounded-lg text-center relative overflow-hidden"
                   style={{
                     backgroundColor: `${qube.favorite_color}15`,
                     border: `1px solid ${qube.favorite_color}40`,
                     boxShadow: `0 0 15px ${qube.favorite_color}20`
                   }}
                 >
-                  <span className="text-text-tertiary text-[10px] block mb-0.5 uppercase tracking-wide">NFT</span>
+                  <span className="text-text-tertiary text-[10px] block mb-0.5 uppercase tracking-wide">Wallet</span>
                   {walletBalanceLoading ? (
                     <span className="text-text-tertiary text-sm animate-pulse">...</span>
                   ) : (
@@ -2853,49 +2848,7 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
                       className="font-mono text-sm font-bold block"
                       style={{ color: qube.favorite_color, textShadow: `0 0 10px ${qube.favorite_color}60` }}
                     >
-                      {formatBCH(nftBalance || 0)}
-                    </span>
-                  )}
-                </div>
-                {/* BCH Balance */}
-                <div
-                  className="flex-1 p-2 rounded-lg text-center relative overflow-hidden"
-                  style={{
-                    backgroundColor: 'rgba(34, 197, 94, 0.1)',
-                    border: '1px solid rgba(34, 197, 94, 0.4)',
-                    boxShadow: '0 0 15px rgba(34, 197, 94, 0.2)'
-                  }}
-                >
-                  <span className="text-text-tertiary text-[10px] block mb-0.5 uppercase tracking-wide">BCH</span>
-                  {walletBalanceLoading ? (
-                    <span className="text-text-tertiary text-sm animate-pulse">...</span>
-                  ) : (
-                    <span
-                      className="font-mono text-sm font-bold block"
-                      style={{ color: '#22c55e', textShadow: '0 0 10px rgba(34, 197, 94, 0.6)' }}
-                    >
-                      {formatBCH(nftBalance || 0)}
-                    </span>
-                  )}
-                </div>
-                {/* Qube Wallet Balance */}
-                <div
-                  className="flex-1 p-2 rounded-lg text-center relative overflow-hidden"
-                  style={{
-                    backgroundColor: 'rgba(180, 124, 255, 0.1)',
-                    border: '1px solid rgba(180, 124, 255, 0.4)',
-                    boxShadow: '0 0 15px rgba(180, 124, 255, 0.2)'
-                  }}
-                >
-                  <span className="text-text-tertiary text-[10px] block mb-0.5 uppercase tracking-wide">Qube</span>
-                  {walletBalanceLoading ? (
-                    <span className="text-text-tertiary text-sm animate-pulse">...</span>
-                  ) : (
-                    <span
-                      className="font-mono text-sm font-bold block text-accent-secondary"
-                      style={{ textShadow: '0 0 10px rgba(180, 124, 255, 0.6)' }}
-                    >
-                      {formatBCH(walletBalance || 0)}
+                      {formatBCH(walletBalance || 0)} BCH
                     </span>
                   )}
                 </div>
@@ -2929,7 +2882,7 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
               </div>
 
               {/* Addresses Section */}
-              {(qube.recipient_address || qube.wallet_owner_q_address || qube.wallet_address) && (
+              {(qube.recipient_address || qube.wallet_address) && (
                 <div className="mb-2 pt-2 border-t border-glass-border/30">
                   <div className="text-[10px] text-text-tertiary uppercase tracking-wider mb-1 flex items-center gap-1">
                     <span>📍</span> Addresses
@@ -2941,15 +2894,9 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
                         <BlockchainLink value={qube.recipient_address} type="address" network={qube.network} />
                       </div>
                     )}
-                    {qube.wallet_owner_q_address && (
-                      <div className="flex justify-between items-center">
-                        <span className="text-text-tertiary">BCH (q):</span>
-                        <BlockchainLink value={qube.wallet_owner_q_address} type="address" network={qube.network} />
-                      </div>
-                    )}
                     {qube.wallet_address && (
                       <div className="flex justify-between items-center">
-                        <span className="text-text-tertiary">Qube (p):</span>
+                        <span className="text-text-tertiary">Wallet (p):</span>
                         <BlockchainLink value={qube.wallet_address} type="address" network={qube.network} />
                       </div>
                     )}

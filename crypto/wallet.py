@@ -340,8 +340,8 @@ class QubeWallet:
                         utxos = [
                             UTXO(
                                 txid=u["txid"],
-                                vout=u["vout"],
-                                value=u["satoshis"],
+                                vout=int(u["vout"]),
+                                value=int(u["satoshis"]),
                                 script_pubkey=script_pubkey
                             )
                             for u in utxo_list
@@ -484,8 +484,8 @@ class QubeWallet:
                     return [
                         UTXO(
                             txid=u["transaction_hash"],
-                            vout=u["index"],
-                            value=u["value"],
+                            vout=int(u["index"]),
+                            value=int(u["value"]),
                             script_pubkey=script_pubkey
                         )
                         for u in utxo_list
@@ -1522,6 +1522,7 @@ class QubeWallet:
         Spend using owner-only path (IF branch).
 
         Owner can withdraw without Qube involvement.
+        Supports multiple inputs (all signed with the same owner key).
 
         Args:
             unsigned_tx: The unsigned transaction
@@ -1530,36 +1531,31 @@ class QubeWallet:
         Returns:
             Signed transaction hex
         """
-        if len(unsigned_tx.utxos) != 1:
-            raise ValueError("Currently only single-input transactions supported")
-
-        utxo = unsigned_tx.utxos[0]
-
-        # Prepare for sighash
-        inputs = [(utxo.txid, utxo.vout, utxo.value, utxo.script_pubkey)]
+        # Prepare inputs and outputs for sighash calculation
+        inputs = [(u.txid, u.vout, u.value, u.script_pubkey) for u in unsigned_tx.utxos]
         output_data = [
             (out.value, address_to_script_pubkey(out.address))
             for out in unsigned_tx.outputs
         ]
 
-        # Calculate sighash
-        sighash = calculate_sighash_forkid(
-            tx_version=2,
-            inputs=inputs,
-            outputs=output_data,
-            input_idx=0,
-            redeem_script=self._redeem_script
-        )
-
-        # Owner signs
-        owner_sig = sign_sighash(sighash, owner_privkey)
+        # Sign each input (BIP143 computes a separate sighash per input)
+        signatures = []
+        for idx in range(len(unsigned_tx.utxos)):
+            sighash = calculate_sighash_forkid(
+                tx_version=2,
+                inputs=inputs,
+                outputs=output_data,
+                input_idx=idx,
+                redeem_script=self._redeem_script
+            )
+            signatures.append(sign_sighash(sighash, owner_privkey))
 
         # Build transaction with owner-only path
         return build_p2sh_spending_tx(
             utxos=unsigned_tx.utxos,
             outputs=unsigned_tx.outputs,
             redeem_script=self._redeem_script,
-            signatures=[owner_sig],
+            signatures=signatures,
             spending_path="owner_only"
         ).hex()
 
@@ -1811,6 +1807,290 @@ class QubeWallet:
             raise ValueError(f"Unsupported private key type: {type(private_key)}")
 
         return cls(privkey_bytes, owner_pubkey_hex, network)
+
+
+# =============================================================================
+# CASHSCRIPT WALLET CLASS
+# =============================================================================
+
+class CashScriptWallet(QubeWallet):
+    """
+    CashScript-based wallet for Qube BCH transactions.
+
+    Replaces the raw P2SH IF/ELSE redeem script with a compiled CashScript
+    contract (QubesWallet). Both spending paths are WalletConnect-compatible:
+
+    - ownerSpend: permissionless contract unlock, owner provides P2PKH input
+    - qubeApproved: qube signs contract input, owner provides P2PKH input
+
+    Inherits balance/UTXO/history query methods from QubeWallet.
+    Overrides transaction building/signing to delegate to wallet-cli.ts.
+    """
+
+    def __init__(
+        self,
+        qube_private_key: bytes,
+        owner_pubkey_hex: str,
+        network: str = "mainnet",
+        qube_pubkey_hex: Optional[str] = None,
+        contract_address: Optional[str] = None
+    ):
+        if len(qube_private_key) != 32:
+            raise ValueError(f"Private key must be 32 bytes, got {len(qube_private_key)}")
+
+        if not owner_pubkey_hex or len(owner_pubkey_hex) != 66:
+            raise ValueError("Owner pubkey must be 66 hex chars (33 bytes compressed)")
+
+        if not owner_pubkey_hex.startswith(('02', '03')):
+            raise ValueError("Owner pubkey must start with 02 or 03 (compressed format)")
+
+        self._qube_privkey = qube_private_key
+        self._owner_pubkey = bytes.fromhex(owner_pubkey_hex)
+        self._network = network
+
+        if qube_pubkey_hex:
+            self._qube_pubkey = bytes.fromhex(qube_pubkey_hex)
+        else:
+            self._qube_pubkey = pubkey_from_privkey(qube_private_key)
+
+        # CashScript wallet does not use a redeem script
+        self._redeem_script = b''
+        self._script_hash = ''
+
+        # Use provided address or derive later via wallet-cli.ts
+        self._p2sh_address = contract_address or ''
+
+        # Balance cache
+        self._cached_balance: Optional[int] = None
+        self._balance_last_updated: float = 0
+        self._balance_cache_ttl: int = 300
+
+        # Broadcast attempt tracking
+        self._broadcast_attempts: List[BroadcastAttempt] = []
+        self._utxo_cooldown_seconds: int = 600
+
+        # Lazy-loaded wallet contract client
+        self._contract_client = None
+
+        logger.debug(
+            "cashscript_wallet_initialized",
+            contract_address=self._p2sh_address,
+            network=network
+        )
+
+    @property
+    def contract_type(self) -> str:
+        return "cashscript"
+
+    def _get_client(self):
+        """Lazy-load the wallet contract client."""
+        if self._contract_client is None:
+            from blockchain.wallet_contract_client import WalletContractClient
+            self._contract_client = WalletContractClient()
+        return self._contract_client
+
+    def _privkey_to_wif(self) -> str:
+        """Convert qube private key bytes to WIF format."""
+        import hashlib
+        # Mainnet WIF prefix: 0x80, compressed suffix: 0x01
+        raw = b'\x80' + self._qube_privkey + b'\x01'
+        checksum = hashlib.sha256(hashlib.sha256(raw).digest()).digest()[:4]
+        import base58
+        return base58.b58encode(raw + checksum).decode()
+
+    async def derive_address(self) -> str:
+        """Derive contract address from pubkeys via wallet-cli.ts."""
+        client = self._get_client()
+        result = await client.derive_address(
+            self.owner_pubkey_hex, self.qube_pubkey_hex
+        )
+        self._p2sh_address = result["contract_address"]
+        return self._p2sh_address
+
+    # -- Spending methods (delegate to wallet-cli.ts) --
+
+    def propose_transaction(
+        self,
+        outputs: List[TxOutput],
+        utxos: List[UTXO],
+        memo: Optional[str] = None
+    ) -> ProposedTransaction:
+        """
+        Propose a transaction (Qube signs, awaits owner approval).
+
+        For CashScript wallets, we store the output details for later
+        execution via wallet-cli.ts (instead of pre-signing).
+        """
+        import time as _time
+        import hashlib
+
+        # Generate unique ID
+        tx_id = hashlib.sha256(
+            f"{_time.time()}{outputs[0].address}{outputs[0].value}".encode()
+        ).hexdigest()[:16]
+
+        # Create a minimal UnsignedTransaction for compatibility
+        # The actual signing happens at broadcast time via wallet-cli.ts
+        fee = estimate_tx_size(1, len(outputs) + 1, "owner_only") * DEFAULT_FEE_PER_BYTE
+        unsigned_tx = UnsignedTransaction(
+            utxos=utxos,
+            outputs=outputs,
+            redeem_script=b'',  # Not used for CashScript
+            fee=fee
+        )
+
+        return ProposedTransaction(
+            tx_id=tx_id,
+            unsigned_tx=unsigned_tx,
+            qube_signature=b'',  # Signing deferred to broadcast time
+            created_at=_time.time(),
+            memo=memo
+        )
+
+    async def owner_withdraw(
+        self,
+        to_address: str,
+        amount_sats: int,
+        owner_privkey: bytes
+    ) -> str:
+        """Owner withdraws directly via CashScript ownerSpend path."""
+        # Convert owner privkey to WIF
+        import hashlib
+        import base58
+        raw = b'\x80' + owner_privkey + b'\x01'
+        checksum = hashlib.sha256(hashlib.sha256(raw).digest()).digest()[:4]
+        owner_wif = base58.b58encode(raw + checksum).decode()
+
+        client = self._get_client()
+        outputs = [{"address": to_address, "value": amount_sats}]
+        return await client.owner_spend_broadcast(
+            owner_pubkey=self.owner_pubkey_hex,
+            qube_pubkey=self.qube_pubkey_hex,
+            owner_wif=owner_wif,
+            outputs=outputs
+        )
+
+    async def owner_withdraw_all(
+        self,
+        to_address: str,
+        owner_privkey: bytes
+    ) -> str:
+        """Owner withdraws entire balance via CashScript ownerSpend path."""
+        balance = await self.get_balance(force_refresh=True)
+        if balance <= 0:
+            raise ValueError("No funds to withdraw")
+
+        # Estimate fee conservatively
+        utxos = await self.get_utxos()
+        fee = estimate_tx_size(len(utxos) + 1, 2, "owner_only") * DEFAULT_FEE_PER_BYTE * 2
+        send_amount = balance - fee
+        if send_amount < DUST_LIMIT:
+            raise ValueError("Balance too low to withdraw after fees")
+
+        return await self.owner_withdraw(to_address, send_amount, owner_privkey)
+
+    async def approve_and_broadcast(
+        self,
+        unsigned_tx: UnsignedTransaction,
+        qube_signature: bytes,
+        owner_privkey: bytes,
+        verify: bool = True
+    ) -> str:
+        """
+        Owner approves a Qube-proposed transaction via CashScript qubeApproved path.
+        """
+        import hashlib
+        import base58
+
+        # Convert keys to WIF
+        raw_owner = b'\x80' + owner_privkey + b'\x01'
+        checksum = hashlib.sha256(hashlib.sha256(raw_owner).digest()).digest()[:4]
+        owner_wif = base58.b58encode(raw_owner + checksum).decode()
+
+        qube_wif = self._privkey_to_wif()
+
+        client = self._get_client()
+        outputs = [{"address": o.address, "value": o.value} for o in unsigned_tx.outputs
+                    if o.address != self._p2sh_address]  # Exclude change back to contract
+        if not outputs:
+            outputs = [{"address": o.address, "value": o.value} for o in unsigned_tx.outputs]
+
+        return await client.qube_approved_broadcast(
+            owner_pubkey=self.owner_pubkey_hex,
+            qube_pubkey=self.qube_pubkey_hex,
+            qube_wif=qube_wif,
+            owner_wif=owner_wif,
+            outputs=outputs
+        )
+
+    # WalletConnect-specific methods
+
+    async def owner_spend_wc(
+        self, owner_address: str, outputs: List[Dict[str, Any]]
+    ) -> str:
+        """Owner withdraws via WalletConnect. Returns WC transaction object."""
+        client = self._get_client()
+        return await client.owner_spend_wc(
+            owner_pubkey=self.owner_pubkey_hex,
+            qube_pubkey=self.qube_pubkey_hex,
+            owner_address=owner_address,
+            outputs=outputs
+        )
+
+    async def qube_approved_wc(
+        self, owner_address: str, outputs: List[Dict[str, Any]]
+    ) -> str:
+        """Qube proposes via WalletConnect. Returns WC transaction object."""
+        client = self._get_client()
+        qube_wif = self._privkey_to_wif()
+        return await client.qube_approved_wc(
+            owner_pubkey=self.owner_pubkey_hex,
+            qube_pubkey=self.qube_pubkey_hex,
+            qube_wif=qube_wif,
+            owner_address=owner_address,
+            outputs=outputs
+        )
+
+    def spend_owner_only(self, unsigned_tx, owner_privkey: bytes) -> str:
+        raise NotImplementedError(
+            "CashScriptWallet does not support synchronous spend_owner_only. "
+            "Use owner_withdraw() or owner_spend_wc() instead."
+        )
+
+    def sign_as_qube(self, unsigned_tx) -> bytes:
+        raise NotImplementedError(
+            "CashScriptWallet does not support sign_as_qube. "
+            "Qube signing happens at broadcast time via wallet-cli.ts."
+        )
+
+    def finalize_multisig(self, unsigned_tx, qube_signature, owner_privkey) -> str:
+        raise NotImplementedError(
+            "CashScriptWallet does not support finalize_multisig. "
+            "Use approve_and_broadcast() instead."
+        )
+
+
+def create_wallet(
+    qube_private_key: bytes,
+    owner_pubkey_hex: str,
+    network: str = "mainnet",
+    qube_pubkey_hex: Optional[str] = None,
+    contract_type: str = "cashscript",
+    contract_address: Optional[str] = None
+) -> QubeWallet:
+    """
+    Factory function to create the appropriate wallet type.
+
+    Args:
+        contract_type: "cashscript" (new) or "legacy_p2sh" (old)
+    """
+    if contract_type == "legacy_p2sh":
+        return QubeWallet(qube_private_key, owner_pubkey_hex, network, qube_pubkey_hex)
+    else:
+        return CashScriptWallet(
+            qube_private_key, owner_pubkey_hex, network,
+            qube_pubkey_hex, contract_address
+        )
 
 
 # =============================================================================

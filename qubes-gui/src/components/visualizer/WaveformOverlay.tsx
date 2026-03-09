@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { useAudioAnalyzer } from '../../hooks/useAudioAnalyzer';
 import type { WaveformStyle, ColorTheme, GradientStyle, AnimationSmoothness } from '../../types';
+import type { AudioPlaybackElement } from '../../contexts/AudioContext';
 import { ClassicBars } from './waveforms/ClassicBars';
 import { SymmetricBars } from './waveforms/SymmetricBars';
 import { SmoothWaveform } from './waveforms/SmoothWaveform';
@@ -15,7 +16,7 @@ import { AvatarFace } from './waveforms/AvatarFace';
 // Slots 10-12: Avatar with intensity levels (Glow, Spectrum, Cosmic)
 
 interface WaveformOverlayProps {
-  audioElement: HTMLAudioElement | null;
+  audioElement: AudioPlaybackElement | null;
   isPlaying: boolean;
   qubeFavoriteColor: string;
   waveformStyle: WaveformStyle;

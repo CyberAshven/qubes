@@ -1,0 +1,41 @@
+pragma cashscript ^0.12.0;
+
+// Qubes Wallet Contract
+//
+// Replaces the raw P2SH IF/ELSE redeem script with a CashScript contract.
+// Two spending paths, both WalletConnect-compatible:
+//
+//   1. ownerSpend — Owner withdraws directly (no Qube involvement).
+//      The contract input is permissionless; authorization is proved by
+//      including a P2PKH input from the owner in the same transaction.
+//
+//   2. qubeApproved — Qube proposes a transaction. The Qube signs the
+//      contract input, and the owner must also include a P2PKH input.
+//
+// WalletConnect compatibility: In both paths, the owner just signs their
+// own standard P2PKH input. The WC wallet sees a normal input to sign.
+// The contract input is either permissionless (ownerSpend) or pre-signed
+// by the Qube (qubeApproved).
+//
+// Constructor args:
+//   ownerPkh — HASH160 of the owner's compressed public key
+//   qubePkh  — HASH160 of the Qube's compressed public key
+
+contract QubesWallet(bytes20 ownerPkh, bytes20 qubePkh) {
+
+    // Owner withdraws without Qube involvement.
+    // Permissionless unlock — authorization is via owner's P2PKH input.
+    function ownerSpend(int ownerInputIndex) {
+        bytes25 expectedLocking = 0x76a914 + ownerPkh + 0x88ac;
+        require(tx.inputs[ownerInputIndex].lockingBytecode == expectedLocking);
+    }
+
+    // Qube-initiated spending — requires Qube signature + owner P2PKH input.
+    function qubeApproved(sig qubeSig, pubkey qubePK, int ownerInputIndex) {
+        require(hash160(qubePK) == qubePkh);
+        require(checkSig(qubeSig, qubePK));
+
+        bytes25 expectedLocking = 0x76a914 + ownerPkh + 0x88ac;
+        require(tx.inputs[ownerInputIndex].lockingBytecode == expectedLocking);
+    }
+}

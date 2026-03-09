@@ -39,6 +39,8 @@ export const TabContent: React.FC<TabContentProps> = ({ qubes, setQubes, onQubes
   const [qubeToDelete, setQubeToDelete] = useState<Qube | null>(null);
   const [chatMode, setChatMode] = useState<ChatMode>('local');
   const [deleteConfirmPassword, setDeleteConfirmPassword] = useState('');
+  const [deleteSweepAddress, setDeleteSweepAddress] = useState('');
+  const [isDeleting, setIsDeleting] = useState(false);
 
   // P2P mode state
   const [p2pConnections, setP2pConnections] = useState<Connection[]>([]);
@@ -172,18 +174,21 @@ export const TabContent: React.FC<TabContentProps> = ({ qubes, setQubes, onQubes
   };
 
   const confirmDelete = async () => {
-    if (!qubeToDelete) return;
+    if (!qubeToDelete || isDeleting) return;
 
+    setIsDeleting(true);
     try {
-      const result = await invoke<{ success: boolean; error?: string }>('delete_qube', {
+      const result = await invoke<{ success: boolean; swept_sats?: number; error?: string }>('delete_qube', {
         userId,
         qubeId: qubeToDelete.qube_id,
+        password: deleteConfirmPassword,
+        sweepAddress: deleteSweepAddress || null,
       });
 
       if (result.success) {
-        setQubeToDelete(null);
-        setDeleteConfirmPassword('');
-        await onQubesChange(); // Refresh the qube list
+        if (result.swept_sats && result.swept_sats > 0) {
+          alert(`Swept ${(result.swept_sats / 100_000_000).toFixed(8)} BCH before deletion.`);
+        }
       } else {
         console.error('Failed to delete qube:', result.error);
         alert(`Failed to delete qube: ${result.error}`);
@@ -191,12 +196,22 @@ export const TabContent: React.FC<TabContentProps> = ({ qubes, setQubes, onQubes
     } catch (err) {
       console.error('Error deleting qube:', err);
       alert(`Error deleting qube: ${String(err)}`);
+    } finally {
+      // Always clean up and refresh — the delete may have succeeded
+      // even if the response errored (e.g. sidecar retry after timeout)
+      setQubeToDelete(null);
+      setDeleteConfirmPassword('');
+      setDeleteSweepAddress('');
+      setIsDeleting(false);
+      await onQubesChange();
     }
   };
 
   const cancelDelete = () => {
     setQubeToDelete(null);
     setDeleteConfirmPassword('');
+    setDeleteSweepAddress('');
+    setIsDeleting(false);
   };
 
   const handleUpdateQubeConfig = async (qubeId: string, updates: { ai_model?: string; voice_model?: string; favorite_color?: string; tts_enabled?: boolean; evaluation_model?: string }) => {
@@ -452,6 +467,19 @@ export const TabContent: React.FC<TabContentProps> = ({ qubes, setQubes, onQubes
               This action cannot be undone.
             </p>
 
+            <div className="mb-4">
+              <label className="text-sm text-text-secondary block mb-2">
+                BCH address to sweep remaining funds to (optional):
+              </label>
+              <input
+                type="text"
+                value={deleteSweepAddress}
+                onChange={(e) => setDeleteSweepAddress(e.target.value)}
+                placeholder="bitcoincash:q... (leave empty if no funds)"
+                className="w-full bg-bg-primary border border-glass-border rounded-lg px-3 py-2 text-text-primary placeholder:text-text-disabled focus:outline-none focus:border-glass-border-hover font-mono text-xs"
+              />
+            </div>
+
             <div className="mb-6">
               <label className="text-sm text-text-secondary block mb-2">
                 Enter your master password to confirm:
@@ -477,9 +505,9 @@ export const TabContent: React.FC<TabContentProps> = ({ qubes, setQubes, onQubes
               <GlassButton
                 variant="danger"
                 onClick={confirmDelete}
-                disabled={deleteConfirmPassword !== password}
+                disabled={deleteConfirmPassword !== password || isDeleting}
               >
-                Delete Qube
+                {isDeleting ? 'Deleting...' : 'Delete Qube'}
               </GlassButton>
             </div>
           </GlassCard>

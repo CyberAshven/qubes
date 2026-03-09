@@ -526,39 +526,36 @@ def build_p2sh_spending_tx(
         utxos: List of UTXOs to spend
         outputs: List of outputs (address, value)
         redeem_script: The redeem script
-        signatures: List of signatures for each input
+        signatures: One signature per input for owner_only,
+                    or [owner_sig, qube_sig] for multisig (single-input only)
         spending_path: "owner_only" or "multisig"
         fee_per_byte: Fee in satoshis per byte (default 1)
 
     Returns:
         Serialized signed transaction
     """
-    # For now, we'll handle single-input transactions
-    # Multi-input can be added later
-    if len(utxos) != 1:
-        raise ValueError("Currently only single-input transactions supported")
-
-    utxo = utxos[0]
-
     # Calculate output scripts
     output_scripts = []
     for out in outputs:
         script = address_to_script_pubkey(out.address)
         output_scripts.append((out.value, script))
 
-    # Build scriptSig based on spending path
+    # Build scriptSigs for each input
+    script_sigs = []
     if spending_path == "owner_only":
-        # <owner_sig> OP_TRUE <redeem_script>
-        if len(signatures) != 1:
-            raise ValueError("Owner-only path requires exactly 1 signature")
-        script_sig = push_data(signatures[0]) + bytes([OP_TRUE]) + push_data(redeem_script)
+        # One signature per input: <owner_sig> OP_TRUE <redeem_script>
+        if len(signatures) != len(utxos):
+            raise ValueError(f"Owner-only path requires one signature per input ({len(utxos)} inputs, got {len(signatures)} signatures)")
+        for sig in signatures:
+            script_sigs.append(push_data(sig) + bytes([OP_TRUE]) + push_data(redeem_script))
     elif spending_path == "multisig":
         # OP_0 <owner_sig> <qube_sig> OP_FALSE <redeem_script>
+        if len(utxos) != 1:
+            raise ValueError("Multisig path currently supports single-input only")
         if len(signatures) != 2:
             raise ValueError("Multisig path requires exactly 2 signatures")
         owner_sig, qube_sig = signatures
-        # OP_CHECKMULTISIG has an off-by-one bug requiring OP_0 prefix
-        script_sig = bytes([OP_0]) + push_data(owner_sig) + push_data(qube_sig) + bytes([OP_FALSE]) + push_data(redeem_script)
+        script_sigs.append(bytes([OP_0]) + push_data(owner_sig) + push_data(qube_sig) + bytes([OP_FALSE]) + push_data(redeem_script))
     else:
         raise ValueError(f"Unknown spending path: {spending_path}")
 
@@ -569,12 +566,13 @@ def build_p2sh_spending_tx(
     tx += struct.pack('<I', 2)
 
     # Input count
-    tx += var_int(1)
+    tx += var_int(len(utxos))
 
-    # Input
-    tx += serialize_outpoint(utxo.txid, utxo.vout)
-    tx += var_int(len(script_sig)) + script_sig
-    tx += struct.pack('<I', 0xffffffff)  # Sequence
+    # Inputs
+    for i, utxo in enumerate(utxos):
+        tx += serialize_outpoint(utxo.txid, utxo.vout)
+        tx += var_int(len(script_sigs[i])) + script_sigs[i]
+        tx += struct.pack('<I', 0xffffffff)  # Sequence
 
     # Output count
     tx += var_int(len(output_scripts))

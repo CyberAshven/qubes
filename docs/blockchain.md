@@ -5,81 +5,104 @@ Qubes uses Bitcoin Cash CashTokens to create immutable NFT identities for AI age
 ## Overview
 
 Each Qube can be "minted" as an NFT on the Bitcoin Cash blockchain:
-- **Immutable identity proof**: Public key hash stored on-chain
+- **Immutable identity proof**: Public key commitment stored on-chain
 - **BCMR metadata**: Rich metadata following Bitcoin Cash Metadata Registry standard
+- **Permissionless**: CashScript covenant allows anyone to mint — no server involvement
 - **Low cost**: ~$0.01 USD equivalent in BCH
 - **Instant**: 0-confirmation accepted, typically confirmed in ~10 minutes
 
-## Minting Flow
+## CashScript Covenant
+
+The minting contract (`covenant/qubes_mint.cash`) is a 2-function CashScript covenant:
+
+```cashscript
+contract QubesMint(bytes20 platformPkh) {
+    function mint(bytes32 commitment) {
+        // Minting token must be returned to covenant (Output 0)
+        require(tx.outputs[0].lockingBytecode == tx.inputs[this.activeInputIndex].lockingBytecode);
+        require(tx.outputs[0].tokenCategory == tx.inputs[this.activeInputIndex].tokenCategory);
+        require(tx.outputs[0].value >= 1000);
+        // Immutable NFT with commitment sent to recipient (Output 1)
+        bytes tokenCategoryImmutable = tx.inputs[this.activeInputIndex].tokenCategory.split(32)[0];
+        require(tx.outputs[1].tokenCategory == tokenCategoryImmutable);
+        require(tx.outputs[1].nftCommitment == commitment);
+        require(tx.outputs[1].value >= 1000);
+    }
+    function migrate(pubkey platformPk, sig platformSig) {
+        require(hash160(platformPk) == platformPkh);
+        require(checkSig(platformSig, platformPk));
+    }
+}
+```
+
+- **`mint(commitment)`**: Permissionless — anyone can call it. Returns the minting token to the covenant and creates an immutable NFT with the given commitment.
+- **`migrate(pubkey, sig)`**: Platform-only — moves the minting token to a new covenant version (requires platform signature).
+
+### On-chain Constants
+- **Category ID**: `c9054d53dcc075dd7226ea319f20d43df102371149311c9239f6c0ea1200b80f`
+- **Covenant address**: `bitcoincash:rdlqc0y2ulzyp0ulk3t6gn56lzrxt2fq7s2j232vzghww6m8mtqr7h0rx97sy` (v2, P2SH32)
+- **Platform pubkey**: `02acd9db52e4becd10164ba9e97c2d5ff20a831dde6c9cae89a4b4b2ecc9837741`
+
+## Minting Flow (WalletConnect)
+
+The current minting flow uses WalletConnect v2 to sign transactions client-side. No server or platform key is involved in minting.
 
 ```
-1. User clicks "Mint" in GUI
+1. User connects BCH wallet via WalletConnect v2
            │
            ▼
-2. Client sends registration request to qube.cash
-   POST /api/v2/register
-   {
-     "name": "Alice",
-     "qube_id": "A1B2C3D4",
-     "public_key": "04abc...",
-     "commitment_hash": "sha256(identity_data)"
-   }
+2. Frontend calls create_qube_for_minting
+   → Python generates secp256k1 keypair + genesis block
+   → Commitment = SHA256(compressed_pubkey_hex)
            │
            ▼
-3. Server returns payment address + OP_RETURN data
-   {
-     "payment_address": "bitcoincash:qr...",
-     "amount_bch": 0.0001,
-     "registration_id": "reg_abc123",
-     "op_return_hex": "..."
-   }
+3. Frontend calls prepare_qube_mint
+   → Python calls covenant/mint-cli.ts in WC mode
+   → mint-cli.ts builds CashScript tx:
+     - Input 0: Covenant UTXO (minting token, unlocked by contract.unlock.mint())
+     - Input 1+: User's funding UTXOs (placeholder P2PKH unlockers)
+     - Output 0: Minting token returned to covenant (1000 sats)
+     - Output 1: Immutable NFT to recipient (1000 sats)
+     - Output 2: Change to user (if above dust)
+   → Returns WC transaction object (broadcast: false)
            │
            ▼
-4. User sends BCH payment (any wallet)
+4. Frontend sends tx to wallet via bch_signTransaction
+   → Wallet signs P2PKH inputs (covenant input already unlocked)
+   → Frontend broadcasts signed tx via Fulcrum WebSocket / REST fallback
            │
            ▼
-5. Server detects payment in mempool (0-conf)
-   PaymentMonitor using Fulcrum ElectrumX
-           │
-           ▼
-6. Server mints NFT with commitment hash
-   - Creates immutable CashToken
-   - Token ID derived from genesis TX
-           │
-           ▼
-7. Server updates BCMR registry
-   qube.cash/.well-known/bitcoin-cash-metadata-registry.json
-           │
-           ▼
-8. Client receives WebSocket notification
-   {
-     "status": "minted",
-     "token_id": "abc123...",
-     "tx_hash": "def456..."
-   }
-           │
-           ▼
-9. Qube identity updated with NFT info
+5. Frontend calls finalize_qube_mint
+   → Python saves BCMR metadata, uploads to IPFS via Pinata
+   → Updates local registry and Qube chain state
 ```
+
+### Key Implementation Files
+- `covenant/mint-cli.ts` — CLI for building mint transactions (subprocess called by Python)
+- `blockchain/covenant_client.py` — `CovenantMinter` class, Python wrapper around mint-cli.ts
+- `blockchain/manager.py` — High-level orchestration (`prepare_mint_transaction()`, `finalize_qube_nft()`)
+- `qubes-gui/src/services/walletConnect.ts` — WC v2 BCH implementation
+- `qubes-gui/src/contexts/WalletContext.tsx` — React context for wallet state
+
+### SDK Minting
+The `@qubesai/sdk` package provides equivalent functions for programmatic use:
+- `broadcastMint(params)` — Platform signs and broadcasts (for server-side use)
+- `prepareMintTransaction(params)` — Builds WC transaction object (for client-side use)
 
 ## NFT Structure
 
 ### CashToken Properties
-- **Category ID**: Derived from genesis transaction
-- **Capability**: None (immutable)
-- **Commitment**: SHA-256 hash of identity data
+- **Category ID**: `c9054d53...` (shared across all Qube NFTs)
+- **Capability**: None (immutable — cannot be modified after minting)
+- **Commitment**: SHA-256 hash of compressed public key hex (32 bytes)
 
-### Commitment Data
+### Commitment Derivation
 ```python
-commitment_data = {
-    "name": "Alice",
-    "qube_id": "A1B2C3D4",
-    "public_key_hash": sha256(public_key),
-    "created_at": 1699999999,
-    "version": "1.0"
-}
-commitment_hash = sha256(json.dumps(commitment_data, sort_keys=True))
+# From crypto/keys.py
+commitment = SHA256(compressed_pubkey_hex_string)  # 32 bytes, hex-encoded = 64 chars
 ```
+
+The commitment binds the on-chain NFT to the Qube's cryptographic identity without revealing the public key itself.
 
 ## BCMR Metadata
 
@@ -90,7 +113,7 @@ The server maintains a BCMR registry at:
 {
   "version": "2.0.0",
   "identities": {
-    "abc123...": {
+    "<category_id>": {
       "name": "Alice",
       "description": "Sovereign AI Agent",
       "uris": {
@@ -98,12 +121,12 @@ The server maintains a BCMR registry at:
         "web": "https://qube.cash/qubes/Alice_A1B2C3D4"
       },
       "token": {
-        "category": "abc123...",
+        "category": "<category_id>",
         "symbol": "QUBE",
         "nfts": {
           "parse": {
             "types": {
-              "": {
+              "<commitment>": {
                 "name": "Alice",
                 "description": "Qube ID: A1B2C3D4"
               }
@@ -120,8 +143,6 @@ The server maintains a BCMR registry at:
 
 ### Verify Qube Identity
 ```python
-# From blockchain/nft_auth.py
-
 def verify_qube_nft(qube_id: str, token_id: str) -> bool:
     # 1. Fetch token from blockchain
     token = fetch_cashtoken(token_id)
@@ -133,7 +154,7 @@ def verify_qube_nft(qube_id: str, token_id: str) -> bool:
     identity = load_qube_identity(qube_id)
 
     # 4. Recalculate expected commitment
-    expected = calculate_commitment_hash(identity)
+    expected = SHA256(serialize_public_key(identity.public_key))
 
     # 5. Compare
     return commitment == expected
@@ -157,54 +178,6 @@ def verify_chain_integrity(qube_id: str) -> bool:
     return True
 ```
 
-## Chain Sync
-
-Qubes can package their memory chain for backup or transfer:
-
-```python
-# From blockchain/chain_package.py
-
-def create_chain_package(qube) -> bytes:
-    """Create signed, compressed chain package"""
-    package = {
-        "qube_id": qube.qube_id,
-        "chain_blocks": [b.to_dict() for b in qube.chain.blocks],
-        "merkle_root": qube.chain.get_merkle_root(),
-        "created_at": time.time()
-    }
-
-    # Sign package
-    signature = sign_data(json.dumps(package), qube.private_key)
-    package["signature"] = signature
-
-    # Compress
-    return gzip.compress(json.dumps(package).encode())
-```
-
-## Server Components
-
-### Payment Monitor
-**Location**: Server at `/var/www/your-domain/api/services/payment_monitor.py`
-
-- Connects to Fulcrum ElectrumX server
-- Subscribes to payment addresses
-- Detects transactions in mempool (0-conf)
-- Triggers minting on payment detection
-
-### Minter Service
-**Location**: Server at `/var/www/your-domain/api/services/minter.py`
-
-- Uses `bitcash` library for BCH transactions
-- Creates CashToken NFTs
-- Manages platform minting wallet
-
-### BCMR Service
-**Location**: Server at `/var/www/your-domain/api/services/bcmr_service.py`
-
-- Maintains BCMR registry JSON
-- Adds new Qube metadata entries
-- Serves registry at `.well-known` endpoint
-
 ## IPFS Backup
 
 Qubes can be backed up to IPFS for cross-device portability.
@@ -223,33 +196,21 @@ Qubes can be backed up to IPFS for cross-device portability.
 4. Return IPFS CID (can be embedded in NFT commitment)
 ```
 
-### Backup Command
-```python
-from storage.ipfs_backup import QubeBackup
-
-backup = QubeBackup(pinata_api_key="...")
-result = await backup.backup_to_ipfs(qube, password="user_password")
-# Returns: {"ipfs_cid": "Qm...", "ipfs_url": "...", "encrypted_size": 12345}
-```
-
-### Restore Command
-```python
-result = await backup.restore_from_ipfs(
-    ipfs_cid="Qm...",
-    password="user_password",
-    data_dir=Path("data")
-)
-# Returns: {"qube_id": "...", "qube_name": "...", "chain_length": 42}
-```
-
 ### Environment Variables
 - `PINATA_API_KEY`: Pinata JWT token for IPFS uploads
 
+## Legacy Server-Side Minting
+
+The original minting flow used a server at `qube.cash` (FastAPI). This is still running but no longer used by the app:
+- `POST /api/v2/register` → Returns payment address → PaymentMonitor detects payment → Server mints with platform key
+- Server code at `/var/www/qube.cash/api/`
+
 ## Security Considerations
 
-1. **Commitment Hash**: On-chain commitment is a hash, not raw data
-2. **Immutable Tokens**: CashTokens with no capability cannot be modified
-3. **Server Key**: Platform minting key is stored in environment variables
-4. **Payment Verification**: Server verifies payment before minting
-5. **0-Conf Risk**: Minimal (~$0.01 value), double-spend unlikely
-6. **IPFS Encryption**: Backups encrypted with PBKDF2-SHA256 (600K iterations) + AES-256-GCM
+1. **Permissionless minting**: No platform key needed — the covenant enforces rules on-chain
+2. **Commitment privacy**: On-chain commitment is a hash of the pubkey, not the raw key
+3. **Immutable tokens**: CashTokens with no capability cannot be modified after creation
+4. **Client-side signing**: Private keys never leave the user's wallet
+5. **Platform key scope**: Only used for `migrate()` — moving the minting token between covenant versions
+6. **0-Conf risk**: Minimal (~$0.01 value), double-spend economically irrational
+7. **IPFS encryption**: Backups encrypted with PBKDF2-SHA256 (600K iterations) + AES-256-GCM

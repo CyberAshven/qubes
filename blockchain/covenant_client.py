@@ -31,10 +31,21 @@ def _find_covenant_dir() -> Path:
 
 def _find_tsx() -> str:
     """Find the tsx binary (local node_modules or global)."""
+    import sys
     covenant_dir = _find_covenant_dir()
-    local_tsx = covenant_dir / "node_modules" / ".bin" / "tsx"
-    if local_tsx.exists():
-        return str(local_tsx)
+    bin_dir = covenant_dir / "node_modules" / ".bin"
+
+    if sys.platform == "win32":
+        # Windows: use .cmd wrapper, or fall back to npx
+        local_cmd = bin_dir / "tsx.cmd"
+        if local_cmd.exists():
+            return str(local_cmd)
+    else:
+        # Unix: use symlink directly
+        local_tsx = bin_dir / "tsx"
+        if local_tsx.exists():
+            return str(local_tsx)
+
     return "tsx"  # Fall back to global
 
 
@@ -74,7 +85,8 @@ class CovenantMinter:
         self,
         qube,
         recipient_address: str,
-        user_address: str
+        user_address: str,
+        change_address: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Build an unsigned WalletConnect transaction object for minting.
@@ -86,6 +98,8 @@ class CovenantMinter:
             qube: Qube instance with public_key
             recipient_address: BCH cashaddr (token-aware, bitcoincash:z...)
             user_address: User's BCH address from WalletConnect session
+            change_address: Where to send change (defaults to user_address).
+                           Should differ from recipient_address to avoid inflating NFT balance.
 
         Returns:
             {
@@ -113,6 +127,9 @@ class CovenantMinter:
             "platform_public_key": self.platform_public_key,
             "mode": "walletconnect"
         }
+
+        if change_address:
+            cli_args["change_address"] = change_address
 
         result = await self._call_mint_cli(cli_args)
 
@@ -265,5 +282,5 @@ class CovenantMinter:
             except Exception as e:
                 return {"success": False, "error": str(e)}
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, _run)

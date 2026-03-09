@@ -1,9 +1,9 @@
 /**
- * WalletConnect Button
+ * WalletConnect Button — Multi-Session
  *
- * Shows "Connect Wallet" when disconnected.
- * When connecting, shows a QR code + copyable URI for BCH wallets.
- * When connected, shows truncated address + disconnect.
+ * Shows all connected wallet sessions with individual disconnect buttons.
+ * "Connect Another Wallet" button always available.
+ * When connecting, shows QR code + copyable URI.
  */
 
 import React, { useState } from 'react';
@@ -16,8 +16,9 @@ interface Props {
 }
 
 export default function WalletConnectButton({ className = '', compact = false }: Props) {
-  const { connected, address, connecting, wcUri, error, connect, disconnect } = useWallet();
+  const { sessions, connecting, wcUri, error, connect, disconnectSession } = useWallet();
   const [copied, setCopied] = useState(false);
+  const [expanded, setExpanded] = useState(false);
 
   const truncateAddress = (addr: string) => {
     if (addr.length <= 20) return addr;
@@ -36,27 +37,6 @@ export default function WalletConnectButton({ className = '', compact = false }:
       // Fallback: select the text
     }
   };
-
-  // Connected state
-  if (connected && address) {
-    return (
-      <div className={`flex items-center gap-2 ${className}`}>
-        <span
-          className="px-3 py-1.5 rounded-lg bg-accent-primary/10 border border-accent-primary/30 text-accent-primary text-sm font-mono"
-          title={address}
-        >
-          {truncateAddress(address)}
-        </span>
-        <button
-          className="px-2 py-1.5 rounded-lg bg-glass-bg border border-glass-border text-text-tertiary hover:text-accent-danger text-xs transition-colors"
-          onClick={disconnect}
-          title="Disconnect wallet"
-        >
-          Disconnect
-        </button>
-      </div>
-    );
-  }
 
   // Connecting state — show QR code + copy URI
   if (connecting && wcUri) {
@@ -102,7 +82,77 @@ export default function WalletConnectButton({ className = '', compact = false }:
     );
   }
 
-  // Disconnected state
+  // Has sessions — show session list + connect another
+  if (sessions.length > 0) {
+    // Compact mode: show count badge + expand on click
+    if (compact) {
+      return (
+        <div className={`relative ${className}`}>
+          <button
+            onClick={() => setExpanded(!expanded)}
+            className="px-3 py-1.5 rounded-lg bg-accent-primary/10 border border-accent-primary/30 text-accent-primary text-sm font-medium"
+            title={`${sessions.length} wallet(s) connected`}
+          >
+            {sessions.length} Wallet{sessions.length > 1 ? 's' : ''}
+          </button>
+          {expanded && (
+            <div className="absolute right-0 top-full mt-1 z-50 min-w-[280px] bg-bg-secondary border border-glass-border rounded-lg shadow-xl p-3 space-y-2">
+              {sessions.map((s) => (
+                <div key={s.topic} className="flex items-center gap-2 text-xs">
+                  <span className="flex-1 font-mono text-text-primary truncate" title={s.address}>
+                    {truncateAddress(s.address)}
+                  </span>
+                  <button
+                    onClick={() => disconnectSession(s.topic)}
+                    className="px-2 py-1 rounded bg-glass-bg border border-glass-border text-text-tertiary hover:text-accent-danger transition-colors"
+                  >
+                    x
+                  </button>
+                </div>
+              ))}
+              <button
+                onClick={() => { setExpanded(false); connect(); }}
+                className="w-full px-2 py-1.5 rounded-lg bg-accent-primary/20 border border-accent-primary/40 text-accent-primary text-xs font-medium hover:bg-accent-primary/30 transition-colors"
+              >
+                + Connect Another
+              </button>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // Full mode: show all sessions inline
+    return (
+      <div className={`space-y-2 ${className}`}>
+        {sessions.map((s) => (
+          <div key={s.topic} className="flex items-center gap-2">
+            <span
+              className="px-3 py-1.5 rounded-lg bg-accent-primary/10 border border-accent-primary/30 text-accent-primary text-sm font-mono flex-1 truncate"
+              title={s.address}
+            >
+              {truncateAddress(s.address)}
+            </span>
+            <button
+              className="px-2 py-1.5 rounded-lg bg-glass-bg border border-glass-border text-text-tertiary hover:text-accent-danger text-xs transition-colors"
+              onClick={() => disconnectSession(s.topic)}
+              title="Disconnect this wallet"
+            >
+              Disconnect
+            </button>
+          </div>
+        ))}
+        <button
+          className="px-4 py-2 rounded-lg bg-accent-primary/20 border border-accent-primary/40 text-accent-primary text-sm font-medium hover:bg-accent-primary/30 transition-colors w-full"
+          onClick={connect}
+        >
+          + Connect Another Wallet
+        </button>
+      </div>
+    );
+  }
+
+  // No sessions — show connect button
   return (
     <div className={className}>
       <button

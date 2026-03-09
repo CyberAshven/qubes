@@ -1,36 +1,58 @@
 /**
- * WalletConnect Context
+ * WalletConnect Context — Multi-Session
  *
- * Provides wallet connection state to the entire app.
- * Wraps the walletConnect service with React state management.
+ * Tracks multiple wallet sessions and provides per-qube session lookup.
+ * Each session can have its public key recovered for qube-to-wallet matching.
  *
- * After connection, auto-retrieves the user's compressed public key:
- * 1. Try bch_getAddresses (some wallets include publicKey)
- * 2. Fallback: bch_signMessage + secp256k1 recovery
+ * - `sessions`: all active WC sessions
+ * - `connected` / `address` / `publicKey`: convenience getters for the active session
+ * - `getSessionForQube(ownerPubkey)`: find the session matching a qube's owner
+ * - `signTransactionWith(topic, wcTx)`: sign using a specific session
  */
 
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import * as wc from '../services/walletConnect';
 import { recoverCompressedPubkey } from '../utils/recoverPublicKey';
 
+export interface WalletSession extends wc.WcSession {
+  publicKey?: string;
+  publicKeySource?: 'wallet' | 'recovered';
+}
+
 interface WalletState {
+  // All connected sessions (with pubkeys)
+  sessions: WalletSession[];
+
+  // Convenience: is ANY session connected?
   connected: boolean;
+  // Active session address (first session)
   address: string | null;
+  // Active session pubkey (first session)
   publicKey: string | null;
   publicKeySource: 'wallet' | 'recovered' | null;
   recoveringPubkey: boolean;
   connecting: boolean;
   wcUri: string | null;
   error: string | null;
+
+  // Session management
   connect: () => Promise<void>;
   disconnect: () => Promise<void>;
+  disconnectSession: (topic: string) => Promise<void>;
+
+  // Per-qube session lookup
+  getSessionForQube: (ownerPubkey: string | undefined) => WalletSession | null;
+
+  // Sign with a specific session (or default)
   signTransaction: (wcTransaction: string) => Promise<wc.WcSignResult>;
+  signTransactionWith: (topic: string, wcTransaction: string) => Promise<wc.WcSignResult>;
   signMessage: (message: string, userPrompt?: string) => Promise<string>;
   getTokens: () => Promise<any[] | null>;
   getBalance: () => Promise<{ confirmed: number; unconfirmed?: number } | null>;
 }
 
 const WalletContext = createContext<WalletState>({
+  sessions: [],
   connected: false,
   address: null,
   publicKey: null,
@@ -41,107 +63,121 @@ const WalletContext = createContext<WalletState>({
   error: null,
   connect: async () => {},
   disconnect: async () => {},
+  disconnectSession: async () => {},
+  getSessionForQube: () => null,
   signTransaction: async () => ({ signedTransaction: '', signedTransactionHash: '' }),
+  signTransactionWith: async () => ({ signedTransaction: '', signedTransactionHash: '' }),
   signMessage: async () => '',
   getTokens: async () => null,
   getBalance: async () => null,
 });
 
 export function WalletProvider({ children }: { children: React.ReactNode }) {
-  const [connected, setConnected] = useState(false);
-  const [address, setAddress] = useState<string | null>(null);
-  const [publicKey, setPublicKey] = useState<string | null>(null);
-  const [publicKeySource, setPublicKeySource] = useState<'wallet' | 'recovered' | null>(null);
-  const [recoveringPubkey, setRecoveringPubkey] = useState(false);
+  const [sessions, setSessions] = useState<WalletSession[]>([]);
   const [connecting, setConnecting] = useState(false);
   const [wcUri, setWcUri] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [recoveringPubkey, setRecoveringPubkey] = useState(false);
 
-  // Track whether this is a fresh connection (vs session restore)
-  const freshConnectionRef = useRef(false);
+  // Track which sessions we've attempted pubkey recovery on
+  const recoveredTopicsRef = useRef<Set<string>>(new Set());
+  // Track fresh connections (vs session restore)
+  const freshTopicsRef = useRef<Set<string>>(new Set());
 
-  // Listen for session changes (including restored sessions)
+  // Listen for session changes from the service
   useEffect(() => {
-    const unsub = wc.onSessionChange((session) => {
-      if (session) {
-        setConnected(true);
-        setAddress(session.address);
-        setWcUri(null); // Clear URI once connected
-      } else {
-        setConnected(false);
-        setAddress(null);
-        setPublicKey(null);
-        setPublicKeySource(null);
-      }
+    const unsub = wc.onSessionsChange((wcSessions) => {
+      setSessions((prev) => {
+        // Merge: keep existing pubkeys, add new sessions, remove deleted ones
+        const prevMap = new Map(prev.map((s) => [s.topic, s]));
+        return wcSessions.map((s) => ({
+          ...s,
+          publicKey: prevMap.get(s.topic)?.publicKey,
+          publicKeySource: prevMap.get(s.topic)?.publicKeySource,
+        }));
+      });
     });
 
-    // Check for existing session on mount
-    const existing = wc.getSession();
-    if (existing) {
-      setConnected(true);
-      setAddress(existing.address);
+    // Check for existing sessions synchronously
+    const existing = wc.getAllSessions();
+    if (existing.length > 0) {
+      setSessions(existing.map((s) => ({ ...s })));
     }
+
+    // Eagerly initialize to restore sessions from storage
+    wc.initClient().catch(() => {});
 
     return unsub;
   }, []);
 
-  // When connected, try to fetch the public key:
-  // 1. bch_getAddresses (some wallets include publicKey)
-  // 2. bch_signMessage + recovery (only on fresh connections)
+  // Recover public keys for sessions that don't have them yet
   useEffect(() => {
-    if (!connected || !address) return;
-    let cancelled = false;
+    if (sessions.length === 0) return;
 
-    (async () => {
-      // Step 1: Try bch_getAddresses
-      try {
-        const addrs = await wc.getAddresses();
-        if (cancelled) return;
-        const withPubkey = addrs.find((a) => a.publicKey);
-        if (withPubkey?.publicKey) {
-          setPublicKey(withPubkey.publicKey);
-          setPublicKeySource('wallet');
-          return;
+    const recoverPubkeys = async () => {
+      for (const session of sessions) {
+        if (session.publicKey) continue;
+        if (recoveredTopicsRef.current.has(session.topic)) continue;
+        recoveredTopicsRef.current.add(session.topic);
+
+        // Step 1: Try bch_getAddresses
+        try {
+          const addrs = await wc.getAddresses(session.topic);
+          const withPubkey = addrs.find((a) => a.publicKey);
+          if (withPubkey?.publicKey) {
+            setSessions((prev) =>
+              prev.map((s) =>
+                s.topic === session.topic
+                  ? { ...s, publicKey: withPubkey.publicKey, publicKeySource: 'wallet' as const }
+                  : s
+              )
+            );
+            continue;
+          }
+        } catch {
+          // Wallet doesn't support getAddresses
         }
-      } catch {
-        // Wallet doesn't support getAddresses
-      }
 
-      // Step 2: Recover pubkey from signMessage (fresh connections only)
-      if (cancelled || !freshConnectionRef.current) return;
-      setRecoveringPubkey(true);
-      try {
-        const message = `Qubes identity verification: ${address}`;
-        const signatureBase64 = await wc.signMessage(
-          message,
-          'Verify your identity for Qube creation',
-        );
-        if (cancelled) return;
-        const recovered = recoverCompressedPubkey(message, signatureBase64);
-        if (/^(02|03)[a-fA-F0-9]{64}$/.test(recovered)) {
-          setPublicKey(recovered);
-          setPublicKeySource('recovered');
+        // Step 2: Recover from signMessage (fresh connections only)
+        if (!freshTopicsRef.current.has(session.topic)) continue;
+        setRecoveringPubkey(true);
+        try {
+          const message = `Qubes identity verification: ${session.address}`;
+          const signatureBase64 = await wc.signMessage(
+            message,
+            'Verify your identity for Qube creation',
+            session.topic,
+          );
+          const recovered = recoverCompressedPubkey(message, signatureBase64);
+          if (/^(02|03)[a-fA-F0-9]{64}$/.test(recovered)) {
+            setSessions((prev) =>
+              prev.map((s) =>
+                s.topic === session.topic
+                  ? { ...s, publicKey: recovered, publicKeySource: 'recovered' as const }
+                  : s
+              )
+            );
+          }
+        } catch {
+          // User rejected or wallet doesn't support signMessage
+        } finally {
+          setRecoveringPubkey(false);
         }
-      } catch {
-        // User rejected or wallet doesn't support signMessage — manual entry
-      } finally {
-        if (!cancelled) setRecoveringPubkey(false);
       }
-    })();
+    };
 
-    return () => { cancelled = true; };
-  }, [connected, address]);
+    recoverPubkeys();
+  }, [sessions.length]);
 
-  const connect = useCallback(async () => {
+  const connectWallet = useCallback(async () => {
     setConnecting(true);
     setError(null);
     setWcUri(null);
-    freshConnectionRef.current = true;
     try {
-      await wc.connect((uri) => setWcUri(uri));
+      const session = await wc.connect((uri) => setWcUri(uri));
+      freshTopicsRef.current.add(session.topic);
       setWcUri(null);
     } catch (e: any) {
-      freshConnectionRef.current = false;
       setWcUri(null);
       const msg = e?.message || String(e);
       if (!msg.includes('User rejected') && !msg.includes('rejected')) {
@@ -152,17 +188,34 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  const disconnect = useCallback(async () => {
-    await wc.disconnect();
-    setPublicKey(null);
-    setPublicKeySource(null);
-    setRecoveringPubkey(false);
+  const disconnectAll = useCallback(async () => {
+    await wc.disconnectAll();
+    recoveredTopicsRef.current.clear();
+    freshTopicsRef.current.clear();
     setWcUri(null);
-    freshConnectionRef.current = false;
   }, []);
+
+  const disconnectOne = useCallback(async (topic: string) => {
+    await wc.disconnectSession(topic);
+    recoveredTopicsRef.current.delete(topic);
+    freshTopicsRef.current.delete(topic);
+  }, []);
+
+  // Find the session that owns a specific qube (by matching pubkey)
+  const getSessionForQube = useCallback(
+    (ownerPubkey: string | undefined): WalletSession | null => {
+      if (!ownerPubkey) return null;
+      return sessions.find((s) => s.publicKey === ownerPubkey) || null;
+    },
+    [sessions],
+  );
 
   const signTransaction = useCallback(async (wcTransaction: string) => {
     return wc.signTransaction(wcTransaction);
+  }, []);
+
+  const signTransactionWith = useCallback(async (topic: string, wcTransaction: string) => {
+    return wc.signTransaction(wcTransaction, topic);
   }, []);
 
   const signMessage = useCallback(async (message: string, userPrompt?: string) => {
@@ -177,12 +230,30 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     return wc.getBalance();
   }, []);
 
+  // Convenience getters from first session
+  const firstSession = sessions[0] || null;
+
   return (
     <WalletContext.Provider
       value={{
-        connected, address, publicKey, publicKeySource, recoveringPubkey,
-        connecting, wcUri, error, connect, disconnect, signTransaction, signMessage,
-        getTokens, getBalance,
+        sessions,
+        connected: sessions.length > 0,
+        address: firstSession?.address || null,
+        publicKey: firstSession?.publicKey || null,
+        publicKeySource: firstSession?.publicKeySource || null,
+        recoveringPubkey,
+        connecting,
+        wcUri,
+        error,
+        connect: connectWallet,
+        disconnect: disconnectAll,
+        disconnectSession: disconnectOne,
+        getSessionForQube,
+        signTransaction,
+        signTransactionWith,
+        signMessage,
+        getTokens,
+        getBalance,
       }}
     >
       {children}

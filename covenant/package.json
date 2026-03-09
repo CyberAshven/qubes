@@ -6,9 +6,11 @@
   "type": "module",
   "scripts": {
     "compile": "cashc qubes_mint.cash --output qubes_mint.json",
+    "compile:wallet": "cashc qubes_wallet.cash --output qubes_wallet.json",
     "deploy": "tsx deploy.ts",
     "migrate": "tsx migrate.ts",
-    "mint": "tsx mint-cli.ts"
+    "mint": "tsx mint-cli.ts",
+    "wallet": "tsx wallet-cli.ts"
   },
   "dependencies": {
     "@bitauth/libauth": "^3.1.0-next.8",

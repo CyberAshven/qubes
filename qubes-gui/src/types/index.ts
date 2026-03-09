@@ -49,7 +49,6 @@ export interface Qube {
   wallet_address?: string;  // P2SH address (bitcoincash:p...)
   wallet_owner_pubkey?: string;  // Owner's public key (hex)
   wallet_qube_pubkey?: string;  // Qube's public key for wallet (hex)
-  wallet_owner_q_address?: string;  // Owner's 'q' address (standard BCH)
 }
 
 export type Tab = 'dashboard' | 'blocks' | 'qubes' | 'relationships' | 'skills' | 'economy' | 'settings' | 'connections' | 'games';

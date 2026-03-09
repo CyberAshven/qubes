@@ -817,7 +817,6 @@ class GUIBridge:
                     "wallet_address": qube.get("wallet_address"),
                     "wallet_owner_pubkey": qube.get("wallet_owner_pubkey"),
                     "wallet_qube_pubkey": qube.get("wallet_qube_pubkey"),
-                    "wallet_owner_q_address": qube.get("wallet_owner_q_address"),
                 }
 
                 gui_qubes.append(gui_qube)
@@ -2792,14 +2791,22 @@ class GUIBridge:
 
     # ========== End WSL2 TTS Setup Commands ==========
 
-    async def delete_qube(self, qube_id: str) -> Dict[str, Any]:
-        """Delete a qube and all its data"""
+    async def delete_qube(self, qube_id: str, password: str = None, sweep_address: str = None) -> Dict[str, Any]:
+        """Delete a qube and all its data, optionally sweeping wallet funds first."""
         try:
-            success = await self.orchestrator.delete_qube(qube_id)
+            if password:
+                self.orchestrator.set_master_key(password)
+
+            swept_sats = await self.orchestrator.delete_qube(
+                qube_id,
+                password=password,
+                sweep_address=sweep_address
+            )
 
             return {
-                "success": success,
-                "qube_id": qube_id
+                "success": True,
+                "qube_id": qube_id,
+                "swept_sats": swept_sats or 0
             }
         except Exception as e:
             logger.error(f"Failed to delete qube: {e}")
@@ -8087,24 +8094,23 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
             logger.info(f"=== GET_WALLET_INFO for {qube_id} ===")
             logger.info(f"P2SH address from genesis: {p2sh_address}")
 
-            # Get owner pubkey and derive NFT address
-            owner_pubkey = wallet_info.get("owner_pubkey")
-            nft_address = None
-            if owner_pubkey:
-                from crypto.bch_script import pubkey_to_token_address
-                nft_address = pubkey_to_token_address(owner_pubkey, "mainnet")
-
             # Get cached data immediately (non-blocking)
             import time
             financial = qube.chain_state.state.get("financial", {})
             wallet_data = financial.get("wallet", {})
             last_sync = wallet_data.get("last_sync")
 
-            # Check if cache is stale
+            # Check if cache is stale or address changed (e.g. after migration)
+            cached_address = wallet_data.get("address")
             needs_sync = (
                 last_sync is None or
-                (time.time() - last_sync) > 300  # 5 minutes
+                (time.time() - last_sync) > 300 or  # 5 minutes
+                (cached_address and cached_address != p2sh_address)  # address changed
             )
+            if cached_address and cached_address != p2sh_address:
+                # Address changed (migration) — clear stale balance
+                wallet_data = {}
+                logger.info(f"Wallet address changed from {cached_address[:30]}... to {p2sh_address[:30]}..., clearing cache")
 
             logger.info(f"Cached balance: {wallet_data.get('balance_satoshis', 'NOT SET')} sats")
             logger.info(f"Last sync: {last_sync}, needs_sync: {needs_sync}")
@@ -8137,10 +8143,7 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
                 except Exception as e:
                     logger.warning(f"Balance fetch failed for {qube_id}: {e}")
 
-            nft_data = financial.get("nft_balance", {})
-
             p2sh_balance = wallet_data.get("balance_satoshis", 0)
-            nft_balance = nft_data.get("balance_satoshis", 0)
 
             # Get pending transactions from chain_state (source of truth)
             pending_txs = qube.chain_state.get_pending_transactions()
@@ -8149,13 +8152,10 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
                 "success": True,
                 "qube_id": qube_id,
                 "wallet_address": p2sh_address,
-                "nft_address": nft_address,
                 "owner_pubkey": wallet_info.get("owner_pubkey"),
                 "qube_pubkey": wallet_info.get("qube_pubkey"),
                 "balance_sats": p2sh_balance,
                 "balance_bch": p2sh_balance / 100_000_000,
-                "nft_balance_sats": nft_balance,
-                "nft_balance_bch": nft_balance / 100_000_000,
                 "last_sync": wallet_data.get("last_sync"),
                 "pending_transactions": [
                     {
@@ -8194,87 +8194,45 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
                 return
 
             p2sh_address = wallet_info.get("p2sh_address")
-            owner_pubkey = wallet_info.get("owner_pubkey")
 
             if not p2sh_address:
                 return
 
-            # Fetch both P2SH and NFT balances using Blockchair API
-            # Use None to indicate "not fetched" vs 0 which means "actually empty"
+            # Fetch P2SH wallet balance from Blockchair (only API that supports P2SH)
             p2sh_balance = None
-            nft_balance = None
-
-            # Prepare addresses
             p2sh_addr_full = p2sh_address if ":" in p2sh_address else f"bitcoincash:{p2sh_address}"
-            q_address = None
-            q_addr_full = None
-            if owner_pubkey:
-                from crypto.bch_script import pubkey_to_p2pkh_address
-                q_address = pubkey_to_p2pkh_address(owner_pubkey, "mainnet", token_aware=False)
-                q_addr_full = q_address if ":" in q_address else f"bitcoincash:{q_address}"
-
-            async def fetch_balance(session, address_full, address_type):
-                """Fetch balance for a single address from Blockchair."""
-                try:
-                    api_url = f"https://api.blockchair.com/bitcoin-cash/dashboards/address/{address_full}"
-                    logger.info(f"Fetching {address_type} balance from Blockchair: {address_full}")
-                    async with session.get(api_url) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            if "data" in data and address_full in data["data"]:
-                                addr_data = data["data"][address_full].get("address", {})
-                                balance = addr_data.get("balance", 0)
-                                logger.info(f"Blockchair {address_type} balance: {balance} sats for {address_full}")
-                                return balance
-                        elif resp.status == 430:
-                            logger.warning(f"Blockchair rate limited for {address_type}: {address_full}")
-                        else:
-                            logger.warning(f"Blockchair returned status {resp.status} for {address_type}: {address_full}")
-                except Exception as e:
-                    logger.error(f"Blockchair API failed for {address_type}: {e}")
-                return None
 
             try:
                 timeout = aiohttp.ClientTimeout(total=15)
                 async with aiohttp.ClientSession(timeout=timeout) as session:
-                    # Fetch both balances concurrently
-                    tasks = [fetch_balance(session, p2sh_addr_full, "P2SH")]
-                    if q_addr_full:
-                        tasks.append(fetch_balance(session, q_addr_full, "NFT"))
-
-                    results = await asyncio.gather(*tasks, return_exceptions=True)
-
-                    # Parse results
-                    if not isinstance(results[0], Exception):
-                        p2sh_balance = results[0]
-                    if len(results) > 1 and not isinstance(results[1], Exception):
-                        nft_balance = results[1]
-
+                    api_url = f"https://api.blockchair.com/bitcoin-cash/dashboards/address/{p2sh_addr_full}"
+                    logger.info(f"Fetching P2SH balance from Blockchair: {p2sh_addr_full}")
+                    async with session.get(api_url) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            if "data" in data and p2sh_addr_full in data["data"]:
+                                addr_data = data["data"][p2sh_addr_full].get("address", {})
+                                p2sh_balance = addr_data.get("balance", 0)
+                                logger.info(f"Blockchair P2SH balance: {p2sh_balance} sats")
+                        elif resp.status == 430:
+                            logger.warning(f"Blockchair rate limited for P2SH: {p2sh_addr_full}")
+                        else:
+                            logger.warning(f"Blockchair returned status {resp.status} for P2SH")
             except Exception as e:
                 logger.warning(f"Balance sync failed: {e}")
 
             # Update chain_state only if we got valid data
-            # Don't overwrite cached values with None (API failure)
             import time
-            financial = qube.chain_state.state.setdefault("financial", {})
-
-            # P2SH wallet balance - only update if we got a response
             if p2sh_balance is not None:
+                financial = qube.chain_state.state.setdefault("financial", {})
                 wallet_data = financial.setdefault("wallet", {})
                 wallet_data["balance_satoshis"] = p2sh_balance
                 wallet_data["balance_bch"] = p2sh_balance / 100_000_000
                 wallet_data["last_sync"] = time.time()
                 wallet_data["address"] = p2sh_address
+                qube.chain_state._save()
 
-            # NFT/BCH balance - only update if we got a response
-            if nft_balance is not None:
-                nft_data = financial.setdefault("nft_balance", {})
-                nft_data["balance_satoshis"] = nft_balance
-                nft_data["balance_bch"] = nft_balance / 100_000_000
-                nft_data["last_sync"] = time.time()
-
-            qube.chain_state._save()
-            logger.debug("wallet_balances_synced", p2sh=p2sh_balance, nft=nft_balance)
+            logger.debug("wallet_balance_synced", p2sh=p2sh_balance)
 
         except Exception as e:
             logger.warning(f"Failed to sync wallet balances: {e}")
@@ -8989,8 +8947,8 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
         qube_id: str,
         to_address: str,
         amount_satoshis: int,
-        owner_wif: str,
-        password: str
+        owner_wif: str = "",
+        password: str = ""
     ) -> Dict[str, Any]:
         """
         Owner withdraws funds directly from Qube wallet (owner-only path).
@@ -9002,7 +8960,7 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
             qube_id: Qube ID
             to_address: BCH address to send to
             amount_satoshis: Amount in satoshis (0 for all)
-            owner_wif: Owner's WIF private key
+            owner_wif: Owner's WIF private key (optional — uses stored key if empty)
             password: User's master password
 
         Returns:
@@ -9022,6 +8980,12 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
             if not wallet_info:
                 return {"success": False, "error": "Qube does not have a wallet configured"}
 
+            # If no WIF provided, try stored key
+            if not owner_wif:
+                owner_wif = self.orchestrator.get_owner_wif_for_qube(qube_id) or ""
+            if not owner_wif:
+                return {"success": False, "error": "No owner key provided and no stored key found. Save your owner key in Wallet Security settings first."}
+
             # Initialize wallet transaction manager
             wallet_manager = qube.wallet_manager
 
@@ -9040,6 +9004,157 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
 
         except Exception as e:
             logger.error(f"Failed to withdraw from wallet: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def prepare_owner_withdraw_wc(
+        self,
+        qube_id: str,
+        to_address: str,
+        amount_satoshis: int,
+        owner_address: str,
+        password: str = ""
+    ) -> Dict[str, Any]:
+        """
+        Prepare a WalletConnect transaction for owner withdrawal.
+
+        Returns a WC transaction object that the frontend sends to the
+        connected wallet for signing. The wallet signs and broadcasts.
+
+        Args:
+            qube_id: Qube ID
+            to_address: Destination BCH address
+            amount_satoshis: Amount in satoshis
+            owner_address: Owner's P2PKH address from WC session
+            password: Master password
+        """
+        try:
+            self.orchestrator.set_master_key(password)
+            qube = await self.orchestrator.load_qube(qube_id)
+            if not qube:
+                return {"success": False, "error": f"Qube {qube_id} not found"}
+
+            wallet_info = self._get_wallet_info_from_genesis(qube.genesis_block)
+            if not wallet_info:
+                return {"success": False, "error": "Qube does not have a wallet configured"}
+
+            from crypto.wallet import CashScriptWallet
+            wallet = qube.wallet_manager.wallet
+            if not isinstance(wallet, CashScriptWallet):
+                return {"success": False, "error": "WalletConnect withdrawal requires a CashScript wallet. This Qube uses a legacy P2SH wallet."}
+
+            outputs = [{"address": to_address, "value": amount_satoshis}]
+            wc_transaction = await wallet.owner_spend_wc(owner_address, outputs)
+
+            return {
+                "success": True,
+                "wc_transaction": wc_transaction,
+                "contract_address": wallet.p2sh_address
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to prepare WC withdrawal: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def prepare_approve_tx_wc(
+        self,
+        qube_id: str,
+        tx_id: str,
+        owner_address: str,
+        password: str = ""
+    ) -> Dict[str, Any]:
+        """
+        Prepare a WalletConnect transaction for approving a Qube-proposed tx.
+
+        The Qube signs the contract input, and the WC wallet signs the
+        owner's P2PKH input.
+
+        Args:
+            qube_id: Qube ID
+            tx_id: Pending transaction ID
+            owner_address: Owner's P2PKH address from WC session
+            password: Master password
+        """
+        try:
+            self.orchestrator.set_master_key(password)
+            qube = await self.orchestrator.load_qube(qube_id)
+            if not qube:
+                return {"success": False, "error": f"Qube {qube_id} not found"}
+
+            from crypto.wallet import CashScriptWallet
+            wallet = qube.wallet_manager.wallet
+            if not isinstance(wallet, CashScriptWallet):
+                return {"success": False, "error": "WalletConnect approval requires a CashScript wallet."}
+
+            # Get pending transaction
+            wallet_manager = qube.wallet_manager
+            pending = wallet_manager.get_pending_transaction(tx_id)
+            if not pending:
+                return {"success": False, "error": f"Pending transaction {tx_id} not found"}
+
+            # Build outputs from the pending tx (exclude change back to contract)
+            outputs = [
+                {"address": o.address, "value": o.value}
+                for o in pending.unsigned_tx.outputs
+                if o.address != wallet.p2sh_address
+            ]
+            if not outputs:
+                outputs = [{"address": o.address, "value": o.value} for o in pending.unsigned_tx.outputs]
+
+            wc_transaction = await wallet.qube_approved_wc(owner_address, outputs)
+
+            return {
+                "success": True,
+                "wc_transaction": wc_transaction,
+                "tx_id": tx_id,
+                "contract_address": wallet.p2sh_address
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to prepare WC approval: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def record_wallet_broadcast(
+        self,
+        qube_id: str,
+        txid: str,
+        to_address: str = "",
+        amount_satoshis: int = 0,
+        memo: str = "",
+        password: str = ""
+    ) -> Dict[str, Any]:
+        """
+        Record a wallet transaction that was broadcast via WalletConnect.
+
+        The WC wallet handles signing and broadcasting. This method just
+        records the result in the Qube's transaction history.
+        """
+        try:
+            self.orchestrator.set_master_key(password)
+            qube = await self.orchestrator.load_qube(qube_id)
+            if not qube:
+                return {"success": False, "error": f"Qube {qube_id} not found"}
+
+            import time
+            from blockchain.wallet_tx import TxHistoryEntry
+            wallet_manager = qube.wallet_manager
+            wallet_manager._add_to_history(TxHistoryEntry(
+                txid=txid,
+                tx_type="withdrawal",
+                amount=-amount_satoshis,
+                fee=0,
+                counterparty=to_address,
+                timestamp=time.time(),
+                block_height=None,
+                memo=memo or "WalletConnect transaction"
+            ))
+
+            # Invalidate balance cache
+            wallet_manager.wallet._cached_balance = None
+
+            return {"success": True, "txid": txid}
+
+        except Exception as e:
+            logger.error(f"Failed to record wallet broadcast: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
 
     async def get_wallet_transactions(
@@ -9140,6 +9255,19 @@ Respond to their trash talk! Keep it fun and in-character. Be witty, playful, or
     # =============================================================================
     # Wallet Security (Owner Keys, Whitelists, Stored-Key Approval)
     # =============================================================================
+
+    async def import_seed_phrase(self, nft_address: str, seed_phrase: str, password: str = None) -> Dict[str, Any]:
+        """Derive WIF from BIP39 seed phrase and save it for the NFT address."""
+        try:
+            if password:
+                self.orchestrator.set_master_key(password)
+            from crypto.seed_to_wif import seed_phrase_to_wif
+            wif = seed_phrase_to_wif(seed_phrase)
+            self.orchestrator.save_owner_key(nft_address, wif)
+            return {"success": True}
+        except Exception as e:
+            logger.error(f"Failed to import seed phrase: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
 
     async def save_owner_key(self, nft_address: str, owner_wif: str, password: str = None) -> Dict[str, Any]:
         """Save encrypted owner WIF for an NFT address."""
@@ -14214,7 +14342,7 @@ async def main():
 
             args = parser.parse_args()
             password = get_secret("password", required=False) or args.password
-            owner_wif = get_secret("owner_wif", required=True)
+            owner_wif = get_secret("owner_wif", required=False) or ""
 
             user_bridge = GUIBridge(user_id=user_id)
             result = await user_bridge.owner_withdraw_from_wallet(
@@ -14256,6 +14384,33 @@ async def main():
             print(json.dumps(result))
 
         # ==================== Wallet Security CLI Commands ====================
+
+        elif command == "import-seed-phrase":
+            # Derive WIF from BIP39 seed phrase and save for NFT address
+            if len(sys.argv) < 3:
+                print(json.dumps({"success": False, "error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("command")
+            parser.add_argument("user_id")
+            parser.add_argument("--nft-address", required=True)
+            parser.add_argument("--password", default=None)
+
+            args = parser.parse_args()
+            password = get_secret("password", required=False) or args.password
+            seed_phrase = get_secret("seed_phrase", required=True)
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.import_seed_phrase(
+                nft_address=args.nft_address,
+                seed_phrase=seed_phrase,
+                password=password
+            )
+            print(json.dumps(result))
 
         elif command == "save-owner-key":
             # Save encrypted owner WIF for an NFT address

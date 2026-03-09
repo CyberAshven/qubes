@@ -3,7 +3,6 @@ import { TransactionHistoryEntry } from '../types';
 
 interface WalletData {
   balance: number | null;
-  nftBalance: number | null;
   transactions: TransactionHistoryEntry[];
   totalTxCount: number;
   hasMoreTx: boolean;
@@ -19,7 +18,7 @@ interface WalletCacheState {
   getWalletData: (qubeId: string) => WalletData | null;
 
   // Set balance for a qube
-  setBalance: (qubeId: string, balance: number, nftBalance?: number) => void;
+  setBalance: (qubeId: string, balance: number) => void;
 
   // Set transactions for a qube
   setTransactions: (
@@ -47,7 +46,6 @@ const DEFAULT_CACHE_MAX_AGE = 5 * 60 * 1000; // 5 minutes
 
 const createEmptyWalletData = (): WalletData => ({
   balance: null,
-  nftBalance: null,
   transactions: [],
   totalTxCount: 0,
   hasMoreTx: false,
@@ -62,14 +60,13 @@ export const useWalletCache = create<WalletCacheState>((set, get) => ({
     return get().wallets[qubeId] || null;
   },
 
-  setBalance: (qubeId: string, balance: number, nftBalance?: number) => {
+  setBalance: (qubeId: string, balance: number) => {
     set((state) => ({
       wallets: {
         ...state.wallets,
         [qubeId]: {
           ...(state.wallets[qubeId] || createEmptyWalletData()),
           balance,
-          nftBalance: nftBalance ?? state.wallets[qubeId]?.nftBalance ?? null,
           lastFetched: Date.now(),
           error: null,
         },

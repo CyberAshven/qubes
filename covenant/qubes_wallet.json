@@ -1,0 +1,71 @@
+{
+  "contractName": "QubesWallet",
+  "constructorInputs": [
+    {
+      "name": "ownerPkh",
+      "type": "bytes20"
+    },
+    {
+      "name": "qubePkh",
+      "type": "bytes20"
+    }
+  ],
+  "abi": [
+    {
+      "name": "ownerSpend",
+      "inputs": [
+        {
+          "name": "ownerInputIndex",
+          "type": "int"
+        }
+      ]
+    },
+    {
+      "name": "qubeApproved",
+      "inputs": [
+        {
+          "name": "qubeSig",
+          "type": "sig"
+        },
+        {
+          "name": "qubePK",
+          "type": "pubkey"
+        },
+        {
+          "name": "ownerInputIndex",
+          "type": "int"
+        }
+      ]
+    }
+  ],
+  "bytecode": "OP_2 OP_PICK OP_0 OP_NUMEQUAL OP_IF 76a914 OP_SWAP OP_CAT 88ac OP_CAT OP_3 OP_ROLL OP_UTXOBYTECODE OP_EQUAL OP_NIP OP_NIP OP_ELSE OP_ROT OP_1 OP_NUMEQUALVERIFY OP_3 OP_PICK OP_HASH160 OP_ROT OP_EQUALVERIFY OP_SWAP OP_ROT OP_CHECKSIGVERIFY 76a914 OP_SWAP OP_CAT 88ac OP_CAT OP_SWAP OP_UTXOBYTECODE OP_EQUAL OP_ENDIF",
+  "source": "pragma cashscript ^0.12.0;\r\n\r\n// Qubes Wallet Contract\r\n//\r\n// Replaces the raw P2SH IF/ELSE redeem script with a CashScript contract.\r\n// Two spending paths, both WalletConnect-compatible:\r\n//\r\n//   1. ownerSpend — Owner withdraws directly (no Qube involvement).\r\n//      The contract input is permissionless; authorization is proved by\r\n//      including a P2PKH input from the owner in the same transaction.\r\n//\r\n//   2. qubeApproved — Qube proposes a transaction. The Qube signs the\r\n//      contract input, and the owner must also include a P2PKH input.\r\n//\r\n// WalletConnect compatibility: In both paths, the owner just signs their\r\n// own standard P2PKH input. The WC wallet sees a normal input to sign.\r\n// The contract input is either permissionless (ownerSpend) or pre-signed\r\n// by the Qube (qubeApproved).\r\n//\r\n// Constructor args:\r\n//   ownerPkh — HASH160 of the owner's compressed public key\r\n//   qubePkh  — HASH160 of the Qube's compressed public key\r\n\r\ncontract QubesWallet(bytes20 ownerPkh, bytes20 qubePkh) {\r\n\r\n    // Owner withdraws without Qube involvement.\r\n    // Permissionless unlock — authorization is via owner's P2PKH input.\r\n    function ownerSpend(int ownerInputIndex) {\r\n        bytes25 expectedLocking = 0x76a914 + ownerPkh + 0x88ac;\r\n        require(tx.inputs[ownerInputIndex].lockingBytecode == expectedLocking);\r\n    }\r\n\r\n    // Qube-initiated spending — requires Qube signature + owner P2PKH input.\r\n    function qubeApproved(sig qubeSig, pubkey qubePK, int ownerInputIndex) {\r\n        require(hash160(qubePK) == qubePkh);\r\n        require(checkSig(qubeSig, qubePK));\r\n\r\n        bytes25 expectedLocking = 0x76a914 + ownerPkh + 0x88ac;\r\n        require(tx.inputs[ownerInputIndex].lockingBytecode == expectedLocking);\r\n    }\r\n}\r\n",
+  "debug": {
+    "bytecode": "5279009c630376a9147c7e0288ac7e537ac7877777677b519d5379a97b887c7bad0376a9147c7e0288ac7e7cc78768",
+    "sourceMap": "28:4:31:5;;;;;29:34:29:42;:45::53;:34:::1;:56::62:0;:34:::1;30:26:30:41:0;;:16::58:1;:8::79;28:4:31:5;;;34::40::0;;;35:24:35:30;;:16::31:1;:35::42:0;:8::44:1;36:25:36:32:0;:34::40;:8::43:1;38:34:38:42:0;:45::53;:34:::1;:56::62:0;:34:::1;39:26:39:41:0;:16::58:1;:8::79;24:0:41:1",
+    "logs": [],
+    "requires": [
+      {
+        "ip": 16,
+        "line": 30
+      },
+      {
+        "ip": 26,
+        "line": 35
+      },
+      {
+        "ip": 29,
+        "line": 36
+      },
+      {
+        "ip": 38,
+        "line": 39
+      }
+    ]
+  },
+  "compiler": {
+    "name": "cashc",
+    "version": "0.12.1"
+  },
+  "updatedAt": "2026-03-09T00:02:57.347Z"
+}
