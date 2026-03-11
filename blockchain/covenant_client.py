@@ -24,8 +24,16 @@ logger = get_logger(__name__)
 
 
 def _find_covenant_dir() -> Path:
-    """Find the covenant/ directory relative to this file."""
-    # blockchain/covenant_client.py -> project_root/covenant/
+    """Find the covenant/ directory relative to this file or the executable."""
+    import sys
+    # In PyInstaller bundle: check next to the executable (dist/qubes-backend/../covenant)
+    if getattr(sys, 'frozen', False):
+        exe_dir = Path(sys.executable).resolve().parent
+        # covenant/ is a sibling of qubes-backend/ in the distribution
+        candidate = exe_dir.parent / "covenant"
+        if candidate.exists():
+            return candidate
+    # Dev mode: relative to source file
     return Path(__file__).resolve().parent.parent / "covenant"
 
 

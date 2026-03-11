@@ -7377,6 +7377,28 @@ async fn install_heavy_update(archive_path: String) -> Result<bool, String> {
         }
     }
 
+    // ── Swap covenant directory ─────────────────────────────────────────
+    let staged_covenant = staging_dir.join("covenant");
+    let current_covenant = exe_dir.join("covenant");
+    let backup_covenant = exe_dir.join("covenant.old");
+
+    if staged_covenant.exists() {
+        if current_covenant.exists() {
+            if backup_covenant.exists() {
+                std::fs::remove_dir_all(&backup_covenant).ok();
+            }
+            std::fs::rename(&current_covenant, &backup_covenant).ok();
+        }
+        if let Err(e) = move_dir(&staged_covenant, &current_covenant) {
+            // Non-fatal: covenant can be reinstalled manually
+            eprintln!("Warning: failed to install covenant update: {}", e);
+            // Rollback if we had a backup
+            if backup_covenant.exists() && !current_covenant.exists() {
+                let _ = std::fs::rename(&backup_covenant, &current_covenant);
+            }
+        }
+    }
+
     // ── Swap frontend binary ────────────────────────────────────────────
     #[cfg(target_os = "windows")]
     let frontend_name = "Qubes.exe";
@@ -7438,6 +7460,12 @@ fn cleanup_old_backend() -> bool {
             let backup_backend = exe_dir.join("qubes-backend.old");
             if backup_backend.exists() {
                 let _ = std::fs::remove_dir_all(&backup_backend);
+            }
+
+            // Clean up old covenant directory
+            let backup_covenant = exe_dir.join("covenant.old");
+            if backup_covenant.exists() {
+                let _ = std::fs::remove_dir_all(&backup_covenant);
             }
 
             // Clean up old frontend binary

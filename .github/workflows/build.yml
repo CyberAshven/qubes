@@ -308,6 +308,11 @@ jobs:
         working-directory: qubes-gui
         run: npm ci
 
+      # ========== Install Covenant Dependencies ==========
+      - name: Install covenant dependencies
+        working-directory: covenant
+        run: npm ci
+
       # ========== Build Tauri App ==========
       - name: Build Tauri app (Windows)
         if: matrix.platform == 'windows-latest'
@@ -444,6 +449,9 @@ jobs:
           # Copy Python backend (--onedir output with all deps)
           Copy-Item "qubes-gui/src-tauri/dist/qubes-backend" "$distDir/qubes-backend" -Recurse
 
+          # Copy CashScript covenant (tsx + TypeScript minting scripts)
+          Copy-Item "covenant" "$distDir/covenant" -Recurse
+
           # Copy Ollama
           Copy-Item "dist-bundle/ollama" "$distDir/ollama" -Recurse
 
@@ -521,6 +529,9 @@ jobs:
           [ -z "$VERSION" ] && VERSION="0.0.0"
           printf '%s' "$VERSION" > "$APP_MACOS/qubes-backend/VERSION"
 
+          # Copy CashScript covenant (tsx + TypeScript minting scripts)
+          cp -r covenant "$APP_MACOS/covenant"
+
           # Copy Ollama
           mkdir -p "$APP_MACOS/ollama"
           cp -r dist-bundle/ollama/* "$APP_MACOS/ollama/"
@@ -582,6 +593,9 @@ jobs:
           VERSION="${VERSION#v}"
           [ -z "$VERSION" ] && VERSION="0.0.0"
           printf '%s' "$VERSION" > "$DIST_DIR/qubes-backend/VERSION"
+
+          # Copy CashScript covenant (tsx + TypeScript minting scripts)
+          cp -r covenant "$DIST_DIR/covenant"
 
           # Copy Ollama
           cp -r dist-bundle/ollama/* "$DIST_DIR/ollama/"
@@ -758,6 +772,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path $updateDir
           Copy-Item "dist-bundle/Qubes/Qubes.exe" "$updateDir/Qubes.exe"
           Copy-Item "dist-bundle/Qubes/qubes-backend" "$updateDir/qubes-backend" -Recurse
+          Copy-Item "dist-bundle/Qubes/covenant" "$updateDir/covenant" -Recurse
           tar -czf "Qubes-Update-Windows.tar.gz" -C $updateDir .
           $hash = (Get-FileHash "Qubes-Update-Windows.tar.gz" -Algorithm SHA256).Hash.ToLower()
           $size = (Get-Item "Qubes-Update-Windows.tar.gz").Length
@@ -789,6 +804,7 @@ jobs:
           mkdir -p "$UPDATE_DIR"
           cp "dist-bundle/Qubes/Qubes" "$UPDATE_DIR/Qubes"
           cp -r "dist-bundle/Qubes/qubes-backend" "$UPDATE_DIR/qubes-backend"
+          cp -r "dist-bundle/Qubes/covenant" "$UPDATE_DIR/covenant"
           tar -czf "Qubes-Update-Linux.tar.gz" -C "$UPDATE_DIR" .
           HASH=$(sha256sum "Qubes-Update-Linux.tar.gz" | cut -d' ' -f1)
           SIZE=$(stat -c%s "Qubes-Update-Linux.tar.gz")
