@@ -198,9 +198,10 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
       {showRestoreModal && (
         <div className="fixed inset-0 bg-black/95 backdrop-blur-sm flex items-center justify-center z-50">
           <GlassCard variant="elevated" className="w-full max-w-md p-6 mx-4">
-            <h2 className="text-xl font-bold text-text-primary mb-4">Restore from Backup</h2>
+            <h2 className="text-xl font-bold text-text-primary mb-4">Full Account Restore</h2>
             <p className="text-text-secondary text-sm mb-4">
-              Select a <code>.qube-backup</code> file to restore your account and all Qubes.
+              Restore your entire account from a <code>.qube-backup</code> file.
+              This will set up your account and import all Qubes from the backup.
             </p>
 
             {/* File picker */}

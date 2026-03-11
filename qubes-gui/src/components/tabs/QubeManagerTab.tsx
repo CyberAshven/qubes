@@ -98,21 +98,17 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
   const [isScanning, setIsScanning] = useState(false);
   const [importProgress, setImportProgress] = useState<{ current: number; total: number; name: string } | null>(null);
 
-  // Export/Import file state
-  const [isExporting, setIsExporting] = useState(false);
-  const [showExportModal, setShowExportModal] = useState(false);
-  const [exportPassword, setExportPassword] = useState('');
-  const [exportConfirmPassword, setExportConfirmPassword] = useState('');
-  const [showImportFileModal, setShowImportFileModal] = useState(false);
-  const [importFilePath, setImportFilePath] = useState('');
-  const [importFilePassword, setImportFilePassword] = useState('');
-  const [isImportingFile, setIsImportingFile] = useState(false);
-
   // Account backup state
   const [showBackupModal, setShowBackupModal] = useState(false);
   const [backupPassword, setBackupPassword] = useState('');
   const [backupConfirmPassword, setBackupConfirmPassword] = useState('');
   const [isBackingUp, setIsBackingUp] = useState(false);
+
+  // Account restore (merge) state
+  const [showRestoreModal, setShowRestoreModal] = useState(false);
+  const [restoreFilePath, setRestoreFilePath] = useState('');
+  const [restorePassword, setRestorePassword] = useState('');
+  const [isRestoring, setIsRestoring] = useState(false);
 
   // Pinata configuration check
   const [pinataConfigured, setPinataConfigured] = useState<boolean | null>(null);
@@ -257,74 +253,6 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
     return convertFileSrc(filePath);
   };
 
-  // Export Qube to .qube file
-  const handleExportQube = async () => {
-    const selectedId = selectedQubeIds[0];
-    if (!selectedId) { alert('Please select a Qube to export'); return; }
-    if (exportPassword !== exportConfirmPassword) { alert('Passwords do not match'); return; }
-    if (exportPassword.length < 8) { alert('Password must be at least 8 characters'); return; }
-
-    try {
-      const filePath = await saveDialog({
-        defaultPath: `${selectedId.slice(0, 8)}.qube`,
-        filters: [{ name: 'Qube Package', extensions: ['qube'] }],
-      });
-      if (!filePath) return;
-
-      setIsExporting(true);
-      const result = await invoke<{ success: boolean; file_path?: string; block_count?: number; error?: string }>('export_qube', {
-        qubeId: selectedId,
-        exportPath: filePath,
-        exportPassword: exportPassword,
-        masterPassword: masterPassword,
-      });
-
-      if (result.success) {
-        alert(`Exported ${result.block_count || 0} blocks to:\n${result.file_path}`);
-        setShowExportModal(false);
-        setExportPassword('');
-        setExportConfirmPassword('');
-      } else {
-        alert(`Export failed: ${result.error}`);
-      }
-    } catch (error) {
-      console.error('Export failed:', error);
-      alert(`Export failed: ${String(error)}`);
-    } finally {
-      setIsExporting(false);
-    }
-  };
-
-  // Import Qube from .qube file
-  const handleImportFromFile = async () => {
-    if (!importFilePath) { alert('Please select a .qube file'); return; }
-    if (!importFilePassword) { alert('Please enter the export password'); return; }
-
-    try {
-      setIsImportingFile(true);
-      const result = await invoke<{ success: boolean; qube_id?: string; qube_name?: string; block_count?: number; error?: string }>('import_qube', {
-        importPath: importFilePath,
-        importPassword: importFilePassword,
-        masterPassword: masterPassword,
-      });
-
-      if (result.success) {
-        alert(`Imported "${result.qube_name}" (${result.block_count || 0} blocks)`);
-        setShowImportFileModal(false);
-        setImportFilePath('');
-        setImportFilePassword('');
-        window.dispatchEvent(new CustomEvent('qube-created', { detail: { qube_id: result.qube_id } }));
-      } else {
-        alert(`Import failed: ${result.error}`);
-      }
-    } catch (error) {
-      console.error('Import failed:', error);
-      alert(`Import failed: ${String(error)}`);
-    } finally {
-      setIsImportingFile(false);
-    }
-  };
-
   // Backup entire account
   const handleBackupAccount = async () => {
     if (backupPassword !== backupConfirmPassword) { alert('Passwords do not match'); return; }
@@ -350,6 +278,20 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
       if (!filePath) return;
 
       setIsBackingUp(true);
+
+      // Clean up incomplete qube directories before backup
+      try {
+        const cleanup = await invoke<{ success: boolean; deleted_count?: number }>('cleanup_incomplete_qubes', {
+          userId,
+          masterPassword: masterPassword,
+        });
+        if (cleanup.success && cleanup.deleted_count && cleanup.deleted_count > 0) {
+          console.log(`Cleaned up ${cleanup.deleted_count} incomplete qube directories`);
+        }
+      } catch (e) {
+        console.warn('Cleanup before backup failed (non-fatal):', e);
+      }
+
       const result = await invoke<{ success: boolean; file_path?: string; qube_count?: number; error?: string }>('export_account_backup', {
         userId,
         exportPath: filePath,
@@ -370,6 +312,41 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
       alert(`Backup failed: ${String(error)}`);
     } finally {
       setIsBackingUp(false);
+    }
+  };
+
+  // Restore (merge) qubes from a backup file
+  const handleRestoreFromBackup = async () => {
+    if (!restoreFilePath) { alert('Please select a backup file'); return; }
+    if (!restorePassword) { alert('Please enter the backup password'); return; }
+
+    try {
+      setIsRestoring(true);
+      const result = await invoke<{ success: boolean; imported_count?: number; skipped_count?: number; user_id?: string; error?: string }>('import_account_backup', {
+        userId,
+        importPath: restoreFilePath,
+        importPassword: restorePassword,
+        masterPassword: masterPassword,
+      });
+
+      if (result.success) {
+        const imported = result.imported_count || 0;
+        const skipped = result.skipped_count || 0;
+        alert(`Restore complete!\n\n${imported} Qube(s) imported${skipped > 0 ? `\n${skipped} already existed (skipped)` : ''}`);
+        setShowRestoreModal(false);
+        setRestoreFilePath('');
+        setRestorePassword('');
+        if (imported > 0) {
+          window.dispatchEvent(new CustomEvent('qube-created'));
+        }
+      } else {
+        alert(`Restore failed: ${result.error}`);
+      }
+    } catch (error) {
+      console.error('Restore failed:', error);
+      alert(`Restore failed: ${String(error)}`);
+    } finally {
+      setIsRestoring(false);
     }
   };
 
@@ -683,26 +660,11 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
         <div className="ml-auto flex gap-2">
           <GlassButton
             variant="secondary"
-            onClick={() => setShowImportFileModal(true)}
-            title="Import a Qube from a .qube file"
-          >
-            Import from Disk
-          </GlassButton>
-          <GlassButton
-            variant="secondary"
-            onClick={() => { if (selectedQubeIds.length > 0) setShowExportModal(true); else alert('Select a Qube to export'); }}
-            disabled={selectedQubeIds.length === 0}
-            title="Export selected Qube to a portable .qube file"
-          >
-            Export
-          </GlassButton>
-          <GlassButton
-            variant="secondary"
             onClick={handleImportFromWalletClick}
             disabled={isImporting}
-            title="Import a Qube from your wallet"
+            title="Scan your connected wallet for Qube NFTs"
           >
-            {isImporting ? 'Importing...' : 'Import from Wallet'}
+            {isImporting ? 'Scanning...' : 'Scan Wallet'}
           </GlassButton>
           <GlassButton
             variant="secondary"
@@ -713,7 +675,7 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
                 ? '⚠️ Pinata API key required - Configure in Settings → API Keys'
                 : selectedQubeIds.length === 0
                 ? 'Select a Qube to sync'
-                : 'Backup selected Qube to IPFS'
+                : 'Sync selected Qube data to IPFS'
             }
           >
             {isSyncing ? 'Syncing...' : 'Sync to IPFS'}
@@ -735,12 +697,19 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
           <GlassButton
             variant="secondary"
             onClick={() => setShowBackupModal(true)}
-            title="Backup your entire account and all Qubes to a portable file"
+            title="Backup your entire account and all Qubes to an encrypted file"
           >
-            Backup Account
+            Backup
+          </GlassButton>
+          <GlassButton
+            variant="secondary"
+            onClick={() => setShowRestoreModal(true)}
+            title="Import Qubes from a backup file — existing Qubes won't be affected"
+          >
+            Restore
           </GlassButton>
           <GlassButton variant="primary" onClick={onCreateQube}>
-            + Create New Qube
+            + New Qube
           </GlassButton>
         </div>
       </div>
@@ -996,7 +965,7 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
       {showImportFromWalletModal && (
         <div className="fixed inset-0 bg-black/95 backdrop-blur-sm flex items-center justify-center z-50">
           <div className="glass-card p-6 max-w-lg w-full mx-4 max-h-[90vh] overflow-y-auto">
-            <h2 className="text-xl font-bold text-text-primary mb-4">Import from Wallet</h2>
+            <h2 className="text-xl font-bold text-text-primary mb-4">Scan Wallet</h2>
             <p className="text-text-secondary text-sm mb-4">
               Connect your wallet to scan for Qubes and import them all at once.
               Your master password decrypts the data — no private key needed.
@@ -1084,109 +1053,11 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
         </div>
       )}
 
-      {/* Export Qube Modal */}
-      {showExportModal && (
-        <div className="fixed inset-0 bg-black/95 backdrop-blur-sm flex items-center justify-center z-50">
-          <div className="glass-card p-6 max-w-md w-full mx-4">
-            <h2 className="text-xl font-bold text-text-primary mb-4">Export Qube</h2>
-            <p className="text-text-secondary text-sm mb-4">
-              Export this Qube to a portable .qube file. The file will be encrypted with the password you set below.
-              You can import it on any device or share it via USB.
-            </p>
-            <div className="space-y-3">
-              <div>
-                <label className="block text-sm text-text-secondary mb-1">Export Password</label>
-                <input
-                  type="password"
-                  value={exportPassword}
-                  onChange={(e) => setExportPassword(e.target.value)}
-                  placeholder="Set a password for this export"
-                  className="w-full px-3 py-2 bg-glass-bg border border-glass-border rounded-lg text-text-primary text-sm"
-                />
-              </div>
-              <div>
-                <label className="block text-sm text-text-secondary mb-1">Confirm Password</label>
-                <input
-                  type="password"
-                  value={exportConfirmPassword}
-                  onChange={(e) => setExportConfirmPassword(e.target.value)}
-                  placeholder="Confirm password"
-                  className="w-full px-3 py-2 bg-glass-bg border border-glass-border rounded-lg text-text-primary text-sm"
-                />
-              </div>
-            </div>
-            <div className="flex gap-3 mt-4">
-              <GlassButton variant="secondary" onClick={() => { setShowExportModal(false); setExportPassword(''); setExportConfirmPassword(''); }}>
-                Cancel
-              </GlassButton>
-              <GlassButton
-                variant="primary"
-                onClick={handleExportQube}
-                disabled={isExporting || !exportPassword || exportPassword !== exportConfirmPassword}
-              >
-                {isExporting ? 'Exporting...' : 'Export'}
-              </GlassButton>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Import from File Modal */}
-      {showImportFileModal && (
-        <div className="fixed inset-0 bg-black/95 backdrop-blur-sm flex items-center justify-center z-50">
-          <div className="glass-card p-6 max-w-md w-full mx-4">
-            <h2 className="text-xl font-bold text-text-primary mb-4">Import from File</h2>
-            <p className="text-text-secondary text-sm mb-4">
-              Import a Qube from a .qube package file. You'll need the password that was used to export it.
-            </p>
-            <div className="space-y-3">
-              <div>
-                <label className="block text-sm text-text-secondary mb-1">Select File</label>
-                <button
-                  onClick={async () => {
-                    const path = await openDialog({
-                      multiple: false,
-                      filters: [{ name: 'Qube Package', extensions: ['qube'] }],
-                    });
-                    if (path && typeof path === 'string') setImportFilePath(path);
-                  }}
-                  className="w-full px-3 py-2 bg-glass-bg border border-glass-border rounded-lg text-text-primary text-sm text-left hover:border-accent-primary/50 transition-colors"
-                >
-                  {importFilePath || 'Choose .qube file...'}
-                </button>
-              </div>
-              <div>
-                <label className="block text-sm text-text-secondary mb-1">Export Password</label>
-                <input
-                  type="password"
-                  value={importFilePassword}
-                  onChange={(e) => setImportFilePassword(e.target.value)}
-                  placeholder="Password used during export"
-                  className="w-full px-3 py-2 bg-glass-bg border border-glass-border rounded-lg text-text-primary text-sm"
-                />
-              </div>
-            </div>
-            <div className="flex gap-3 mt-4">
-              <GlassButton variant="secondary" onClick={() => { setShowImportFileModal(false); setImportFilePath(''); setImportFilePassword(''); }}>
-                Cancel
-              </GlassButton>
-              <GlassButton
-                variant="primary"
-                onClick={handleImportFromFile}
-                disabled={isImportingFile || !importFilePath || !importFilePassword}
-              >
-                {isImportingFile ? 'Importing...' : 'Import'}
-              </GlassButton>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* Account Backup Modal */}
       {showBackupModal && (
         <div className="fixed inset-0 bg-black/95 backdrop-blur-sm flex items-center justify-center z-50">
           <div className="glass-card p-6 max-w-md w-full mx-4">
-            <h2 className="text-xl font-bold text-text-primary mb-4">Backup Account</h2>
+            <h2 className="text-xl font-bold text-text-primary mb-4">Backup</h2>
             <p className="text-text-secondary text-sm mb-4">
               Export your entire account (credentials + all Qubes) to a portable <code>.qube-backup</code> file.
               Protect it with a password you'll need when restoring.
@@ -1228,6 +1099,63 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
                 loading={isBackingUp}
               >
                 {isBackingUp ? 'Backing up...' : 'Create Backup'}
+              </GlassButton>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Restore (Merge) Modal */}
+      {showRestoreModal && (
+        <div className="fixed inset-0 bg-black/95 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="glass-card p-6 max-w-md w-full mx-4">
+            <h2 className="text-xl font-bold text-text-primary mb-4">Restore from Backup</h2>
+            <p className="text-text-secondary text-sm mb-4">
+              Import Qubes from a <code>.qube-backup</code> file into your account.
+              Qubes that already exist will be skipped — your current data won't be affected.
+            </p>
+            <div className="space-y-3">
+              <div>
+                <label className="block text-sm text-text-secondary mb-1">Backup File</label>
+                <button
+                  onClick={async () => {
+                    const path = await openDialog({
+                      multiple: false,
+                      filters: [{ name: 'Qube Backup', extensions: ['qube-backup'] }],
+                    });
+                    if (path && typeof path === 'string') setRestoreFilePath(path);
+                  }}
+                  className="w-full px-3 py-2 bg-glass-bg border border-glass-border rounded-lg text-text-primary text-sm text-left hover:border-accent-primary/50 transition-colors truncate"
+                >
+                  {restoreFilePath ? restoreFilePath.split(/[/\\]/).pop() : 'Choose .qube-backup file...'}
+                </button>
+              </div>
+              <div>
+                <label className="block text-sm text-text-secondary mb-1">Backup Password</label>
+                <input
+                  type="password"
+                  value={restorePassword}
+                  onChange={(e) => setRestorePassword(e.target.value)}
+                  placeholder="Password used when creating the backup"
+                  className="w-full px-3 py-2 bg-glass-bg border border-glass-border rounded-lg text-text-primary text-sm"
+                />
+              </div>
+            </div>
+            <div className="flex gap-3 mt-4">
+              <GlassButton
+                variant="secondary"
+                onClick={() => { setShowRestoreModal(false); setRestoreFilePath(''); setRestorePassword(''); }}
+                disabled={isRestoring}
+              >
+                Cancel
+              </GlassButton>
+              <GlassButton
+                variant="primary"
+                onClick={handleRestoreFromBackup}
+                disabled={isRestoring || !restoreFilePath || !restorePassword}
+                loading={isRestoring}
+              >
+                {isRestoring ? 'Restoring...' : 'Restore'}
               </GlassButton>
             </div>
           </div>

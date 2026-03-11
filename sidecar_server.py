@@ -204,6 +204,7 @@ POSITIONAL_ARG_NAMES = {
     "import-qube": ["import_path"],
     "export-account-backup": ["user_id", "export_path"],
     "import-account-backup": ["user_id", "import_path"],
+    "cleanup-incomplete-qubes": ["user_id"],
     # API key batch
     "save-api-keys": ["user_id"],
     "update-qube-nft": ["user_id", "qube_id"],

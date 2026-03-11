@@ -6421,6 +6421,8 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
             account_data["account_files"] = account_files
 
             # Collect all valid Qubes (must have genesis.json to be a real qube)
+            # Read directly from disk to avoid heavy load_qube() initialization
+            # (AI init, audio init, CashScript migration) which can hang on Windows.
             qubes_data = []
             qube_count = 0
 
@@ -6433,27 +6435,33 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
                     if len(parts) != 2:
                         continue
 
+                    chain_dir = dir_entry / "chain"
+                    genesis_file = chain_dir / "genesis.json"
+
                     # Skip broken/incomplete qube directories (failed creation attempts)
-                    if not (dir_entry / "chain" / "genesis.json").exists():
+                    if not genesis_file.exists():
                         continue
 
                     qube_name, qube_id = parts
 
                     try:
-                        # Load qube if not already loaded
-                        if qube_id not in self.orchestrator.qubes:
-                            await self.orchestrator.load_qube(qube_id)
+                        # If qube is already loaded, anchor any active session
+                        if qube_id in self.orchestrator.qubes:
+                            qube = self.orchestrator.qubes[qube_id]
+                            if qube.current_session and len(qube.current_session.session_blocks) > 0:
+                                try:
+                                    await qube.anchor_session()
+                                except Exception as e:
+                                    logger.warning(f"Failed to anchor session for {qube_id}: {e}")
 
-                        qube = self.orchestrator.qubes[qube_id]
-
-                        # Anchor any active session first
-                        if qube.current_session and len(qube.current_session.session_blocks) > 0:
-                            await qube.anchor_session()
+                        # Read genesis block from disk
+                        with open(genesis_file, 'r', encoding='utf-8') as f:
+                            genesis_data = json.load(f)
 
                         qube_export = {
                             "qube_id": qube_id,
                             "qube_name": qube_name,
-                            "genesis_block": qube.genesis_block.to_dict() if qube.genesis_block else None,
+                            "genesis_block": genesis_data,
                             "chain_state": None,
                             "memory_blocks": [],
                             "relationships": None,
@@ -6462,22 +6470,36 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
                             "avatar_base64": None,
                         }
 
-                        # Private key
-                        from cryptography.hazmat.primitives import serialization
-                        private_key_pem = qube.private_key.private_bytes(
-                            encoding=serialization.Encoding.PEM,
-                            format=serialization.PrivateFormat.PKCS8,
-                            encryption_algorithm=serialization.NoEncryption()
-                        ).decode('utf-8')
-                        qube_export["private_key_pem"] = private_key_pem
+                        # Private key — decrypt from qube_metadata.json
+                        from cryptography.hazmat.primitives import serialization as key_serialization
+                        metadata_file = chain_dir / "qube_metadata.json"
+                        if metadata_file.exists():
+                            with open(metadata_file, 'r', encoding='utf-8') as f:
+                                qube_metadata = json.load(f)
+                            enc_key_hex = qube_metadata.get("encrypted_private_key")
+                            if enc_key_hex:
+                                private_key = self.orchestrator._decrypt_private_key(
+                                    enc_key_hex, self.orchestrator.master_key
+                                )
+                                qube_export["private_key_pem"] = private_key.private_bytes(
+                                    encoding=key_serialization.Encoding.PEM,
+                                    format=key_serialization.PrivateFormat.PKCS8,
+                                    encryption_algorithm=key_serialization.NoEncryption()
+                                ).decode('utf-8')
 
-                        # Chain state
+                        # Chain state — decrypt directly from disk
                         encryption_key = self._get_qube_encryption_key(dir_entry)
                         if encryption_key:
-                            from core.chain_state import ChainState
-                            chain_dir = dir_entry / "chain"
-                            cs = ChainState(data_dir=chain_dir, encryption_key=encryption_key)
-                            qube_export["chain_state"] = cs.state
+                            chain_state_file = chain_dir / "chain_state.json"
+                            if chain_state_file.exists():
+                                from crypto.encryption import decrypt_block_data, derive_chain_state_key
+                                with open(chain_state_file, 'r') as f:
+                                    cs_file_data = json.load(f)
+                                if cs_file_data.get("encrypted"):
+                                    cs_key = derive_chain_state_key(encryption_key)
+                                    qube_export["chain_state"] = decrypt_block_data(cs_file_data, cs_key)
+                                else:
+                                    qube_export["chain_state"] = cs_file_data
 
                         # Memory blocks
                         blocks_dir = dir_entry / "blocks" / "permanent"
@@ -6493,7 +6515,7 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
                                 qube_export["relationships"] = json.load(f)
 
                         # NFT metadata
-                        nft_file = dir_entry / "chain" / "nft_metadata.json"
+                        nft_file = chain_dir / "nft_metadata.json"
                         if nft_file.exists():
                             with open(nft_file, 'r', encoding='utf-8') as f:
                                 qube_export["nft_metadata"] = json.load(f)
@@ -6506,7 +6528,7 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
 
                         # Avatar
                         for pattern in ["*.png", "*.jpg", "*.jpeg", "*.webp"]:
-                            avatar_files = list((dir_entry / "chain").glob(f"*_avatar{pattern[1:]}"))
+                            avatar_files = list(chain_dir.glob(f"*_avatar{pattern[1:]}"))
                             if avatar_files:
                                 with open(avatar_files[0], 'rb') as f:
                                     qube_export["avatar_base64"] = base64.b64encode(f.read()).decode('utf-8')
@@ -6568,6 +6590,47 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
 
         except Exception as e:
             logger.error(f"Failed to export account backup: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def cleanup_incomplete_qubes(self) -> Dict[str, Any]:
+        """
+        Delete qube directories that are incomplete (missing genesis.json).
+        These are leftovers from failed creation attempts.
+
+        Returns:
+            Dict with success, deleted_count, deleted_dirs
+        """
+        import shutil
+
+        try:
+            qubes_dir = self.orchestrator.data_dir / "qubes"
+            if not qubes_dir.exists():
+                return {"success": True, "deleted_count": 0, "deleted_dirs": []}
+
+            deleted = []
+            for dir_entry in sorted(qubes_dir.iterdir()):
+                if not dir_entry.is_dir():
+                    continue
+                parts = dir_entry.name.rsplit('_', 1)
+                if len(parts) != 2:
+                    continue
+                # A valid qube must have genesis.json
+                if not (dir_entry / "chain" / "genesis.json").exists():
+                    dir_name = dir_entry.name
+                    try:
+                        shutil.rmtree(dir_entry)
+                        deleted.append(dir_name)
+                        logger.info(f"Deleted incomplete qube directory: {dir_name}")
+                    except Exception as e:
+                        logger.warning(f"Failed to delete {dir_name}: {e}")
+
+            return {
+                "success": True,
+                "deleted_count": len(deleted),
+                "deleted_dirs": deleted,
+            }
+        except Exception as e:
+            logger.error(f"Failed to cleanup incomplete qubes: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
 
     async def import_account_backup(self, import_path: str, import_password: str, master_password: str) -> Dict[str, Any]:
@@ -6700,7 +6763,7 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
                     enc_nonce = os.urandom(12)
                     enc_aesgcm = AESGCM(self.orchestrator.master_key)
                     encrypted_enc_key = enc_aesgcm.encrypt(enc_nonce, enc_key, None)
-                    enc_key_data = {"nonce": enc_nonce.hex(), "encrypted_key": encrypted_enc_key.hex()}
+                    enc_key_data = {"nonce": enc_nonce.hex(), "ciphertext": encrypted_enc_key.hex(), "algorithm": "AES-256-GCM", "version": "1.0"}
                     with open(qube_dir / "chain" / "encryption_key.enc", 'w') as f:
                         json.dump(enc_key_data, f)
 

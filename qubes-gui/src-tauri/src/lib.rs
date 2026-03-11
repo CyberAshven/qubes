@@ -6078,6 +6078,36 @@ async fn import_account_backup(app_handle: AppHandle,
     Ok(response)
 }
 
+#[derive(Serialize, Deserialize)]
+struct CleanupIncompleteQubesResponse {
+    success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    deleted_count: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    deleted_dirs: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+#[tauri::command]
+async fn cleanup_incomplete_qubes(app_handle: AppHandle,
+    user_id: String,
+    master_password: String
+) -> Result<CleanupIncompleteQubesResponse, String> {
+    validate_identifier(&user_id, "user_id")?;
+
+    let args = vec![user_id];
+    let mut secrets = HashMap::new();
+    secrets.insert("password", master_password.as_str());
+
+    let result = sidecar_execute_with_retry("cleanup-incomplete-qubes", args, secrets, Some(&app_handle), Some(30)).await?;
+
+    let response: CleanupIncompleteQubesResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse cleanup response: {}", e))?;
+
+    Ok(response)
+}
+
 /// Scan wallet for Qube NFTs
 #[tauri::command]
 async fn scan_wallet(
@@ -7506,6 +7536,7 @@ pub fn run() {
             export_qube,
             import_qube,
             export_account_backup,
+            cleanup_incomplete_qubes,
             import_account_backup,
             scan_wallet,
             resolve_public_key,
