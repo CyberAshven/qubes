@@ -6702,8 +6702,21 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
                     f.write(base64.b64decode(b64data))
                 logger.info(f"Restored account file: {filename}")
 
-            # Re-set master key (account files may have changed)
+            # Point orchestrator at the correct user directory before deriving keys.
+            # The login restore path passes userId='_restore', so the orchestrator
+            # initially points at the wrong data dir. Reinitialize it with the
+            # backup's real user_id so set_master_key reads the correct salt.bin
+            # and the verifier gets written to the correct location.
+            if self.orchestrator.user_id != backup_user_id:
+                self.orchestrator = UserOrchestrator(user_id=backup_user_id)
+
+            # Derive master key from the provided password + the user's salt.bin
             self.orchestrator.set_master_key(master_password)
+
+            # Regenerate password verifier so login works with the new master password.
+            # Without this, the verifier stays encrypted with the old password's key
+            # while the qube keys get re-encrypted with the new one — split-brain.
+            await self._create_password_verifier(self.orchestrator)
 
             # Import each Qube
             qubes_dir = user_dir / "qubes"
