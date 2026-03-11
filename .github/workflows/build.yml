@@ -854,12 +854,13 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           BUNDLE_DIR="qubes-gui/src-tauri/target/${{ matrix.target }}/release/bundle/macos"
-          if [ -d "$BUNDLE_DIR/Qubes.app" ]; then
-            cd "$BUNDLE_DIR"
-            tar -czf Qubes-macOS-ARM.app.tar.gz Qubes.app
+          # Use Tauri's generated tar.gz + sig (signature matches the archive)
+          TARGZ=$(find "$BUNDLE_DIR" -name "*.app.tar.gz" ! -name "*.sig" 2>/dev/null | head -1)
+          if [ -n "$TARGZ" ] && [ -f "$TARGZ" ]; then
+            cp "$TARGZ" "Qubes-macOS-ARM.app.tar.gz"
             gh release upload "${{ needs.create-release.outputs.tag }}" "Qubes-macOS-ARM.app.tar.gz" --clobber
-            if [ -f "Qubes.app.tar.gz.sig" ]; then
-              cp "Qubes.app.tar.gz.sig" "Qubes-macOS-ARM.app.tar.gz.sig"
+            if [ -f "$TARGZ.sig" ]; then
+              cp "$TARGZ.sig" "Qubes-macOS-ARM.app.tar.gz.sig"
               gh release upload "${{ needs.create-release.outputs.tag }}" "Qubes-macOS-ARM.app.tar.gz.sig" --clobber
             fi
           fi
@@ -870,16 +871,13 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           APPIMAGE_DIR="qubes-gui/src-tauri/target/${{ matrix.target }}/release/bundle/appimage"
-          APPIMAGE=$(find "$APPIMAGE_DIR" -name "*.AppImage" ! -name "*.sig" 2>/dev/null | head -1)
-          if [ -n "$APPIMAGE" ] && [ -f "$APPIMAGE" ]; then
-            # Create tar.gz for smaller download
-            cp "$APPIMAGE" "Qubes-Linux.AppImage"
-            tar -czf "Qubes-Linux.AppImage.tar.gz" "Qubes-Linux.AppImage"
+          # Use Tauri's generated tar.gz + sig (signature matches the archive)
+          TARGZ=$(find "$APPIMAGE_DIR" -name "*.AppImage.tar.gz" ! -name "*.sig" 2>/dev/null | head -1)
+          if [ -n "$TARGZ" ] && [ -f "$TARGZ" ]; then
+            cp "$TARGZ" "Qubes-Linux.AppImage.tar.gz"
             gh release upload "${{ needs.create-release.outputs.tag }}" "Qubes-Linux.AppImage.tar.gz" --clobber
-            # Tauri v2 signs the raw AppImage (not tar.gz). The updater extracts
-            # the archive first, then verifies the extracted file against the sig.
-            if [ -f "$APPIMAGE.sig" ]; then
-              cp "$APPIMAGE.sig" "Qubes-Linux.AppImage.tar.gz.sig"
+            if [ -f "$TARGZ.sig" ]; then
+              cp "$TARGZ.sig" "Qubes-Linux.AppImage.tar.gz.sig"
               gh release upload "${{ needs.create-release.outputs.tag }}" "Qubes-Linux.AppImage.tar.gz.sig" --clobber
             fi
           fi

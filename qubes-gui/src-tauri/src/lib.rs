@@ -7069,28 +7069,41 @@ fn get_platform_key() -> &'static str {
     { "unknown" }
 }
 
+/// Fetch latest.json from GitHub (primary) or qube.cash (fallback)
+async fn fetch_update_manifest() -> Result<serde_json::Value, String> {
+    let endpoints = [
+        "https://github.com/BitFaced2/Qubes/releases/latest/download/latest.json",
+        "https://qube.cash/releases/latest.json",
+    ];
+    let client = reqwest::Client::new();
+    let mut last_error = String::new();
+
+    for url in &endpoints {
+        match client.get(*url).timeout(Duration::from_secs(15)).send().await {
+            Ok(response) if response.status().is_success() => {
+                match response.json::<serde_json::Value>().await {
+                    Ok(manifest) => return Ok(manifest),
+                    Err(e) => last_error = format!("Failed to parse manifest from {}: {}", url, e),
+                }
+            }
+            Ok(response) => {
+                last_error = format!("{} returned status: {}", url, response.status());
+            }
+            Err(e) => {
+                last_error = format!("Failed to fetch {}: {}", url, e);
+            }
+        }
+    }
+
+    Err(format!("All update endpoints failed. Last error: {}", last_error))
+}
+
 /// Check for available heavy bundle updates
 #[tauri::command]
 async fn check_heavy_update() -> Result<HeavyUpdateInfo, String> {
     let current_version = get_backend_version();
 
-    // Fetch latest.json from update endpoint
-    let client = reqwest::Client::new();
-    let response = client
-        .get("https://qube.cash/releases/latest.json")
-        .timeout(Duration::from_secs(15))
-        .send()
-        .await
-        .map_err(|e| format!("Failed to check for updates: {}", e))?;
-
-    if !response.status().is_success() {
-        return Err(format!("Update server returned status: {}", response.status()));
-    }
-
-    let manifest: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse update manifest: {}", e))?;
+    let manifest = fetch_update_manifest().await?;
 
     // Check for heavy_update section
     let heavy_update = match manifest.get("heavy_update") {
@@ -7253,6 +7266,48 @@ async fn verify_heavy_update(
     Ok(hash == expected_sha256.to_lowercase())
 }
 
+/// Move a file, falling back to copy+delete when rename fails (cross-device)
+fn move_file(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    match std::fs::rename(from, to) {
+        Ok(()) => Ok(()),
+        Err(e) if e.raw_os_error() == Some(18) /* EXDEV: cross-device link */ => {
+            std::fs::copy(from, to)?;
+            std::fs::remove_file(from)?;
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Move a directory, falling back to recursive copy+delete when rename fails (cross-device)
+fn move_dir(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    match std::fs::rename(from, to) {
+        Ok(()) => Ok(()),
+        Err(e) if e.raw_os_error() == Some(18) /* EXDEV: cross-device link */ => {
+            copy_dir_recursive(from, to)?;
+            std::fs::remove_dir_all(from)?;
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Recursively copy a directory
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if src_path.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else {
+            std::fs::copy(&src_path, &dst_path)?;
+        }
+    }
+    Ok(())
+}
+
 /// Install a heavy update by extracting and atomically swapping directories
 #[tauri::command]
 async fn install_heavy_update(archive_path: String) -> Result<bool, String> {
@@ -7295,18 +7350,30 @@ async fn install_heavy_update(archive_path: String) -> Result<bool, String> {
             std::fs::remove_dir_all(&backup_backend).ok();
         }
 
-        // Atomic swap: rename current → .old, move staged → current
+        // Swap: rename current → .old, move staged → current
         std::fs::rename(&current_backend, &backup_backend)
             .map_err(|e| {
                 format!("Failed to backup current backend: {}. No changes made.", e)
             })?;
 
-        if let Err(e) = std::fs::rename(&staged_backend, &current_backend) {
+        if let Err(e) = move_dir(&staged_backend, &current_backend) {
             // Rollback: restore from backup
             let _ = std::fs::rename(&backup_backend, &current_backend);
             return Err(format!(
                 "Failed to install new backend (rolled back): {}", e
             ));
+        }
+
+        // On Unix, ensure backend binary is executable
+        #[cfg(not(target_os = "windows"))]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let backend_bin = current_backend.join("qubes-backend");
+            if let Ok(metadata) = std::fs::metadata(&backend_bin) {
+                let mut perms = metadata.permissions();
+                perms.set_mode(0o755);
+                let _ = std::fs::set_permissions(&backend_bin, perms);
+            }
         }
     }
 
@@ -7333,7 +7400,7 @@ async fn install_heavy_update(archive_path: String) -> Result<bool, String> {
         std::fs::rename(&current_frontend, &backup_frontend)
             .map_err(|e| format!("Failed to backup frontend binary: {}", e))?;
 
-        if let Err(e) = std::fs::rename(&staged_frontend, &current_frontend) {
+        if let Err(e) = move_file(&staged_frontend, &current_frontend) {
             // Rollback frontend
             let _ = std::fs::rename(&backup_frontend, &current_frontend);
             return Err(format!(
