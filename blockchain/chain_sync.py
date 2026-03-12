@@ -743,11 +743,11 @@ class ChainSyncService:
         """
         Scan wallet for Qube NFTs
 
-        Queries the blockchain for all CashToken NFTs owned by this wallet
-        that have valid Qube BCMR metadata.
+        Queries the local registry for all CashToken NFTs owned by this wallet.
+        Handles address format normalization (q-address vs z-address).
 
         Args:
-            wallet_address: BCH address to scan
+            wallet_address: BCH address to scan (any format)
 
         Returns:
             List of WalletQubeInfo for each Qube found
@@ -763,40 +763,48 @@ class ChainSyncService:
 
             found_qubes: List[WalletQubeInfo] = []
 
-            # Get all NFTs owned by this address from registry
-            # (In production, would query blockchain directly)
+            # Normalize wallet address to token-aware 'z' format for comparison,
+            # since registry stores token addresses (bitcoincash:z...)
+            # but WalletConnect provides standard addresses (bitcoincash:q...)
+            from crypto.bch_script import cash_address_to_token_address, token_address_to_cash_address
+            try:
+                wallet_token_addr = cash_address_to_token_address(wallet_address)
+            except ValueError:
+                # Already a z-address or P2SH — use as-is
+                wallet_token_addr = wallet_address
+
             for qube_id, entry in self.nft_registry.registry.items():
-                if entry.get("recipient_address") == wallet_address:
+                recipient = entry.get("recipient_address", "")
+                # Compare using token address format
+                if recipient == wallet_token_addr or recipient == wallet_address:
                     category_id = entry.get("category_id")
 
-                    # Get chain_sync metadata
-                    chain_sync = self.bcmr_generator.get_chain_sync_metadata(category_id)
+                    # Get qube name from BCMR if available
+                    qube_name = qube_id  # Default
+                    bcmr = self.bcmr_generator.load_bcmr(category_id)
+                    if bcmr:
+                        try:
+                            identities = bcmr.get("identities", {})
+                            if category_id in identities:
+                                revisions = identities[category_id]
+                                latest_key = bcmr.get("latestRevision")
+                                if latest_key and latest_key in revisions:
+                                    revision = revisions[latest_key]
+                                    qube_name = revision.get("name", qube_id)
+                        except Exception:
+                            pass
 
-                    if chain_sync:
-                        # Get qube name from BCMR
-                        bcmr = self.bcmr_generator.load_bcmr(category_id)
-                        qube_name = qube_id  # Default
+                    # chain_sync metadata is optional (qube may not be synced to IPFS yet)
+                    chain_sync = self.bcmr_generator.get_chain_sync_metadata(category_id) or {}
 
-                        if bcmr:
-                            try:
-                                identities = bcmr.get("identities", {})
-                                if category_id in identities:
-                                    revisions = identities[category_id]
-                                    latest_key = bcmr.get("latestRevision")
-                                    if latest_key and latest_key in revisions:
-                                        revision = revisions[latest_key]
-                                        qube_name = revision.get("name", qube_id)
-                            except Exception:
-                                pass
-
-                        found_qubes.append(WalletQubeInfo(
-                            qube_id=qube_id,
-                            qube_name=qube_name,
-                            category_id=category_id,
-                            ipfs_cid=chain_sync.get("ipfs_cid", ""),
-                            chain_length=chain_sync.get("chain_length", 0),
-                            sync_timestamp=chain_sync.get("sync_timestamp", 0)
-                        ))
+                    found_qubes.append(WalletQubeInfo(
+                        qube_id=qube_id,
+                        qube_name=qube_name,
+                        category_id=category_id,
+                        ipfs_cid=chain_sync.get("ipfs_cid", ""),
+                        chain_length=chain_sync.get("chain_length", 0),
+                        sync_timestamp=chain_sync.get("sync_timestamp", 0)
+                    ))
 
             logger.info(
                 "scan_wallet_completed",

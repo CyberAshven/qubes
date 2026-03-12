@@ -950,8 +950,17 @@ class GUIBridge:
                 password=password
             )
 
+            # Read nft_metadata.json (written synchronously by finalize_qube_mint)
+            nft_metadata = {}
+            nft_metadata_path = qube.data_dir / "chain" / "nft_metadata.json"
+            if nft_metadata_path.exists():
+                import json as _json
+                with open(nft_metadata_path, 'r') as _f:
+                    nft_metadata = _json.load(_f)
+
             # Transform to GUI format (must match Rust Qube struct fields)
             genesis_dict = qube.genesis_block.to_dict()
+            wallet_info = genesis_dict.get("wallet", {})
             gui_qube = {
                 "qube_id": qube.qube_id,
                 "name": qube.name,
@@ -970,6 +979,17 @@ class GUIBridge:
                 "status": "active",
                 "mint_txid": mint_txid,
                 "nft_category_id": genesis_dict.get("nft_category_id", ""),
+                # Blockchain fields from nft_metadata + genesis
+                "recipient_address": nft_metadata.get("recipient_address"),
+                "commitment": nft_metadata.get("commitment"),
+                "public_key": genesis_dict.get("public_key"),
+                "wallet_address": wallet_info.get("p2sh_address"),
+                "wallet_owner_pubkey": wallet_info.get("owner_pubkey"),
+                "wallet_qube_pubkey": wallet_info.get("qube_pubkey"),
+                "network": nft_metadata.get("network", "mainnet"),
+                # Avatar
+                "avatar_ipfs_cid": genesis_dict.get("avatar", {}).get("ipfs_cid"),
+                "avatar_url": f"https://ipfs.io/ipfs/{genesis_dict.get('avatar', {}).get('ipfs_cid')}" if genesis_dict.get("avatar", {}).get("ipfs_cid") else None,
             }
 
             return gui_qube
@@ -7096,7 +7116,7 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
             wallet_address: BCH address to scan
 
         Returns:
-            Dict with success, qubes list
+            Dict with success, qubes list (excludes qubes already imported locally)
         """
         from blockchain.chain_sync import ChainSyncService
 
@@ -7104,9 +7124,43 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
             sync_service = ChainSyncService()
             qubes = await sync_service.scan_wallet_for_qubes(wallet_address)
 
+            # Check which qubes already exist locally, get names + block counts
+            # Directory format: Name_QUBEID
+            local_qube_info = {}  # qube_id -> {name, blocks, dir}
+            if self.orchestrator and self.orchestrator.data_dir:
+                qubes_dir = self.orchestrator.data_dir / "qubes"
+                if qubes_dir.exists():
+                    for d in qubes_dir.iterdir():
+                        if d.is_dir() and '_' in d.name:
+                            parts = d.name.rsplit('_', 1)
+                            qid = parts[-1]
+                            name = parts[0] if len(parts) == 2 else qid
+                            # Read actual block count from chain state
+                            total_blocks = 1  # genesis default
+                            try:
+                                encryption_key = self.orchestrator._get_encryption_key(d)
+                                if encryption_key:
+                                    from core.chain_state import ChainState
+                                    cs = ChainState(d / "chain", encryption_key, qid)
+                                    chain_data = cs.state.get("chain", {})
+                                    total_blocks = chain_data.get("total_blocks", 1)
+                            except Exception:
+                                pass
+                            local_qube_info[qid] = {"name": name, "blocks": total_blocks}
+
+            results = []
+            for q in qubes:
+                d = q.to_dict()
+                d["already_imported"] = q.qube_id in local_qube_info
+                if q.qube_id in local_qube_info:
+                    info = local_qube_info[q.qube_id]
+                    d["qube_name"] = info["name"]
+                    d["chain_length"] = info["blocks"]
+                results.append(d)
+
             return {
                 "success": True,
-                "qubes": [q.to_dict() for q in qubes]
+                "qubes": results
             }
 
         except Exception as e:

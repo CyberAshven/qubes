@@ -286,7 +286,7 @@ export const TabContent: React.FC<TabContentProps> = ({ qubes, setQubes, onQubes
       <div className="flex-1 relative">
         {/* Dashboard Tab - Chat Interface */}
         <div
-          className={`absolute inset-0 flex flex-col overflow-y-auto ${
+          className={`absolute inset-0 flex flex-col overflow-hidden ${
             currentTab === 'dashboard' ? 'z-10 opacity-100' : 'z-0 opacity-0 pointer-events-none'
           }`}
         >

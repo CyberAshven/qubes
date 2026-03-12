@@ -1062,6 +1062,8 @@ export const GroupChatInterface: React.FC<GroupChatInterfaceProps> = ({
 
               if (!response) {
                 console.log('[AutoContinue] Conversation ended (no response)');
+                setIsConversationActive(false);
+                shouldContinueRef.current = false;
                 setIsLoading(false);
                 setStatus({ stage: 'idle' });
                 return;
@@ -1072,6 +1074,8 @@ export const GroupChatInterface: React.FC<GroupChatInterfaceProps> = ({
               console.error('[AutoContinue] Error:', err);
               isFetchingRef.current = false;
               processingRef.current = false;
+              setIsConversationActive(false);
+              shouldContinueRef.current = false;
               setIsLoading(false);
               setStatus({ stage: 'idle' });
             }
@@ -1296,45 +1300,45 @@ export const GroupChatInterface: React.FC<GroupChatInterfaceProps> = ({
     <div className="flex-1 flex flex-col gap-4 overflow-hidden">
       {/* Header - large avatar with credentials stacked vertically */}
       <GlassCard className="p-4">
-        <div className="flex items-center gap-8 overflow-x-auto">
-          {selectedQubes.map((qube, index) => (
-            <div
-              key={qube.qube_id}
-              className={`flex items-center gap-4 flex-shrink-0 ${index > 0 ? 'pl-8 border-l border-glass-border' : ''}`}
-            >
-              {/* Large Avatar */}
-              <img
-                src={getAvatarPath(qube)}
-                alt={`${qube.name} avatar`}
-                className="w-20 h-20 rounded-xl object-cover shadow-lg transition-transform hover:scale-105"
-                style={{
-                  border: `3px solid ${qube.favorite_color}`,
-                  boxShadow: `0 0 20px ${qube.favorite_color}40`
-                }}
-                onError={(e) => {
-                  const target = e.target as HTMLImageElement;
-                  target.style.display = 'none';
-                }}
-              />
-
-              {/* Credentials stacked vertically - no labels */}
-              <div className="flex flex-col gap-0.5">
-                <span className="text-xl font-display font-bold" style={{ color: qube.favorite_color }}>
-                  {qube.name}
-                </span>
-                <span className="text-base font-display font-medium flex items-center gap-1" style={{ color: qube.favorite_color }}>
-                  🤖 {formatModelName(qube.ai_model)}
-                </span>
-                <span className="text-base font-display font-medium flex items-center gap-1" style={{ color: qube.favorite_color }}>
-                  🎤 {formatVoiceDisplay(qube.voice_model)}
-                </span>
+        <div className="flex items-center gap-2">
+          {/* Avatars — flex-wrap so they adapt to width instead of scrolling */}
+          <div className="flex items-center gap-6 flex-wrap flex-1 min-w-0">
+            {selectedQubes.map((qube, index) => (
+              <div
+                key={qube.qube_id}
+                className={`flex items-center gap-3 ${index > 0 ? 'pl-6 border-l border-glass-border' : ''}`}
+              >
+                <img
+                  src={getAvatarPath(qube)}
+                  alt={`${qube.name} avatar`}
+                  className="w-16 h-16 rounded-xl object-cover shadow-lg flex-shrink-0"
+                  style={{
+                    border: `3px solid ${qube.favorite_color}`,
+                    boxShadow: `0 0 20px ${qube.favorite_color}40`
+                  }}
+                  onError={(e) => {
+                    const target = e.target as HTMLImageElement;
+                    target.style.display = 'none';
+                  }}
+                />
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-lg font-display font-bold" style={{ color: qube.favorite_color }}>
+                    {qube.name}
+                  </span>
+                  <span className="text-sm font-display font-medium flex items-center gap-1" style={{ color: qube.favorite_color }}>
+                    🤖 {formatModelName(qube.ai_model)}
+                  </span>
+                  <span className="text-sm font-display font-medium flex items-center gap-1" style={{ color: qube.favorite_color }}>
+                    🎤 {formatVoiceDisplay(qube.voice_model)}
+                  </span>
+                </div>
               </div>
-            </div>
-          ))}
+            ))}
+          </div>
 
-          {/* Pause/Resume/Stop buttons - right side */}
+          {/* Pause/Resume/Stop buttons — always visible, outside the avatar area */}
           {isConversationActive && (
-            <div className="flex items-center gap-2 ml-auto flex-shrink-0">
+            <div className="flex items-center gap-2 flex-shrink-0">
               {isPaused ? (
                 <GlassButton onClick={handleResume} size="sm">
                   Resume

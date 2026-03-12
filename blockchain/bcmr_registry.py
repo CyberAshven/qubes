@@ -388,6 +388,12 @@ class BCMRRegistryManager:
         # Extract qube data
         qube_name = getattr(qube, 'name', f"Qube {qube.qube_id}")
         avatar_cid = getattr(qube, 'avatar_ipfs_cid', '')
+        if not avatar_cid and hasattr(qube, 'genesis_block'):
+            avatar_data = getattr(qube.genesis_block, 'avatar', None)
+            if isinstance(avatar_data, dict):
+                avatar_cid = avatar_data.get('ipfs_cid', '')
+            elif hasattr(avatar_data, 'ipfs_cid'):
+                avatar_cid = getattr(avatar_data, 'ipfs_cid', '')
 
         description = ""
         creator = None

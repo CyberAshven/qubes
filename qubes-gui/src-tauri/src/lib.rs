@@ -1231,6 +1231,8 @@ struct WalletQubeInfo {
     ipfs_cid: String,
     chain_length: u32,
     sync_timestamp: u64,
+    #[serde(default)]
+    already_imported: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

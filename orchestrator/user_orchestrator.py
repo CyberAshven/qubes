@@ -556,6 +556,26 @@ class UserOrchestrator:
             await self._save_qube(qube, pending.private_key)
             self._initialize_qube_skills(qube)
 
+            # Write nft_metadata.json immediately (before background tasks)
+            # so list_qubes can read it even if BCMR/IPFS is still running.
+            import json as _json
+            from datetime import datetime as _dt, timezone as _tz
+            qube_name = getattr(qube, 'name', qube.qube_id)
+            nft_metadata = {
+                "qube_id": pending.qube_id,
+                "category_id": pending.category_id,
+                "mint_txid": mint_txid,
+                "recipient_address": pending.recipient_address,
+                "commitment": pending.commitment,
+                "network": "mainnet",
+                "minted_at": _dt.now(_tz.utc).isoformat(),
+                "bcmr_location": f"blockchain/{qube_name}_bcmr.json"
+            }
+            nft_metadata_path = qube.data_dir / "chain" / "nft_metadata.json"
+            with open(nft_metadata_path, 'w') as _f:
+                _json.dump(nft_metadata, _f, indent=2)
+            logger.info("nft_metadata_saved_early", qube_id=pending.qube_id[:16] + "...")
+
             # Initialize AI so the qube is immediately usable for chat
             # (load_qube is skipped since the qube is already in self.qubes)
             api_keys = self._get_api_keys()
@@ -597,7 +617,11 @@ class UserOrchestrator:
                     registry_mgr = BCMRRegistryManager(category_id=OFFICIAL_QUBES_CATEGORY)
                     registry_mgr.add_qube_to_registry(qube)
                     # Sync to server via HTTPS API (works for all users, no SSH needed)
-                    await asyncio.to_thread(registry_mgr.add_qube_to_server, qube)
+                    success = await asyncio.to_thread(registry_mgr.add_qube_to_server, qube)
+                    if success:
+                        # Mark as synced so load_qube doesn't retry
+                        marker = qube.data_dir / "chain" / ".registry_synced"
+                        marker.write_text("ok")
                     await registry_mgr.upload_to_ipfs()
                     # trigger_paytaca_reindex uses blocking requests.post —
                     # run in thread to avoid blocking the event loop
@@ -805,6 +829,22 @@ class UserOrchestrator:
                 )
             except Exception as sync_err:
                 logger.debug(f"Could not start balance sync: {sync_err}")
+
+            # Background: re-register in BCMR registry if not yet synced
+            registry_marker = qube_dir / "chain" / ".registry_synced"
+            if not registry_marker.exists():
+                async def _bg_registry_sync():
+                    try:
+                        from core.official_category import OFFICIAL_QUBES_CATEGORY
+                        from blockchain.bcmr_registry import BCMRRegistryManager
+                        registry_mgr = BCMRRegistryManager(category_id=OFFICIAL_QUBES_CATEGORY)
+                        await asyncio.to_thread(registry_mgr.add_qube_to_server, qube)
+                        # Mark as synced so we don't retry on every load
+                        registry_marker.write_text("ok")
+                        logger.info("registry_sync_on_load_ok", qube_id=qube_id[:16] + "...")
+                    except Exception as e:
+                        logger.debug(f"registry_sync_on_load_failed: {e}")
+                asyncio.create_task(_bg_registry_sync())
 
             logger.info("qube_loaded_successfully", qube_id=qube_id[:16] + "...")
 

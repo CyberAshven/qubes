@@ -119,6 +119,7 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
     ipfs_cid: string;
     chain_length: number;
     sync_timestamp: number;
+    already_imported?: boolean;
   }>>([]);
 
   // Reset qube state (new save slot)
@@ -531,6 +532,7 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
           ipfs_cid: string;
           chain_length: number;
           sync_timestamp: number;
+          already_imported?: boolean;
         }>;
         error?: string;
       }>('scan_wallet', {
@@ -540,6 +542,9 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
 
       if (result.success && result.qubes) {
         setWalletQubes(result.qubes);
+        if (result.qubes.length === 0) {
+          alert('No Qubes found for this wallet address.');
+        }
       } else {
         alert(`Scan failed: ${result.error}`);
       }
@@ -552,7 +557,8 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
 
   // Bulk import all Qubes from wallet (no WIF — password-based decryption)
   const handleBulkImport = async () => {
-    if (!walletQubes.length || !userId || !masterPassword) return;
+    const importable = walletQubes.filter(q => !q.already_imported);
+    if (!importable.length || !userId || !masterPassword) return;
 
     setIsImporting(true);
     setImportProgress(null);
@@ -561,9 +567,9 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
     const errors: string[] = [];
 
     try {
-      for (let i = 0; i < walletQubes.length; i++) {
-        const q = walletQubes[i];
-        setImportProgress({ current: i + 1, total: walletQubes.length, name: q.qube_name });
+      for (let i = 0; i < importable.length; i++) {
+        const q = importable[i];
+        setImportProgress({ current: i + 1, total: importable.length, name: q.qube_name });
 
         try {
           const result = await invoke<{
@@ -592,7 +598,7 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
         }
       }
 
-      const summary = [`Imported ${imported} of ${walletQubes.length} Qube(s).`];
+      const summary = [`Imported ${imported} of ${importable.length} Qube(s).`];
       if (failed > 0) summary.push(`\n${failed} failed:\n${errors.join('\n')}`);
       alert(summary.join(''));
 
@@ -993,22 +999,33 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
             {walletQubes.length > 0 && (
               <div className="mb-4">
                 <label className="block text-text-secondary text-sm mb-2">
-                  Found {walletQubes.length} Qube(s)
+                  Found {walletQubes.length} Qube(s) in wallet
+                  {walletQubes.every(q => q.already_imported) && (
+                    <span className="text-text-tertiary"> — all already imported</span>
+                  )}
                 </label>
                 <div className="space-y-2 max-h-48 overflow-y-auto">
                   {walletQubes.map((q) => (
                     <div
-                      key={q.category_id}
-                      className="p-3 rounded-lg border border-border-primary bg-surface-secondary"
+                      key={q.qube_id}
+                      className={`p-3 rounded-lg border ${
+                        q.already_imported
+                          ? 'border-border-primary/50 bg-surface-secondary/50 opacity-60'
+                          : 'border-border-primary bg-surface-secondary'
+                      }`}
                     >
                       <div className="flex justify-between items-start">
                         <div>
-                          <p className="text-text-primary font-medium">{q.qube_name}</p>
+                          <p className="text-text-primary font-medium">
+                            {q.qube_name}
+                            {q.already_imported && (
+                              <span className="text-text-tertiary text-xs ml-2">(already imported)</span>
+                            )}
+                          </p>
                           <p className="text-text-tertiary text-xs">{q.qube_id}</p>
                         </div>
                         <div className="text-right text-xs text-text-tertiary">
-                          <p>{q.chain_length} blocks</p>
-                          <p>{new Date(q.sync_timestamp * 1000).toLocaleDateString()}</p>
+                          <p>{q.chain_length || 1} block{(q.chain_length || 1) !== 1 ? 's' : ''}</p>
                         </div>
                       </div>
                     </div>
@@ -1042,10 +1059,15 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
                 <GlassButton
                   variant="primary"
                   onClick={handleBulkImport}
-                  disabled={isImporting}
+                  disabled={isImporting || walletQubes.filter(q => !q.already_imported).length === 0}
                   loading={isImporting}
                 >
-                  {isImporting ? 'Importing...' : `Import All (${walletQubes.length})`}
+                  {isImporting
+                    ? 'Importing...'
+                    : walletQubes.filter(q => !q.already_imported).length > 0
+                      ? `Import (${walletQubes.filter(q => !q.already_imported).length})`
+                      : 'All Imported'
+                  }
                 </GlassButton>
               )}
             </div>

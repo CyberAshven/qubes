@@ -479,7 +479,7 @@ function App() {
       {/* Celebration UI (XP toasts, level-ups, etc) */}
       <CelebrationOverlay />
 
-      <div className={`h-screen w-screen flex flex-col bg-bg-primary ${isLocked ? 'invisible' : ''}`}>
+      <div className={`h-screen w-screen flex flex-col overflow-hidden bg-bg-primary ${isLocked ? 'invisible' : ''}`}>
         {/* Title Bar */}
         <div className="h-8 flex items-center justify-between px-4 bg-bg-quaternary border-b border-glass-border">
           <span className="text-sm font-display text-accent-primary">QUBES ({qubes.length} loaded)</span>
