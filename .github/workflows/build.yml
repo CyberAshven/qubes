@@ -107,7 +107,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       # ========== Free Disk Space (needed for heavy deps + models) ==========
       - name: Free disk space (Linux)
@@ -157,7 +157,7 @@ jobs:
 
       # ========== Setup Node.js ==========
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: '20'
           cache: 'npm'
@@ -165,7 +165,7 @@ jobs:
 
       # ========== Setup Python ==========
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
           cache: 'pip'
