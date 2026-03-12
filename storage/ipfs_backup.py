@@ -209,7 +209,11 @@ class QubeBackup:
         metadata: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
-        Export full Qube data for backup
+        Export full Qube data for backup.
+
+        Mirrors the data collected by the local account backup
+        (gui_bridge.export_account_backup) minus private keys,
+        so an IPFS restore produces the same result as a local restore.
 
         Args:
             qube: Qube instance
@@ -218,6 +222,7 @@ class QubeBackup:
         Returns:
             Complete Qube data as dict
         """
+        import base64
         from datetime import datetime, timezone
 
         # Export all blocks from storage
@@ -233,28 +238,77 @@ class QubeBackup:
         block_hashes = [block["block_hash"] for block in all_blocks]
         merkle_root = compute_merkle_root(block_hashes) if block_hashes else None
 
+        # Genesis block
+        genesis_dict = None
+        if hasattr(qube.genesis_block, 'to_dict'):
+            genesis_dict = qube.genesis_block.to_dict()
+        elif isinstance(qube.genesis_block, dict):
+            genesis_dict = qube.genesis_block
+
+        # Full chain state (includes relationships, mood, skills, etc.)
+        chain_state_full = {}
+        if hasattr(qube, 'chain_state') and qube.chain_state:
+            chain_state_full = qube.chain_state.state.copy()
+
+        # NFT metadata (from disk)
+        nft_metadata = None
+        bcmr_data = None
+        avatar_base64 = None
+        avatar_filename = None
+
+        if hasattr(qube, 'data_dir') and qube.data_dir:
+            qube_dir = Path(qube.data_dir)
+            chain_dir = qube_dir / "chain"
+
+            # NFT metadata
+            nft_file = chain_dir / "nft_metadata.json"
+            if nft_file.exists():
+                with open(nft_file, 'r', encoding='utf-8') as f:
+                    nft_metadata = json.load(f)
+
+            # BCMR
+            bcmr_file = qube_dir / "blockchain" / f"{qube.name}_bcmr.json"
+            if bcmr_file.exists():
+                with open(bcmr_file, 'r', encoding='utf-8') as f:
+                    bcmr_data = json.load(f)
+
+            # Avatar
+            for pattern in ["*.png", "*.jpg", "*.jpeg", "*.webp"]:
+                avatar_files = list(chain_dir.glob(f"*_avatar{pattern[1:]}"))
+                if avatar_files:
+                    with open(avatar_files[0], 'rb') as f:
+                        avatar_base64 = base64.b64encode(f.read()).decode('utf-8')
+                        avatar_filename = avatar_files[0].name
+                    break
+
         backup_data = {
             # Qube identity
             "qube_id": qube.qube_id,
             "qube_name": qube.name,
             "public_key": qube.genesis_block.public_key,
 
+            # Genesis block
+            "genesis_block": genesis_dict,
+
             # Memory chain
             "chain_length": chain_length,
             "blocks": all_blocks,
             "merkle_root": merkle_root,
 
-            # Chain state
-            "chain_state": {
-                "last_block_hash": qube.chain_state.state["last_block_hash"],
-                "block_counts": qube.chain_state.state["block_counts"],
-                "total_tokens_used": qube.chain_state.state["total_tokens_used"],
-                "total_api_cost": qube.chain_state.state["total_api_cost"],
-            },
+            # Full chain state (relationships, mood, skills, settings, etc.)
+            "chain_state": chain_state_full,
+
+            # NFT & BCMR
+            "nft_metadata": nft_metadata,
+            "bcmr_data": bcmr_data,
+
+            # Avatar
+            "avatar_base64": avatar_base64,
+            "avatar_filename": avatar_filename,
 
             # Metadata
             "backup_timestamp": int(datetime.now(timezone.utc).timestamp()),
-            "backup_version": "1.0",
+            "backup_version": "2.0",
             "metadata": metadata or {}
         }
 
@@ -443,7 +497,10 @@ class QubeBackup:
         data_dir: Path
     ) -> str:
         """
-        Import Qube data to local storage
+        Import Qube data to local storage.
+
+        Restores the same directory structure as the local account
+        backup import (gui_bridge.import_account_backup).
 
         Args:
             backup_data: Decrypted backup data
@@ -452,46 +509,77 @@ class QubeBackup:
         Returns:
             Path to restored Qube directory
         """
+        import base64
         from core.block import Block
 
         qube_id = backup_data["qube_id"]
         qube_name = backup_data["qube_name"]
 
-        # Create Qube directory
+        # Create Qube directory structure
         qube_dir_name = f"{qube_name}_{qube_id}"
         qube_path = data_dir / "qubes" / qube_dir_name
-        qube_path.mkdir(parents=True, exist_ok=True)
-
-        # Write all blocks to JSON files
+        chain_dir = qube_path / "chain"
         blocks_dir = qube_path / "blocks" / "permanent"
+        chain_dir.mkdir(parents=True, exist_ok=True)
         blocks_dir.mkdir(parents=True, exist_ok=True)
+        (qube_path / "blocks" / "session").mkdir(parents=True, exist_ok=True)
+        (qube_path / "audio").mkdir(parents=True, exist_ok=True)
+        (qube_path / "images").mkdir(parents=True, exist_ok=True)
 
+        # Write genesis block
+        genesis_block = backup_data.get("genesis_block")
+        if genesis_block:
+            with open(chain_dir / "genesis.json", 'w', encoding='utf-8') as f:
+                json.dump(genesis_block, f, indent=2)
+
+        # Write all memory blocks
         for block_dict in backup_data["blocks"]:
             block = Block.from_dict(block_dict)
             block_type_str = block_dict.get("block_type", "UNKNOWN")
             timestamp = block_dict.get("timestamp", 0)
             filename = f"{block.block_number}_{block_type_str}_{timestamp}.json"
-            block_file = blocks_dir / filename
-
-            with open(block_file, 'w') as f:
+            with open(blocks_dir / filename, 'w', encoding='utf-8') as f:
                 json.dump(block_dict, f, indent=2)
 
         # Write chain state
-        chain_state_path = qube_path / "chain_state.json"
-        chain_state_data = {
-            "qube_id": qube_id,
-            "chain_length": backup_data["chain_length"],
-            "last_block_number": backup_data["chain_length"] - 1,
-            "last_block_hash": backup_data["chain_state"]["last_block_hash"],
-            "block_counts": backup_data["chain_state"]["block_counts"],
-            "total_tokens_used": backup_data["chain_state"]["total_tokens_used"],
-            "total_api_cost": backup_data["chain_state"]["total_api_cost"],
-            "restored_from_ipfs": True,
-            "restored_at": int(__import__('time').time())
-        }
+        chain_state = backup_data.get("chain_state", {})
+        if isinstance(chain_state, dict) and chain_state:
+            # v2.0 backups have the full chain_state; v1.0 has only 4 fields
+            if "last_block_hash" in chain_state and "block_counts" not in chain_state:
+                # Looks like a nested subset — wrap it
+                pass
+            chain_state["restored_from_ipfs"] = True
+            chain_state["restored_at"] = int(__import__('time').time())
+        else:
+            chain_state = {
+                "qube_id": qube_id,
+                "chain_length": backup_data["chain_length"],
+                "restored_from_ipfs": True,
+                "restored_at": int(__import__('time').time()),
+            }
+        with open(chain_dir / "chain_state.json", 'w', encoding='utf-8') as f:
+            json.dump(chain_state, f, indent=2)
 
-        with open(chain_state_path, 'w') as f:
-            json.dump(chain_state_data, f, indent=2)
+        # Write NFT metadata
+        nft_metadata = backup_data.get("nft_metadata")
+        if nft_metadata:
+            with open(chain_dir / "nft_metadata.json", 'w', encoding='utf-8') as f:
+                json.dump(nft_metadata, f, indent=2)
+
+        # Write BCMR
+        bcmr_data = backup_data.get("bcmr_data")
+        if bcmr_data:
+            bcmr_dir = qube_path / "blockchain"
+            bcmr_dir.mkdir(parents=True, exist_ok=True)
+            with open(bcmr_dir / f"{qube_name}_bcmr.json", 'w', encoding='utf-8') as f:
+                json.dump(bcmr_data, f, indent=2)
+
+        # Write avatar
+        avatar_b64 = backup_data.get("avatar_base64")
+        avatar_fname = backup_data.get("avatar_filename")
+        if avatar_b64 and avatar_fname:
+            with open(chain_dir / avatar_fname, 'wb') as f:
+                f.write(base64.b64decode(avatar_b64))
 
         logger.info(
             "qube_data_imported",

@@ -1521,7 +1521,7 @@ class GUIBridge:
                     "error": "Audio manager not initialized for this qube"
                 }
 
-            # Get voice model from chain_state or genesis_block
+            # Get voice model from chain_state (source of truth)
             voice_model = None
             if qube.chain_state:
                 voice_model = qube.chain_state.get_voice_model()

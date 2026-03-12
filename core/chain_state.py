@@ -376,6 +376,20 @@ class ChainState:
             logger.info("chain_state_initialized_from_genesis", qube_id=self.qube_id)
             return
 
+        # Try to read genesis.json from the chain directory so we never lose
+        # settings like voice_model/tts_enabled when chain_state is recreated
+        genesis_path = self.data_dir / "genesis.json"
+        if genesis_path.exists():
+            try:
+                with open(genesis_path, 'r') as f:
+                    genesis_data = json.load(f)
+                self.state = create_default_chain_state(genesis_data, self.qube_id)
+                self._save()
+                logger.info("chain_state_initialized_from_genesis_file", qube_id=self.qube_id, genesis_path=str(genesis_path))
+                return
+            except Exception as e:
+                logger.warning("failed_to_read_genesis_for_init", error=str(e), genesis_path=str(genesis_path))
+
         # Fallback: hardcoded defaults (for backward compatibility)
         now = int(datetime.now(timezone.utc).timestamp())
 

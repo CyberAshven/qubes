@@ -52,7 +52,7 @@ const WelcomeStep: React.FC<WelcomeStepProps> = ({ onNext, onBackToLogin }) => {
         and creating your first Qube. It only takes a few minutes!
       </div>
 
-      <div className="wizard-buttons" style={{ justifyContent: 'center' }}>
+      <div className="wizard-buttons" style={{ justifyContent: 'center', gap: '1rem' }}>
         <button className="wizard-btn wizard-btn-primary" onClick={onNext}>
           Get Started
           <span>→</span>

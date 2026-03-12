@@ -496,9 +496,12 @@ export const CreateQubeModal: React.FC<CreateQubeModalProps> = ({
 
       console.log('[Minting] WC transaction prepared:', prepResult.qube_id);
 
-      // Step 2: Send to wallet for signing + broadcast
+      // Step 2: Send to wallet for signing + broadcast (use session matching owner pubkey)
       setMintStatus('Approve in your wallet...');
-      const signResult = await wallet.signTransaction(prepResult.wc_transaction);
+      const qubeSession = wallet.getSessionForQube(formData.ownerPubkey);
+      const signResult = qubeSession
+        ? await wallet.signTransactionWith(qubeSession.topic, prepResult.wc_transaction)
+        : await wallet.signTransaction(prepResult.wc_transaction);
 
       if (!signResult.signedTransactionHash) {
         throw new Error('Wallet did not return a transaction hash');

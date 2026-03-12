@@ -1269,7 +1269,7 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
 
       // Check if TTS should be generated BEFORE setting status
       const qube = selectedQubes.find(q => q.qube_id === response.speaker_id);
-      const shouldGenerateTTS = qube && qube.tts_enabled !== false && qube.voice_model;
+      const shouldGenerateTTS = qube && qube.tts_enabled === true && qube.voice_model;
 
       console.log(`[Prefetch] TTS check for ${response.speaker_name}: qube=${!!qube}, tts_enabled=${qube?.tts_enabled}, voice_model=${qube?.voice_model}, shouldGenerate=${shouldGenerateTTS}`);
 
@@ -1769,7 +1769,7 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
       }
 
       const voiceModel = pendingTTSMessage.voice_model || qube?.voice_model;
-      const ttsEnabled = qube?.tts_enabled !== false;
+      const ttsEnabled = qube?.tts_enabled === true;
 
       // No TTS - just show message
       if (!voiceModel || !ttsEnabled) {

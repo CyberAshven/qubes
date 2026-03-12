@@ -1305,7 +1305,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
       };
 
       // Check if TTS is enabled for this qube
-      if (currentQube.tts_enabled) {
+      if (currentQube.tts_enabled === true) {
         try {
           // Show TTS generation indicator and reset progress
           setIsGeneratingTTS(true);

@@ -645,8 +645,8 @@ export const GroupChatInterface: React.FC<GroupChatInterfaceProps> = ({
 
     isPlayingRef.current = true;
 
-    // Generate TTS if enabled
-    if (qube?.tts_enabled !== false && qube?.voice_model) {
+    // Generate TTS if enabled (strict check: must be explicitly enabled, not just undefined)
+    if (qube?.tts_enabled === true && qube?.voice_model) {
       setStatus({ stage: 'generating_tts', speakerName: response.speaker_name, speakerId: response.speaker_id });
 
       try {
@@ -654,7 +654,7 @@ export const GroupChatInterface: React.FC<GroupChatInterfaceProps> = ({
         await playTTS(userId!, qube.qube_id, ttsText, password!);
       } catch (err) {
         console.error('TTS error:', err);
-        // Continue without TTS
+        // Continue without TTS — don't leave status stuck on generating_tts
       }
     }
 
@@ -821,9 +821,9 @@ export const GroupChatInterface: React.FC<GroupChatInterfaceProps> = ({
         // nextSpeakerId should stay as the current prefetch target until it's played
       }
 
-      // Prefetch TTS
+      // Prefetch TTS (strict check: must be explicitly enabled)
       const qube = getQubeById(response.speaker_id);
-      if (qube?.tts_enabled !== false && qube?.voice_model) {
+      if (qube?.tts_enabled === true && qube?.voice_model) {
         try {
           const cleanedMessage = truncateForTTS(cleanContentForDisplay(response.message));
           const audioUrl = await prefetchTTS(userId, qube.qube_id, cleanedMessage, password);
@@ -853,6 +853,7 @@ export const GroupChatInterface: React.FC<GroupChatInterfaceProps> = ({
     } catch (err) {
       console.error(`[Prefetch] Error for qube ${forQubeId}:`, err);
       updatePipeline(forQubeId, { status: 'idle', pendingResponse: null });
+      setStatus({ stage: 'idle' });
     } finally {
       isFetchingRef.current = false;
     }
@@ -919,7 +920,7 @@ export const GroupChatInterface: React.FC<GroupChatInterfaceProps> = ({
 
     // Play TTS - use prefetched audio if available, otherwise generate
     const qube = getQubeById(response.speaker_id);
-    if (qube?.tts_enabled !== false && qube?.voice_model) {
+    if (qube?.tts_enabled === true && qube?.voice_model) {
       if (pipeline.prefetchedAudio) {
         // Use prefetched TTS - instant playback!
         console.log(`[Prefetch] Using prefetched TTS audio`);

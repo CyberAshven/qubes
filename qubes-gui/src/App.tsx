@@ -301,14 +301,6 @@ function App() {
     try {
       await invoke('delete_user_account', { userId: username });
       setLoginError(null);
-      // Re-check if any users remain
-      const response = await invoke<FirstRunResponse>('check_first_run');
-      if (response.is_first_run) {
-        setIsFirstRun(true);
-      } else {
-        // Other users still exist, show wizard for new account creation
-        setShowWizard(true);
-      }
     } catch (err) {
       console.error('Failed to reset account:', err);
       setLoginError('Failed to reset account. Please try again.');
@@ -404,17 +396,17 @@ function App() {
     );
   }
 
-  // Show setup wizard for first run (no users) or explicit "Create Account" click
-  if (isFirstRun || showWizard) {
+  // Show setup wizard when user clicks "Create Account" from login screen
+  if (showWizard) {
     return (
       <SetupWizard
         onComplete={handleWizardComplete}
-        onBackToLogin={isFirstRun ? undefined : () => setShowWizard(false)}
+        onBackToLogin={() => setShowWizard(false)}
       />
     );
   }
 
-  // Show login screen if not authenticated (always has "Create Account" option)
+  // Always show login screen when not authenticated (even on first run)
   if (!isAuthenticated) {
     return (
       <LoginScreen

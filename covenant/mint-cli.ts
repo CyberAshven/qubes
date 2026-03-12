@@ -322,7 +322,7 @@ try {
 } catch (e: any) {
   output({
     success: false,
-    error: e.message || String(e)
+    error: e?.message || String(e)
   });
   process.exit(1);
 }

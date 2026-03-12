@@ -856,11 +856,13 @@ class UserOrchestrator:
                             avatar_url = f"https://ipfs.io/ipfs/{avatar_ipfs_cid}"
                         # Note: We pass avatar_local_path separately for frontend to handle
 
-                        # Load chain state for block counts and current model using ChainState with encryption
+                        # Load chain state for block counts, current model, and settings using ChainState with encryption
                         total_blocks = 1  # At least genesis
                         block_breakdown = {}
                         current_model = None  # Will be read from chain_state if available
                         current_provider = None
+                        cs_voice_model = None  # Voice/TTS from chain_state (authoritative)
+                        cs_tts_enabled = None
                         try:
                             encryption_key = self._get_encryption_key(qube_dir)
                             if encryption_key:
@@ -876,6 +878,10 @@ class UserOrchestrator:
                                 runtime = cs.state.get("runtime", {})
                                 current_model = runtime.get("current_model")
                                 current_provider = runtime.get("current_provider")
+                                # Read voice/TTS settings from chain_state (has proper defaults)
+                                cs_settings = cs.state.get("settings", {})
+                                cs_voice_model = cs_settings.get("voice_model")
+                                cs_tts_enabled = cs_settings.get("tts_enabled")
                             else:
                                 # Fallback: try legacy plain JSON (for qubes not yet migrated)
                                 chain_state_path = qube_dir / "chain" / "chain_state.json"
@@ -1033,8 +1039,8 @@ class UserOrchestrator:
                             "ai_provider": current_provider or genesis.get("ai_provider", "unknown"),
                             "birth_timestamp": genesis["birth_timestamp"],
                             "creator": genesis.get("creator"),
-                            "voice_model": genesis.get("voice_model"),
-                            "tts_enabled": genesis.get("tts_enabled"),
+                            "voice_model": cs_voice_model or genesis.get("voice_model"),
+                            "tts_enabled": cs_tts_enabled if cs_tts_enabled is not None else genesis.get("tts_enabled"),
                             "favorite_color": genesis.get("favorite_color", "#00ff88"),
                             "home_blockchain": genesis.get("home_blockchain", "bitcoincash"),
                             "genesis_prompt": genesis.get("genesis_prompt", ""),

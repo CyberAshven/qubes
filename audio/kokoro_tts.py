@@ -135,17 +135,21 @@ class KokoroTTSProvider(TTSProvider):
         """Get voice ID, validating it exists for the language."""
         voice_id = voice_config.voice_id
 
-        if voice_id:
-            # Check if voice exists in specified language
-            if voice_id in self.VOICES.get(lang_code, []):
-                return voice_id
-            # Check if voice exists in any language (use as-is)
-            for voices in self.VOICES.values():
-                if voice_id in voices:
-                    return voice_id
+        if not voice_id:
+            raise ValueError("No voice_id specified in voice config")
 
-        # Return default voice for language
-        return self.DEFAULT_VOICES.get(lang_code, 'af_heart')
+        # Check if voice exists in specified language
+        if voice_id in self.VOICES.get(lang_code, []):
+            return voice_id
+        # Check if voice exists in any language (use as-is)
+        for voices in self.VOICES.values():
+            if voice_id in voices:
+                return voice_id
+
+        raise ValueError(
+            f"Kokoro voice '{voice_id}' not found. "
+            f"Available for lang '{lang_code}': {self.VOICES.get(lang_code, [])}"
+        )
 
     async def synthesize_stream(
         self, text: str, voice_config: VoiceConfig
@@ -246,8 +250,9 @@ class KokoroTTSProvider(TTSProvider):
         logger.info(
             "kokoro_generating",
             text_length=len(text),
+            requested_voice=voice_config.voice_id,
+            resolved_voice=voice,
             lang_code=lang_code,
-            voice=voice,
             speed=speed
         )
 
