@@ -7399,6 +7399,38 @@ async fn install_heavy_update(archive_path: String) -> Result<bool, String> {
         }
     }
 
+    // ── Swap node directory ──────────────────────────────────────────────
+    let staged_node = staging_dir.join("node");
+    let current_node = exe_dir.join("node");
+    let backup_node = exe_dir.join("node.old");
+
+    if staged_node.exists() {
+        if current_node.exists() {
+            if backup_node.exists() {
+                std::fs::remove_dir_all(&backup_node).ok();
+            }
+            std::fs::rename(&current_node, &backup_node).ok();
+        }
+        if let Err(e) = move_dir(&staged_node, &current_node) {
+            eprintln!("Warning: failed to install node update: {}", e);
+            if backup_node.exists() && !current_node.exists() {
+                let _ = std::fs::rename(&backup_node, &current_node);
+            }
+        } else {
+            // On Unix, ensure node binary is executable
+            #[cfg(not(target_os = "windows"))]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let node_bin = current_node.join("node");
+                if let Ok(metadata) = std::fs::metadata(&node_bin) {
+                    let mut perms = metadata.permissions();
+                    perms.set_mode(0o755);
+                    let _ = std::fs::set_permissions(&node_bin, perms);
+                }
+            }
+        }
+    }
+
     // ── Swap frontend binary ────────────────────────────────────────────
     #[cfg(target_os = "windows")]
     let frontend_name = "Qubes.exe";
@@ -7466,6 +7498,12 @@ fn cleanup_old_backend() -> bool {
             let backup_covenant = exe_dir.join("covenant.old");
             if backup_covenant.exists() {
                 let _ = std::fs::remove_dir_all(&backup_covenant);
+            }
+
+            // Clean up old node directory
+            let backup_node = exe_dir.join("node.old");
+            if backup_node.exists() {
+                let _ = std::fs::remove_dir_all(&backup_node);
             }
 
             // Clean up old frontend binary

@@ -32,22 +32,35 @@ def _find_covenant_dir() -> Path:
     return Path(__file__).resolve().parent.parent / "covenant"
 
 
-def _find_tsx() -> str:
-    """Find the tsx binary (local node_modules or global)."""
+def _find_tsx() -> list:
+    """Return command parts to run tsx (e.g. [node, cli.mjs] or [tsx])."""
     import sys
     covenant_dir = _find_covenant_dir()
-    bin_dir = covenant_dir / "node_modules" / ".bin"
 
+    # Prefer bundled node binary + tsx CLI entry point (no system Node.js needed)
+    tsx_cli = covenant_dir / "node_modules" / "tsx" / "dist" / "cli.mjs"
+    if tsx_cli.exists():
+        if getattr(sys, 'frozen', False):
+            dist_root = Path(sys.executable).resolve().parent.parent
+        else:
+            dist_root = Path(__file__).resolve().parent.parent
+        node_name = "node.exe" if sys.platform == "win32" else "node"
+        bundled_node = dist_root / "node" / node_name
+        if bundled_node.exists():
+            return [str(bundled_node), str(tsx_cli)]
+
+    # Fall back to tsx shell script (needs system Node.js in PATH)
+    bin_dir = covenant_dir / "node_modules" / ".bin"
     if sys.platform == "win32":
         local_cmd = bin_dir / "tsx.cmd"
         if local_cmd.exists():
-            return str(local_cmd)
+            return [str(local_cmd)]
     else:
         local_tsx = bin_dir / "tsx"
         if local_tsx.exists():
-            return str(local_tsx)
+            return [str(local_tsx)]
 
-    return "tsx"
+    return ["tsx"]
 
 
 class WalletContractClient:
@@ -62,14 +75,14 @@ class WalletContractClient:
 
     async def _call_wallet_cli(self, cli_args: Dict[str, Any]) -> Dict[str, Any]:
         """Call covenant/wallet-cli.ts via subprocess in a thread pool."""
-        tsx_bin = _find_tsx()
+        tsx_cmd = _find_tsx()
         wallet_cli = str(self.covenant_dir / "wallet-cli.ts")
         args_json = json.dumps(cli_args)
 
         def _run():
             try:
                 proc = subprocess.run(
-                    [tsx_bin, wallet_cli, args_json],
+                    [*tsx_cmd, wallet_cli, args_json],
                     capture_output=True,
                     text=True,
                     timeout=60,

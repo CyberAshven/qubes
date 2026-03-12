@@ -81,6 +81,7 @@ jobs:
             artifact_name: Qubes-Windows
             ollama_url: https://github.com/ollama/ollama/releases/download/v0.4.7/ollama-windows-amd64.zip
             ollama_ext: zip
+            node_url: https://nodejs.org/dist/v20.18.3/node-v20.18.3-win-x64.zip
             exe_ext: .exe
 
           - platform: macos-latest
@@ -88,6 +89,7 @@ jobs:
             artifact_name: Qubes-macOS-ARM
             ollama_url: https://github.com/ollama/ollama/releases/download/v0.4.7/ollama-darwin
             ollama_ext: binary
+            node_url: https://nodejs.org/dist/v20.18.3/node-v20.18.3-darwin-arm64.tar.gz
             exe_ext: ''
 
           # Intel Mac removed - macos-13 is retired and macos-13-large requires paid plan
@@ -98,6 +100,7 @@ jobs:
             artifact_name: Qubes-Linux
             ollama_url: https://github.com/ollama/ollama/releases/download/v0.4.7/ollama-linux-amd64.tgz
             ollama_ext: tgz
+            node_url: https://nodejs.org/dist/v20.18.3/node-v20.18.3-linux-x64.tar.gz
             exe_ext: ''
 
     runs-on: ${{ matrix.platform }}
@@ -376,6 +379,28 @@ jobs:
           cp -r ollama-temp/bin/* dist-bundle/ollama/ || cp ollama-temp/ollama dist-bundle/ollama/
           chmod +x dist-bundle/ollama/*
 
+      # ========== Download Portable Node.js ==========
+      # Bundled so covenant minting works without system Node.js
+      - name: Download portable Node.js (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "${{ matrix.node_url }}" -OutFile "node.zip"
+          Expand-Archive "node.zip" -DestinationPath "node-temp"
+          $nodeDir = Get-ChildItem "node-temp" -Directory | Select-Object -First 1
+          New-Item -ItemType Directory -Force -Path "dist-bundle/node"
+          Copy-Item "$($nodeDir.FullName)/node.exe" "dist-bundle/node/node.exe"
+
+      - name: Download portable Node.js (macOS/Linux)
+        if: matrix.platform != 'windows-latest'
+        run: |
+          curl -L "${{ matrix.node_url }}" -o node.tar.gz
+          tar -xzf node.tar.gz
+          NODE_DIR=$(ls -d node-v* | head -1)
+          mkdir -p dist-bundle/node
+          cp "$NODE_DIR/bin/node" dist-bundle/node/node
+          chmod +x dist-bundle/node/node
+
       # ========== Download HuggingFace Models ==========
       - name: Download HuggingFace models
         shell: bash
@@ -451,6 +476,9 @@ jobs:
 
           # Copy CashScript covenant (tsx + TypeScript minting scripts)
           Copy-Item "covenant" "$distDir/covenant" -Recurse
+
+          # Copy portable Node.js (for covenant tsx scripts)
+          Copy-Item "dist-bundle/node" "$distDir/node" -Recurse
 
           # Copy Ollama
           Copy-Item "dist-bundle/ollama" "$distDir/ollama" -Recurse
@@ -532,6 +560,9 @@ jobs:
           # Copy CashScript covenant (tsx + TypeScript minting scripts)
           cp -r covenant "$APP_MACOS/covenant"
 
+          # Copy portable Node.js (for covenant tsx scripts)
+          cp -r dist-bundle/node "$APP_MACOS/node"
+
           # Copy Ollama
           mkdir -p "$APP_MACOS/ollama"
           cp -r dist-bundle/ollama/* "$APP_MACOS/ollama/"
@@ -596,6 +627,9 @@ jobs:
 
           # Copy CashScript covenant (tsx + TypeScript minting scripts)
           cp -r covenant "$DIST_DIR/covenant"
+
+          # Copy portable Node.js (for covenant tsx scripts)
+          cp -r dist-bundle/node "$DIST_DIR/node"
 
           # Copy Ollama
           cp -r dist-bundle/ollama/* "$DIST_DIR/ollama/"
@@ -773,6 +807,7 @@ jobs:
           Copy-Item "dist-bundle/Qubes/Qubes.exe" "$updateDir/Qubes.exe"
           Copy-Item "dist-bundle/Qubes/qubes-backend" "$updateDir/qubes-backend" -Recurse
           Copy-Item "dist-bundle/Qubes/covenant" "$updateDir/covenant" -Recurse
+          Copy-Item "dist-bundle/Qubes/node" "$updateDir/node" -Recurse
           tar -czf "Qubes-Update-Windows.tar.gz" -C $updateDir .
           $hash = (Get-FileHash "Qubes-Update-Windows.tar.gz" -Algorithm SHA256).Hash.ToLower()
           $size = (Get-Item "Qubes-Update-Windows.tar.gz").Length
@@ -805,6 +840,7 @@ jobs:
           cp "dist-bundle/Qubes/Qubes" "$UPDATE_DIR/Qubes"
           cp -r "dist-bundle/Qubes/qubes-backend" "$UPDATE_DIR/qubes-backend"
           cp -r "dist-bundle/Qubes/covenant" "$UPDATE_DIR/covenant"
+          cp -r "dist-bundle/Qubes/node" "$UPDATE_DIR/node"
           tar -czf "Qubes-Update-Linux.tar.gz" -C "$UPDATE_DIR" .
           HASH=$(sha256sum "Qubes-Update-Linux.tar.gz" | cut -d' ' -f1)
           SIZE=$(stat -c%s "Qubes-Update-Linux.tar.gz")
