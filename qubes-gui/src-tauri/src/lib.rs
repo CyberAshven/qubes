@@ -6071,7 +6071,8 @@ async fn import_account_backup(app_handle: AppHandle,
     user_id: String,
     import_path: String,
     import_password: String,
-    master_password: String
+    master_password: String,
+    wallet_sig: Option<String>,
 ) -> Result<ImportAccountBackupResponse, String> {
 
     validate_identifier(&user_id, "user_id")?;
@@ -6082,6 +6083,8 @@ async fn import_account_backup(app_handle: AppHandle,
     secrets.insert("password", master_password.as_str());
     secrets.insert("master_password", master_password.as_str());
     secrets.insert("import_password", import_password.as_str());
+    let wallet_sig_str = wallet_sig.as_deref().unwrap_or("");
+    secrets.insert("wallet_sig", wallet_sig_str);
 
     let result = sidecar_execute_with_retry("import-account-backup", args, secrets, Some(&app_handle), Some(300)).await?;
 
@@ -6095,7 +6098,8 @@ async fn import_account_backup(app_handle: AppHandle,
 async fn export_account_backup_ipfs(app_handle: AppHandle,
     user_id: String,
     export_password: String,
-    master_password: String
+    master_password: String,
+    wallet_sig: Option<String>,
 ) -> Result<serde_json::Value, String> {
 
     validate_identifier(&user_id, "user_id")?;
@@ -6106,6 +6110,8 @@ async fn export_account_backup_ipfs(app_handle: AppHandle,
     secrets.insert("password", master_password.as_str());
     secrets.insert("master_password", master_password.as_str());
     secrets.insert("export_password", export_password.as_str());
+    let wallet_sig_str = wallet_sig.as_deref().unwrap_or("");
+    secrets.insert("wallet_sig", wallet_sig_str);
 
     sidecar_execute_with_retry("export-account-backup-ipfs", args, secrets, Some(&app_handle), Some(300)).await
 }
@@ -6115,7 +6121,8 @@ async fn import_account_backup_ipfs(app_handle: AppHandle,
     user_id: String,
     ipfs_cid: String,
     import_password: String,
-    master_password: String
+    master_password: String,
+    wallet_sig: Option<String>,
 ) -> Result<ImportAccountBackupResponse, String> {
 
     validate_identifier(&user_id, "user_id")?;
@@ -6126,6 +6133,8 @@ async fn import_account_backup_ipfs(app_handle: AppHandle,
     secrets.insert("password", master_password.as_str());
     secrets.insert("master_password", master_password.as_str());
     secrets.insert("import_password", import_password.as_str());
+    let wallet_sig_str = wallet_sig.as_deref().unwrap_or("");
+    secrets.insert("wallet_sig", wallet_sig_str);
 
     let result = sidecar_execute_with_retry("import-account-backup-ipfs", args, secrets, Some(&app_handle), Some(300)).await?;
 
@@ -6133,6 +6142,46 @@ async fn import_account_backup_ipfs(app_handle: AppHandle,
         .map_err(|e| format!("Failed to parse import-account-backup-ipfs response: {}", e))?;
 
     Ok(response)
+}
+
+#[tauri::command]
+async fn sync_qube_to_ipfs_backup(app_handle: AppHandle,
+    user_id: String,
+    qube_id: String,
+    export_password: String,
+    master_password: String,
+    wallet_sig: Option<String>,
+) -> Result<serde_json::Value, String> {
+
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let args = vec![user_id, qube_id];
+
+    let mut secrets = HashMap::new();
+    secrets.insert("password", master_password.as_str());
+    secrets.insert("master_password", master_password.as_str());
+    secrets.insert("export_password", export_password.as_str());
+    let wallet_sig_str = wallet_sig.as_deref().unwrap_or("");
+    secrets.insert("wallet_sig", wallet_sig_str);
+
+    sidecar_execute_with_retry("sync-qube-to-ipfs-backup", args, secrets, Some(&app_handle), Some(300)).await
+}
+
+#[tauri::command]
+async fn list_account_backups_pinata(app_handle: AppHandle,
+    user_id: String,
+    pinata_jwt: String,
+) -> Result<serde_json::Value, String> {
+
+    validate_identifier(&user_id, "user_id")?;
+
+    let args = vec![user_id];
+
+    let mut secrets = HashMap::new();
+    secrets.insert("pinata_jwt", pinata_jwt.as_str());
+
+    sidecar_execute_with_retry("list-account-backups-pinata", args, secrets, Some(&app_handle), Some(30)).await
 }
 
 #[derive(Serialize, Deserialize)]
@@ -7729,6 +7778,8 @@ pub fn run() {
             export_account_backup,
             import_account_backup,
             export_account_backup_ipfs,
+            sync_qube_to_ipfs_backup,
+            list_account_backups_pinata,
             import_account_backup_ipfs,
             cleanup_incomplete_qubes,
             scan_wallet,

@@ -6644,7 +6644,7 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
             logger.error(f"Failed to export account backup: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
 
-    async def export_account_backup_ipfs(self, export_password: str, master_password: str) -> Dict[str, Any]:
+    async def export_account_backup_ipfs(self, export_password: str, master_password: str, wallet_sig: str = "") -> Dict[str, Any]:
         """
         Export full account backup to IPFS via Pinata.
 
@@ -6668,7 +6668,7 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
             with tempfile.NamedTemporaryFile(suffix='.qube-backup', delete=False) as tmp:
                 tmp_path = tmp.name
 
-            result = await self.export_account_backup(tmp_path, export_password, master_password)
+            result = await self.export_account_backup_v2(tmp_path, export_password, master_password, wallet_sig=wallet_sig)
             if not result.get("success"):
                 return result
 
@@ -6714,7 +6714,657 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
                 except Exception:
                     pass
 
-    async def import_account_backup_ipfs(self, ipfs_cid: str, import_password: str, master_password: str) -> Dict[str, Any]:
+    async def list_account_backups_pinata(self, pinata_jwt: str) -> Dict[str, Any]:
+        """
+        List account backups stored in Pinata by querying the pin list API.
+
+        Filters pins whose name starts with 'qubes_account_' and returns them
+        sorted by date (newest first) so the user can pick which one to restore.
+
+        Args:
+            pinata_jwt: Pinata JWT API key (from Settings → API Keys)
+
+        Returns:
+            Dict with success, backups (list of {cid, name, date, size_bytes})
+        """
+        import aiohttp
+
+        if not pinata_jwt or len(pinata_jwt.strip()) < 10:
+            return {"success": False, "error": "Invalid Pinata JWT"}
+
+        jwt = pinata_jwt.strip()
+        headers = {"Authorization": f"Bearer {jwt}"}
+
+        # Query pins filtered by name prefix
+        params = {
+            "status": "pinned",
+            "metadata[name]": "qubes_account_",
+            "pageLimit": 100,
+        }
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    "https://api.pinata.cloud/data/pinList",
+                    headers=headers,
+                    params=params,
+                    timeout=aiohttp.ClientTimeout(total=30),
+                ) as resp:
+                    if resp.status == 401:
+                        return {"success": False, "error": "Invalid Pinata API key — check your JWT."}
+                    if resp.status != 200:
+                        body = await resp.text()
+                        return {"success": False, "error": f"Pinata API error ({resp.status}): {body[:300]}"}
+                    data = await resp.json()
+
+            rows = data.get("rows", [])
+            backups = []
+            for pin in rows:
+                name = pin.get("metadata", {}).get("name", "")
+                if not name.startswith("qubes_account_"):
+                    continue
+                backups.append({
+                    "cid": pin.get("ipfs_pin_hash", ""),
+                    "name": name,
+                    "date": pin.get("date_pinned", ""),
+                    "size_bytes": pin.get("size", 0),
+                })
+
+            # Sort newest first
+            backups.sort(key=lambda x: x["date"], reverse=True)
+
+            logger.info(f"Found {len(backups)} Qubes backup(s) in Pinata")
+            return {"success": True, "backups": backups}
+
+        except Exception as e:
+            logger.error(f"Failed to list Pinata backups: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    def _derive_backup_key_v2(self, password: str, salt_hex: str) -> bytes:
+        """Derive AES-256 key from password + hex salt using PBKDF2."""
+        from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+        from cryptography.hazmat.primitives import hashes
+        salt = bytes.fromhex(salt_hex)
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=salt,
+            iterations=600000,
+        )
+        return kdf.derive(password.encode('utf-8'))
+
+    def _encrypt_section_v2(self, data_dict: dict, key: bytes) -> bytes:
+        """Encrypt a dict section: random nonce + AESGCM → returns nonce(12B)+ciphertext bytes."""
+        import os
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        nonce = os.urandom(12)
+        aesgcm = AESGCM(key)
+        data_bytes = json.dumps(data_dict, ensure_ascii=False).encode('utf-8')
+        ciphertext = aesgcm.encrypt(nonce, data_bytes, None)
+        return nonce + ciphertext
+
+    def _decrypt_section_v2(self, enc_bytes: bytes, key: bytes) -> dict:
+        """Decrypt a v2 section: split nonce(12B)+ciphertext, decrypt, return dict."""
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        nonce = enc_bytes[:12]
+        ciphertext = enc_bytes[12:]
+        aesgcm = AESGCM(key)
+        plaintext = aesgcm.decrypt(nonce, ciphertext, None)
+        return json.loads(plaintext.decode('utf-8'))
+
+    async def export_account_backup_v2(self, export_path: str, export_password: str, master_password: str, wallet_sig: str = "") -> Dict[str, Any]:
+        """
+        Export full account backup in v2 structured ZIP format.
+
+        v2 ZIP structure:
+          manifest.json  - plaintext
+          account.enc    - [nonce 12B][AES-256-GCM ciphertext] of account_files dict
+          qubes/
+            {name}_{id}.enc  - per-Qube encrypted export
+
+        Args:
+            export_path: Path where to save the .qube-backup file
+            export_password: Password to encrypt the backup
+            master_password: User's master password to decrypt existing data
+
+        Returns:
+            Dict with success, file_path, qube_count
+        """
+        import zipfile
+        import base64
+        import os
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        from cryptography.hazmat.primitives import serialization as key_serialization
+
+        try:
+            self.orchestrator.set_master_key(master_password)
+
+            user_dir = self.orchestrator.data_dir
+            qubes_dir = user_dir / "qubes"
+
+            # Generate salt and derive key
+            salt = os.urandom(32)
+
+            # ── Key Derivation ──────────────────────────────────────────────────────────
+            # NEW (2026-03-15): Wallet-bound encryption — key derived from password + wallet signature.
+            # The wallet signature (bch_signMessage("qubes-backup-key:v1")) is deterministic
+            # (RFC 6979) so the same wallet always produces the same key.
+            #
+            # TODO(MIGRATION-2026-04-15): Remove password-only path below.
+            # After this date, reject wallet_sig="" and require WalletConnect for all backups.
+            # Any developer reading this: warn the user if their backup has wallet_bound=False.
+            # ────────────────────────────────────────────────────────────────────────────
+            import base64 as _base64
+            from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+            from cryptography.hazmat.primitives import hashes
+            if wallet_sig:
+                try:
+                    sig_bytes = _base64.b64decode(wallet_sig)
+                except Exception:
+                    try:
+                        sig_bytes = bytes.fromhex(wallet_sig)
+                    except Exception:
+                        sig_bytes = wallet_sig.encode('utf-8')
+                key_material = export_password.encode('utf-8') + sig_bytes
+                wallet_bound = True
+            else:
+                # DEPRECATED(2026-03-15): Password-only key — no wallet binding.
+                # TODO(MIGRATION-2026-04-15): Remove this path. Existing backups created
+                # before wallet-binding was introduced still use this. Warn users.
+                key_material = export_password.encode('utf-8')
+                wallet_bound = False
+
+            kdf = PBKDF2HMAC(
+                algorithm=hashes.SHA256(),
+                length=32,
+                salt=salt,
+                iterations=600000,
+            )
+            key = kdf.derive(key_material)
+
+            # Collect account-level files
+            account_files = {}
+            for filename in ["salt.bin", "pbkdf2_iterations.txt", "password_verifier.enc",
+                             "api_keys.enc", "preferences.json", "wallet_security.enc"]:
+                filepath = user_dir / filename
+                if filepath.exists():
+                    with open(filepath, 'rb') as f:
+                        account_files[filename] = base64.b64encode(f.read()).decode('utf-8')
+
+            # Read settings.enc directory if it exists
+            settings_dir = user_dir / "settings.enc"
+            if settings_dir.is_dir():
+                for sf in settings_dir.iterdir():
+                    if sf.is_file():
+                        with open(sf, 'rb') as f:
+                            account_files[f"settings.enc/{sf.name}"] = base64.b64encode(f.read()).decode('utf-8')
+
+            # Encrypt account section
+            account_enc_bytes = self._encrypt_section_v2(account_files, key)
+
+            # Helper: read entire directory recursively as {rel_path: base64}
+            def _read_dir_as_b64(root_dir: Path) -> dict:
+                result = {}
+                if not root_dir.exists():
+                    return result
+                for f in sorted(root_dir.rglob("*")):
+                    if f.is_file():
+                        rel = str(f.relative_to(root_dir))
+                        with open(f, 'rb') as fh:
+                            result[rel] = base64.b64encode(fh.read()).decode('utf-8')
+                return result
+
+            # Collect all valid Qubes
+            qube_index = []
+            qube_sections = {}  # filename -> bytes
+            qube_count = 0
+
+            if qubes_dir.exists():
+                for dir_entry in sorted(qubes_dir.iterdir()):
+                    if not dir_entry.is_dir():
+                        continue
+
+                    parts = dir_entry.name.rsplit('_', 1)
+                    if len(parts) != 2:
+                        continue
+
+                    chain_dir = dir_entry / "chain"
+                    genesis_file = chain_dir / "genesis.json"
+
+                    if not genesis_file.exists():
+                        continue
+
+                    qube_name, qube_id = parts
+
+                    try:
+                        # Anchor active session if loaded
+                        if qube_id in self.orchestrator.qubes:
+                            qube = self.orchestrator.qubes[qube_id]
+                            if qube.current_session and len(qube.current_session.session_blocks) > 0:
+                                try:
+                                    await qube.anchor_session()
+                                except Exception as e:
+                                    logger.warning(f"Failed to anchor session for {qube_id}: {e}")
+
+                        # Read genesis block
+                        with open(genesis_file, 'r', encoding='utf-8') as f:
+                            genesis_data = json.load(f)
+
+                        qube_export = {
+                            "qube_id": qube_id,
+                            "qube_name": qube_name,
+                            "genesis_block": genesis_data,
+                            "chain_state": None,
+                            "memory_blocks": [],
+                            "relationships": None,
+                            "nft_metadata": None,
+                            "bcmr_data": None,
+                            "avatar_base64": None,
+                            "snapshots": None,
+                            "locker": None,
+                            "shared_memory": None,
+                            "skills_cache": None,
+                        }
+
+                        # Private key
+                        metadata_file = chain_dir / "qube_metadata.json"
+                        if metadata_file.exists():
+                            with open(metadata_file, 'r', encoding='utf-8') as f:
+                                qube_metadata = json.load(f)
+                            enc_key_hex = qube_metadata.get("encrypted_private_key")
+                            if enc_key_hex:
+                                private_key = self.orchestrator._decrypt_private_key(
+                                    enc_key_hex, self.orchestrator.master_key
+                                )
+                                qube_export["private_key_pem"] = private_key.private_bytes(
+                                    encoding=key_serialization.Encoding.PEM,
+                                    format=key_serialization.PrivateFormat.PKCS8,
+                                    encryption_algorithm=key_serialization.NoEncryption()
+                                ).decode('utf-8')
+
+                        # Chain state
+                        encryption_key = self._get_qube_encryption_key(dir_entry)
+                        if encryption_key:
+                            chain_state_file = chain_dir / "chain_state.json"
+                            if chain_state_file.exists():
+                                from crypto.encryption import decrypt_block_data, derive_chain_state_key
+                                with open(chain_state_file, 'r') as f:
+                                    cs_file_data = json.load(f)
+                                if cs_file_data.get("encrypted"):
+                                    cs_key = derive_chain_state_key(encryption_key)
+                                    qube_export["chain_state"] = decrypt_block_data(cs_file_data, cs_key)
+                                else:
+                                    qube_export["chain_state"] = cs_file_data
+
+                        # Memory blocks
+                        blocks_dir = dir_entry / "blocks" / "permanent"
+                        if blocks_dir.exists():
+                            for block_file in sorted(blocks_dir.glob("*.json")):
+                                with open(block_file, 'r', encoding='utf-8') as f:
+                                    qube_export["memory_blocks"].append(json.load(f))
+
+                        # Relationships
+                        rel_file = dir_entry / "relationships" / "relationships.json"
+                        if rel_file.exists():
+                            with open(rel_file, 'r', encoding='utf-8') as f:
+                                qube_export["relationships"] = json.load(f)
+
+                        # NFT metadata
+                        nft_file = chain_dir / "nft_metadata.json"
+                        if nft_file.exists():
+                            with open(nft_file, 'r', encoding='utf-8') as f:
+                                qube_export["nft_metadata"] = json.load(f)
+
+                        # BCMR
+                        bcmr_file = dir_entry / "blockchain" / f"{qube_name}_bcmr.json"
+                        if bcmr_file.exists():
+                            with open(bcmr_file, 'r', encoding='utf-8') as f:
+                                qube_export["bcmr_data"] = json.load(f)
+
+                        # Avatar
+                        for pattern in ["*.png", "*.jpg", "*.jpeg", "*.webp"]:
+                            avatar_files = list(chain_dir.glob(f"*_avatar{pattern[1:]}"))
+                            if avatar_files:
+                                with open(avatar_files[0], 'rb') as f:
+                                    qube_export["avatar_base64"] = base64.b64encode(f.read()).decode('utf-8')
+                                    qube_export["avatar_filename"] = avatar_files[0].name
+                                break
+
+                        # Snapshots, locker, shared memory
+                        qube_export["snapshots"] = _read_dir_as_b64(dir_entry / "snapshots")
+                        qube_export["locker"] = _read_dir_as_b64(dir_entry / "locker")
+                        qube_export["shared_memory"] = _read_dir_as_b64(dir_entry / "shared_memory")
+
+                        # Skills cache
+                        skills_file = chain_dir / "skills_cache.json"
+                        if skills_file.exists():
+                            with open(skills_file, 'r', encoding='utf-8') as f:
+                                qube_export["skills_cache"] = json.load(f)
+
+                        # Encrypt qube section
+                        qube_filename = f"qubes/{qube_name}_{qube_id}.enc"
+                        qube_sections[qube_filename] = self._encrypt_section_v2(qube_export, key)
+
+                        qube_index.append({
+                            "name": qube_name,
+                            "id": qube_id,
+                            "file": qube_filename,
+                        })
+                        qube_count += 1
+
+                    except Exception as e:
+                        logger.warning(f"Failed to export Qube {qube_id}: {e}")
+                        continue
+
+            # Build manifest
+            manifest = {
+                "version": "2.0",
+                "type": "account-backup",
+                "user_id": self.orchestrator.user_id,
+                "export_date": datetime.now().isoformat(),
+                "qube_count": qube_count,
+                "qube_index": qube_index,
+                "salt": salt.hex(),
+                "wallet_bound": wallet_bound,
+                "wallet_address": "",  # Set by frontend, stored for display only — not used in key derivation
+            }
+
+            # Ensure parent directory exists
+            Path(export_path).parent.mkdir(parents=True, exist_ok=True)
+
+            # Write ZIP
+            with zipfile.ZipFile(export_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr("manifest.json", json.dumps(manifest, indent=2))
+                zf.writestr("account.enc", account_enc_bytes)
+                for filename, enc_bytes in qube_sections.items():
+                    zf.writestr(filename, enc_bytes)
+
+            logger.info(f"Exported v2 account backup to {export_path} ({qube_count} Qubes)")
+
+            return {
+                "success": True,
+                "file_path": export_path,
+                "qube_count": qube_count,
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to export v2 account backup: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def sync_qube_to_ipfs_backup(self, qube_id: str, export_password: str, master_password: str, wallet_sig: str = "") -> Dict[str, Any]:
+        """
+        Backup a single Qube to IPFS via Pinata in v2 format.
+
+        Creates a v2 ZIP (type="qube-backup") with just one Qube in qubes/{name}_{id}.enc,
+        uploads to Pinata, returns the CID.
+
+        Args:
+            qube_id: The Qube ID to backup
+            export_password: Password to encrypt the backup
+            master_password: User's master password
+
+        Returns:
+            Dict with success, ipfs_cid, ipfs_url, qube_name
+        """
+        import tempfile
+        import base64
+        import os
+        import zipfile
+        import aiohttp
+        from cryptography.hazmat.primitives import serialization as key_serialization
+
+        tmp_path = None
+        try:
+            pinata_key = os.environ.get("PINATA_API_KEY") or os.environ.get("PINATA_SECRET_KEY")
+            if not pinata_key:
+                return {"success": False, "error": "Pinata API key not configured. Add PINATA_API_KEY in Settings."}
+
+            self.orchestrator.set_master_key(master_password)
+
+            user_dir = self.orchestrator.data_dir
+            qubes_dir = user_dir / "qubes"
+
+            # Find qube directory
+            qube_dir = None
+            qube_name = None
+            for dir_entry in qubes_dir.iterdir():
+                if dir_entry.is_dir() and qube_id in dir_entry.name:
+                    qube_dir = dir_entry
+                    parts = dir_entry.name.rsplit('_', 1)
+                    if len(parts) == 2:
+                        qube_name = parts[0]
+                    break
+
+            if not qube_dir or not qube_name:
+                return {"success": False, "error": f"Qube directory not found for {qube_id}"}
+
+            chain_dir = qube_dir / "chain"
+            genesis_file = chain_dir / "genesis.json"
+            if not genesis_file.exists():
+                return {"success": False, "error": f"Qube {qube_id} has no genesis block — incomplete Qube"}
+
+            # Generate salt and derive key
+            salt = os.urandom(32)
+
+            # ── Key Derivation ──────────────────────────────────────────────────────────
+            # NEW (2026-03-15): Wallet-bound encryption — key derived from password + wallet signature.
+            # The wallet signature (bch_signMessage("qubes-backup-key:v1")) is deterministic
+            # (RFC 6979) so the same wallet always produces the same key.
+            #
+            # TODO(MIGRATION-2026-04-15): Remove password-only path below.
+            # After this date, reject wallet_sig="" and require WalletConnect for all backups.
+            # Any developer reading this: warn the user if their backup has wallet_bound=False.
+            # ────────────────────────────────────────────────────────────────────────────
+            import base64 as _base64
+            from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+            from cryptography.hazmat.primitives import hashes
+            if wallet_sig:
+                try:
+                    sig_bytes = _base64.b64decode(wallet_sig)
+                except Exception:
+                    try:
+                        sig_bytes = bytes.fromhex(wallet_sig)
+                    except Exception:
+                        sig_bytes = wallet_sig.encode('utf-8')
+                key_material = export_password.encode('utf-8') + sig_bytes
+                wallet_bound = True
+            else:
+                # DEPRECATED(2026-03-15): Password-only key — no wallet binding.
+                # TODO(MIGRATION-2026-04-15): Remove this path. Existing backups created
+                # before wallet-binding was introduced still use this. Warn users.
+                key_material = export_password.encode('utf-8')
+                wallet_bound = False
+
+            kdf = PBKDF2HMAC(
+                algorithm=hashes.SHA256(),
+                length=32,
+                salt=salt,
+                iterations=600000,
+            )
+            key = kdf.derive(key_material)
+
+            # Helper: read entire directory recursively as {rel_path: base64}
+            def _read_dir_as_b64(root_dir: Path) -> dict:
+                result = {}
+                if not root_dir.exists():
+                    return result
+                for f in sorted(root_dir.rglob("*")):
+                    if f.is_file():
+                        rel = str(f.relative_to(root_dir))
+                        with open(f, 'rb') as fh:
+                            result[rel] = base64.b64encode(fh.read()).decode('utf-8')
+                return result
+
+            # Anchor active session if loaded
+            if qube_id in self.orchestrator.qubes:
+                qube_obj = self.orchestrator.qubes[qube_id]
+                if qube_obj.current_session and len(qube_obj.current_session.session_blocks) > 0:
+                    try:
+                        await qube_obj.anchor_session()
+                    except Exception as e:
+                        logger.warning(f"Failed to anchor session for {qube_id}: {e}")
+
+            # Read genesis block
+            with open(genesis_file, 'r', encoding='utf-8') as f:
+                genesis_data = json.load(f)
+
+            qube_export = {
+                "qube_id": qube_id,
+                "qube_name": qube_name,
+                "genesis_block": genesis_data,
+                "chain_state": None,
+                "memory_blocks": [],
+                "relationships": None,
+                "nft_metadata": None,
+                "bcmr_data": None,
+                "avatar_base64": None,
+                "snapshots": None,
+                "locker": None,
+                "shared_memory": None,
+                "skills_cache": None,
+            }
+
+            # Private key
+            metadata_file = chain_dir / "qube_metadata.json"
+            if metadata_file.exists():
+                with open(metadata_file, 'r', encoding='utf-8') as f:
+                    qube_metadata = json.load(f)
+                enc_key_hex = qube_metadata.get("encrypted_private_key")
+                if enc_key_hex:
+                    private_key = self.orchestrator._decrypt_private_key(
+                        enc_key_hex, self.orchestrator.master_key
+                    )
+                    qube_export["private_key_pem"] = private_key.private_bytes(
+                        encoding=key_serialization.Encoding.PEM,
+                        format=key_serialization.PrivateFormat.PKCS8,
+                        encryption_algorithm=key_serialization.NoEncryption()
+                    ).decode('utf-8')
+
+            # Chain state
+            encryption_key = self._get_qube_encryption_key(qube_dir)
+            if encryption_key:
+                chain_state_file = chain_dir / "chain_state.json"
+                if chain_state_file.exists():
+                    from crypto.encryption import decrypt_block_data, derive_chain_state_key
+                    with open(chain_state_file, 'r') as f:
+                        cs_file_data = json.load(f)
+                    if cs_file_data.get("encrypted"):
+                        cs_key = derive_chain_state_key(encryption_key)
+                        qube_export["chain_state"] = decrypt_block_data(cs_file_data, cs_key)
+                    else:
+                        qube_export["chain_state"] = cs_file_data
+
+            # Memory blocks
+            blocks_dir = qube_dir / "blocks" / "permanent"
+            if blocks_dir.exists():
+                for block_file in sorted(blocks_dir.glob("*.json")):
+                    with open(block_file, 'r', encoding='utf-8') as f:
+                        qube_export["memory_blocks"].append(json.load(f))
+
+            # Relationships
+            rel_file = qube_dir / "relationships" / "relationships.json"
+            if rel_file.exists():
+                with open(rel_file, 'r', encoding='utf-8') as f:
+                    qube_export["relationships"] = json.load(f)
+
+            # NFT metadata
+            nft_file = chain_dir / "nft_metadata.json"
+            if nft_file.exists():
+                with open(nft_file, 'r', encoding='utf-8') as f:
+                    qube_export["nft_metadata"] = json.load(f)
+
+            # BCMR
+            bcmr_file = qube_dir / "blockchain" / f"{qube_name}_bcmr.json"
+            if bcmr_file.exists():
+                with open(bcmr_file, 'r', encoding='utf-8') as f:
+                    qube_export["bcmr_data"] = json.load(f)
+
+            # Avatar
+            for pattern in ["*.png", "*.jpg", "*.jpeg", "*.webp"]:
+                avatar_files = list(chain_dir.glob(f"*_avatar{pattern[1:]}"))
+                if avatar_files:
+                    with open(avatar_files[0], 'rb') as f:
+                        qube_export["avatar_base64"] = base64.b64encode(f.read()).decode('utf-8')
+                        qube_export["avatar_filename"] = avatar_files[0].name
+                    break
+
+            qube_export["snapshots"] = _read_dir_as_b64(qube_dir / "snapshots")
+            qube_export["locker"] = _read_dir_as_b64(qube_dir / "locker")
+            qube_export["shared_memory"] = _read_dir_as_b64(qube_dir / "shared_memory")
+
+            skills_file = chain_dir / "skills_cache.json"
+            if skills_file.exists():
+                with open(skills_file, 'r', encoding='utf-8') as f:
+                    qube_export["skills_cache"] = json.load(f)
+
+            # Encrypt qube section
+            qube_filename = f"qubes/{qube_name}_{qube_id}.enc"
+            qube_enc_bytes = self._encrypt_section_v2(qube_export, key)
+
+            # Build manifest
+            manifest = {
+                "version": "2.0",
+                "type": "qube-backup",
+                "user_id": self.orchestrator.user_id,
+                "export_date": datetime.now().isoformat(),
+                "qube_count": 1,
+                "qube_index": [{"name": qube_name, "id": qube_id, "file": qube_filename}],
+                "salt": salt.hex(),
+                "wallet_bound": wallet_bound,
+                "wallet_address": "",  # Set by frontend, stored for display only — not used in key derivation
+            }
+
+            # Write to temp file
+            with tempfile.NamedTemporaryFile(suffix='.qube-backup', delete=False) as tmp:
+                tmp_path = tmp.name
+
+            with zipfile.ZipFile(tmp_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr("manifest.json", json.dumps(manifest, indent=2))
+                zf.writestr(qube_filename, qube_enc_bytes)
+
+            with open(tmp_path, 'rb') as f:
+                backup_bytes = f.read()
+
+            user_id = self.orchestrator.user_id
+            filename = f"qubes_qube_{user_id}_{qube_name}_{qube_id}.qube-backup"
+
+            form = aiohttp.FormData()
+            form.add_field('file', backup_bytes, filename=filename, content_type='application/octet-stream')
+            form.add_field('pinataMetadata', json.dumps({"name": filename}), content_type='application/json')
+
+            headers = {"Authorization": f"Bearer {pinata_key}"}
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    "https://api.pinata.cloud/pinning/pinFileToIPFS",
+                    data=form,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=300)
+                ) as resp:
+                    if resp.status != 200:
+                        body = await resp.text()
+                        return {"success": False, "error": f"Pinata upload failed ({resp.status}): {body[:300]}"}
+                    upload_result = await resp.json()
+                    ipfs_cid = upload_result["IpfsHash"]
+
+            logger.info(f"Qube {qube_id} backup uploaded to IPFS: {ipfs_cid}")
+            return {
+                "success": True,
+                "ipfs_cid": ipfs_cid,
+                "ipfs_url": f"https://gateway.pinata.cloud/ipfs/{ipfs_cid}",
+                "qube_name": qube_name,
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to sync qube {qube_id} to IPFS backup: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+        finally:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
+
+    async def import_account_backup_ipfs(self, ipfs_cid: str, import_password: str, master_password: str, wallet_sig: str = "") -> Dict[str, Any]:
         """
         Restore full account backup from IPFS.
 
@@ -6768,7 +7418,7 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
                 tmp.write(backup_bytes)
                 tmp_path = tmp.name
 
-            return await self.import_account_backup(tmp_path, import_password, master_password)
+            return await self.import_account_backup(tmp_path, import_password, master_password, wallet_sig=wallet_sig)
 
         except Exception as e:
             logger.error(f"Failed to import account backup from IPFS: {e}", exc_info=True)
@@ -6821,7 +7471,7 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
             logger.error(f"Failed to cleanup incomplete qubes: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
 
-    async def import_account_backup(self, import_path: str, import_password: str, master_password: str) -> Dict[str, Any]:
+    async def import_account_backup(self, import_path: str, import_password: str, master_password: str, wallet_sig: str = "") -> Dict[str, Any]:
         """
         Import a full account backup from a .qube-backup file.
 
@@ -6844,13 +7494,242 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
         from cryptography.hazmat.primitives import hashes
 
         try:
-            # Read and decrypt
+            # Read manifest
             with zipfile.ZipFile(import_path, 'r') as zf:
                 manifest = json.loads(zf.read("manifest.json"))
-                encrypted_data = zf.read("data.enc")
+                zip_namelist = zf.namelist()
 
-            if manifest.get("type") != "account-backup":
+            backup_version = manifest.get("version", "1.0")
+            backup_type = manifest.get("type", "account-backup")
+
+            if backup_type not in ("account-backup", "qube-backup"):
                 return {"success": False, "error": "Not an account backup file. Use 'Import from Disk' for single Qube files."}
+
+            # ---- v2 path ----
+            if backup_version.startswith("2."):
+                # ── v2 Key Derivation ─────────────────────────────────────────────────────
+                # TODO(MIGRATION-2026-04-15): Remove wallet_bound=False path.
+                # New backups are always wallet_bound=True. Old ones still decrypt with password only.
+                # ────────────────────────────────────────────────────────────────────────────
+                import base64 as _base64
+                from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+                from cryptography.hazmat.primitives import hashes
+                salt = bytes.fromhex(manifest["salt"])
+                wallet_bound = manifest.get("wallet_bound", False)
+                if wallet_bound:
+                    if not wallet_sig:
+                        return {
+                            "success": False,
+                            "error": "WALLET_REQUIRED: This backup requires WalletConnect authentication. "
+                                     "Please connect your wallet (Cashonize/Zapit) and try again."
+                        }
+                    try:
+                        sig_bytes = _base64.b64decode(wallet_sig)
+                    except Exception:
+                        try:
+                            sig_bytes = bytes.fromhex(wallet_sig)
+                        except Exception:
+                            sig_bytes = wallet_sig.encode('utf-8')
+                    key_material = import_password.encode('utf-8') + sig_bytes
+                else:
+                    # DEPRECATED(2026-03-15): Password-only restore.
+                    # TODO(MIGRATION-2026-04-15): Remove. Warn user to re-create backup with WalletConnect.
+                    key_material = import_password.encode('utf-8')
+
+                kdf = PBKDF2HMAC(
+                    algorithm=hashes.SHA256(),
+                    length=32,
+                    salt=salt,
+                    iterations=600000,
+                )
+                key = kdf.derive(key_material)
+
+                # Restore account files (only present in account-backup type)
+                backup_user_id = manifest.get("user_id", self.orchestrator.user_id)
+                from utils.paths import get_users_dir
+                user_dir = get_users_dir() / backup_user_id
+                user_dir.mkdir(parents=True, exist_ok=True)
+
+                with zipfile.ZipFile(import_path, 'r') as zf:
+                    if "account.enc" in zip_namelist:
+                        try:
+                            account_enc_bytes = zf.read("account.enc")
+                            account_files = self._decrypt_section_v2(account_enc_bytes, key)
+                        except Exception:
+                            return {"success": False, "error": "Wrong password — could not decrypt account section."}
+
+                        for filename, b64data in account_files.items():
+                            filepath = user_dir / filename
+                            filepath.parent.mkdir(parents=True, exist_ok=True)
+                            if filename in ("salt.bin", "pbkdf2_iterations.txt", "password_verifier.enc"):
+                                if filepath.exists():
+                                    logger.info(f"Skipping existing account file: {filename}")
+                                    continue
+                            with open(filepath, 'wb') as f:
+                                f.write(base64.b64decode(b64data))
+                            logger.info(f"Restored account file: {filename}")
+
+                    # Point orchestrator at correct user directory
+                    if self.orchestrator.user_id != backup_user_id:
+                        self.orchestrator = UserOrchestrator(user_id=backup_user_id)
+
+                    # Derive master key
+                    self.orchestrator.set_master_key(master_password)
+
+                    # Regenerate password verifier
+                    await self._create_password_verifier(self.orchestrator)
+
+                    # Import Qubes
+                    qubes_dir = user_dir / "qubes"
+                    qubes_dir.mkdir(parents=True, exist_ok=True)
+
+                    imported_count = 0
+                    skipped_count = 0
+
+                    for qube_entry in manifest.get("qube_index", []):
+                        qube_file = qube_entry["file"]
+                        qube_name_entry = qube_entry["name"]
+                        qube_id_entry = qube_entry["id"]
+
+                        # Skip if already exists
+                        existing = [d for d in qubes_dir.iterdir() if d.is_dir() and qube_id_entry in d.name]
+                        if existing:
+                            logger.info(f"Skipping existing Qube: {qube_name_entry} ({qube_id_entry})")
+                            skipped_count += 1
+                            continue
+
+                        if qube_file not in zip_namelist:
+                            logger.warning(f"Qube file {qube_file} not found in backup ZIP")
+                            skipped_count += 1
+                            continue
+
+                        try:
+                            enc_bytes = zf.read(qube_file)
+                            try:
+                                qube_export = self._decrypt_section_v2(enc_bytes, key)
+                            except Exception:
+                                return {"success": False, "error": f"Wrong password — could not decrypt Qube {qube_name_entry}."}
+
+                            qube_id = qube_export["qube_id"]
+                            qube_name = qube_export["qube_name"]
+                            qube_dir_name = f"{qube_name}_{qube_id}"
+                            qube_dir = qubes_dir / qube_dir_name
+
+                            # Create directory structure
+                            (qube_dir / "chain").mkdir(parents=True, exist_ok=True)
+                            (qube_dir / "blocks" / "permanent").mkdir(parents=True, exist_ok=True)
+                            (qube_dir / "blocks" / "session").mkdir(parents=True, exist_ok=True)
+                            (qube_dir / "relationships").mkdir(parents=True, exist_ok=True)
+                            (qube_dir / "blockchain").mkdir(parents=True, exist_ok=True)
+                            (qube_dir / "snapshots").mkdir(parents=True, exist_ok=True)
+                            (qube_dir / "locker").mkdir(parents=True, exist_ok=True)
+                            (qube_dir / "shared_memory").mkdir(parents=True, exist_ok=True)
+
+                            # Restore private key
+                            from cryptography.hazmat.primitives.serialization import load_pem_private_key
+                            from crypto.keys import serialize_public_key
+                            private_key = load_pem_private_key(
+                                qube_export["private_key_pem"].encode('utf-8'),
+                                password=None
+                            )
+                            public_key = private_key.public_key()
+                            encrypted_privkey = self.orchestrator._encrypt_private_key(
+                                private_key, self.orchestrator.master_key
+                            )
+
+                            metadata = {
+                                "qube_id": qube_id,
+                                "name": qube_name,
+                                "public_key": serialize_public_key(public_key),
+                                "encrypted_private_key": encrypted_privkey.hex(),
+                                "genesis_block": qube_export.get("genesis_block"),
+                            }
+                            with open(qube_dir / "chain" / "qube_metadata.json", 'w') as f:
+                                json.dump(metadata, f, indent=2)
+
+                            # Generate new encryption key
+                            enc_key = os.urandom(32)
+                            enc_nonce = os.urandom(12)
+                            enc_aesgcm = AESGCM(self.orchestrator.master_key)
+                            encrypted_enc_key = enc_aesgcm.encrypt(enc_nonce, enc_key, None)
+                            enc_key_data = {"nonce": enc_nonce.hex(), "ciphertext": encrypted_enc_key.hex(), "algorithm": "AES-256-GCM", "version": "1.0"}
+                            with open(qube_dir / "chain" / "encryption_key.enc", 'w') as f:
+                                json.dump(enc_key_data, f)
+
+                            # Restore chain state
+                            if qube_export.get("chain_state"):
+                                from core.chain_state import ChainState
+                                cs = ChainState(data_dir=qube_dir / "chain", encryption_key=enc_key)
+                                cs.state = qube_export["chain_state"]
+                                cs._save()
+
+                            # Restore memory blocks
+                            for block in qube_export.get("memory_blocks", []):
+                                block_num = block.get("block_number", 0)
+                                block_type = block.get("block_type", "UNKNOWN")
+                                timestamp = block.get("timestamp", "0")
+                                filename = f"{block_num}_{block_type}_{timestamp}.json"
+                                with open(qube_dir / "blocks" / "permanent" / filename, 'w', encoding='utf-8') as f:
+                                    json.dump(block, f, indent=2)
+
+                            # Restore relationships
+                            if qube_export.get("relationships"):
+                                with open(qube_dir / "relationships" / "relationships.json", 'w') as f:
+                                    json.dump(qube_export["relationships"], f, indent=2)
+
+                            # Restore NFT metadata
+                            if qube_export.get("nft_metadata"):
+                                with open(qube_dir / "chain" / "nft_metadata.json", 'w') as f:
+                                    json.dump(qube_export["nft_metadata"], f, indent=2)
+
+                            # Restore BCMR
+                            if qube_export.get("bcmr_data"):
+                                with open(qube_dir / "blockchain" / f"{qube_name}_bcmr.json", 'w') as f:
+                                    json.dump(qube_export["bcmr_data"], f, indent=2)
+
+                            # Restore avatar
+                            if qube_export.get("avatar_base64") and qube_export.get("avatar_filename"):
+                                with open(qube_dir / "chain" / qube_export["avatar_filename"], 'wb') as f:
+                                    f.write(base64.b64decode(qube_export["avatar_base64"]))
+
+                            def _restore_dir_from_b64(data: dict, root_dir: Path):
+                                for rel_path, b64data in data.items():
+                                    dest = root_dir / rel_path
+                                    dest.parent.mkdir(parents=True, exist_ok=True)
+                                    with open(dest, 'wb') as fh:
+                                        fh.write(base64.b64decode(b64data))
+
+                            if qube_export.get("snapshots"):
+                                _restore_dir_from_b64(qube_export["snapshots"], qube_dir / "snapshots")
+                            if qube_export.get("locker"):
+                                _restore_dir_from_b64(qube_export["locker"], qube_dir / "locker")
+                            if qube_export.get("shared_memory"):
+                                _restore_dir_from_b64(qube_export["shared_memory"], qube_dir / "shared_memory")
+
+                            # Restore skills cache
+                            if qube_export.get("skills_cache") is not None:
+                                with open(qube_dir / "chain" / "skills_cache.json", 'w', encoding='utf-8') as f:
+                                    json.dump(qube_export["skills_cache"], f, indent=2)
+
+                            imported_count += 1
+                            logger.info(f"Imported Qube (v2): {qube_name} ({qube_id})")
+
+                        except Exception as e:
+                            logger.error(f"Failed to import Qube {qube_id_entry}: {e}", exc_info=True)
+                            skipped_count += 1
+                            continue
+
+                logger.info(f"v2 account backup import complete: {imported_count} imported, {skipped_count} skipped")
+                return {
+                    "success": True,
+                    "imported_count": imported_count,
+                    "skipped_count": skipped_count,
+                    "user_id": backup_user_id,
+                }
+
+            # ---- v1 path (legacy) ----
+            with zipfile.ZipFile(import_path, 'r') as zf:
+                encrypted_data = zf.read("data.enc")
 
             salt = bytes.fromhex(manifest["salt"])
             nonce = bytes.fromhex(manifest["nonce"])

@@ -4,6 +4,8 @@ import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { GlassCard } from '../glass/GlassCard';
 import { GlassInput } from '../glass/GlassInput';
 import { GlassButton } from '../glass/GlassButton';
+import { connect as wcConnect, getSession as wcGetSession, signMessage as wcSignMessage } from '../../services/walletConnect';
+import { QRCodeCanvas } from 'qrcode.react';
 
 interface LoginScreenProps {
   onLogin: (username: string, password: string) => Promise<void>;
@@ -28,12 +30,23 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
 
   // Restore from IPFS state
   const [showIpfsRestoreModal, setShowIpfsRestoreModal] = useState(false);
-  const [ipfsCid, setIpfsCid] = useState('');
+  const [ipfsPinataJwt, setIpfsPinataJwt] = useState('');
+  const [ipfsBackupList, setIpfsBackupList] = useState<Array<{cid: string; name: string; date: string; size_bytes: number}>>([]);
+  const [ipfsSelectedCid, setIpfsSelectedCid] = useState('');
+  const [isListingBackups, setIsListingBackups] = useState(false);
+  const [ipfsListError, setIpfsListError] = useState<string | null>(null);
   const [ipfsRestorePassword, setIpfsRestorePassword] = useState('');
   const [ipfsRestoreMasterPassword, setIpfsRestoreMasterPassword] = useState('');
   const [ipfsRestoreMasterPasswordConfirm, setIpfsRestoreMasterPasswordConfirm] = useState('');
   const [isIpfsRestoring, setIsIpfsRestoring] = useState(false);
   const [ipfsRestoreError, setIpfsRestoreError] = useState<string | null>(null);
+
+  // WalletConnect state — shared between both restore modals
+  const [wcUri, setWcUri] = useState('');
+  const [wcAddress, setWcAddress] = useState('');
+  const [walletSig, setWalletSig] = useState('');
+  const [isConnectingWallet, setIsConnectingWallet] = useState(false);
+  const [wcError, setWcError] = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -58,6 +71,31 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
     });
     if (selected) {
       setRestoreFilePath(selected as string);
+    }
+  };
+
+  const handleConnectWallet = async () => {
+    setIsConnectingWallet(true);
+    setWcError(null);
+    setWcUri('');
+    try {
+      // Check if already connected
+      const existing = wcGetSession();
+      if (existing) {
+        const sig = await wcSignMessage('qubes-backup-key:v1', 'Qubes needs to verify wallet ownership to decrypt your backup');
+        setWcAddress(existing.address);
+        setWalletSig(sig);
+        return;
+      }
+      const session = await wcConnect((uri) => setWcUri(uri));
+      const sig = await wcSignMessage('qubes-backup-key:v1', 'Qubes needs to verify wallet ownership to decrypt your backup', session.topic);
+      setWcAddress(session.address);
+      setWalletSig(sig);
+      setWcUri('');
+    } catch (err) {
+      setWcError(`Wallet connection failed: ${err}`);
+    } finally {
+      setIsConnectingWallet(false);
     }
   };
 
@@ -89,6 +127,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
         importPath: restoreFilePath,
         importPassword: restorePassword,
         masterPassword: restoreMasterPassword,
+        walletSig: walletSig,
       });
 
       if (result.success) {
@@ -98,6 +137,10 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
         setRestorePassword('');
         setRestoreMasterPassword('');
         setRestoreMasterPasswordConfirm('');
+        setWalletSig('');
+        setWcAddress('');
+        setWcUri('');
+        setWcError(null);
         // Pre-fill username if available
         if (result.user_id) {
           setUsername(result.user_id);
@@ -113,8 +156,36 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
     }
   };
 
+  const handleListBackups = async () => {
+    if (!ipfsPinataJwt.trim()) return;
+    setIsListingBackups(true);
+    setIpfsListError(null);
+    setIpfsBackupList([]);
+    setIpfsSelectedCid('');
+    try {
+      const result = await invoke<{ success: boolean; backups?: Array<{cid: string; name: string; date: string; size_bytes: number}>; error?: string }>(
+        'list_account_backups_pinata',
+        { userId: '_restore', pinataJwt: ipfsPinataJwt.trim() }
+      );
+      if (result.success && result.backups) {
+        if (result.backups.length === 0) {
+          setIpfsListError('No Qubes backups found in this Pinata account.');
+        } else {
+          setIpfsBackupList(result.backups);
+          setIpfsSelectedCid(result.backups[0].cid);
+        }
+      } else {
+        setIpfsListError(result.error || 'Failed to list backups');
+      }
+    } catch (err) {
+      setIpfsListError(`${err}`);
+    } finally {
+      setIsListingBackups(false);
+    }
+  };
+
   const handleIpfsRestore = async () => {
-    if (!ipfsCid.trim() || !ipfsRestorePassword || !ipfsRestoreMasterPassword) return;
+    if (!ipfsSelectedCid || !ipfsRestorePassword || !ipfsRestoreMasterPassword) return;
 
     if (ipfsRestoreMasterPassword !== ipfsRestoreMasterPasswordConfirm) {
       setIpfsRestoreError('Master passwords do not match.');
@@ -138,18 +209,25 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
         error?: string;
       }>('import_account_backup_ipfs', {
         userId: '_restore',
-        ipfsCid: ipfsCid.trim(),
+        ipfsCid: ipfsSelectedCid,
         importPassword: ipfsRestorePassword,
         masterPassword: ipfsRestoreMasterPassword,
+        walletSig: walletSig,
       });
 
       if (result.success) {
         alert(`Account restored from IPFS!\n\n${result.imported_count} Qube(s) imported, ${result.skipped_count} skipped.\n\nPlease sign in with your master password.`);
         setShowIpfsRestoreModal(false);
-        setIpfsCid('');
+        setIpfsPinataJwt('');
+        setIpfsBackupList([]);
+        setIpfsSelectedCid('');
         setIpfsRestorePassword('');
         setIpfsRestoreMasterPassword('');
         setIpfsRestoreMasterPasswordConfirm('');
+        setWalletSig('');
+        setWcAddress('');
+        setWcUri('');
+        setWcError(null);
         if (result.user_id) {
           setUsername(result.user_id);
           setPassword(ipfsRestoreMasterPassword);
@@ -163,6 +241,46 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
       setIsIpfsRestoring(false);
     }
   };
+
+  // Reusable WalletConnect UI block
+  const walletConnectBlock = (
+    <div className="mb-4 p-3 border border-border-primary rounded-lg bg-surface-secondary">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-text-secondary text-sm font-medium">Wallet Authentication</span>
+        {walletSig && (
+          <span className="text-xs text-accent-primary">✓ Connected: {wcAddress.slice(0, 16)}...</span>
+        )}
+      </div>
+      {!walletSig ? (
+        <>
+          <p className="text-text-tertiary text-xs mb-2">
+            Connect your BCH wallet (Cashonize / Zapit) to authenticate.{' '}
+            <span className="text-accent-warning">Required for wallet-bound backups.</span>
+          </p>
+          <button
+            onClick={handleConnectWallet}
+            disabled={isConnectingWallet}
+            className="w-full px-3 py-2 rounded bg-accent-primary/20 border border-accent-primary/40 text-accent-primary text-sm hover:bg-accent-primary/30 transition-colors disabled:opacity-50"
+          >
+            {isConnectingWallet ? 'Connecting...' : '🔗 Connect Wallet'}
+          </button>
+          {wcUri && (
+            <div className="mt-3 flex flex-col items-center gap-2">
+              <p className="text-text-tertiary text-xs">Scan with Cashonize or Zapit:</p>
+              <div className="bg-white p-2 rounded">
+                <QRCodeCanvas value={wcUri} size={160} />
+              </div>
+            </div>
+          )}
+          {wcError && <p className="text-accent-danger text-xs mt-2">{wcError}</p>}
+        </>
+      ) : (
+        <p className="text-text-tertiary text-xs">
+          Wallet verified. You can proceed with restore.
+        </p>
+      )}
+    </div>
+  );
 
   return (
     <div className="h-screen w-screen flex items-center justify-center bg-bg-primary relative overflow-hidden">
@@ -267,53 +385,112 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
           <GlassCard variant="elevated" className="w-full max-w-md p-6 mx-4">
             <h2 className="text-xl font-bold text-text-primary mb-2">Restore from IPFS</h2>
             <p className="text-text-secondary text-sm mb-4">
-              Restore your account using an IPFS CID from a previous backup.
-              The CID was shown when you backed up to IPFS.
+              Enter your Pinata JWT to find your backed-up accounts, then restore with your backup password.
             </p>
 
+            {/* Step 1: Pinata JWT + find backups */}
             <div className="mb-4">
-              <label className="block text-text-secondary text-sm mb-1">IPFS CID</label>
-              <input
-                type="text"
-                value={ipfsCid}
-                onChange={(e) => setIpfsCid(e.target.value)}
-                placeholder="Qm... or bafy..."
-                className="w-full bg-surface-secondary border border-border-primary rounded-lg px-3 py-2 text-text-primary text-sm font-mono"
-              />
+              <label className="block text-text-secondary text-sm mb-1">Pinata JWT API Key</label>
+              <div className="flex gap-2">
+                <input
+                  type="password"
+                  value={ipfsPinataJwt}
+                  onChange={(e) => setIpfsPinataJwt(e.target.value)}
+                  placeholder="eyJhbGci..."
+                  className="flex-1 bg-surface-secondary border border-border-primary rounded-lg px-3 py-2 text-text-primary text-sm font-mono"
+                  disabled={isListingBackups || isIpfsRestoring}
+                />
+                <GlassButton
+                  variant="secondary"
+                  onClick={handleListBackups}
+                  disabled={!ipfsPinataJwt.trim() || isListingBackups || isIpfsRestoring}
+                  loading={isListingBackups}
+                >
+                  {isListingBackups ? 'Searching...' : 'Find'}
+                </GlassButton>
+              </div>
             </div>
 
-            <div className="mb-4">
-              <label className="block text-text-secondary text-sm mb-1">Backup Password</label>
-              <input
-                type="password"
-                value={ipfsRestorePassword}
-                onChange={(e) => setIpfsRestorePassword(e.target.value)}
-                placeholder="Password used when creating the backup"
-                className="w-full bg-surface-secondary border border-border-primary rounded-lg px-3 py-2 text-text-primary text-sm"
-              />
-            </div>
+            {ipfsListError && (
+              <div className="mb-4 p-3 bg-accent-danger/10 border border-accent-danger/30 rounded-lg">
+                <p className="text-accent-danger text-sm">{ipfsListError}</p>
+              </div>
+            )}
 
-            <div className="mb-4">
-              <label className="block text-text-secondary text-sm mb-1">Master Password</label>
-              <input
-                type="password"
-                value={ipfsRestoreMasterPassword}
-                onChange={(e) => setIpfsRestoreMasterPassword(e.target.value)}
-                placeholder="Master password for this device"
-                className="w-full bg-surface-secondary border border-border-primary rounded-lg px-3 py-2 text-text-primary text-sm"
-              />
-            </div>
+            {/* Step 2: backup list + passwords */}
+            {ipfsBackupList.length > 0 && (
+              <>
+                <div className="mb-4">
+                  <label className="block text-text-secondary text-sm mb-1">Select Backup</label>
+                  <div className="space-y-2">
+                    {ipfsBackupList.map((b) => (
+                      <label
+                        key={b.cid}
+                        className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
+                          ipfsSelectedCid === b.cid
+                            ? 'border-accent-primary bg-accent-primary/10'
+                            : 'border-border-primary bg-surface-secondary hover:border-accent-primary/50'
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="ipfsBackup"
+                          value={b.cid}
+                          checked={ipfsSelectedCid === b.cid}
+                          onChange={() => setIpfsSelectedCid(b.cid)}
+                          className="mt-0.5"
+                        />
+                        <div className="min-w-0">
+                          <p className="text-text-primary text-sm font-medium truncate">{b.name}</p>
+                          <p className="text-text-tertiary text-xs">
+                            {b.date ? new Date(b.date).toLocaleString() : 'Unknown date'} &bull; {(b.size_bytes / 1024).toFixed(1)} KB
+                          </p>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                </div>
 
-            <div className="mb-4">
-              <label className="block text-text-secondary text-sm mb-1">Confirm Master Password</label>
-              <input
-                type="password"
-                value={ipfsRestoreMasterPasswordConfirm}
-                onChange={(e) => setIpfsRestoreMasterPasswordConfirm(e.target.value)}
-                placeholder="Confirm master password"
-                className="w-full bg-surface-secondary border border-border-primary rounded-lg px-3 py-2 text-text-primary text-sm"
-              />
-            </div>
+                {/* WalletConnect step */}
+                {walletConnectBlock}
+
+                <div className="mb-4">
+                  <label className="block text-text-secondary text-sm mb-1">Backup Password</label>
+                  <input
+                    type="password"
+                    value={ipfsRestorePassword}
+                    onChange={(e) => setIpfsRestorePassword(e.target.value)}
+                    placeholder="Password used when creating the backup"
+                    className="w-full bg-surface-secondary border border-border-primary rounded-lg px-3 py-2 text-text-primary text-sm"
+                    disabled={isIpfsRestoring}
+                  />
+                </div>
+
+                <div className="mb-4">
+                  <label className="block text-text-secondary text-sm mb-1">New Master Password</label>
+                  <input
+                    type="password"
+                    value={ipfsRestoreMasterPassword}
+                    onChange={(e) => setIpfsRestoreMasterPassword(e.target.value)}
+                    placeholder="Master password for this device"
+                    className="w-full bg-surface-secondary border border-border-primary rounded-lg px-3 py-2 text-text-primary text-sm"
+                    disabled={isIpfsRestoring}
+                  />
+                </div>
+
+                <div className="mb-4">
+                  <label className="block text-text-secondary text-sm mb-1">Confirm Master Password</label>
+                  <input
+                    type="password"
+                    value={ipfsRestoreMasterPasswordConfirm}
+                    onChange={(e) => setIpfsRestoreMasterPasswordConfirm(e.target.value)}
+                    placeholder="Confirm master password"
+                    className="w-full bg-surface-secondary border border-border-primary rounded-lg px-3 py-2 text-text-primary text-sm"
+                    disabled={isIpfsRestoring}
+                  />
+                </div>
+              </>
+            )}
 
             {ipfsRestoreError && (
               <div className="mb-4 p-3 bg-accent-danger/10 border border-accent-danger/30 rounded-lg">
@@ -330,19 +507,31 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
             <div className="flex gap-3 justify-end">
               <GlassButton
                 variant="secondary"
-                onClick={() => { setShowIpfsRestoreModal(false); setIpfsRestoreError(null); }}
-                disabled={isIpfsRestoring}
+                onClick={() => {
+                  setShowIpfsRestoreModal(false);
+                  setIpfsRestoreError(null);
+                  setIpfsListError(null);
+                  setIpfsBackupList([]);
+                  setIpfsSelectedCid('');
+                  setWalletSig('');
+                  setWcAddress('');
+                  setWcUri('');
+                  setWcError(null);
+                }}
+                disabled={isIpfsRestoring || isListingBackups}
               >
                 Cancel
               </GlassButton>
-              <GlassButton
-                variant="primary"
-                onClick={handleIpfsRestore}
-                disabled={!ipfsCid.trim() || !ipfsRestorePassword || !ipfsRestoreMasterPassword || !ipfsRestoreMasterPasswordConfirm || isIpfsRestoring}
-                loading={isIpfsRestoring}
-              >
-                {isIpfsRestoring ? 'Restoring...' : 'Restore from IPFS'}
-              </GlassButton>
+              {ipfsBackupList.length > 0 && (
+                <GlassButton
+                  variant="primary"
+                  onClick={handleIpfsRestore}
+                  disabled={!ipfsSelectedCid || !ipfsRestorePassword || !ipfsRestoreMasterPassword || !ipfsRestoreMasterPasswordConfirm || isIpfsRestoring}
+                  loading={isIpfsRestoring}
+                >
+                  {isIpfsRestoring ? 'Restoring...' : 'Restore Account'}
+                </GlassButton>
+              )}
             </div>
           </GlassCard>
         </div>
@@ -374,6 +563,9 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
                 </GlassButton>
               </div>
             </div>
+
+            {/* WalletConnect step */}
+            {walletConnectBlock}
 
             {/* Backup password */}
             <div className="mb-4">
@@ -419,7 +611,14 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
             <div className="flex gap-3 justify-end">
               <GlassButton
                 variant="secondary"
-                onClick={() => { setShowRestoreModal(false); setRestoreError(null); }}
+                onClick={() => {
+                  setShowRestoreModal(false);
+                  setRestoreError(null);
+                  setWalletSig('');
+                  setWcAddress('');
+                  setWcUri('');
+                  setWcError(null);
+                }}
                 disabled={isRestoring}
               >
                 Cancel

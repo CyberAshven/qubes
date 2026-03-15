@@ -205,7 +205,9 @@ POSITIONAL_ARG_NAMES = {
     "export-account-backup": ["user_id", "export_path"],
     "import-account-backup": ["user_id", "import_path"],
     "export-account-backup-ipfs": ["user_id"],
+    "list-account-backups-pinata": ["user_id"],
     "import-account-backup-ipfs": ["user_id", "ipfs_cid"],
+    "sync-qube-to-ipfs-backup": ["user_id", "qube_id"],
     "cleanup-incomplete-qubes": ["user_id"],
     # API key batch
     "save-api-keys": ["user_id"],

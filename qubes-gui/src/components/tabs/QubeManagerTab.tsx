@@ -106,6 +106,12 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
   const [backupConfirmPassword, setBackupConfirmPassword] = useState('');
   const [isBackingUp, setIsBackingUp] = useState(false);
 
+  // IPFS backup all state
+  const [showIpfsBackupAllModal, setShowIpfsBackupAllModal] = useState(false);
+  const [ipfsBackupAllPassword, setIpfsBackupAllPassword] = useState('');
+  const [ipfsBackupAllConfirm, setIpfsBackupAllConfirm] = useState('');
+  const [isIpfsBackingUpAll, setIsIpfsBackingUpAll] = useState(false);
+
   // Account restore (merge) state
   const [showRestoreModal, setShowRestoreModal] = useState(false);
   const [restoreFilePath, setRestoreFilePath] = useState('');
@@ -315,6 +321,49 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
       alert(`Backup failed: ${String(error)}`);
     } finally {
       setIsBackingUp(false);
+    }
+  };
+
+  const handleIpfsBackupAll = async () => {
+    if (ipfsBackupAllPassword !== ipfsBackupAllConfirm) { alert('Passwords do not match'); return; }
+    if (ipfsBackupAllPassword.length < 8) { alert('Password must be at least 8 characters'); return; }
+    setIsIpfsBackingUpAll(true);
+
+    // Get wallet signature for wallet-bound backup
+    let walletSigForBackup = '';
+    try {
+      const { getSession: wcGetSession, signMessage: wcSignMessage, connect: wcConnect } = await import('../../services/walletConnect');
+      let session = wcGetSession();
+      if (!session) {
+        // Prompt user to connect wallet first
+        alert('Please connect your wallet (Cashonize/Zapit) first via the WalletConnect button before creating a wallet-bound backup.\n\nYou can still back up without wallet binding, but it is less secure.');
+      } else {
+        walletSigForBackup = await wcSignMessage('qubes-backup-key:v1', 'Qubes is creating an encrypted backup of your account');
+      }
+    } catch (e) {
+      console.warn('[Backup] Could not get wallet signature, using password-only backup:', e);
+      // Non-fatal: fall back to password-only (deprecated but still works)
+    }
+
+    try {
+      const result = await invoke<{ success: boolean; ipfs_cid?: string; ipfs_url?: string; qube_count?: number; error?: string }>('export_account_backup_ipfs', {
+        userId,
+        exportPassword: ipfsBackupAllPassword,
+        masterPassword: password,
+        walletSig: walletSigForBackup,
+      });
+      if (result.success) {
+        alert(`All Qubes backed up to IPFS!\n\n${result.qube_count} Qube(s) uploaded.\n\nCID: ${result.ipfs_cid}\n\nSave this CID or use your Pinata account to restore.`);
+        setShowIpfsBackupAllModal(false);
+        setIpfsBackupAllPassword('');
+        setIpfsBackupAllConfirm('');
+      } else {
+        alert(`IPFS backup failed: ${result.error}`);
+      }
+    } catch (error) {
+      alert(`IPFS backup failed: ${String(error)}`);
+    } finally {
+      setIsIpfsBackingUpAll(false);
     }
   };
 
@@ -704,6 +753,14 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
           </GlassButton>
           <GlassButton
             variant="secondary"
+            onClick={() => setShowIpfsBackupAllModal(true)}
+            title={pinataConfigured === false ? '⚠️ Pinata API key required' : 'Backup all Qubes to IPFS (one CID restores everything)'}
+            disabled={isIpfsBackingUpAll}
+          >
+            {isIpfsBackingUpAll ? 'Uploading...' : '☁ Backup All to IPFS'}
+          </GlassButton>
+          <GlassButton
+            variant="secondary"
             onClick={() => setShowBackupModal(true)}
             title="Backup your entire account and all Qubes to an encrypted file"
           >
@@ -1077,6 +1134,62 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
         </div>
       )}
 
+      {/* IPFS Backup All Modal */}
+      {showIpfsBackupAllModal && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50">
+          <GlassCard variant="elevated" className="w-full max-w-md p-6 mx-4">
+            <h2 className="text-xl font-bold text-text-primary mb-2">Backup All to IPFS</h2>
+            <p className="text-text-secondary text-sm mb-4">
+              Upload your entire account (all Qubes + credentials) to IPFS via Pinata.
+              Each Qube is stored in its own folder. You get one CID to restore everything.
+            </p>
+            <div className="mb-4">
+              <label className="block text-sm text-text-secondary mb-1">Backup Password</label>
+              <input
+                type="password"
+                value={ipfsBackupAllPassword}
+                onChange={(e) => setIpfsBackupAllPassword(e.target.value)}
+                placeholder="Choose a password to encrypt this backup"
+                className="w-full bg-surface-secondary border border-border-primary rounded-lg px-3 py-2 text-text-primary text-sm"
+                disabled={isIpfsBackingUpAll}
+              />
+            </div>
+            <div className="mb-6">
+              <label className="block text-sm text-text-secondary mb-1">Confirm Password</label>
+              <input
+                type="password"
+                value={ipfsBackupAllConfirm}
+                onChange={(e) => setIpfsBackupAllConfirm(e.target.value)}
+                placeholder="Confirm backup password"
+                className="w-full bg-surface-secondary border border-border-primary rounded-lg px-3 py-2 text-text-primary text-sm"
+                disabled={isIpfsBackingUpAll}
+              />
+            </div>
+            {isIpfsBackingUpAll && (
+              <div className="mb-4 p-3 bg-accent-primary/10 border border-accent-primary/30 rounded-lg">
+                <p className="text-accent-primary text-sm">Uploading to IPFS... this may take a moment.</p>
+              </div>
+            )}
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => { setShowIpfsBackupAllModal(false); setIpfsBackupAllPassword(''); setIpfsBackupAllConfirm(''); }}
+                className="px-4 py-2 rounded-lg border border-glass-border text-text-secondary hover:text-text-primary hover:border-accent-primary/50 transition-colors text-sm"
+                disabled={isIpfsBackingUpAll}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleIpfsBackupAll}
+                disabled={isIpfsBackingUpAll || !ipfsBackupAllPassword || !ipfsBackupAllConfirm}
+                className="px-4 py-2 rounded-lg bg-accent-primary/20 border border-accent-primary/50 text-accent-primary hover:bg-accent-primary/30 transition-colors text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isIpfsBackingUpAll ? 'Uploading...' : 'Backup to IPFS'}
+              </button>
+            </div>
+          </GlassCard>
+        </div>
+      )}
+
       {/* Account Backup Modal */}
       {showBackupModal && (
         <div className="fixed inset-0 bg-black/95 backdrop-blur-sm flex items-center justify-center z-50">
@@ -1288,6 +1401,12 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
 
   // Custom voices are now managed by VoiceLibraryContext - no need for local loading
 
+  // Per-Qube IPFS backup state
+  const [showQubeIpfsModal, setShowQubeIpfsModal] = useState(false);
+  const [qubeIpfsPassword, setQubeIpfsPassword] = useState('');
+  const [qubeIpfsPasswordConfirm, setQubeIpfsPasswordConfirm] = useState('');
+  const [isQubeIpfsSyncing, setIsQubeIpfsSyncing] = useState(false);
+
   // Wallet Security state
   const [walletSecurityModalOpen, setWalletSecurityModalOpen] = useState(false);
   const [walletSecurity, setWalletSecurity] = useState<{
@@ -1326,6 +1445,50 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
   // Refresh wallet security after modal saves
   const handleWalletSecuritySave = () => {
     loadWalletSecurity();
+  };
+
+  const handleQubeIpfsBackup = async () => {
+    if (qubeIpfsPassword !== qubeIpfsPasswordConfirm) { alert('Passwords do not match'); return; }
+    if (qubeIpfsPassword.length < 8) { alert('Password must be at least 8 characters'); return; }
+    setIsQubeIpfsSyncing(true);
+
+    // Get wallet signature for wallet-bound backup
+    let walletSigForBackup = '';
+    try {
+      const { getSession: wcGetSession, signMessage: wcSignMessage, connect: wcConnect } = await import('../../services/walletConnect');
+      let session = wcGetSession();
+      if (!session) {
+        // Prompt user to connect wallet first
+        alert('Please connect your wallet (Cashonize/Zapit) first via the WalletConnect button before creating a wallet-bound backup.\n\nYou can still back up without wallet binding, but it is less secure.');
+      } else {
+        walletSigForBackup = await wcSignMessage('qubes-backup-key:v1', 'Qubes is creating an encrypted backup of your account');
+      }
+    } catch (e) {
+      console.warn('[Backup] Could not get wallet signature, using password-only backup:', e);
+      // Non-fatal: fall back to password-only (deprecated but still works)
+    }
+
+    try {
+      const result = await invoke<{ success: boolean; ipfs_cid?: string; qube_name?: string; error?: string }>('sync_qube_to_ipfs_backup', {
+        userId,
+        qubeId: qube.qube_id,
+        exportPassword: qubeIpfsPassword,
+        masterPassword,
+        walletSig: walletSigForBackup,
+      });
+      if (result.success) {
+        alert(`${qube.name} backed up to IPFS!\n\nCID: ${result.ipfs_cid}\n\nThis Qube is stored in the qubes/ folder of your IPFS backup.`);
+        setShowQubeIpfsModal(false);
+        setQubeIpfsPassword('');
+        setQubeIpfsPasswordConfirm('');
+      } else {
+        alert(`IPFS backup failed: ${result.error}`);
+      }
+    } catch (err) {
+      alert(`IPFS backup failed: ${err}`);
+    } finally {
+      setIsQubeIpfsSyncing(false);
+    }
   };
 
   // Get cached wallet data for this qube
@@ -2818,6 +2981,13 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
                 </button>
               )}
               <button
+                onClick={(e) => { e.stopPropagation(); setShowQubeIpfsModal(true); }}
+                className="px-2 py-1 text-xs rounded border border-accent-secondary/40 text-accent-secondary hover:bg-accent-secondary/10 transition-colors"
+                title="Backup this Qube to IPFS"
+              >
+                ☁ IPFS
+              </button>
+              <button
                 onClick={(e) => { e.stopPropagation(); onDelete(); }}
                 className="flex-1 px-4 py-2 bg-accent-danger/10 text-accent-danger rounded-lg hover:bg-accent-danger/20 transition-all text-sm font-medium"
               >
@@ -3386,6 +3556,61 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
           setAutonomousModePool(updates.autonomousModePool);
         }}
       />
+
+      {/* Per-Qube IPFS Backup Modal */}
+      {showQubeIpfsModal && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50" onClick={(e) => e.stopPropagation()}>
+          <div className="bg-bg-secondary border border-glass-border rounded-xl p-6 w-full max-w-sm mx-4">
+            <h3 className="text-lg font-bold text-text-primary mb-2">Backup {qube.name} to IPFS</h3>
+            <p className="text-text-secondary text-sm mb-4">
+              This Qube will be stored in <code>qubes/{qube.name}_{qube.qube_id}.enc</code> on IPFS.
+            </p>
+            <div className="mb-3">
+              <label className="block text-sm text-text-secondary mb-1">Backup Password</label>
+              <input
+                type="password"
+                value={qubeIpfsPassword}
+                onChange={(e) => setQubeIpfsPassword(e.target.value)}
+                placeholder="Choose a backup password"
+                className="w-full bg-surface-secondary border border-border-primary rounded-lg px-3 py-2 text-text-primary text-sm"
+                disabled={isQubeIpfsSyncing}
+              />
+            </div>
+            <div className="mb-4">
+              <label className="block text-sm text-text-secondary mb-1">Confirm Password</label>
+              <input
+                type="password"
+                value={qubeIpfsPasswordConfirm}
+                onChange={(e) => setQubeIpfsPasswordConfirm(e.target.value)}
+                placeholder="Confirm password"
+                className="w-full bg-surface-secondary border border-border-primary rounded-lg px-3 py-2 text-text-primary text-sm"
+                disabled={isQubeIpfsSyncing}
+              />
+            </div>
+            {isQubeIpfsSyncing && (
+              <div className="mb-3 p-2 bg-accent-primary/10 border border-accent-primary/30 rounded text-accent-primary text-sm">
+                Uploading to IPFS...
+              </div>
+            )}
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => { setShowQubeIpfsModal(false); setQubeIpfsPassword(''); setQubeIpfsPasswordConfirm(''); }}
+                className="px-3 py-1.5 rounded border border-glass-border text-text-secondary hover:text-text-primary text-sm transition-colors"
+                disabled={isQubeIpfsSyncing}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleQubeIpfsBackup}
+                disabled={isQubeIpfsSyncing || !qubeIpfsPassword || !qubeIpfsPasswordConfirm}
+                className="px-3 py-1.5 rounded bg-accent-secondary/20 border border-accent-secondary/50 text-accent-secondary hover:bg-accent-secondary/30 text-sm transition-colors disabled:opacity-50"
+              >
+                {isQubeIpfsSyncing ? 'Uploading...' : 'Backup to IPFS'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
