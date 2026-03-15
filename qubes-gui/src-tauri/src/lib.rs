@@ -2839,7 +2839,7 @@ async fn anchor_session(app_handle: AppHandle, user_id: String, qube_id: String,
     // Rate limit check
     check_rate_limit("anchor_session")?;
 
-    let args = vec![user_id, qube_id];
+    let args = vec![user_id, qube_id.clone()];
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
