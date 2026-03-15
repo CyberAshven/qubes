@@ -5,6 +5,7 @@
  * - **constants** — Category IDs, dust limits, helpers (browser-safe)
  * - **contract** — Contract instantiation (Node.js only, requires `cashscript`)
  * - **mint**     — Build/broadcast mint transactions (Node.js only, requires `cashscript` + `@bitauth/libauth`)
+ * - **transfer** — Build WalletConnect NFT transfer transactions (Node.js only, requires `cashscript` + `@bitauth/libauth`)
  * - **verify**   — NFT ownership verification via Chaingraph GraphQL (browser-safe)
  *
  * `cashscript` and `@bitauth/libauth` are **optional** peer dependencies.
@@ -18,4 +19,5 @@
 export * from './constants.js';
 export * from './contract.js';
 export * from './mint.js';
+export * from './transfer.js';
 export * from './verify.js';

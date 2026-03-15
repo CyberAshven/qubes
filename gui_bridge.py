@@ -6567,7 +6567,8 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
                                 return result
                             for f in sorted(root_dir.rglob("*")):
                                 if f.is_file():
-                                    rel = str(f.relative_to(root_dir))
+                                    # Always use forward slashes so backups are cross-platform
+                                    rel = f.relative_to(root_dir).as_posix()
                                     with open(f, 'rb') as fh:
                                         result[rel] = base64.b64encode(fh.read()).decode('utf-8')
                             return result
@@ -6912,7 +6913,7 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
                     return result
                 for f in sorted(root_dir.rglob("*")):
                     if f.is_file():
-                        rel = str(f.relative_to(root_dir))
+                        rel = f.relative_to(root_dir).as_posix()
                         with open(f, 'rb') as fh:
                             result[rel] = base64.b64encode(fh.read()).decode('utf-8')
                 return result
@@ -7194,7 +7195,7 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
                     return result
                 for f in sorted(root_dir.rglob("*")):
                     if f.is_file():
-                        rel = str(f.relative_to(root_dir))
+                        rel = f.relative_to(root_dir).as_posix()
                         with open(f, 'rb') as fh:
                             result[rel] = base64.b64encode(fh.read()).decode('utf-8')
                 return result
@@ -7698,7 +7699,9 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
 
                             def _restore_dir_from_b64(data: dict, root_dir: Path):
                                 for rel_path, b64data in data.items():
-                                    dest = root_dir / rel_path
+                                    # Normalize separators: old Windows backups may use backslashes
+                                    parts = rel_path.replace('\\', '/').split('/')
+                                    dest = root_dir.joinpath(*parts)
                                     dest.parent.mkdir(parents=True, exist_ok=True)
                                     with open(dest, 'wb') as fh:
                                         fh.write(base64.b64decode(b64data))

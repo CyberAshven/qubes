@@ -59,12 +59,15 @@ export {
   type QubeIdentity,
 } from './crypto.js';
 
-// Covenant minting types
+// Covenant minting and transfer types
 export {
   type MintResult,
   type WcMintResult,
   type MintError,
   type MintOutcome,
+  type WcTransferResult,
+  type TransferError,
+  type TransferOutcome,
 } from './covenant.js';
 
 // Package types

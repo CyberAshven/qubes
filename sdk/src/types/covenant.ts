@@ -92,3 +92,43 @@ export interface MintError {
  * Union type for all possible mint results.
  */
 export type MintOutcome = MintResult | WcMintResult | MintError;
+
+// ---------------------------------------------------------------------------
+// NFT Transfer — WalletConnect Mode
+// ---------------------------------------------------------------------------
+
+/**
+ * Result of a WalletConnect NFT transfer transaction build.
+ *
+ * The transfer is a pure P2PKH → P2PKH send (no covenant involved).
+ * The SDK builds an unsigned transaction; the wallet signs all inputs
+ * via `bch_signTransaction`.
+ *
+ * Python equivalent: return value of `BlockchainManager.prepare_transfer_wc()`.
+ * CLI equivalent: stdout JSON from `covenant/transfer-cli.ts`.
+ */
+export interface WcTransferResult {
+  /** Whether the transaction was built successfully. */
+  success: boolean;
+  /** Stringified WalletConnect transaction object for wallet signing. Python: `wc_transaction`. */
+  wcTransaction: string;
+  /** CashToken category ID (64-char hex). Python: `category_id`. */
+  categoryId: string;
+  /** 64-character hex NFT commitment. */
+  commitment: string;
+}
+
+/**
+ * Error result from a failed transfer operation.
+ */
+export interface TransferError {
+  /** Always false for errors. */
+  success: false;
+  /** Error description. */
+  error: string;
+}
+
+/**
+ * Union type for all possible transfer results.
+ */
+export type TransferOutcome = WcTransferResult | TransferError;
