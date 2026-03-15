@@ -33,22 +33,16 @@ interface TotalBalanceWidgetProps {
 }
 
 function TotalBalanceWidget({ qubes, userId, password }: TotalBalanceWidgetProps) {
-  const { setBalance, getWalletData } = useWalletCache();
+  const { wallets, setBalance } = useWalletCache();
   const [isRefreshing, setIsRefreshing] = useState(false);
 
-  // Sum all cached balances (in satoshis)
+  // Sum all cached balances (in satoshis) — reactive to wallets store changes
   const totalSats = qubes.reduce((sum, qube) => {
-    const data = getWalletData(qube.qube_id);
-    if (data && data.balance !== null) {
-      return sum + data.balance;
-    }
-    return sum;
+    const data = wallets[qube.qube_id];
+    return sum + (data?.balance ?? 0);
   }, 0);
 
-  const hasAnyBalance = qubes.some((qube) => {
-    const data = getWalletData(qube.qube_id);
-    return data && data.balance !== null;
-  });
+  const hasAnyBalance = qubes.some((qube) => wallets[qube.qube_id]?.balance !== undefined);
 
   const handleRefresh = async () => {
     if (isRefreshing || !userId || !password) return;
@@ -58,13 +52,13 @@ function TotalBalanceWidget({ qubes, userId, password }: TotalBalanceWidgetProps
       await Promise.all(
         qubesWithWallet.map(async (qube) => {
           try {
-            const result = await invoke<{ balance?: number }>('get_wallet_info', {
+            const result = await invoke<{ success?: boolean; balance_sats?: number }>('get_wallet_info', {
               userId,
               qubeId: qube.qube_id,
               password,
             });
-            if (result.balance !== undefined && result.balance !== null) {
-              setBalance(qube.qube_id, result.balance);
+            if (result.balance_sats !== undefined && result.balance_sats !== null) {
+              setBalance(qube.qube_id, result.balance_sats);
             }
           } catch (err) {
             console.warn(`Failed to refresh balance for ${qube.qube_id}:`, err);
