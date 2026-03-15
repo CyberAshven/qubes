@@ -207,6 +207,8 @@ class AudioManager:
 
     def _load_config_from_env(self) -> Dict[str, Any]:
         """Load configuration from environment variables"""
+        # Resolve base models dir: QUBES_MODELS_DIR env var or platform default
+        _models_base = Path(os.getenv("QUBES_MODELS_DIR", "~/.qubes/models")).expanduser()
         return {
             "openai_api_key": os.getenv("OPENAI_API_KEY"),
             "elevenlabs_api_key": os.getenv("ELEVENLABS_API_KEY"),
@@ -216,15 +218,16 @@ class AudioManager:
             "piper_model_path": Path(
                 os.getenv(
                     "PIPER_MODEL_PATH",
-                    "~/.qubes/models/piper/en_US-lessac-medium.onnx"
+                    str(_models_base / "piper" / "en_US-lessac-medium.onnx")
                 )
             ),
             "whisper_cpp_model_path": Path(
                 os.getenv(
                     "WHISPER_MODEL_PATH",
-                    "~/.qubes/models/whisper/ggml-base.en.bin"
+                    str(_models_base / "whisper" / "ggml-base.en.bin")
                 )
             ),
+            "qwen3_models_dir": _models_base / "qwen3-tts",
         }
 
     def _init_tts_providers(self):
@@ -384,9 +387,28 @@ class AudioManager:
                 except Exception:
                     pass  # Use defaults
 
+            # Use QUBES_MODELS_DIR if set, otherwise platform default
+            qwen3_models_dir = self.config.get("qwen3_models_dir")
+
+            # Auto-download model if not present
+            if qwen3_models_dir is not None:
+                try:
+                    from audio.model_downloader import Qwen3ModelDownloader
+                    _dl = Qwen3ModelDownloader(models_dir=qwen3_models_dir)
+                    _variant_key = f"{model_variant}-Base"
+                    if not _dl.is_model_downloaded(_variant_key):
+                        logger.info("qwen3_auto_download_triggered", variant=_variant_key)
+                        _dl.start_download(_variant_key)
+                        # Also download tokenizer
+                        if not _dl.is_model_downloaded("Tokenizer"):
+                            _dl.start_download("Tokenizer")
+                except Exception as _dl_err:
+                    logger.warning("qwen3_auto_download_failed", error=str(_dl_err))
+
             provider = Qwen3TTSProvider(
                 model_variant=model_variant,
-                use_flash_attention=use_flash_attention
+                use_flash_attention=use_flash_attention,
+                **({"models_dir": qwen3_models_dir} if qwen3_models_dir else {})
             )
             self.tts_providers["qwen3"] = provider
             logger.info("tts_provider_initialized", provider="qwen3")
@@ -489,7 +511,8 @@ class AudioManager:
             result["available"] = result["recommended_variant"] is not None
 
             # Check downloaded models
-            models_dir = Path.home() / ".qubes" / "models" / "qwen3-tts"
+            _models_base = Path(os.getenv("QUBES_MODELS_DIR", str(Path.home() / ".qubes" / "models")))
+            models_dir = _models_base / "qwen3-tts"
             if models_dir.exists():
                 for model_dir in models_dir.iterdir():
                     if model_dir.is_dir():

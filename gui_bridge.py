@@ -63,18 +63,54 @@ sys.path.insert(0, str(Path(__file__).parent))
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")
 
+# ============================================================================
+# CUSTOM MODELS PATH (qubes-config.json or QUBES_MODELS_DIR env var)
+# ============================================================================
+# Allow users to store models on any drive/path they want.
+# Priority: QUBES_MODELS_DIR env var > qubes-config.json models_path > auto-detect
+_custom_models_dir = None
+
+# 1. Check env var (set by .env file or OS)
+if os.environ.get('QUBES_MODELS_DIR'):
+    _custom_models_dir = Path(os.environ['QUBES_MODELS_DIR'])
+
+# 2. Check qubes-config.json next to the exe
+if _custom_models_dir is None:
+    try:
+        import json as _json
+        _exe_dir_cfg = Path(sys.executable).parent
+        for _cfg_path in [
+            _exe_dir_cfg.parent / "qubes-config.json",
+            _exe_dir_cfg / "qubes-config.json",
+            Path(__file__).parent.parent / "qubes-config.json",
+        ]:
+            if _cfg_path.exists():
+                _cfg = _json.loads(_cfg_path.read_text(encoding="utf-8"))
+                if _cfg.get("models_path"):
+                    _custom_models_dir = Path(_cfg["models_path"])
+                break
+    except Exception:
+        pass
+
 # Auto-detect bundled HuggingFace models (heavy bundle)
 # Sets HF_HOME so kokoro, sentence-transformers find pre-downloaded models
-if not os.environ.get('HF_HOME') and getattr(sys, 'frozen', False):
-    _exe_dir = Path(sys.executable).parent
-    # --onedir layout: exe is at Qubes/qubes-backend/qubes-backend
-    # models are at Qubes/models/huggingface (one level up)
-    _hf_models = _exe_dir.parent / "models" / "huggingface"
-    if not _hf_models.exists():
-        # Flat layout: models next to exe
-        _hf_models = _exe_dir / "models" / "huggingface"
-    if _hf_models.exists():
+if not os.environ.get('HF_HOME'):
+    if _custom_models_dir is not None:
+        _hf_models = _custom_models_dir / "huggingface"
+        _hf_models.mkdir(parents=True, exist_ok=True)
         os.environ['HF_HOME'] = str(_hf_models)
+        os.environ.setdefault('QUBES_MODELS_DIR', str(_custom_models_dir))
+    elif getattr(sys, 'frozen', False):
+        _exe_dir = Path(sys.executable).parent
+        # --onedir layout: exe is at Qubes/qubes-backend/qubes-backend
+        # models are at Qubes/models/huggingface (one level up)
+        _hf_models = _exe_dir.parent / "models" / "huggingface"
+        if not _hf_models.exists():
+            # Flat layout: models next to exe
+            _hf_models = _exe_dir / "models" / "huggingface"
+        if _hf_models.exists():
+            os.environ['HF_HOME'] = str(_hf_models)
+            os.environ.setdefault('QUBES_MODELS_DIR', str(_hf_models.parent))
 
 # CRITICAL: Disable all logging to stdout/stderr before importing anything
 # Set environment variable to disable structlog output
