@@ -1,4 +1,6 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import Cropper from 'react-easy-crop';
+import type { Area } from 'react-easy-crop';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
 import { open as openShell } from '@tauri-apps/plugin-shell';
@@ -1489,7 +1491,15 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
 
   // State declarations
   const [flipState, setFlipState] = useState(0); // 0 = front, 1 = blockchain, 2 = visualizer
-  const [rotation, setRotation] = useState(0); // Track cumulative rotation
+  const [flipScale, setFlipScale] = useState(1); // 1 = full width, 0 = collapsed (mid-flip)
+  const [showAvatarCropper, setShowAvatarCropper] = useState(false);
+  const [avatarSrc, setAvatarSrc] = useState<string | null>(null);
+  const [crop, setCrop] = useState({ x: 0, y: 0 });
+  const [zoom, setZoom] = useState(1);
+  const [croppedAreaPixels, setCroppedAreaPixels] = useState<Area | null>(null);
+  const [savingAvatar, setSavingAvatar] = useState(false);
+  const [avatarCacheBust, setAvatarCacheBust] = useState(Date.now());
+  const avatarInputRef = useRef<HTMLInputElement>(null);
   const [isEditingModel, setIsEditingModel] = useState(false);
   const [providerSelectedInEdit, setProviderSelectedInEdit] = useState(false); // Track if provider was selected during edit
   const [modelSelectedInEdit, setModelSelectedInEdit] = useState(false); // Track if model was selected during edit
@@ -1717,9 +1727,74 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
   };
 
   const handleFlip = () => {
-    const newFlipState = (flipState + 1) % 3;
-    setFlipState(newFlipState);
-    setRotation(newFlipState * 180); // Keep rotation in sync with flipState
+    if (flipScale !== 1) return; // already animating
+    setFlipScale(0); // collapse
+    setTimeout(() => {
+      setFlipState(prev => (prev + 1) % 3);
+      setFlipScale(1); // expand
+    }, 200);
+  };
+
+  const handleAvatarFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      setAvatarSrc(reader.result as string);
+      setCrop({ x: 0, y: 0 });
+      setZoom(1);
+      setShowAvatarCropper(true);
+    };
+    reader.readAsDataURL(file);
+    // Reset input so same file can be re-selected
+    e.target.value = '';
+  };
+
+  const onCropComplete = useCallback((_: Area, croppedPixels: Area) => {
+    setCroppedAreaPixels(croppedPixels);
+  }, []);
+
+  const getCroppedImageBase64 = async (imageSrc: string, pixelCrop: Area): Promise<string> => {
+    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const img = new Image();
+      img.addEventListener('load', () => resolve(img));
+      img.addEventListener('error', reject);
+      img.src = imageSrc;
+    });
+    const canvas = document.createElement('canvas');
+    canvas.width = pixelCrop.width;
+    canvas.height = pixelCrop.height;
+    const ctx = canvas.getContext('2d')!;
+    ctx.drawImage(image, pixelCrop.x, pixelCrop.y, pixelCrop.width, pixelCrop.height, 0, 0, pixelCrop.width, pixelCrop.height);
+    // Return base64 without the data URL prefix
+    return canvas.toDataURL('image/png').split(',')[1];
+  };
+
+  const handleSaveAvatar = async () => {
+    if (!avatarSrc || !croppedAreaPixels) return;
+    setSavingAvatar(true);
+    try {
+      const base64 = await getCroppedImageBase64(avatarSrc, croppedAreaPixels);
+      // Save to temp file via Tauri
+      const tempPath = await invoke<string>('save_cropped_avatar', { base64Data: base64 });
+      // Update avatar in backend
+      const result = await invoke<{ success: boolean; error?: string }>('update_qube_avatar', {
+        userId,
+        qubeId: qube.qube_id,
+        avatarPath: tempPath,
+      });
+      if (result.success) {
+        setShowAvatarCropper(false);
+        setAvatarSrc(null);
+        setAvatarCacheBust(Date.now()); // Force img reload
+      } else {
+        alert(`Failed to update avatar: ${result.error}`);
+      }
+    } catch (err) {
+      alert(`Error: ${String(err)}`);
+    } finally {
+      setSavingAvatar(false);
+    }
   };
 
   const loadVisualizerSettings = async () => {
@@ -2344,21 +2419,18 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
           zIndex: isSelected ? 5 : undefined,
         }}
       />
-      <div className="relative w-full overflow-hidden rounded-xl" style={{ perspective: '1000px', height: '600px' }}>
+      <div className="relative w-full overflow-hidden rounded-xl" style={{ height: '600px' }}>
         <div
           className="relative w-full h-full"
           style={{
-            transformStyle: 'preserve-3d',
-            transition: 'transform 0.6s ease-in-out',
-            transform: `rotateY(${rotation}deg)`,
+            transition: 'transform 0.2s ease-in-out',
+            transform: `scaleX(${flipScale})`,
           }}
         >
         {/* FRONT SIDE */}
         <div
           className="absolute w-full h-full"
           style={{
-            backfaceVisibility: 'hidden',
-            WebkitBackfaceVisibility: 'hidden',
             opacity: flipState === 0 ? 1 : 0,
             pointerEvents: flipState === 0 ? 'auto' : 'none',
             transition: 'opacity 0.3s ease-in-out',
@@ -2405,16 +2477,25 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
               ⚙️
             </button>
 
+            {/* Hidden file input for avatar change */}
+            <input
+              ref={avatarInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={handleAvatarFileSelect}
+            />
+
             {/* Avatar - Click to flip, drag to reorder */}
             <div className="flex flex-col items-center mb-4">
               <div
                 {...dragHandleProps}
                 onClick={handleFlip}
                 className="cursor-pointer mb-3 hover:scale-105 transition-transform"
-                title={flipState === 0 ? "Click to flip • Drag to reorder" : flipState === 1 ? "Click to flip • Drag to reorder" : "Click to flip • Drag to reorder"}
+                title="Click to flip • Drag to reorder"
               >
                 <img
-                  src={getAvatarPath(qube)}
+                  src={`${getAvatarPath(qube)}?v=${avatarCacheBust}`}
                   alt={`${qube.name} avatar`}
                   className="w-48 h-48 rounded-xl object-cover shadow-lg"
                   style={{
@@ -2422,14 +2503,12 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
                     boxShadow: `0 0 15px ${qube.favorite_color || '#00ff88'}40`,
                   }}
                   onError={(e) => {
-                    // Fallback to letter if image fails to load
                     const target = e.target as HTMLImageElement;
                     target.style.display = 'none';
                     const fallback = target.nextElementSibling as HTMLElement;
                     if (fallback) fallback.style.display = 'flex';
                   }}
                 />
-                {/* Fallback letter avatar (always rendered, shown if image fails) */}
                 <div
                   className="w-48 h-48 rounded-xl flex items-center justify-center text-8xl font-display font-bold shadow-lg"
                   style={{
@@ -2443,6 +2522,7 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
                   {qube.name.charAt(0).toUpperCase()}
                 </div>
               </div>
+
               <h3 className="text-2xl font-bold text-text-primary text-center mb-1">
                 {qube.name}
               </h3>
@@ -2751,9 +2831,6 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
         <div
           className="absolute w-full h-full"
           style={{
-            backfaceVisibility: 'hidden',
-            WebkitBackfaceVisibility: 'hidden',
-            transform: 'rotateY(180deg)',
             opacity: flipState === 1 ? 1 : 0,
             pointerEvents: flipState === 1 ? 'auto' : 'none',
             transition: 'opacity 0.3s ease-in-out',
@@ -2772,6 +2849,61 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
             >
               🔄
             </button>
+
+            {/* Change Avatar button - Top Right on blockchain side */}
+            <button
+              onClick={(e) => { e.stopPropagation(); avatarInputRef.current?.click(); }}
+              className="absolute top-3 right-3 text-xl hover:scale-110 transition-transform cursor-pointer z-10 opacity-60 hover:opacity-100"
+              title="Change avatar photo"
+            >
+              📷
+            </button>
+
+            {/* Avatar crop modal */}
+            {showAvatarCropper && avatarSrc && (
+              <div
+                className="fixed inset-0 z-50 flex items-center justify-center"
+                style={{ background: 'rgba(0,0,0,0.85)' }}
+                onClick={(e) => { if (e.target === e.currentTarget) setShowAvatarCropper(false); }}
+              >
+                <div className="bg-bg-secondary rounded-2xl p-6 w-96 flex flex-col gap-4" style={{ border: `1px solid ${qube.favorite_color || '#00ff88'}40` }}>
+                  <h3 className="text-lg font-bold text-text-primary text-center">Crop Avatar</h3>
+                  <div className="relative w-full rounded-xl overflow-hidden" style={{ height: 300 }}>
+                    <Cropper
+                      image={avatarSrc}
+                      crop={crop}
+                      zoom={zoom}
+                      aspect={1}
+                      cropShape="rect"
+                      onCropChange={setCrop}
+                      onZoomChange={setZoom}
+                      onCropComplete={onCropComplete}
+                    />
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs text-text-tertiary">Zoom</span>
+                    <input
+                      type="range" min={1} max={3} step={0.01} value={zoom}
+                      onChange={(e) => setZoom(Number(e.target.value))}
+                      className="flex-1"
+                      style={{ accentColor: qube.favorite_color || '#00ff88' }}
+                    />
+                  </div>
+                  <div className="flex gap-3">
+                    <button
+                      onClick={() => setShowAvatarCropper(false)}
+                      className="flex-1 py-2 rounded-lg text-sm text-text-secondary border border-border-primary hover:bg-bg-tertiary transition-colors"
+                    >Cancel</button>
+                    <button
+                      onClick={handleSaveAvatar}
+                      disabled={savingAvatar}
+                      className="flex-1 py-2 rounded-lg text-sm font-medium transition-colors"
+                      style={{ background: qube.favorite_color || '#00ff88', color: '#000' }}
+                    >{savingAvatar ? 'Saving...' : 'Save Photo'}</button>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* Header */}
             <div className="text-center mb-3">
@@ -2944,9 +3076,6 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
         <div
           className="absolute w-full h-full"
           style={{
-            backfaceVisibility: 'hidden',
-            WebkitBackfaceVisibility: 'hidden',
-            transform: 'rotateY(360deg)',
             opacity: flipState === 2 ? 1 : 0,
             pointerEvents: flipState === 2 ? 'auto' : 'none',
             transition: 'opacity 0.3s ease-in-out',

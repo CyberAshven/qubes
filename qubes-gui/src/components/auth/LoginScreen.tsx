@@ -17,7 +17,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
 
-  // Restore from backup state
+  // Restore from backup (file) state
   const [showRestoreModal, setShowRestoreModal] = useState(false);
   const [restoreFilePath, setRestoreFilePath] = useState('');
   const [restorePassword, setRestorePassword] = useState('');
@@ -25,6 +25,15 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
   const [restoreMasterPasswordConfirm, setRestoreMasterPasswordConfirm] = useState('');
   const [isRestoring, setIsRestoring] = useState(false);
   const [restoreError, setRestoreError] = useState<string | null>(null);
+
+  // Restore from IPFS state
+  const [showIpfsRestoreModal, setShowIpfsRestoreModal] = useState(false);
+  const [ipfsCid, setIpfsCid] = useState('');
+  const [ipfsRestorePassword, setIpfsRestorePassword] = useState('');
+  const [ipfsRestoreMasterPassword, setIpfsRestoreMasterPassword] = useState('');
+  const [ipfsRestoreMasterPasswordConfirm, setIpfsRestoreMasterPasswordConfirm] = useState('');
+  const [isIpfsRestoring, setIsIpfsRestoring] = useState(false);
+  const [ipfsRestoreError, setIpfsRestoreError] = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -104,6 +113,57 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
     }
   };
 
+  const handleIpfsRestore = async () => {
+    if (!ipfsCid.trim() || !ipfsRestorePassword || !ipfsRestoreMasterPassword) return;
+
+    if (ipfsRestoreMasterPassword !== ipfsRestoreMasterPasswordConfirm) {
+      setIpfsRestoreError('Master passwords do not match.');
+      return;
+    }
+
+    if (ipfsRestoreMasterPassword.length < 8) {
+      setIpfsRestoreError('Master password must be at least 8 characters.');
+      return;
+    }
+
+    setIsIpfsRestoring(true);
+    setIpfsRestoreError(null);
+
+    try {
+      const result = await invoke<{
+        success: boolean;
+        imported_count?: number;
+        skipped_count?: number;
+        user_id?: string;
+        error?: string;
+      }>('import_account_backup_ipfs', {
+        userId: '_restore',
+        ipfsCid: ipfsCid.trim(),
+        importPassword: ipfsRestorePassword,
+        masterPassword: ipfsRestoreMasterPassword,
+      });
+
+      if (result.success) {
+        alert(`Account restored from IPFS!\n\n${result.imported_count} Qube(s) imported, ${result.skipped_count} skipped.\n\nPlease sign in with your master password.`);
+        setShowIpfsRestoreModal(false);
+        setIpfsCid('');
+        setIpfsRestorePassword('');
+        setIpfsRestoreMasterPassword('');
+        setIpfsRestoreMasterPasswordConfirm('');
+        if (result.user_id) {
+          setUsername(result.user_id);
+          setPassword(ipfsRestoreMasterPassword);
+        }
+      } else {
+        setIpfsRestoreError(result.error || 'IPFS restore failed');
+      }
+    } catch (err) {
+      setIpfsRestoreError(`${err}`);
+    } finally {
+      setIsIpfsRestoring(false);
+    }
+  };
+
   return (
     <div className="h-screen w-screen flex items-center justify-center bg-bg-primary relative overflow-hidden">
       {/* Animated background */}
@@ -177,7 +237,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
           <p>Secured with end-to-end encryption</p>
         </div>
 
-        <div className="mt-4 flex justify-center gap-4">
+        <div className="mt-4 flex justify-center gap-3 flex-wrap">
           <button
             onClick={onCreateAccount}
             className="text-accent-primary hover:text-accent-primary/80 text-sm font-medium transition-colors"
@@ -189,16 +249,110 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
             onClick={() => setShowRestoreModal(true)}
             className="text-accent-secondary hover:text-accent-secondary/80 text-sm font-medium transition-colors"
           >
-            Restore from Backup
+            Restore from File
+          </button>
+          <span className="text-text-tertiary">|</span>
+          <button
+            onClick={() => setShowIpfsRestoreModal(true)}
+            className="text-accent-secondary hover:text-accent-secondary/80 text-sm font-medium transition-colors"
+          >
+            Restore from IPFS
           </button>
         </div>
       </GlassCard>
 
-      {/* Restore from Backup Modal */}
+      {/* Restore from IPFS Modal */}
+      {showIpfsRestoreModal && (
+        <div className="fixed inset-0 bg-black/95 backdrop-blur-sm flex items-center justify-center z-50">
+          <GlassCard variant="elevated" className="w-full max-w-md p-6 mx-4">
+            <h2 className="text-xl font-bold text-text-primary mb-2">Restore from IPFS</h2>
+            <p className="text-text-secondary text-sm mb-4">
+              Restore your account using an IPFS CID from a previous backup.
+              The CID was shown when you backed up to IPFS.
+            </p>
+
+            <div className="mb-4">
+              <label className="block text-text-secondary text-sm mb-1">IPFS CID</label>
+              <input
+                type="text"
+                value={ipfsCid}
+                onChange={(e) => setIpfsCid(e.target.value)}
+                placeholder="Qm... or bafy..."
+                className="w-full bg-surface-secondary border border-border-primary rounded-lg px-3 py-2 text-text-primary text-sm font-mono"
+              />
+            </div>
+
+            <div className="mb-4">
+              <label className="block text-text-secondary text-sm mb-1">Backup Password</label>
+              <input
+                type="password"
+                value={ipfsRestorePassword}
+                onChange={(e) => setIpfsRestorePassword(e.target.value)}
+                placeholder="Password used when creating the backup"
+                className="w-full bg-surface-secondary border border-border-primary rounded-lg px-3 py-2 text-text-primary text-sm"
+              />
+            </div>
+
+            <div className="mb-4">
+              <label className="block text-text-secondary text-sm mb-1">Master Password</label>
+              <input
+                type="password"
+                value={ipfsRestoreMasterPassword}
+                onChange={(e) => setIpfsRestoreMasterPassword(e.target.value)}
+                placeholder="Master password for this device"
+                className="w-full bg-surface-secondary border border-border-primary rounded-lg px-3 py-2 text-text-primary text-sm"
+              />
+            </div>
+
+            <div className="mb-4">
+              <label className="block text-text-secondary text-sm mb-1">Confirm Master Password</label>
+              <input
+                type="password"
+                value={ipfsRestoreMasterPasswordConfirm}
+                onChange={(e) => setIpfsRestoreMasterPasswordConfirm(e.target.value)}
+                placeholder="Confirm master password"
+                className="w-full bg-surface-secondary border border-border-primary rounded-lg px-3 py-2 text-text-primary text-sm"
+              />
+            </div>
+
+            {ipfsRestoreError && (
+              <div className="mb-4 p-3 bg-accent-danger/10 border border-accent-danger/30 rounded-lg">
+                <p className="text-accent-danger text-sm">{ipfsRestoreError}</p>
+              </div>
+            )}
+
+            {isIpfsRestoring && (
+              <div className="mb-4 p-3 bg-accent-primary/10 border border-accent-primary/30 rounded-lg">
+                <p className="text-accent-primary text-sm">Downloading from IPFS and restoring... this may take a moment.</p>
+              </div>
+            )}
+
+            <div className="flex gap-3 justify-end">
+              <GlassButton
+                variant="secondary"
+                onClick={() => { setShowIpfsRestoreModal(false); setIpfsRestoreError(null); }}
+                disabled={isIpfsRestoring}
+              >
+                Cancel
+              </GlassButton>
+              <GlassButton
+                variant="primary"
+                onClick={handleIpfsRestore}
+                disabled={!ipfsCid.trim() || !ipfsRestorePassword || !ipfsRestoreMasterPassword || !ipfsRestoreMasterPasswordConfirm || isIpfsRestoring}
+                loading={isIpfsRestoring}
+              >
+                {isIpfsRestoring ? 'Restoring...' : 'Restore from IPFS'}
+              </GlassButton>
+            </div>
+          </GlassCard>
+        </div>
+      )}
+
+      {/* Restore from File Modal */}
       {showRestoreModal && (
         <div className="fixed inset-0 bg-black/95 backdrop-blur-sm flex items-center justify-center z-50">
           <GlassCard variant="elevated" className="w-full max-w-md p-6 mx-4">
-            <h2 className="text-xl font-bold text-text-primary mb-4">Full Account Restore</h2>
+            <h2 className="text-xl font-bold text-text-primary mb-4">Restore from File</h2>
             <p className="text-text-secondary text-sm mb-4">
               Restore your entire account from a <code>.qube-backup</code> file.
               This will set up your account and import all Qubes from the backup.

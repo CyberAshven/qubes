@@ -889,6 +889,14 @@ class UserOrchestrator:
                         avatar_ipfs_cid = avatar_info.get("ipfs_cid")
                         avatar_local_path = avatar_info.get("local_path")
 
+                        # Resolve avatar path: stored as filename-only (new) or absolute (legacy)
+                        if avatar_local_path:
+                            _p = Path(avatar_local_path)
+                            if not (_p.is_absolute() and _p.exists()):
+                                # Filename-only (new format) or stale absolute from another OS
+                                _candidate = qube_dir / "chain" / _p.name
+                                avatar_local_path = str(_candidate) if _candidate.exists() else None
+
                         # Construct avatar URL (IPFS only - file:// URLs don't work in Tauri WebView)
                         # Frontend will handle local files via convertFileSrc()
                         avatar_url = None
@@ -1644,6 +1652,13 @@ class UserOrchestrator:
             avatar_ipfs_cid = avatar_info.get("ipfs_cid")
             avatar_local_path = avatar_info.get("local_path")
 
+            # Resolve avatar path: stored as filename-only (new) or absolute (legacy)
+            if avatar_local_path:
+                _p = Path(avatar_local_path)
+                if not (_p.is_absolute() and _p.exists()):
+                    _candidate = qube_dir / "chain" / _p.name
+                    avatar_local_path = str(_candidate) if _candidate.exists() else None
+
             # Construct avatar URL (IPFS only - file:// URLs don't work in Tauri WebView)
             # Frontend will handle local files via convertFileSrc()
             avatar_url = None
@@ -1934,7 +1949,7 @@ class UserOrchestrator:
             return {
                 "source": "uploaded",
                 "ipfs_cid": ipfs_cid,
-                "local_path": str(local_avatar_path),
+                "local_path": local_avatar_path.name,
                 "file_format": avatar_file.suffix[1:],  # Remove dot
                 "dimensions": "unknown"
             }

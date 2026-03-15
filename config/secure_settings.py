@@ -295,8 +295,12 @@ class SecureSettingsManager:
         Raises:
             ValueError: If provider invalid
         """
-        # Load existing keys
-        api_keys = self.load_api_keys()
+        # Load existing keys (start fresh if decryption fails — stale password)
+        try:
+            api_keys = self.load_api_keys()
+        except DecryptionError:
+            logger.warning("api_key_load_failed_starting_fresh", provider=provider)
+            api_keys = APIKeys()
 
         # Validate provider
         if not hasattr(api_keys, provider):

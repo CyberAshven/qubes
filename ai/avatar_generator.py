@@ -182,7 +182,7 @@ class AvatarGenerator:
             avatar_data = {
                 "source": "generated",
                 "ipfs_cid": ipfs_cid if ipfs_cid else "",
-                "local_path": str(local_path),
+                "local_path": local_path.name,
                 "file_format": "png",
                 "dimensions": size,
                 "style": style,

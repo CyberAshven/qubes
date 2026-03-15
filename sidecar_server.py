@@ -87,7 +87,7 @@ PRE_BRIDGE_COMMANDS = {
 # Commands that invalidate qube cache after execution
 CACHE_INVALIDATING = {
     "delete-qube", "reset-qube", "anchor-session", "discard-session",
-    "create-qube", "transfer-qube", "update-qube-config", "import-qube", "import-account-backup",
+    "create-qube", "transfer-qube", "update-qube-config", "import-qube", "import-account-backup", "import-account-backup-ipfs",
     "delete-session-block", "discard-last-block", "finalize-qube-mint",
 }
 
@@ -204,6 +204,8 @@ POSITIONAL_ARG_NAMES = {
     "import-qube": ["import_path"],
     "export-account-backup": ["user_id", "export_path"],
     "import-account-backup": ["user_id", "import_path"],
+    "export-account-backup-ipfs": ["user_id"],
+    "import-account-backup-ipfs": ["user_id", "ipfs_cid"],
     "cleanup-incomplete-qubes": ["user_id"],
     # API key batch
     "save-api-keys": ["user_id"],
@@ -403,7 +405,8 @@ class SidecarServer:
 
     def _get_sync_preferences(self):
         """Read periodic sync preferences from user settings."""
-        bridge = self.state.bridge
+        # Use the first available bridge to read preferences
+        bridge = next(iter(self.state.bridges.values()), None)
         if not bridge or not bridge.orchestrator:
             return False, 900  # disabled, 15 min default
         try:
@@ -440,15 +443,6 @@ class SidecarServer:
         """Sync all eligible qubes to IPFS."""
         import time
 
-        # Need an active bridge with master key set
-        bridge = self.state.bridge
-        if not bridge or not bridge.orchestrator:
-            return
-
-        orchestrator = bridge.orchestrator
-        if not orchestrator.qubes:
-            return
-
         # Check if master key is available (user must have authenticated)
         password = os.environ.get("QUBES_PASSWORD")
         if not password:
@@ -457,35 +451,44 @@ class SidecarServer:
         now = time.time()
         synced_count = 0
 
-        for qube_id, qube in list(orchestrator.qubes.items()):
-            # Skip if synced recently
-            last_sync = self._last_sync_times.get(qube_id, 0)
-            if now - last_sync < interval_secs:
+        # Iterate all loaded user bridges
+        for user_id, bridge in list(self.state.bridges.items()):
+            if not bridge or not bridge.orchestrator:
                 continue
 
-            # Skip qubes without NFT
-            qube_dir = self._find_qube_dir(orchestrator, qube_id)
-            if not qube_dir:
+            orchestrator = bridge.orchestrator
+            if not orchestrator.qubes:
                 continue
 
-            nft_file = qube_dir / "chain" / "nft_metadata.json"
-            if not nft_file.exists():
-                continue
+            for qube_id, qube in list(orchestrator.qubes.items()):
+                # Skip if synced recently
+                last_sync = self._last_sync_times.get(qube_id, 0)
+                if now - last_sync < interval_secs:
+                    continue
 
-            try:
-                # Reuse the bridge's sync method (handles anchoring, IPFS upload, etc.)
-                result = await bridge.sync_to_chain(
-                    qube_id=qube_id,
-                    password=password
-                )
-                if result.get("success"):
-                    self._last_sync_times[qube_id] = now
-                    synced_count += 1
-                    logger.info(f"auto_sync_success qube={qube_id} cid={result.get('ipfs_cid', '?')[:16]}...")
-                else:
-                    logger.warning(f"auto_sync_failed qube={qube_id} error={result.get('error', '?')}")
-            except Exception as e:
-                logger.error(f"auto_sync_exception qube={qube_id} error={e}")
+                # Skip qubes without NFT
+                qube_dir = self._find_qube_dir(orchestrator, qube_id)
+                if not qube_dir:
+                    continue
+
+                nft_file = qube_dir / "chain" / "nft_metadata.json"
+                if not nft_file.exists():
+                    continue
+
+                try:
+                    # Reuse the bridge's sync method (handles anchoring, IPFS upload, etc.)
+                    result = await bridge.sync_to_chain(
+                        qube_id=qube_id,
+                        password=password
+                    )
+                    if result.get("success"):
+                        self._last_sync_times[qube_id] = now
+                        synced_count += 1
+                        logger.info(f"auto_sync_success qube={qube_id} cid={result.get('ipfs_cid', '?')[:16]}...")
+                    else:
+                        logger.warning(f"auto_sync_failed qube={qube_id} error={result.get('error', '?')}")
+                except Exception as e:
+                    logger.error(f"auto_sync_exception qube={qube_id} error={e}")
 
         if synced_count > 0:
             logger.info(f"auto_sync_cycle_complete synced={synced_count}")

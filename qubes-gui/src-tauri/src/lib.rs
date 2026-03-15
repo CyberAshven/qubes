@@ -2182,7 +2182,7 @@ async fn send_message(app_handle: AppHandle, user_id: String, qube_id: String, m
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 
-    let result = sidecar_execute_with_retry("send-message", args, secrets, Some(&app_handle), None).await?;
+    let result = sidecar_execute_with_retry("send-message", args, secrets, Some(&app_handle), Some(300)).await?;
 
     let chat_response: ChatResponse = serde_json::from_value(result)
         .map_err(|e| format!("Failed to parse send-message response: {}", e))?;
@@ -3232,6 +3232,17 @@ async fn update_qube_config(app_handle: AppHandle,
 
     Ok(response)
 
+}
+
+#[tauri::command]
+async fn update_qube_avatar(app_handle: AppHandle, user_id: String, qube_id: String, avatar_path: String) -> Result<serde_json::Value, String> {
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+    let args = vec![user_id, qube_id, avatar_path];
+    let result = sidecar_execute_with_retry("update-qube-avatar", args, HashMap::new(), Some(&app_handle), None).await?;
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse update-qube-avatar response: {}", e))?;
+    Ok(response)
 }
 
 #[tauri::command]
@@ -6080,6 +6091,50 @@ async fn import_account_backup(app_handle: AppHandle,
     Ok(response)
 }
 
+#[tauri::command]
+async fn export_account_backup_ipfs(app_handle: AppHandle,
+    user_id: String,
+    export_password: String,
+    master_password: String
+) -> Result<serde_json::Value, String> {
+
+    validate_identifier(&user_id, "user_id")?;
+
+    let args = vec![user_id];
+
+    let mut secrets = HashMap::new();
+    secrets.insert("password", master_password.as_str());
+    secrets.insert("master_password", master_password.as_str());
+    secrets.insert("export_password", export_password.as_str());
+
+    sidecar_execute_with_retry("export-account-backup-ipfs", args, secrets, Some(&app_handle), Some(300)).await
+}
+
+#[tauri::command]
+async fn import_account_backup_ipfs(app_handle: AppHandle,
+    user_id: String,
+    ipfs_cid: String,
+    import_password: String,
+    master_password: String
+) -> Result<ImportAccountBackupResponse, String> {
+
+    validate_identifier(&user_id, "user_id")?;
+
+    let args = vec![user_id, ipfs_cid];
+
+    let mut secrets = HashMap::new();
+    secrets.insert("password", master_password.as_str());
+    secrets.insert("master_password", master_password.as_str());
+    secrets.insert("import_password", import_password.as_str());
+
+    let result = sidecar_execute_with_retry("import-account-backup-ipfs", args, secrets, Some(&app_handle), Some(300)).await?;
+
+    let response: ImportAccountBackupResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse import-account-backup-ipfs response: {}", e))?;
+
+    Ok(response)
+}
+
 #[derive(Serialize, Deserialize)]
 struct CleanupIncompleteQubesResponse {
     success: bool,
@@ -7555,6 +7610,7 @@ pub fn run() {
             check_sessions,
             force_exit,
             update_qube_config,
+            update_qube_avatar,
             get_qube_blocks,
             recall_last_context,
             delete_qube,
@@ -7671,8 +7727,10 @@ pub fn run() {
             export_qube,
             import_qube,
             export_account_backup,
-            cleanup_incomplete_qubes,
             import_account_backup,
+            export_account_backup_ipfs,
+            import_account_backup_ipfs,
+            cleanup_incomplete_qubes,
             scan_wallet,
             resolve_public_key,
             // Dev debugging

@@ -3334,10 +3334,11 @@ class GUIBridge:
             if not local_path:
                 return {"success": False, "error": "No local avatar path found in metadata"}
 
-            # Resolve the avatar path (could be relative or absolute)
+            # Resolve the avatar path: filename-only (new format) or absolute (legacy)
             avatar_path = Path(local_path)
-            if not avatar_path.is_absolute():
-                avatar_path = Path(__file__).parent / local_path
+            if not (avatar_path.is_absolute() and avatar_path.exists()):
+                # Filename-only or stale absolute from another OS — resolve from chain dir
+                avatar_path = qube_dir / "chain" / avatar_path.name
 
             if not avatar_path.exists():
                 return {"success": False, "error": f"Avatar file not found at {avatar_path}"}
@@ -6488,6 +6489,10 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
                             "nft_metadata": None,
                             "bcmr_data": None,
                             "avatar_base64": None,
+                            "snapshots": None,
+                            "locker": None,
+                            "shared_memory": None,
+                            "skills_cache": None,
                         }
 
                         # Private key — decrypt from qube_metadata.json
@@ -6555,6 +6560,33 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
                                     qube_export["avatar_filename"] = avatar_files[0].name
                                 break
 
+                        # Helper: read entire directory recursively as {rel_path: base64}
+                        def _read_dir_as_b64(root_dir: Path) -> dict:
+                            result = {}
+                            if not root_dir.exists():
+                                return result
+                            for f in sorted(root_dir.rglob("*")):
+                                if f.is_file():
+                                    rel = str(f.relative_to(root_dir))
+                                    with open(f, 'rb') as fh:
+                                        result[rel] = base64.b64encode(fh.read()).decode('utf-8')
+                            return result
+
+                        # Snapshots
+                        qube_export["snapshots"] = _read_dir_as_b64(dir_entry / "snapshots")
+
+                        # Locker
+                        qube_export["locker"] = _read_dir_as_b64(dir_entry / "locker")
+
+                        # Shared memory
+                        qube_export["shared_memory"] = _read_dir_as_b64(dir_entry / "shared_memory")
+
+                        # Skills cache
+                        skills_file = chain_dir / "skills_cache.json"
+                        if skills_file.exists():
+                            with open(skills_file, 'r', encoding='utf-8') as f:
+                                qube_export["skills_cache"] = json.load(f)
+
                         qubes_data.append(qube_export)
                         qube_count += 1
 
@@ -6611,6 +6643,142 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
         except Exception as e:
             logger.error(f"Failed to export account backup: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
+
+    async def export_account_backup_ipfs(self, export_password: str, master_password: str) -> Dict[str, Any]:
+        """
+        Export full account backup to IPFS via Pinata.
+
+        Creates the same backup as export_account_backup, then uploads the encrypted
+        ZIP to IPFS and returns the CID. The CID is needed to restore from IPFS.
+
+        Returns:
+            Dict with success, ipfs_cid, ipfs_url, qube_count
+        """
+        import tempfile
+        import os
+        import aiohttp
+
+        tmp_path = None
+        try:
+            pinata_key = os.environ.get("PINATA_API_KEY") or os.environ.get("PINATA_SECRET_KEY")
+            if not pinata_key:
+                return {"success": False, "error": "Pinata API key not configured. Add PINATA_API_KEY in Settings."}
+
+            # Write backup to a temp file using existing logic
+            with tempfile.NamedTemporaryFile(suffix='.qube-backup', delete=False) as tmp:
+                tmp_path = tmp.name
+
+            result = await self.export_account_backup(tmp_path, export_password, master_password)
+            if not result.get("success"):
+                return result
+
+            with open(tmp_path, 'rb') as f:
+                backup_bytes = f.read()
+
+            user_id = self.orchestrator.user_id
+            filename = f"qubes_account_{user_id}.qube-backup"
+
+            form = aiohttp.FormData()
+            form.add_field('file', backup_bytes, filename=filename, content_type='application/octet-stream')
+            form.add_field('pinataMetadata', json.dumps({"name": filename}), content_type='application/json')
+
+            headers = {"Authorization": f"Bearer {pinata_key}"}
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    "https://api.pinata.cloud/pinning/pinFileToIPFS",
+                    data=form,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=120)
+                ) as resp:
+                    if resp.status != 200:
+                        body = await resp.text()
+                        return {"success": False, "error": f"Pinata upload failed ({resp.status}): {body[:300]}"}
+                    upload_result = await resp.json()
+                    ipfs_cid = upload_result["IpfsHash"]
+
+            logger.info(f"Account backup uploaded to IPFS: {ipfs_cid}")
+            return {
+                "success": True,
+                "ipfs_cid": ipfs_cid,
+                "ipfs_url": f"https://gateway.pinata.cloud/ipfs/{ipfs_cid}",
+                "qube_count": result.get("qube_count", 0),
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to export account backup to IPFS: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+        finally:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
+
+    async def import_account_backup_ipfs(self, ipfs_cid: str, import_password: str, master_password: str) -> Dict[str, Any]:
+        """
+        Restore full account backup from IPFS.
+
+        Downloads the encrypted backup by CID from IPFS gateways, saves to a temp
+        file, and restores using the same logic as import_account_backup.
+
+        Args:
+            ipfs_cid: The IPFS CID returned when the backup was uploaded
+            import_password: Password used when the backup was created
+            master_password: Master password for the restored account on this device
+
+        Returns:
+            Dict with success, imported_count, skipped_count, user_id
+        """
+        import tempfile
+        import os
+        import aiohttp
+
+        if not ipfs_cid or len(ipfs_cid.strip()) < 10:
+            return {"success": False, "error": "Invalid IPFS CID"}
+
+        ipfs_cid = ipfs_cid.strip()
+
+        gateways = [
+            f"https://gateway.pinata.cloud/ipfs/{ipfs_cid}",
+            f"https://ipfs.io/ipfs/{ipfs_cid}",
+            f"https://cloudflare-ipfs.com/ipfs/{ipfs_cid}",
+        ]
+
+        backup_bytes = None
+        last_error = "Unknown error"
+
+        async with aiohttp.ClientSession() as session:
+            for url in gateways:
+                try:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=120)) as resp:
+                        if resp.status == 200:
+                            backup_bytes = await resp.read()
+                            logger.info(f"Downloaded backup from IPFS: {url} ({len(backup_bytes)} bytes)")
+                            break
+                        last_error = f"HTTP {resp.status} from {url}"
+                except Exception as e:
+                    last_error = str(e)
+
+        if not backup_bytes:
+            return {"success": False, "error": f"Could not download backup from IPFS: {last_error}"}
+
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix='.qube-backup', delete=False) as tmp:
+                tmp.write(backup_bytes)
+                tmp_path = tmp.name
+
+            return await self.import_account_backup(tmp_path, import_password, master_password)
+
+        except Exception as e:
+            logger.error(f"Failed to import account backup from IPFS: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+        finally:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
 
     async def cleanup_incomplete_qubes(self) -> Dict[str, Any]:
         """
@@ -6765,6 +6933,9 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
                     (qube_dir / "blocks" / "session").mkdir(parents=True, exist_ok=True)
                     (qube_dir / "relationships").mkdir(parents=True, exist_ok=True)
                     (qube_dir / "blockchain").mkdir(parents=True, exist_ok=True)
+                    (qube_dir / "snapshots").mkdir(parents=True, exist_ok=True)
+                    (qube_dir / "locker").mkdir(parents=True, exist_ok=True)
+                    (qube_dir / "shared_memory").mkdir(parents=True, exist_ok=True)
 
                     # Restore private key
                     from cryptography.hazmat.primitives.serialization import load_pem_private_key
@@ -6835,6 +7006,31 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
                     if qube_export.get("avatar_base64") and qube_export.get("avatar_filename"):
                         with open(qube_dir / "chain" / qube_export["avatar_filename"], 'wb') as f:
                             f.write(base64.b64decode(qube_export["avatar_base64"]))
+
+                    # Helper: restore {rel_path: base64} dict back to a directory
+                    def _restore_dir_from_b64(data: dict, root_dir: Path):
+                        for rel_path, b64data in data.items():
+                            dest = root_dir / rel_path
+                            dest.parent.mkdir(parents=True, exist_ok=True)
+                            with open(dest, 'wb') as fh:
+                                fh.write(base64.b64decode(b64data))
+
+                    # Restore snapshots
+                    if qube_export.get("snapshots"):
+                        _restore_dir_from_b64(qube_export["snapshots"], qube_dir / "snapshots")
+
+                    # Restore locker
+                    if qube_export.get("locker"):
+                        _restore_dir_from_b64(qube_export["locker"], qube_dir / "locker")
+
+                    # Restore shared memory
+                    if qube_export.get("shared_memory"):
+                        _restore_dir_from_b64(qube_export["shared_memory"], qube_dir / "shared_memory")
+
+                    # Restore skills cache
+                    if qube_export.get("skills_cache") is not None:
+                        with open(qube_dir / "chain" / "skills_cache.json", 'w', encoding='utf-8') as f:
+                            json.dump(qube_export["skills_cache"], f, indent=2)
 
                     imported_count += 1
                     logger.info(f"Imported Qube: {qube_name} ({qube_id})")
@@ -11437,6 +11633,81 @@ async def main():
 
             result = await user_bridge.update_qube_config(qube_id, ai_model, voice_model, favorite_color, tts_enabled, evaluation_model)
             print(json.dumps(result))
+
+        elif command == "update-qube-avatar":
+            if len(sys.argv) < 5:
+                print(json.dumps({"error": "User ID, Qube ID, and avatar_path required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            qube_id = validate_qube_id(sys.argv[3])
+            avatar_path = sys.argv[4]
+
+            import shutil
+            from datetime import timezone
+
+            user_bridge = GUIBridge(user_id=user_id)
+            data_dir = user_bridge.orchestrator.data_dir
+
+            # Find qube directory
+            qubes_dir = data_dir / "qubes"
+            qube_dir = None
+            for d in qubes_dir.iterdir():
+                if d.is_dir() and qube_id in d.name:
+                    qube_dir = d
+                    break
+
+            if not qube_dir:
+                print(json.dumps({"success": False, "error": f"Qube {qube_id} not found"}))
+            else:
+                try:
+                    chain_dir = qube_dir / "chain"
+                    dest_path = chain_dir / f"{qube_id}_avatar.png"
+
+                    # Copy new avatar over old one
+                    shutil.copy2(avatar_path, dest_path)
+
+                    # Update genesis.json avatar field
+                    genesis_file = chain_dir / "genesis.json"
+                    if genesis_file.exists():
+                        with open(genesis_file, 'r', encoding='utf-8') as f:
+                            genesis = json.load(f)
+                        genesis["avatar"] = {
+                            "source": "uploaded",
+                            "ipfs_cid": None,
+                            "local_path": dest_path.name,
+                            "file_format": "png",
+                            "dimensions": "unknown",
+                        }
+                        with open(genesis_file, 'w', encoding='utf-8') as f:
+                            json.dump(genesis, f, indent=2)
+
+                    # Update BCMR icon/image uris (clear IPFS cid, set pending re-upload)
+                    qube_name = qube_dir.name.rsplit('_', 1)[0]
+                    bcmr_file = qube_dir / "blockchain" / f"{qube_name}_bcmr.json"
+                    if bcmr_file.exists():
+                        with open(bcmr_file, 'r', encoding='utf-8') as f:
+                            bcmr = json.load(f)
+                        now = datetime.now(timezone.utc).isoformat()
+                        bcmr["latestRevision"] = now
+                        for identity_key, identity_revisions in bcmr.get("identities", {}).items():
+                            latest_ts = max(identity_revisions.keys())
+                            revision = identity_revisions[latest_ts]
+                            uris = revision.get("uris", {})
+                            # Clear IPFS icon/image — will be updated on next IPFS sync
+                            uris.pop("icon", None)
+                            uris.pop("image", None)
+                            uris["icon_pending_upload"] = dest_path.name
+                            revision["uris"] = uris
+                            # Add new revision entry with updated timestamp
+                            identity_revisions[now] = revision
+                        with open(bcmr_file, 'w', encoding='utf-8') as f:
+                            json.dump(bcmr, f, indent=2)
+
+                    print(json.dumps({"success": True, "avatar_path": str(dest_path)}))
+                except Exception as e:
+                    logger.error(f"Failed to update avatar: {e}", exc_info=True)
+                    print(json.dumps({"success": False, "error": str(e)}))
 
         elif command == "reload-ai-keys":
             if len(sys.argv) < 4:
