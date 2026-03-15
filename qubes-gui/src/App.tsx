@@ -20,9 +20,80 @@ import { CelebrationProvider } from './contexts/CelebrationContext';
 import { WalletProvider } from './contexts/WalletContext';
 import { CelebrationOverlay } from './components/celebrations';
 import { Qube } from './types';
+import { useWalletCache } from './hooks/useWalletCache';
 
 // Check if we're in dev mode
 const isDev = import.meta.env.DEV;
+
+// Total balance widget displayed in the title bar
+interface TotalBalanceWidgetProps {
+  qubes: Qube[];
+  userId: string;
+  password: string;
+}
+
+function TotalBalanceWidget({ qubes, userId, password }: TotalBalanceWidgetProps) {
+  const { setBalance, getWalletData } = useWalletCache();
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  // Sum all cached balances (in satoshis)
+  const totalSats = qubes.reduce((sum, qube) => {
+    const data = getWalletData(qube.qube_id);
+    if (data && data.balance !== null) {
+      return sum + data.balance;
+    }
+    return sum;
+  }, 0);
+
+  const hasAnyBalance = qubes.some((qube) => {
+    const data = getWalletData(qube.qube_id);
+    return data && data.balance !== null;
+  });
+
+  const handleRefresh = async () => {
+    if (isRefreshing || !userId || !password) return;
+    setIsRefreshing(true);
+    try {
+      const qubesWithWallet = qubes.filter((q) => q.wallet_address);
+      await Promise.all(
+        qubesWithWallet.map(async (qube) => {
+          try {
+            const result = await invoke<{ balance?: number }>('get_wallet_info', {
+              userId,
+              qubeId: qube.qube_id,
+              password,
+            });
+            if (result.balance !== undefined && result.balance !== null) {
+              setBalance(qube.qube_id, result.balance);
+            }
+          } catch (err) {
+            console.warn(`Failed to refresh balance for ${qube.qube_id}:`, err);
+          }
+        })
+      );
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
+
+  const displayBalance = hasAnyBalance
+    ? (totalSats / 1e8).toFixed(8) + ' BCH'
+    : '-.-------- BCH';
+
+  return (
+    <div className="flex items-center gap-1.5 text-xs">
+      <span className="text-text-tertiary font-mono">{displayBalance}</span>
+      <button
+        onClick={handleRefresh}
+        disabled={isRefreshing}
+        title="Refresh balances"
+        className="text-text-tertiary hover:text-accent-primary transition-colors disabled:opacity-40"
+      >
+        {isRefreshing ? '⟳' : '↻'}
+      </button>
+    </div>
+  );
+}
 
 interface AuthResponse {
   success: boolean;
@@ -483,6 +554,7 @@ function App() {
         {/* Title Bar */}
         <div className="h-8 flex items-center justify-between px-4 bg-bg-quaternary border-b border-glass-border">
           <span className="text-sm font-display text-accent-primary">QUBES ({qubes.length} loaded)</span>
+          <TotalBalanceWidget qubes={qubes} userId={userId || ''} password={password || ''} />
           <div className="flex items-center gap-3 text-xs">
             <span className="text-accent-primary flex items-center gap-1">
               <span>👤</span>

@@ -87,7 +87,7 @@ PRE_BRIDGE_COMMANDS = {
 # Commands that invalidate qube cache after execution
 CACHE_INVALIDATING = {
     "delete-qube", "reset-qube", "anchor-session", "discard-session",
-    "create-qube", "transfer-qube", "finalize-transfer-wc", "update-qube-config", "import-qube", "import-account-backup", "import-account-backup-ipfs",
+    "create-qube", "transfer-qube", "finalize-transfer-wc", "update-qube-config", "update-qube-avatar", "import-qube", "import-account-backup", "import-account-backup-ipfs",
     "delete-session-block", "discard-last-block", "finalize-qube-mint",
 }
 
@@ -122,6 +122,7 @@ POSITIONAL_ARG_NAMES = {
     "recall-last-context": ["user_id", "qube_id"],
     "delete-qube": ["user_id", "qube_id", "--sweep-address"],
     "reset-qube": ["user_id", "qube_id"],
+    "update-qube-avatar": ["user_id", "qube_id", "avatar_path"],
     "save-image": ["user_id", "qube_id", "image_url"],
     "upload-avatar-to-ipfs": ["user_id", "qube_id"],
     "analyze-image": ["user_id", "qube_id", "image_base64", "user_message"],
