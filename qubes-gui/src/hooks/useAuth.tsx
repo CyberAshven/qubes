@@ -9,14 +9,14 @@ const loadAutoLockSettings = () => {
     if (saved) {
       const parsed = JSON.parse(saved);
       return {
-        autoLockEnabled: parsed.autoLockEnabled ?? true,
-        autoLockTimeout: parsed.autoLockTimeout ?? 5,
+        autoLockEnabled: parsed.autoLockEnabled ?? false,
+        autoLockTimeout: parsed.autoLockTimeout ?? 15,
       };
     }
   } catch (e) {
     console.error('Failed to load auto-lock settings:', e);
   }
-  return { autoLockEnabled: true, autoLockTimeout: 5 };
+  return { autoLockEnabled: false, autoLockTimeout: 15 };
 };
 
 // Save auto-lock settings to localStorage

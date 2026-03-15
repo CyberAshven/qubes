@@ -175,6 +175,79 @@ class CovenantMinter:
             "recipient_address": result["recipient_address"]
         }
 
+    async def prepare_transfer_transaction(
+        self,
+        category_id: str,
+        sender_address: str,
+        recipient_address: str,
+        change_address: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Build an unsigned WalletConnect transaction for an NFT transfer.
+
+        Finds the NFT UTXO in the sender's wallet and builds a P2PKH → P2PKH
+        transfer transaction. No private key required — the wallet signs via WC.
+
+        Args:
+            category_id: 64-char hex NFT category ID
+            sender_address: Current owner's BCH address (from WC session)
+            recipient_address: New owner's BCH address
+            change_address: Where to send change (defaults to sender_address)
+
+        Returns:
+            {
+                "wc_transaction": str,
+                "category_id": str,
+                "commitment": str
+            }
+        """
+        cli_args: Dict[str, Any] = {
+            "category_id": category_id,
+            "sender_address": sender_address,
+            "recipient_address": recipient_address,
+        }
+        if change_address:
+            cli_args["change_address"] = change_address
+
+        tsx_cmd = _find_tsx()
+        transfer_cli = str(self.covenant_dir / "transfer-cli.ts")
+        args_json = json.dumps(cli_args)
+
+        def _run():
+            try:
+                proc = subprocess.run(
+                    [*tsx_cmd, transfer_cli, args_json],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    cwd=str(self.covenant_dir)
+                )
+                stdout = proc.stdout.strip()
+                if not stdout:
+                    return {
+                        "success": False,
+                        "error": f"transfer-cli produced no output. stderr: {proc.stderr.strip()}"
+                    }
+                try:
+                    return json.loads(stdout)
+                except json.JSONDecodeError:
+                    return {
+                        "success": False,
+                        "error": f"transfer-cli returned invalid JSON: {stdout[:200]}"
+                    }
+            except subprocess.TimeoutExpired:
+                return {"success": False, "error": "transfer-cli timed out after 60s"}
+            except FileNotFoundError:
+                return {
+                    "success": False,
+                    "error": "tsx not found. Install: cd covenant && npm install"
+                }
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, _run)
+
     async def mint_qube_nft(
         self,
         qube,

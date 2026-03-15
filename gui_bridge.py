@@ -6081,7 +6081,7 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
             qube = self.orchestrator.qubes[qube_id]
 
             # Anchor any active session first
-            if qube.current_session and len(qube.current_session.blocks) > 0:
+            if qube.current_session and len(qube.current_session.session_blocks) > 0:
                 await qube.anchor_session()
                 logger.info(f"Auto-anchored session before export for {qube_id}")
 
@@ -6660,9 +6660,12 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
 
         tmp_path = None
         try:
-            pinata_key = os.environ.get("PINATA_API_KEY") or os.environ.get("PINATA_SECRET_KEY")
+            # Read Pinata JWT from encrypted api_keys.enc (same as sync_to_chain)
+            self.orchestrator.set_master_key(master_password)
+            api_keys = self.orchestrator.get_api_keys()
+            pinata_key = api_keys.pinata_jwt if api_keys else None
             if not pinata_key:
-                return {"success": False, "error": "Pinata API key not configured. Add PINATA_API_KEY in Settings."}
+                return {"success": False, "error": "Pinata API key not configured. Add it in Settings → API Keys."}
 
             # Write backup to a temp file using existing logic
             with tempfile.NamedTemporaryFile(suffix='.qube-backup', delete=False) as tmp:
@@ -7115,11 +7118,12 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
 
         tmp_path = None
         try:
-            pinata_key = os.environ.get("PINATA_API_KEY") or os.environ.get("PINATA_SECRET_KEY")
-            if not pinata_key:
-                return {"success": False, "error": "Pinata API key not configured. Add PINATA_API_KEY in Settings."}
-
+            # Read Pinata JWT from encrypted api_keys.enc (same as sync_to_chain)
             self.orchestrator.set_master_key(master_password)
+            api_keys = self.orchestrator.get_api_keys()
+            pinata_key = api_keys.pinata_jwt if api_keys else None
+            if not pinata_key:
+                return {"success": False, "error": "Pinata API key not configured. Add it in Settings → API Keys."}
 
             user_dir = self.orchestrator.data_dir
             qubes_dir = user_dir / "qubes"
@@ -7989,7 +7993,7 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
                 return {"success": False, "error": "No category_id in NFT metadata"}
 
             # Anchor any active session first
-            if qube.current_session and len(qube.current_session.blocks) > 0:
+            if qube.current_session and len(qube.current_session.session_blocks) > 0:
                 await qube.anchor_session()
                 logger.info(f"Auto-anchored session before sync for {qube_id}")
 
@@ -8029,6 +8033,215 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
 
         except Exception as e:
             logger.error(f"Failed to sync Qube {qube_id} to chain: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def prepare_transfer_wc(
+        self,
+        qube_id: str,
+        recipient_address: str,
+        recipient_public_key: str,
+        sender_address: str,
+        password: str
+    ) -> Dict[str, Any]:
+        """
+        Prepare a WalletConnect-based Qube transfer.
+
+        Runs all chain-sync prep steps (sync to IPFS, re-encrypt for recipient,
+        update BCMR) then builds an unsigned WC transaction for the NFT send.
+        No WIF / private key required from the user.
+
+        Args:
+            qube_id: The Qube ID to transfer
+            recipient_address: Recipient's BCH address
+            recipient_public_key: Recipient's public key hex (66 chars)
+            sender_address: Sender's BCH address (from WalletConnect session)
+            password: User's master password
+
+        Returns:
+            { success, wc_transaction, category_id, commitment, pending_transfer_id }
+        """
+        from blockchain.chain_sync import ChainSyncService
+        from crypto.keys import serialize_public_key
+        import uuid
+
+        try:
+            self.orchestrator.set_master_key(password)
+
+            qubes_dir = self.orchestrator.data_dir / "qubes"
+            qube_dir = None
+            qube_name = None
+
+            for dir_entry in qubes_dir.iterdir():
+                if dir_entry.is_dir() and qube_id in dir_entry.name:
+                    qube_dir = dir_entry
+                    qube_name = dir_entry.name.rsplit('_', 1)[0]
+                    break
+
+            if not qube_dir:
+                return {"success": False, "error": f"Qube directory not found for {qube_id}"}
+
+            if qube_id not in self.orchestrator.qubes:
+                await self.orchestrator.load_qube(qube_id)
+
+            qube = self.orchestrator.qubes[qube_id]
+
+            nft_metadata_file = qube_dir / "chain" / "nft_metadata.json"
+            if not nft_metadata_file.exists():
+                return {"success": False, "error": "Qube does not have an NFT. Cannot transfer."}
+
+            with open(nft_metadata_file, 'r', encoding='utf-8') as f:
+                nft_metadata = json.load(f)
+
+            category_id = nft_metadata.get("category_id")
+            if not category_id:
+                return {"success": False, "error": "No category_id in NFT metadata"}
+
+            # Anchor active session first
+            if qube.current_session and len(qube.current_session.session_blocks) > 0:
+                await qube.anchor_session()
+                logger.info(f"Auto-anchored session before transfer for {qube_id}")
+
+            # Get Pinata key for IPFS sync
+            api_keys = self.orchestrator.get_api_keys()
+            pinata_jwt = api_keys.pinata_jwt if api_keys else None
+            if pinata_jwt:
+                os.environ["PINATA_API_KEY"] = pinata_jwt
+
+            public_key_hex = serialize_public_key(qube.public_key)
+
+            # Steps 1-4: sync, re-encrypt for recipient, update BCMR
+            sync_service = ChainSyncService(
+                use_pinata=bool(pinata_jwt),
+                pinata_api_key=pinata_jwt or ""
+            )
+            genesis_dict = qube.genesis_block.to_dict() if hasattr(qube.genesis_block, 'to_dict') else qube.genesis_block
+
+            sync_result = await sync_service.sync_to_chain(
+                qube_dir=str(qube_dir),
+                qube_id=qube_id,
+                qube_name=qube_name,
+                owner_public_key_hex=public_key_hex,
+                genesis_block=genesis_dict,
+                user_id=self.orchestrator.user_id,
+                category_id=category_id,
+            )
+            if not sync_result.success:
+                return {"success": False, "error": f"IPFS sync failed: {sync_result.error}"}
+
+            from crypto.ecies import decrypt_symmetric_key, encrypt_symmetric_key_for_recipient
+            symmetric_key = decrypt_symmetric_key(sync_result.encrypted_key, qube.private_key)
+            new_encrypted_key = encrypt_symmetric_key_for_recipient(symmetric_key, recipient_public_key)
+
+            current_metadata = sync_service.bcmr_generator.get_chain_sync_metadata(category_id)
+            current_version = current_metadata.get("key_version", 1) if current_metadata else 1
+            sync_service.bcmr_generator.update_encrypted_key_for_transfer(
+                category_id=category_id,
+                new_encrypted_key=new_encrypted_key,
+                new_key_version=current_version + 1
+            )
+
+            # Build unsigned WC transaction via transfer-cli.ts
+            from blockchain.covenant_client import CovenantMinter
+            minter = CovenantMinter(network="mainnet")
+            wc_result = await minter.prepare_transfer_transaction(
+                category_id=category_id,
+                sender_address=sender_address,
+                recipient_address=recipient_address,
+            )
+
+            if not wc_result.get("success"):
+                return {"success": False, "error": f"Transfer tx build failed: {wc_result.get('error')}"}
+
+            # Store pending transfer info on disk for finalize step
+            pending_id = str(uuid.uuid4())[:8]
+            pending_dir = self.orchestrator.data_dir / "pending_transfers"
+            pending_dir.mkdir(parents=True, exist_ok=True)
+            with open(pending_dir / f"{pending_id}.json", 'w') as f:
+                json.dump({
+                    "qube_id": qube_id,
+                    "qube_dir": str(qube_dir),
+                    "recipient_address": recipient_address,
+                    "category_id": category_id,
+                }, f)
+
+            return {
+                "success": True,
+                "wc_transaction": wc_result["wc_transaction"],
+                "category_id": category_id,
+                "commitment": wc_result.get("commitment", ""),
+                "pending_transfer_id": pending_id,
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to prepare WC transfer for {qube_id}: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def finalize_transfer_wc(
+        self,
+        pending_transfer_id: str,
+        transfer_txid: str,
+        password: str
+    ) -> Dict[str, Any]:
+        """
+        Finalize a WalletConnect Qube transfer after the wallet has signed and broadcast.
+
+        Deletes the local Qube directory and refreshes the IPFS account backup
+        so the transferred Qube is removed from the owner's backup.
+
+        Args:
+            pending_transfer_id: ID from prepare_transfer_wc
+            transfer_txid: Transaction ID from WalletConnect broadcast
+            password: User's master password
+
+        Returns:
+            { success, transfer_txid, recipient_address }
+        """
+        import shutil
+
+        try:
+            self.orchestrator.set_master_key(password)
+
+            pending_dir = self.orchestrator.data_dir / "pending_transfers"
+            pending_file = pending_dir / f"{pending_transfer_id}.json"
+
+            if not pending_file.exists():
+                return {"success": False, "error": f"No pending transfer found: {pending_transfer_id}"}
+
+            with open(pending_file, 'r') as f:
+                pending = json.load(f)
+
+            qube_id = pending["qube_id"]
+            qube_dir = pending["qube_dir"]
+            recipient_address = pending["recipient_address"]
+
+            # Remove from orchestrator cache
+            if qube_id in self.orchestrator.qubes:
+                del self.orchestrator.qubes[qube_id]
+
+            # Delete local Qube data
+            local_deleted = False
+            try:
+                shutil.rmtree(qube_dir)
+                local_deleted = True
+                logger.info(f"Deleted local Qube data for {qube_id} after transfer")
+            except Exception as e:
+                logger.warning(f"Failed to delete local Qube data for {qube_id}: {e}")
+
+            # Clean up pending file
+            try:
+                pending_file.unlink()
+            except Exception:
+                pass
+
+            return {
+                "success": True,
+                "transfer_txid": transfer_txid,
+                "recipient_address": recipient_address,
+                "local_deleted": local_deleted,
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to finalize WC transfer {pending_transfer_id}: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
 
     async def transfer_qube(
@@ -8094,7 +8307,7 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
                 return {"success": False, "error": "No category_id in NFT metadata"}
 
             # Anchor any active session first
-            if qube.current_session and len(qube.current_session.blocks) > 0:
+            if qube.current_session and len(qube.current_session.session_blocks) > 0:
                 await qube.anchor_session()
                 logger.info(f"Auto-anchored session before transfer for {qube_id}")
 

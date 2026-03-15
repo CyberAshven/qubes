@@ -30,7 +30,9 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
 
   // Restore from IPFS state
   const [showIpfsRestoreModal, setShowIpfsRestoreModal] = useState(false);
+  const [ipfsInputMode, setIpfsInputMode] = useState<'jwt' | 'cid'>('jwt');
   const [ipfsPinataJwt, setIpfsPinataJwt] = useState('');
+  const [ipfsDirectCid, setIpfsDirectCid] = useState('');
   const [ipfsBackupList, setIpfsBackupList] = useState<Array<{cid: string; name: string; date: string; size_bytes: number}>>([]);
   const [ipfsSelectedCid, setIpfsSelectedCid] = useState('');
   const [isListingBackups, setIsListingBackups] = useState(false);
@@ -185,7 +187,8 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
   };
 
   const handleIpfsRestore = async () => {
-    if (!ipfsSelectedCid || !ipfsRestorePassword || !ipfsRestoreMasterPassword) return;
+    const cidToRestore = ipfsInputMode === 'cid' ? ipfsDirectCid.trim() : ipfsSelectedCid;
+    if (!cidToRestore || !ipfsRestorePassword || !ipfsRestoreMasterPassword) return;
 
     if (ipfsRestoreMasterPassword !== ipfsRestoreMasterPasswordConfirm) {
       setIpfsRestoreError('Master passwords do not match.');
@@ -209,7 +212,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
         error?: string;
       }>('import_account_backup_ipfs', {
         userId: '_restore',
-        ipfsCid: ipfsSelectedCid,
+        ipfsCid: cidToRestore,
         importPassword: ipfsRestorePassword,
         masterPassword: ipfsRestoreMasterPassword,
         walletSig: walletSig,
@@ -219,6 +222,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
         alert(`Account restored from IPFS!\n\n${result.imported_count} Qube(s) imported, ${result.skipped_count} skipped.\n\nPlease sign in with your master password.`);
         setShowIpfsRestoreModal(false);
         setIpfsPinataJwt('');
+        setIpfsDirectCid('');
         setIpfsBackupList([]);
         setIpfsSelectedCid('');
         setIpfsRestorePassword('');
@@ -381,35 +385,68 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
 
       {/* Restore from IPFS Modal */}
       {showIpfsRestoreModal && (
-        <div className="fixed inset-0 bg-black/95 backdrop-blur-sm flex items-center justify-center z-50">
-          <GlassCard variant="elevated" className="w-full max-w-md p-6 mx-4">
-            <h2 className="text-xl font-bold text-text-primary mb-2">Restore from IPFS</h2>
-            <p className="text-text-secondary text-sm mb-4">
-              Enter your Pinata JWT to find your backed-up accounts, then restore with your backup password.
+        <div className="fixed inset-0 bg-black/95 backdrop-blur-sm flex items-center justify-center z-50 overflow-y-auto py-4">
+          <GlassCard variant="elevated" className="w-full max-w-md p-6 mx-4 my-auto">
+            <h2 className="text-xl font-bold text-text-primary mb-1">Restore from IPFS</h2>
+            <p className="text-text-secondary text-xs mb-4">
+              Find your backup via Pinata account or enter a CID directly.
             </p>
 
-            {/* Step 1: Pinata JWT + find backups */}
-            <div className="mb-4">
-              <label className="block text-text-secondary text-sm mb-1">Pinata JWT API Key</label>
-              <div className="flex gap-2">
-                <input
-                  type="password"
-                  value={ipfsPinataJwt}
-                  onChange={(e) => setIpfsPinataJwt(e.target.value)}
-                  placeholder="eyJhbGci..."
-                  className="flex-1 bg-surface-secondary border border-border-primary rounded-lg px-3 py-2 text-text-primary text-sm font-mono"
-                  disabled={isListingBackups || isIpfsRestoring}
-                />
-                <GlassButton
-                  variant="secondary"
-                  onClick={handleListBackups}
-                  disabled={!ipfsPinataJwt.trim() || isListingBackups || isIpfsRestoring}
-                  loading={isListingBackups}
-                >
-                  {isListingBackups ? 'Searching...' : 'Find'}
-                </GlassButton>
-              </div>
+            {/* Mode toggle */}
+            <div className="flex gap-2 mb-4">
+              <button
+                onClick={() => { setIpfsInputMode('jwt'); setIpfsListError(null); }}
+                className={`flex-1 py-1.5 rounded text-sm font-medium transition-colors ${ipfsInputMode === 'jwt' ? 'bg-accent-primary/20 border border-accent-primary/50 text-accent-primary' : 'bg-surface-secondary border border-border-primary text-text-secondary hover:text-text-primary'}`}
+              >
+                Pinata Account
+              </button>
+              <button
+                onClick={() => { setIpfsInputMode('cid'); setIpfsListError(null); }}
+                className={`flex-1 py-1.5 rounded text-sm font-medium transition-colors ${ipfsInputMode === 'cid' ? 'bg-accent-primary/20 border border-accent-primary/50 text-accent-primary' : 'bg-surface-secondary border border-border-primary text-text-secondary hover:text-text-primary'}`}
+              >
+                Enter CID
+              </button>
             </div>
+
+            {/* JWT mode */}
+            {ipfsInputMode === 'jwt' && (
+              <div className="mb-4">
+                <label className="block text-text-secondary text-sm mb-1">Pinata JWT API Key</label>
+                <div className="flex gap-2">
+                  <input
+                    type="password"
+                    value={ipfsPinataJwt}
+                    onChange={(e) => setIpfsPinataJwt(e.target.value)}
+                    placeholder="eyJhbGci..."
+                    className="flex-1 bg-surface-secondary border border-border-primary rounded-lg px-3 py-2 text-text-primary text-sm font-mono"
+                    disabled={isListingBackups || isIpfsRestoring}
+                  />
+                  <GlassButton
+                    variant="secondary"
+                    onClick={handleListBackups}
+                    disabled={!ipfsPinataJwt.trim() || isListingBackups || isIpfsRestoring}
+                    loading={isListingBackups}
+                  >
+                    {isListingBackups ? '...' : 'Find'}
+                  </GlassButton>
+                </div>
+              </div>
+            )}
+
+            {/* CID mode */}
+            {ipfsInputMode === 'cid' && (
+              <div className="mb-4">
+                <label className="block text-text-secondary text-sm mb-1">IPFS CID</label>
+                <input
+                  type="text"
+                  value={ipfsDirectCid}
+                  onChange={(e) => setIpfsDirectCid(e.target.value)}
+                  placeholder="Qm... or bafy..."
+                  className="w-full bg-surface-secondary border border-border-primary rounded-lg px-3 py-2 text-text-primary text-sm font-mono"
+                  disabled={isIpfsRestoring}
+                />
+              </div>
+            )}
 
             {ipfsListError && (
               <div className="mb-4 p-3 bg-accent-danger/10 border border-accent-danger/30 rounded-lg">
@@ -417,50 +454,53 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
               </div>
             )}
 
-            {/* Step 2: backup list + passwords */}
-            {ipfsBackupList.length > 0 && (
+            {/* Backup list (JWT mode after search) */}
+            {ipfsInputMode === 'jwt' && ipfsBackupList.length > 0 && (
+              <div className="mb-4">
+                <label className="block text-text-secondary text-sm mb-1">Select Backup</label>
+                <div className="space-y-2 max-h-40 overflow-y-auto">
+                  {ipfsBackupList.map((b) => (
+                    <label
+                      key={b.cid}
+                      className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
+                        ipfsSelectedCid === b.cid
+                          ? 'border-accent-primary bg-accent-primary/10'
+                          : 'border-border-primary bg-surface-secondary hover:border-accent-primary/50'
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="ipfsBackup"
+                        value={b.cid}
+                        checked={ipfsSelectedCid === b.cid}
+                        onChange={() => setIpfsSelectedCid(b.cid)}
+                        className="mt-0.5"
+                      />
+                      <div className="min-w-0">
+                        <p className="text-text-primary text-sm font-medium truncate">{b.name}</p>
+                        <p className="text-text-tertiary text-xs">
+                          {b.date ? new Date(b.date).toLocaleString() : 'Unknown date'} &bull; {(b.size_bytes / 1024).toFixed(1)} KB
+                        </p>
+                      </div>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* WalletConnect — always visible once modal is open */}
+            {walletConnectBlock}
+
+            {/* Passwords — shown when CID is known */}
+            {(ipfsInputMode === 'cid' ? ipfsDirectCid.trim() : ipfsSelectedCid) && (
               <>
                 <div className="mb-4">
-                  <label className="block text-text-secondary text-sm mb-1">Select Backup</label>
-                  <div className="space-y-2">
-                    {ipfsBackupList.map((b) => (
-                      <label
-                        key={b.cid}
-                        className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
-                          ipfsSelectedCid === b.cid
-                            ? 'border-accent-primary bg-accent-primary/10'
-                            : 'border-border-primary bg-surface-secondary hover:border-accent-primary/50'
-                        }`}
-                      >
-                        <input
-                          type="radio"
-                          name="ipfsBackup"
-                          value={b.cid}
-                          checked={ipfsSelectedCid === b.cid}
-                          onChange={() => setIpfsSelectedCid(b.cid)}
-                          className="mt-0.5"
-                        />
-                        <div className="min-w-0">
-                          <p className="text-text-primary text-sm font-medium truncate">{b.name}</p>
-                          <p className="text-text-tertiary text-xs">
-                            {b.date ? new Date(b.date).toLocaleString() : 'Unknown date'} &bull; {(b.size_bytes / 1024).toFixed(1)} KB
-                          </p>
-                        </div>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-
-                {/* WalletConnect step */}
-                {walletConnectBlock}
-
-                <div className="mb-4">
-                  <label className="block text-text-secondary text-sm mb-1">Backup Password</label>
+                  <label className="block text-text-secondary text-sm mb-1">Master Password (from original device)</label>
                   <input
                     type="password"
                     value={ipfsRestorePassword}
                     onChange={(e) => setIpfsRestorePassword(e.target.value)}
-                    placeholder="Password used when creating the backup"
+                    placeholder="Master password you used to log in"
                     className="w-full bg-surface-secondary border border-border-primary rounded-lg px-3 py-2 text-text-primary text-sm"
                     disabled={isIpfsRestoring}
                   />
@@ -500,7 +540,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
 
             {isIpfsRestoring && (
               <div className="mb-4 p-3 bg-accent-primary/10 border border-accent-primary/30 rounded-lg">
-                <p className="text-accent-primary text-sm">Downloading from IPFS and restoring... this may take a moment.</p>
+                <p className="text-accent-primary text-sm">Downloading from IPFS and restoring...</p>
               </div>
             )}
 
@@ -509,10 +549,12 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
                 variant="secondary"
                 onClick={() => {
                   setShowIpfsRestoreModal(false);
+                  setIpfsInputMode('jwt');
                   setIpfsRestoreError(null);
                   setIpfsListError(null);
                   setIpfsBackupList([]);
                   setIpfsSelectedCid('');
+                  setIpfsDirectCid('');
                   setWalletSig('');
                   setWcAddress('');
                   setWcUri('');
@@ -522,11 +564,11 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
               >
                 Cancel
               </GlassButton>
-              {ipfsBackupList.length > 0 && (
+              {(ipfsInputMode === 'cid' ? ipfsDirectCid.trim() : ipfsSelectedCid) && (
                 <GlassButton
                   variant="primary"
                   onClick={handleIpfsRestore}
-                  disabled={!ipfsSelectedCid || !ipfsRestorePassword || !ipfsRestoreMasterPassword || !ipfsRestoreMasterPasswordConfirm || isIpfsRestoring}
+                  disabled={!ipfsRestorePassword || !ipfsRestoreMasterPassword || !ipfsRestoreMasterPasswordConfirm || isIpfsRestoring}
                   loading={isIpfsRestoring}
                 >
                   {isIpfsRestoring ? 'Restoring...' : 'Restore Account'}
@@ -569,12 +611,12 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
 
             {/* Backup password */}
             <div className="mb-4">
-              <label className="block text-text-secondary text-sm mb-1">Backup Password</label>
+              <label className="block text-text-secondary text-sm mb-1">Master Password (from original device)</label>
               <input
                 type="password"
                 value={restorePassword}
                 onChange={(e) => setRestorePassword(e.target.value)}
-                placeholder="Password used when creating the backup"
+                placeholder="Master password you used to log in"
                 className="w-full bg-surface-secondary border border-border-primary rounded-lg px-3 py-2 text-text-primary text-sm"
               />
             </div>

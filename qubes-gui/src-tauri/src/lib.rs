@@ -2848,6 +2848,11 @@ async fn anchor_session(app_handle: AppHandle, user_id: String, qube_id: String,
     let response: serde_json::Value = serde_json::from_value(result)
         .map_err(|e| format!("Failed to parse anchor-session response: {}", e))?;
 
+    // Notify frontend so it can trigger IPFS sync
+    if response.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
+        let _ = app_handle.emit("anchor-complete", serde_json::json!({ "qube_id": qube_id }));
+    }
+
     Ok(response)
 }
 
@@ -5970,9 +5975,60 @@ async fn transfer_qube(app_handle: AppHandle,
 
 }
 
+/// Prepare WalletConnect-based Qube transfer (no WIF — wallet signs via WC)
+#[tauri::command]
+async fn prepare_transfer_wc(app_handle: AppHandle,
+    user_id: String,
+    qube_id: String,
+    recipient_address: String,
+    recipient_public_key: String,
+    sender_address: String,
+    master_password: String,
+) -> Result<serde_json::Value, String> {
+
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let args = vec![
+        user_id,
+        qube_id,
+        recipient_address,
+        recipient_public_key,
+        sender_address,
+    ];
+
+    let mut secrets = HashMap::new();
+    secrets.insert("password", master_password.as_str());
+
+    sidecar_execute_with_retry("prepare-transfer-wc", args, secrets, Some(&app_handle), Some(120)).await
+}
+
+/// Finalize WalletConnect Qube transfer (delete local data, refresh IPFS backup)
+#[tauri::command]
+async fn finalize_transfer_wc(app_handle: AppHandle,
+    user_id: String,
+    pending_transfer_id: String,
+    transfer_txid: String,
+    master_password: String,
+) -> Result<serde_json::Value, String> {
+
+    validate_identifier(&user_id, "user_id")?;
+
+    let args = vec![
+        user_id,
+        pending_transfer_id,
+        transfer_txid,
+    ];
+
+    let mut secrets = HashMap::new();
+    secrets.insert("password", master_password.as_str());
+
+    sidecar_execute_with_retry("finalize-transfer-wc", args, secrets, Some(&app_handle), Some(60)).await
+}
+
 /// Import Qube from wallet
 #[tauri::command]
-async fn import_from_wallet(app_handle: AppHandle, 
+async fn import_from_wallet(app_handle: AppHandle,
     user_id: String,
     wallet_wif: String,
     category_id: String,
@@ -7772,6 +7828,8 @@ pub fn run() {
             // Chain Sync (NFT-Bundled Storage)
             sync_to_chain,
             transfer_qube,
+            prepare_transfer_wc,
+            finalize_transfer_wc,
             import_from_wallet,
             export_qube,
             import_qube,

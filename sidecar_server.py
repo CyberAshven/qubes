@@ -87,7 +87,7 @@ PRE_BRIDGE_COMMANDS = {
 # Commands that invalidate qube cache after execution
 CACHE_INVALIDATING = {
     "delete-qube", "reset-qube", "anchor-session", "discard-session",
-    "create-qube", "transfer-qube", "update-qube-config", "import-qube", "import-account-backup", "import-account-backup-ipfs",
+    "create-qube", "transfer-qube", "finalize-transfer-wc", "update-qube-config", "import-qube", "import-account-backup", "import-account-backup-ipfs",
     "delete-session-block", "discard-last-block", "finalize-qube-mint",
 }
 
@@ -209,6 +209,8 @@ POSITIONAL_ARG_NAMES = {
     "import-account-backup-ipfs": ["user_id", "ipfs_cid"],
     "sync-qube-to-ipfs-backup": ["user_id", "qube_id"],
     "cleanup-incomplete-qubes": ["user_id"],
+    "prepare-transfer-wc": ["user_id", "qube_id", "recipient_address", "recipient_public_key", "sender_address"],
+    "finalize-transfer-wc": ["user_id", "pending_transfer_id", "transfer_txid"],
     # API key batch
     "save-api-keys": ["user_id"],
     "update-qube-nft": ["user_id", "qube_id"],
