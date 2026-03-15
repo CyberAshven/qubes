@@ -1596,6 +1596,65 @@ class GUIBridge:
                 "error": str(e)
             }
 
+    async def update_qube_avatar(self, qube_id: str, avatar_path: str) -> Dict[str, Any]:
+        """Update a Qube's avatar image."""
+        import shutil
+        from datetime import timezone as _tz
+        try:
+            qubes_dir = self.orchestrator.data_dir / "qubes"
+            qube_dir = None
+            for d in qubes_dir.iterdir():
+                if d.is_dir() and qube_id in d.name:
+                    qube_dir = d
+                    break
+
+            if not qube_dir:
+                return {"success": False, "error": f"Qube {qube_id} not found"}
+
+            chain_dir = qube_dir / "chain"
+            dest_path = chain_dir / f"{qube_id}_avatar.png"
+            shutil.copy2(avatar_path, dest_path)
+
+            # Update genesis.json avatar field
+            genesis_file = chain_dir / "genesis.json"
+            if genesis_file.exists():
+                with open(genesis_file, 'r', encoding='utf-8') as f:
+                    genesis = json.load(f)
+                genesis["avatar"] = {
+                    "source": "uploaded",
+                    "ipfs_cid": None,
+                    "local_path": dest_path.name,
+                    "file_format": "png",
+                    "dimensions": "unknown",
+                }
+                with open(genesis_file, 'w', encoding='utf-8') as f:
+                    json.dump(genesis, f, indent=2)
+
+            # Update BCMR — clear IPFS icon/image, mark pending re-upload
+            qube_name = qube_dir.name.rsplit('_', 1)[0]
+            bcmr_file = qube_dir / "blockchain" / f"{qube_name}_bcmr.json"
+            if bcmr_file.exists():
+                with open(bcmr_file, 'r', encoding='utf-8') as f:
+                    bcmr = json.load(f)
+                now = datetime.now(_tz.utc).isoformat()
+                bcmr["latestRevision"] = now
+                for _, identity_revisions in bcmr.get("identities", {}).items():
+                    latest_ts = max(identity_revisions.keys())
+                    revision = identity_revisions[latest_ts]
+                    uris = revision.get("uris", {})
+                    uris.pop("icon", None)
+                    uris.pop("image", None)
+                    uris["icon_pending_upload"] = dest_path.name
+                    revision["uris"] = uris
+                    identity_revisions[now] = revision
+                with open(bcmr_file, 'w', encoding='utf-8') as f:
+                    json.dump(bcmr, f, indent=2)
+
+            return {"success": True, "avatar_path": str(dest_path)}
+        except Exception as e:
+            logger.error(f"Failed to update avatar: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
     async def update_qube_config(self, qube_id: str, ai_model: str = None, voice_model: str = None, favorite_color: str = None, tts_enabled: bool = None, evaluation_model: str = None) -> Dict[str, Any]:
         """Update qube runtime configuration using qube_metadata.json as single source of truth"""
         try:

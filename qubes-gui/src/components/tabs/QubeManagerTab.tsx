@@ -118,6 +118,20 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
   const [restoreFilePath, setRestoreFilePath] = useState('');
   const [restorePassword, setRestorePassword] = useState('');
   const [isRestoring, setIsRestoring] = useState(false);
+  // Restore mode
+  const [restoreMode, setRestoreMode] = useState<'local' | 'ipfs'>('local');
+  // IPFS restore state
+  const [ipfsInputMode, setIpfsInputMode] = useState<'jwt' | 'cid'>('jwt');
+  const [ipfsPinataJwt, setIpfsPinataJwt] = useState('');
+  const [ipfsDirectCid, setIpfsDirectCid] = useState('');
+  const [ipfsBackupList, setIpfsBackupList] = useState<Array<{cid: string; name: string; date: string; size_bytes: number}>>([]);
+  const [ipfsSelectedCid, setIpfsSelectedCid] = useState('');
+  const [ipfsListError, setIpfsListError] = useState<string | null>(null);
+  const [isListingBackups, setIsListingBackups] = useState(false);
+  // WC 2FA for restore
+  const [restoreWalletSig, setRestoreWalletSig] = useState('');
+  const [restoreWcAddress, setRestoreWcAddress] = useState('');
+  const [isSigningRestoreWc, setIsSigningRestoreWc] = useState(false);
 
   // Pinata configuration check
   const [pinataConfigured, setPinataConfigured] = useState<boolean | null>(null);
@@ -361,6 +375,21 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
     }
   };
 
+  // Reset restore modal state
+  const resetRestoreState = () => {
+    setRestoreFilePath('');
+    setRestorePassword('');
+    setRestoreMode('local');
+    setIpfsInputMode('jwt');
+    setIpfsPinataJwt('');
+    setIpfsDirectCid('');
+    setIpfsBackupList([]);
+    setIpfsSelectedCid('');
+    setIpfsListError(null);
+    setRestoreWalletSig('');
+    setRestoreWcAddress('');
+  };
+
   // Restore (merge) qubes from a backup file
   const handleRestoreFromBackup = async () => {
     if (!restoreFilePath) { alert('Please select a backup file'); return; }
@@ -373,6 +402,7 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
         importPath: restoreFilePath,
         importPassword: restorePassword,
         masterPassword: masterPassword,
+        walletSig: restoreWalletSig || null,
       });
 
       if (result.success) {
@@ -380,8 +410,7 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
         const skipped = result.skipped_count || 0;
         alert(`Restore complete!\n\n${imported} Qube(s) imported${skipped > 0 ? `\n${skipped} already existed (skipped)` : ''}`);
         setShowRestoreModal(false);
-        setRestoreFilePath('');
-        setRestorePassword('');
+        resetRestoreState();
         if (imported > 0) {
           window.dispatchEvent(new CustomEvent('qube-created'));
         }
@@ -393,6 +422,80 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
       alert(`Restore failed: ${String(error)}`);
     } finally {
       setIsRestoring(false);
+    }
+  };
+
+  const handleListBackupsForRestore = async () => {
+    if (!ipfsPinataJwt.trim()) return;
+    setIsListingBackups(true);
+    setIpfsListError(null);
+    setIpfsBackupList([]);
+    setIpfsSelectedCid('');
+    try {
+      const result = await invoke<{ success: boolean; backups?: Array<{cid: string; name: string; date: string; size_bytes: number}>; error?: string }>(
+        'list_account_backups_pinata',
+        { userId: '_restore', pinataJwt: ipfsPinataJwt.trim() }
+      );
+      if (result.success && result.backups) {
+        if (result.backups.length === 0) {
+          setIpfsListError('No Qubes backups found in this Pinata account.');
+        } else {
+          setIpfsBackupList(result.backups);
+          setIpfsSelectedCid(result.backups[0].cid);
+        }
+      } else {
+        setIpfsListError(result.error || 'Failed to list backups');
+      }
+    } catch (err) {
+      setIpfsListError(`${err}`);
+    } finally {
+      setIsListingBackups(false);
+    }
+  };
+
+  const handleIpfsRestore = async () => {
+    const cidToRestore = ipfsInputMode === 'cid' ? ipfsDirectCid.trim() : ipfsSelectedCid;
+    if (!cidToRestore || !restorePassword) return;
+    setIsRestoring(true);
+    try {
+      const result = await invoke<{ success: boolean; imported_count?: number; skipped_count?: number; error?: string }>(
+        'import_account_backup_ipfs',
+        {
+          userId,
+          ipfsCid: cidToRestore,
+          importPassword: restorePassword,
+          masterPassword,
+          walletSig: restoreWalletSig || null,
+        }
+      );
+      if (result.success) {
+        alert(`Restored from IPFS! ${result.imported_count} Qube(s) imported, ${result.skipped_count} skipped.`);
+        setShowRestoreModal(false);
+        resetRestoreState();
+      } else {
+        alert(`IPFS Restore failed: ${result.error}`);
+      }
+    } catch (err) {
+      alert(`IPFS Restore error: ${err}`);
+    } finally {
+      setIsRestoring(false);
+    }
+  };
+
+  const handleSignRestoreWc = async () => {
+    setIsSigningRestoreWc(true);
+    try {
+      const { getSession, signMessage: wcSignMessage } = await import('../../services/walletConnect');
+      const session = await getSession();
+      if (session) {
+        const sig = await wcSignMessage('qubes-backup-key:v1', 'Qubes needs to verify wallet ownership to decrypt your backup', session.topic);
+        setRestoreWalletSig(sig);
+        setRestoreWcAddress(wallet.address || '');
+      }
+    } catch (err) {
+      console.error('WC sign failed:', err);
+    } finally {
+      setIsSigningRestoreWc(false);
     }
   };
 
@@ -1216,55 +1319,261 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
       {/* Restore (Merge) Modal */}
       {showRestoreModal && (
         <div className="fixed inset-0 bg-black/95 backdrop-blur-sm flex items-center justify-center z-50">
-          <div className="glass-card p-6 max-w-md w-full mx-4">
-            <h2 className="text-xl font-bold text-text-primary mb-4">Restore from Backup</h2>
-            <p className="text-text-secondary text-sm mb-4">
-              Import Qubes from a <code>.qube-backup</code> file into your account.
-              Qubes that already exist will be skipped — your current data won't be affected.
-            </p>
-            <div className="space-y-3">
-              <div>
-                <label className="block text-sm text-text-secondary mb-1">Backup File</label>
-                <button
-                  onClick={async () => {
-                    const path = await openDialog({
-                      multiple: false,
-                      filters: [{ name: 'Qube Backup', extensions: ['qube-backup'] }],
-                    });
-                    if (path && typeof path === 'string') setRestoreFilePath(path);
-                  }}
-                  className="w-full px-3 py-2 bg-glass-bg border border-glass-border rounded-lg text-text-primary text-sm text-left hover:border-accent-primary/50 transition-colors truncate"
-                >
-                  {restoreFilePath ? restoreFilePath.split(/[/\\]/).pop() : 'Choose .qube-backup file...'}
-                </button>
-              </div>
-              <div>
-                <label className="block text-sm text-text-secondary mb-1">Master Password (from original device)</label>
-                <input
-                  type="password"
-                  value={restorePassword}
-                  onChange={(e) => setRestorePassword(e.target.value)}
-                  placeholder="Master password used to log in on the original device"
-                  className="w-full px-3 py-2 bg-glass-bg border border-glass-border rounded-lg text-text-primary text-sm"
-                />
-              </div>
+          <div className="glass-card p-6 max-w-lg w-full mx-4 max-h-[90vh] overflow-y-auto">
+            {/* Header */}
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-xl font-bold text-text-primary">Restore from Backup</h2>
+              <button
+                onClick={() => { resetRestoreState(); setShowRestoreModal(false); }}
+                className="text-text-tertiary hover:text-text-primary transition-colors text-lg leading-none"
+              >
+                ✕
+              </button>
             </div>
-            <div className="flex gap-3 mt-4">
-              <GlassButton
-                variant="secondary"
-                onClick={() => { setShowRestoreModal(false); setRestoreFilePath(''); setRestorePassword(''); }}
-                disabled={isRestoring}
+
+            {/* Mode toggle tabs */}
+            <div className="flex gap-1 mb-4 p-1 bg-bg-secondary rounded-lg">
+              <button
+                onClick={() => setRestoreMode('local')}
+                className={`flex-1 py-1.5 px-3 rounded-md text-sm font-medium transition-all ${
+                  restoreMode === 'local'
+                    ? 'bg-accent-primary/20 text-accent-primary border border-accent-primary/30'
+                    : 'text-text-secondary hover:text-text-primary'
+                }`}
               >
-                Cancel
-              </GlassButton>
-              <GlassButton
-                variant="primary"
-                onClick={handleRestoreFromBackup}
-                disabled={isRestoring || !restoreFilePath || !restorePassword}
-                loading={isRestoring}
+                Local File
+              </button>
+              <button
+                onClick={() => setRestoreMode('ipfs')}
+                className={`flex-1 py-1.5 px-3 rounded-md text-sm font-medium transition-all ${
+                  restoreMode === 'ipfs'
+                    ? 'bg-accent-primary/20 text-accent-primary border border-accent-primary/30'
+                    : 'text-text-secondary hover:text-text-primary'
+                }`}
               >
-                {isRestoring ? 'Restoring...' : 'Restore'}
-              </GlassButton>
+                IPFS
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              {restoreMode === 'local' ? (
+                <>
+                  <p className="text-text-secondary text-sm">
+                    Import Qubes from a <code>.qube-backup</code> file into your account.
+                    Qubes that already exist will be skipped.
+                  </p>
+                  <div>
+                    <label className="block text-sm text-text-secondary mb-1">Backup File</label>
+                    <button
+                      onClick={async () => {
+                        const path = await openDialog({
+                          multiple: false,
+                          filters: [{ name: 'Qube Backup', extensions: ['qube-backup'] }],
+                        });
+                        if (path && typeof path === 'string') setRestoreFilePath(path);
+                      }}
+                      className="w-full px-3 py-2 bg-glass-bg border border-glass-border rounded-lg text-text-primary text-sm text-left hover:border-accent-primary/50 transition-colors truncate"
+                    >
+                      {restoreFilePath ? restoreFilePath.split(/[/\\]/).pop() : 'Choose .qube-backup file...'}
+                    </button>
+                  </div>
+                  <div>
+                    <label className="block text-sm text-text-secondary mb-1">Master Password</label>
+                    <input
+                      type="password"
+                      value={restorePassword}
+                      onChange={(e) => setRestorePassword(e.target.value)}
+                      placeholder="Master password used to encrypt the backup"
+                      className="w-full px-3 py-2 bg-glass-bg border border-glass-border rounded-lg text-text-primary text-sm"
+                    />
+                  </div>
+                  {/* WC 2FA */}
+                  <div className="p-3 border border-glass-border rounded-lg bg-glass-bg/20">
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="text-xs text-text-tertiary uppercase tracking-wide">Optional: Wallet 2FA</span>
+                      {restoreWalletSig && (
+                        <span className="text-xs text-accent-success">✓ {restoreWcAddress.slice(0, 16)}...</span>
+                      )}
+                    </div>
+                    {!restoreWalletSig ? (
+                      <>
+                        <p className="text-[10px] text-text-tertiary mb-2">Required only if your backup was created with wallet authentication.</p>
+                        {wallet.connected ? (
+                          <GlassButton variant="secondary" onClick={handleSignRestoreWc} disabled={isSigningRestoreWc} className="w-full text-sm">
+                            {isSigningRestoreWc ? 'Signing...' : '🔗 Sign with Connected Wallet'}
+                          </GlassButton>
+                        ) : (
+                          <p className="text-[10px] text-text-tertiary">Connect your wallet first using the WalletConnect button.</p>
+                        )}
+                      </>
+                    ) : (
+                      <GlassButton variant="secondary" onClick={() => { setRestoreWalletSig(''); setRestoreWcAddress(''); }} className="text-xs">
+                        Clear Signature
+                      </GlassButton>
+                    )}
+                  </div>
+                  <div className="flex gap-3 pt-1">
+                    <GlassButton
+                      variant="secondary"
+                      onClick={() => { resetRestoreState(); setShowRestoreModal(false); }}
+                      disabled={isRestoring}
+                    >
+                      Cancel
+                    </GlassButton>
+                    <GlassButton
+                      variant="primary"
+                      onClick={handleRestoreFromBackup}
+                      disabled={isRestoring || !restoreFilePath || !restorePassword}
+                      loading={isRestoring}
+                    >
+                      {isRestoring ? 'Restoring...' : 'Restore'}
+                    </GlassButton>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <p className="text-text-secondary text-sm">
+                    Restore Qubes from an IPFS backup using your Pinata account or a direct CID.
+                  </p>
+                  {/* IPFS sub-mode toggle */}
+                  <div className="flex gap-1 p-1 bg-bg-secondary rounded-lg">
+                    <button
+                      onClick={() => setIpfsInputMode('jwt')}
+                      className={`flex-1 py-1 px-2 rounded-md text-xs font-medium transition-all ${
+                        ipfsInputMode === 'jwt'
+                          ? 'bg-accent-primary/20 text-accent-primary border border-accent-primary/30'
+                          : 'text-text-secondary hover:text-text-primary'
+                      }`}
+                    >
+                      Pinata Account
+                    </button>
+                    <button
+                      onClick={() => setIpfsInputMode('cid')}
+                      className={`flex-1 py-1 px-2 rounded-md text-xs font-medium transition-all ${
+                        ipfsInputMode === 'cid'
+                          ? 'bg-accent-primary/20 text-accent-primary border border-accent-primary/30'
+                          : 'text-text-secondary hover:text-text-primary'
+                      }`}
+                    >
+                      Direct CID
+                    </button>
+                  </div>
+
+                  {ipfsInputMode === 'jwt' ? (
+                    <div className="space-y-2">
+                      <div>
+                        <label className="block text-sm text-text-secondary mb-1">Pinata JWT</label>
+                        <div className="flex gap-2">
+                          <input
+                            type="password"
+                            value={ipfsPinataJwt}
+                            onChange={(e) => setIpfsPinataJwt(e.target.value)}
+                            placeholder="eyJ..."
+                            className="flex-1 px-3 py-2 bg-glass-bg border border-glass-border rounded-lg text-text-primary text-sm"
+                          />
+                          <GlassButton
+                            variant="secondary"
+                            onClick={handleListBackupsForRestore}
+                            disabled={isListingBackups || !ipfsPinataJwt.trim()}
+                            loading={isListingBackups}
+                          >
+                            {isListingBackups ? 'Listing...' : 'List Backups'}
+                          </GlassButton>
+                        </div>
+                      </div>
+                      {ipfsListError && (
+                        <p className="text-xs text-accent-danger">{ipfsListError}</p>
+                      )}
+                      {ipfsBackupList.length > 0 && (
+                        <div className="space-y-1 max-h-36 overflow-y-auto">
+                          {ipfsBackupList.map((backup) => (
+                            <label key={backup.cid} className="flex items-start gap-2 p-2 rounded-lg border border-glass-border bg-glass-bg/20 cursor-pointer hover:border-accent-primary/40 transition-colors">
+                              <input
+                                type="radio"
+                                name="ipfs-backup"
+                                value={backup.cid}
+                                checked={ipfsSelectedCid === backup.cid}
+                                onChange={() => setIpfsSelectedCid(backup.cid)}
+                                className="mt-0.5"
+                              />
+                              <div className="min-w-0 flex-1">
+                                <p className="text-sm text-text-primary truncate">{backup.name}</p>
+                                <p className="text-[10px] text-text-tertiary">{backup.date} · {(backup.size_bytes / 1024).toFixed(1)} KB</p>
+                              </div>
+                            </label>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div>
+                      <label className="block text-sm text-text-secondary mb-1">IPFS CID</label>
+                      <input
+                        type="text"
+                        value={ipfsDirectCid}
+                        onChange={(e) => setIpfsDirectCid(e.target.value)}
+                        placeholder="Qm... or bafyb..."
+                        className="w-full px-3 py-2 bg-glass-bg border border-glass-border rounded-lg text-text-primary text-sm font-mono"
+                      />
+                    </div>
+                  )}
+
+                  <div>
+                    <label className="block text-sm text-text-secondary mb-1">Master Password</label>
+                    <input
+                      type="password"
+                      value={restorePassword}
+                      onChange={(e) => setRestorePassword(e.target.value)}
+                      placeholder="Master password used to encrypt the backup"
+                      className="w-full px-3 py-2 bg-glass-bg border border-glass-border rounded-lg text-text-primary text-sm"
+                    />
+                  </div>
+
+                  {/* WC 2FA */}
+                  <div className="p-3 border border-glass-border rounded-lg bg-glass-bg/20">
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="text-xs text-text-tertiary uppercase tracking-wide">Optional: Wallet 2FA</span>
+                      {restoreWalletSig && (
+                        <span className="text-xs text-accent-success">✓ {restoreWcAddress.slice(0, 16)}...</span>
+                      )}
+                    </div>
+                    {!restoreWalletSig ? (
+                      <>
+                        <p className="text-[10px] text-text-tertiary mb-2">Required only if your backup was created with wallet authentication.</p>
+                        {wallet.connected ? (
+                          <GlassButton variant="secondary" onClick={handleSignRestoreWc} disabled={isSigningRestoreWc} className="w-full text-sm">
+                            {isSigningRestoreWc ? 'Signing...' : '🔗 Sign with Connected Wallet'}
+                          </GlassButton>
+                        ) : (
+                          <p className="text-[10px] text-text-tertiary">Connect your wallet first using the WalletConnect button.</p>
+                        )}
+                      </>
+                    ) : (
+                      <GlassButton variant="secondary" onClick={() => { setRestoreWalletSig(''); setRestoreWcAddress(''); }} className="text-xs">
+                        Clear Signature
+                      </GlassButton>
+                    )}
+                  </div>
+
+                  <div className="flex gap-3 pt-1">
+                    <GlassButton
+                      variant="secondary"
+                      onClick={() => { resetRestoreState(); setShowRestoreModal(false); }}
+                      disabled={isRestoring}
+                    >
+                      Cancel
+                    </GlassButton>
+                    <GlassButton
+                      variant="primary"
+                      onClick={handleIpfsRestore}
+                      disabled={isRestoring || !restorePassword || (ipfsInputMode === 'jwt' ? !ipfsSelectedCid : !ipfsDirectCid.trim())}
+                      loading={isRestoring}
+                    >
+                      {isRestoring ? 'Restoring...' : 'Restore from IPFS'}
+                    </GlassButton>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         </div>
