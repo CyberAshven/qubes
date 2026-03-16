@@ -6194,7 +6194,8 @@ async fn export_account_backup(app_handle: AppHandle,
     user_id: String,
     export_path: String,
     export_password: String,
-    master_password: String
+    master_password: String,
+    wallet_sig: Option<String>,
 ) -> Result<ExportAccountBackupResponse, String> {
 
     validate_identifier(&user_id, "user_id")?;
@@ -6205,6 +6206,9 @@ async fn export_account_backup(app_handle: AppHandle,
     secrets.insert("password", master_password.as_str());
     secrets.insert("master_password", master_password.as_str());
     secrets.insert("export_password", export_password.as_str());
+    if let Some(sig) = &wallet_sig {
+        secrets.insert("wallet_sig", sig.as_str());
+    }
 
     let result = sidecar_execute_with_retry("export-account-backup", args, secrets, Some(&app_handle), Some(300)).await?;
 

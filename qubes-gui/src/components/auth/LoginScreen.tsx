@@ -259,7 +259,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
         <>
           <p className="text-text-tertiary text-xs mb-2">
             Connect your BCH wallet (Cashonize / Zapit) to authenticate.{' '}
-            <span className="text-accent-warning">Required for wallet-bound backups.</span>
+            <span className="text-accent-warning">Required for all backups and restores.</span>
           </p>
           <button
             onClick={handleConnectWallet}
@@ -568,7 +568,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
                 <GlassButton
                   variant="primary"
                   onClick={handleIpfsRestore}
-                  disabled={!ipfsRestorePassword || !ipfsRestoreMasterPassword || !ipfsRestoreMasterPasswordConfirm || isIpfsRestoring}
+                  disabled={!ipfsRestorePassword || !ipfsRestoreMasterPassword || !ipfsRestoreMasterPasswordConfirm || !walletSig || isIpfsRestoring}
                   loading={isIpfsRestoring}
                 >
                   {isIpfsRestoring ? 'Restoring...' : 'Restore Account'}
@@ -668,7 +668,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
               <GlassButton
                 variant="primary"
                 onClick={handleRestore}
-                disabled={!restoreFilePath || !restorePassword || !restoreMasterPassword || !restoreMasterPasswordConfirm || isRestoring}
+                disabled={!restoreFilePath || !restorePassword || !restoreMasterPassword || !restoreMasterPasswordConfirm || !walletSig || isRestoring}
                 loading={isRestoring}
               >
                 {isRestoring ? 'Restoring...' : 'Restore Account'}
