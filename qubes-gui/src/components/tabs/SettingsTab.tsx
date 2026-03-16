@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { GlassCard, GlassButton, GlassInput } from '../glass';
 import { useAuth } from '../../hooks/useAuth';
 import { useChainState } from '../../contexts/ChainStateContext';
@@ -219,6 +220,7 @@ export const SettingsTab: React.FC = () => {
     trustPersonality: true,
     voiceSettings: true,
     gpuAcceleration: true,
+    localModels: true,
     decisionIntelligence: true,
     security: true,
     celebrationSettings: true,
@@ -295,6 +297,20 @@ export const SettingsTab: React.FC = () => {
   }>({});
   const [gpuUninstalling, setGpuUninstalling] = useState(false);
   const [gpuError, setGpuError] = useState<string | null>(null);
+
+  // Local Models state
+  const [ollamaModels, setOllamaModels] = useState<string[]>([]);
+  const [isPullingModel, setIsPullingModel] = useState<string | null>(null);
+  const [pullProgress, setPullProgress] = useState<{ status: string; completed?: number; total?: number } | null>(null);
+  const [ttsModelStatus, setTtsModelStatus] = useState<{
+    kokoro_installed: boolean;
+    sentence_transformers_installed: boolean;
+    whisper_installed: boolean;
+    models_dir: string;
+  } | null>(null);
+  const [isUpdatingTts, setIsUpdatingTts] = useState(false);
+  const [ttsUpdateResult, setTtsUpdateResult] = useState<string | null>(null);
+  const pullListenerRef = useRef<(() => void) | null>(null);
 
   const formatBytes = (bytes: number): string => {
     if (bytes === 0) return '0 B';
@@ -378,6 +394,93 @@ export const SettingsTab: React.FC = () => {
       checkGpuAcceleration();
     }
   }, [userId]);
+
+  // Listen for Ollama pull progress events
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    listen<{ model: string; status: string; completed?: number; total?: number }>('ollama-pull-progress', (event) => {
+      if (event.payload.status === 'done') {
+        setPullProgress(null);
+        setIsPullingModel(null);
+        // Refresh model list after pull
+        checkOllamaModels();
+      } else {
+        setPullProgress({ status: event.payload.status, completed: event.payload.completed, total: event.payload.total });
+      }
+    }).then((fn) => {
+      unlisten = fn;
+      pullListenerRef.current = fn;
+    });
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
+
+  const checkOllamaModels = async () => {
+    try {
+      const result = await invoke<{ running: boolean; models: string[] }>('check_ollama_status');
+      if (result.running) {
+        setOllamaModels(result.models);
+      }
+    } catch (err) {
+      console.error('Failed to check Ollama models:', err);
+    }
+  };
+
+  const checkTtsModels = async () => {
+    if (!userId) return;
+    try {
+      const result = await invoke<any>('check_local_tts_models', { userId });
+      setTtsModelStatus(result);
+    } catch (err) {
+      console.error('Failed to check TTS models:', err);
+    }
+  };
+
+  const handlePullModel = async (modelName: string) => {
+    if (isPullingModel) return;
+    setIsPullingModel(modelName);
+    setPullProgress({ status: 'starting...' });
+    try {
+      await invoke('pull_ollama_model', { modelName });
+    } catch (err) {
+      setIsPullingModel(null);
+      setPullProgress(null);
+      alert(`Failed to pull ${modelName}: ${err}`);
+    }
+  };
+
+  const handleUpdateAllOllamaModels = async () => {
+    if (isPullingModel || ollamaModels.length === 0) return;
+    for (const model of ollamaModels) {
+      setIsPullingModel(model);
+      setPullProgress({ status: 'starting...' });
+      try {
+        await invoke('pull_ollama_model', { modelName: model });
+      } catch (err) {
+        console.error(`Failed to pull ${model}:`, err);
+      }
+    }
+  };
+
+  const handleUpdateTtsModels = async () => {
+    if (!userId || isUpdatingTts) return;
+    setIsUpdatingTts(true);
+    setTtsUpdateResult(null);
+    try {
+      const result = await invoke<{ success: boolean; updated: string[]; errors: string[] }>('update_local_tts_models', { userId });
+      if (result.success) {
+        setTtsUpdateResult(`Updated: ${result.updated.join(', ') || 'already up to date'}`);
+      } else {
+        setTtsUpdateResult(`Errors: ${result.errors.join('; ')}`);
+      }
+      await checkTtsModels();
+    } catch (err) {
+      setTtsUpdateResult(`Failed: ${err}`);
+    } finally {
+      setIsUpdatingTts(false);
+    }
+  };
 
   const checkGpuAcceleration = async () => {
     try {
@@ -1772,6 +1875,135 @@ export const SettingsTab: React.FC = () => {
                   ) : (
                     <p className="text-xs text-text-tertiary">Checking GPU status...</p>
                   )}
+                </>
+              )}
+            </GlassCard>
+
+            {/* Local Models */}
+            <GlassCard className="p-4 mt-4">
+              <button
+                onClick={() => {
+                  togglePanel('localModels');
+                  if (collapsedPanels.localModels) {
+                    checkOllamaModels();
+                    checkTtsModels();
+                  }
+                }}
+                className="w-full flex items-center justify-between text-left"
+              >
+                <h2 className="text-lg font-display text-text-primary">
+                  📦 Local Models
+                </h2>
+                <span className={`text-text-tertiary transition-transform ${collapsedPanels.localModels ? '' : 'rotate-180'}`}>
+                  ▼
+                </span>
+              </button>
+
+              {!collapsedPanels.localModels && (
+                <>
+                  <p className="text-[10px] text-text-tertiary mb-4 mt-2">
+                    Update AI models (Ollama) and voice/embedding models (Kokoro TTS, Sentence Transformers).
+                  </p>
+
+                  {/* Ollama Models */}
+                  <div className="mb-4">
+                    <h3 className="text-sm font-medium text-text-secondary mb-2">🤖 AI Models (Ollama)</h3>
+                    {ollamaModels.length > 0 ? (
+                      <div className="space-y-2">
+                        {ollamaModels.map((model) => (
+                          <div key={model} className="flex items-center justify-between bg-bg-primary/40 rounded px-3 py-2">
+                            <div>
+                              <span className="text-xs text-text-primary font-mono">{model}</span>
+                              <span className="ml-2 text-[10px] text-green-400">✓ installed</span>
+                            </div>
+                            <GlassButton
+                              variant="secondary"
+                              onClick={() => handlePullModel(model)}
+                              disabled={isPullingModel !== null}
+                            >
+                              {isPullingModel === model ? 'Updating...' : 'Update'}
+                            </GlassButton>
+                          </div>
+                        ))}
+                        <GlassButton
+                          variant="primary"
+                          onClick={handleUpdateAllOllamaModels}
+                          disabled={isPullingModel !== null}
+                          className="w-full mt-2"
+                        >
+                          {isPullingModel ? `Updating ${isPullingModel}...` : 'Update All Ollama Models'}
+                        </GlassButton>
+                      </div>
+                    ) : (
+                      <div className="text-xs text-text-tertiary italic">No Ollama models installed yet.</div>
+                    )}
+
+                    {/* Pull progress */}
+                    {pullProgress && (
+                      <div className="mt-3 p-3 bg-bg-primary/60 rounded border border-glass-border">
+                        <div className="flex justify-between text-xs text-text-secondary mb-1">
+                          <span>{pullProgress.status}</span>
+                          {pullProgress.total && pullProgress.total > 0 && (
+                            <span>
+                              {formatBytes(pullProgress.completed ?? 0)} / {formatBytes(pullProgress.total)}
+                            </span>
+                          )}
+                        </div>
+                        {pullProgress.total && pullProgress.total > 0 && (
+                          <div className="w-full bg-bg-quaternary rounded-full h-1.5">
+                            <div
+                              className="bg-accent-primary h-1.5 rounded-full transition-all"
+                              style={{ width: `${Math.min(100, ((pullProgress.completed ?? 0) / pullProgress.total) * 100)}%` }}
+                            />
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Voice & Embedding Models */}
+                  <div>
+                    <h3 className="text-sm font-medium text-text-secondary mb-2">🎙️ Voice & Embedding Models</h3>
+                    {ttsModelStatus ? (
+                      <div className="space-y-2 mb-3">
+                        <div className="flex items-center justify-between bg-bg-primary/40 rounded px-3 py-2">
+                          <span className="text-xs text-text-primary">Kokoro TTS 82M</span>
+                          <span className={`text-[10px] ${ttsModelStatus.kokoro_installed ? 'text-green-400' : 'text-red-400'}`}>
+                            {ttsModelStatus.kokoro_installed ? '✓ installed' : '✗ missing'}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between bg-bg-primary/40 rounded px-3 py-2">
+                          <span className="text-xs text-text-primary">Sentence Transformers</span>
+                          <span className={`text-[10px] ${ttsModelStatus.sentence_transformers_installed ? 'text-green-400' : 'text-red-400'}`}>
+                            {ttsModelStatus.sentence_transformers_installed ? '✓ installed' : '✗ missing'}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between bg-bg-primary/40 rounded px-3 py-2">
+                          <span className="text-xs text-text-primary">Whisper STT</span>
+                          <span className={`text-[10px] ${ttsModelStatus.whisper_installed ? 'text-green-400' : 'text-red-400'}`}>
+                            {ttsModelStatus.whisper_installed ? '✓ installed' : '✗ missing'}
+                          </span>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-xs text-text-tertiary italic mb-3">Click to check model status...</div>
+                    )}
+
+                    <GlassButton
+                      variant="secondary"
+                      onClick={handleUpdateTtsModels}
+                      disabled={isUpdatingTts}
+                      className="w-full"
+                    >
+                      {isUpdatingTts ? 'Re-downloading...' : 'Re-download Voice Models'}
+                    </GlassButton>
+
+                    {ttsUpdateResult && (
+                      <p className={`text-xs mt-2 ${ttsUpdateResult.startsWith('Updated') ? 'text-green-400' : 'text-red-400'}`}>
+                        {ttsUpdateResult}
+                      </p>
+                    )}
+                  </div>
                 </>
               )}
             </GlassCard>

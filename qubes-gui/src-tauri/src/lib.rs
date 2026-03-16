@@ -5901,6 +5901,87 @@ async fn start_ollama() -> Result<bool, String> {
     Ok(true)
 }
 
+/// Pull an Ollama model, streaming progress events to the frontend
+#[tauri::command]
+async fn pull_ollama_model(app_handle: AppHandle, model_name: String) -> Result<bool, String> {
+    use futures_util::StreamExt;
+
+    let client = reqwest::Client::new();
+    let body = serde_json::json!({ "name": model_name, "stream": true });
+
+    let response = client
+        .post("http://127.0.0.1:11434/api/pull")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to connect to Ollama: {}", e))?;
+
+    if !response.status().is_success() {
+        return Err(format!("Ollama pull failed with status: {}", response.status()));
+    }
+
+    let mut stream = response.bytes_stream();
+    let mut buf = String::new();
+
+    while let Some(chunk) = stream.next().await {
+        let bytes = chunk.map_err(|e| format!("Stream error: {}", e))?;
+        buf.push_str(&String::from_utf8_lossy(&bytes));
+
+        // Process complete NDJSON lines
+        while let Some(pos) = buf.find('\n') {
+            let line = buf[..pos].trim().to_string();
+            buf = buf[pos + 1..].to_string();
+
+            if line.is_empty() {
+                continue;
+            }
+
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) {
+                let payload = serde_json::json!({
+                    "model": model_name,
+                    "status": json.get("status").and_then(|v| v.as_str()).unwrap_or(""),
+                    "completed": json.get("completed").and_then(|v| v.as_u64()),
+                    "total": json.get("total").and_then(|v| v.as_u64()),
+                    "digest": json.get("digest").and_then(|v| v.as_str()).unwrap_or(""),
+                });
+                let _ = app_handle.emit("ollama-pull-progress", payload);
+            }
+        }
+    }
+
+    // Emit done event
+    let _ = app_handle.emit("ollama-pull-progress", serde_json::json!({
+        "model": model_name,
+        "status": "done",
+        "completed": null,
+        "total": null,
+    }));
+
+    Ok(true)
+}
+
+/// Check status of local TTS/embedding models via Python sidecar
+#[tauri::command]
+async fn check_local_tts_models(app_handle: AppHandle, user_id: String) -> Result<serde_json::Value, String> {
+    let args = vec![user_id];
+    let secrets = HashMap::new();
+    let result = sidecar_execute_with_retry("check-local-tts-models", args, secrets, Some(&app_handle), None).await?;
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse check-local-tts-models response: {}", e))?;
+    Ok(response)
+}
+
+/// Re-download/update local TTS and embedding models via Python sidecar
+#[tauri::command]
+async fn update_local_tts_models(app_handle: AppHandle, user_id: String) -> Result<serde_json::Value, String> {
+    let args = vec![user_id];
+    let secrets = HashMap::new();
+    let result = sidecar_execute_with_retry("update-local-tts-models", args, secrets, Some(&app_handle), None).await?;
+    let response: serde_json::Value = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse update-local-tts-models response: {}", e))?;
+    Ok(response)
+}
+
 /// Open external URL in default browser (using safe opener plugin)
 #[tauri::command]
 async fn open_external_url(url: String) -> Result<bool, String> {
@@ -7824,6 +7905,9 @@ pub fn run() {
             check_ollama_status,
             get_backend_diagnostics,
             start_ollama,
+            pull_ollama_model,
+            check_local_tts_models,
+            update_local_tts_models,
             open_external_url,
             // Chain Sync (NFT-Bundled Storage)
             sync_to_chain,
