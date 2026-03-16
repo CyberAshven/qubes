@@ -29,9 +29,9 @@ class BlockPreferences:
     group_anchor_threshold: int = 20  # Anchor threshold for group chats
 
     # IPFS backup settings
-    auto_sync_ipfs_on_anchor: bool = False  # Auto-sync to IPFS after auto-anchor
-    auto_sync_ipfs_periodic: bool = False  # Periodic background sync to IPFS
-    auto_sync_ipfs_interval: int = 15  # Interval in minutes (15, 30, 45, 60)
+    auto_sync_ipfs_on_anchor: bool = True   # Auto-sync to IPFS after auto-anchor
+    auto_sync_ipfs_periodic: bool = True   # Periodic background sync to IPFS
+    auto_sync_ipfs_interval: int = 15      # Interval in minutes (5, 15, 30, 60)
 
 
 @dataclass

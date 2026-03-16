@@ -126,8 +126,8 @@ export const SettingsTab: React.FC = () => {
     individual_anchor_threshold: 10,
     group_auto_anchor: true,
     group_anchor_threshold: 5,
-    auto_sync_ipfs_on_anchor: false,
-    auto_sync_ipfs_periodic: false,
+    auto_sync_ipfs_on_anchor: true,
+    auto_sync_ipfs_periodic: true,
     auto_sync_ipfs_interval: 15,
   });
   const [loadingPreferences, setLoadingPreferences] = useState(true);
@@ -1295,7 +1295,7 @@ export const SettingsTab: React.FC = () => {
                 className="w-full flex items-center justify-between text-left"
               >
                 <h2 className="text-lg font-display text-text-primary">
-                  ⚓ Auto-Anchor
+                  ⚓ Anchor &amp; Backup
                 </h2>
                 <span className={`text-text-tertiary transition-transform ${collapsedPanels.blockSettings ? '' : 'rotate-180'}`}>
                   ▼
@@ -1307,15 +1307,17 @@ export const SettingsTab: React.FC = () => {
               {loadingPreferences ? (
                 <p className="text-xs text-text-tertiary">Loading...</p>
               ) : (
-                <div className="space-y-3">
-                  {/* Individual Chat Settings */}
-                  <div className="border-b border-white/10 pb-3">
-                    <h3 className="text-xs font-medium text-text-primary mb-2">
-                      Individual Chat
-                    </h3>
+                <div className="space-y-4 mt-3">
+
+                  {/* BCH Anchor */}
+                  <div className="border border-white/10 rounded-lg p-3 space-y-3">
+                    <h3 className="text-xs font-semibold text-text-primary uppercase tracking-wide">⛓️ BCH Anchor (local + on-chain hash)</h3>
+
+                    {/* Individual Chat */}
                     <div className="space-y-2">
+                      <p className="text-[10px] text-text-tertiary font-medium">Individual Chat</p>
                       <label className="flex items-center justify-between text-xs">
-                        <span className="text-text-secondary">Auto-anchor</span>
+                        <span className="text-text-secondary">Auto-anchor enabled</span>
                         <input
                           type="checkbox"
                           checked={blockPreferences.individual_auto_anchor}
@@ -1324,33 +1326,31 @@ export const SettingsTab: React.FC = () => {
                           className="w-4 h-4 rounded bg-surface-secondary border-border-subtle accent-accent-primary"
                         />
                       </label>
-                      <label className="flex items-center justify-between text-xs">
-                        <span className="text-text-secondary">Anchor every</span>
-                        <div className="flex items-center gap-1">
-                          <input
-                            type="number"
-                            min="5"
-                            max="50"
-                            value={individualThresholdInput}
-                            onChange={(e) => setIndividualThresholdInput(e.target.value)}
-                            onBlur={(e) => handleThresholdBlur('individual_anchor_threshold', e.target.value)}
-                            disabled={savingPreferences}
-                            className="w-14 h-6 px-2 text-xs rounded bg-white/90 border border-border-subtle text-gray-900 focus:outline-none focus:border-accent-primary"
-                          />
-                          <span className="text-text-tertiary text-[10px]">blocks</span>
-                        </div>
-                      </label>
+                      {blockPreferences.individual_auto_anchor && (
+                        <label className="flex items-center justify-between text-xs">
+                          <span className="text-text-secondary">Anchor every</span>
+                          <div className="flex items-center gap-1">
+                            <input
+                              type="number"
+                              min="5"
+                              max="50"
+                              value={individualThresholdInput}
+                              onChange={(e) => setIndividualThresholdInput(e.target.value)}
+                              onBlur={(e) => handleThresholdBlur('individual_anchor_threshold', e.target.value)}
+                              disabled={savingPreferences}
+                              className="w-14 h-6 px-2 text-xs rounded bg-white/90 border border-border-subtle text-gray-900 focus:outline-none focus:border-accent-primary"
+                            />
+                            <span className="text-text-tertiary text-[10px]">blocks (~{Math.round(parseInt(individualThresholdInput||'10')/2)} msgs)</span>
+                          </div>
+                        </label>
+                      )}
                     </div>
-                  </div>
 
-                  {/* Group Chat Settings */}
-                  <div className="border-b border-white/10 pb-3">
-                    <h3 className="text-xs font-medium text-text-primary mb-2">
-                      Group Chat
-                    </h3>
-                    <div className="space-y-2">
+                    {/* Group Chat */}
+                    <div className="space-y-2 pt-1 border-t border-white/5">
+                      <p className="text-[10px] text-text-tertiary font-medium pt-1">Group Chat</p>
                       <label className="flex items-center justify-between text-xs">
-                        <span className="text-text-secondary">Auto-anchor</span>
+                        <span className="text-text-secondary">Auto-anchor enabled</span>
                         <input
                           type="checkbox"
                           checked={blockPreferences.group_auto_anchor}
@@ -1359,33 +1359,35 @@ export const SettingsTab: React.FC = () => {
                           className="w-4 h-4 rounded bg-surface-secondary border-border-subtle accent-accent-primary"
                         />
                       </label>
-                      <label className="flex items-center justify-between text-xs">
-                        <span className="text-text-secondary">Anchor every</span>
-                        <div className="flex items-center gap-1">
-                          <input
-                            type="number"
-                            min="5"
-                            max="50"
-                            value={groupThresholdInput}
-                            onChange={(e) => setGroupThresholdInput(e.target.value)}
-                            onBlur={(e) => handleThresholdBlur('group_anchor_threshold', e.target.value)}
-                            disabled={savingPreferences}
-                            className="w-14 h-6 px-2 text-xs rounded bg-white/90 border border-border-subtle text-gray-900 focus:outline-none focus:border-accent-primary"
-                          />
-                          <span className="text-text-tertiary text-[10px]">blocks</span>
-                        </div>
-                      </label>
+                      {blockPreferences.group_auto_anchor && (
+                        <label className="flex items-center justify-between text-xs">
+                          <span className="text-text-secondary">Anchor every</span>
+                          <div className="flex items-center gap-1">
+                            <input
+                              type="number"
+                              min="5"
+                              max="50"
+                              value={groupThresholdInput}
+                              onChange={(e) => setGroupThresholdInput(e.target.value)}
+                              onBlur={(e) => handleThresholdBlur('group_anchor_threshold', e.target.value)}
+                              disabled={savingPreferences}
+                              className="w-14 h-6 px-2 text-xs rounded bg-white/90 border border-border-subtle text-gray-900 focus:outline-none focus:border-accent-primary"
+                            />
+                            <span className="text-text-tertiary text-[10px]">blocks (~{Math.round(parseInt(groupThresholdInput||'5')/2)} msgs)</span>
+                          </div>
+                        </label>
+                      )}
                     </div>
                   </div>
 
-                  {/* IPFS Sync Settings */}
-                  <div>
-                    <h3 className="text-xs font-medium text-text-primary mb-2">
-                      IPFS Sync
-                    </h3>
-                    <div className="space-y-2">
+                  {/* IPFS Backup */}
+                  <div className="border border-white/10 rounded-lg p-3 space-y-3">
+                    <h3 className="text-xs font-semibold text-text-primary uppercase tracking-wide">☁️ IPFS Backup (Pinata)</h3>
+
+                    {/* After anchor */}
+                    <div className="space-y-1">
                       <label className="flex items-center justify-between text-xs">
-                        <span className="text-text-secondary">Sync to IPFS after auto-anchor</span>
+                        <span className="text-text-secondary">After each anchor</span>
                         <input
                           type="checkbox"
                           checked={blockPreferences.auto_sync_ipfs_on_anchor}
@@ -1395,10 +1397,13 @@ export const SettingsTab: React.FC = () => {
                         />
                       </label>
                       <p className="text-[10px] text-text-tertiary">
-                        Automatically upload .qube package to IPFS after each auto-anchor
+                        Upload to Pinata immediately after every auto-anchor (new CID replaces old)
                       </p>
+                    </div>
 
-                      <label className="flex items-center justify-between text-xs pt-2">
+                    {/* Periodic */}
+                    <div className="space-y-1 pt-1 border-t border-white/5">
+                      <label className="flex items-center justify-between text-xs pt-1">
                         <span className="text-text-secondary">Periodic background sync</span>
                         <input
                           type="checkbox"
@@ -1408,45 +1413,40 @@ export const SettingsTab: React.FC = () => {
                           className="w-4 h-4 rounded bg-surface-secondary border-border-subtle accent-accent-primary"
                         />
                       </label>
-                      <p className="text-[10px] text-text-tertiary">
-                        Automatically sync all Qubes to IPFS on a timer
-                      </p>
-
-                      {blockPreferences.auto_sync_ipfs_periodic && (
-                        <label className="flex items-center justify-between text-xs pt-1">
-                          <span className="text-text-secondary">Sync interval</span>
-                          <select
-                            value={blockPreferences.auto_sync_ipfs_interval}
-                            onChange={async (e) => {
-                              const interval = parseInt(e.target.value);
-                              setSavingPreferences(true);
-                              setBlockPreferences(prev => ({ ...prev, auto_sync_ipfs_interval: interval }));
-                              try {
-                                const result = await invoke<BlockPreferences>('update_block_preferences', {
-                                  userId,
-                                  autoSyncIpfsInterval: interval,
-                                });
-                                setBlockPreferences(result);
-                              } catch (error) {
-                                console.error('Failed to update sync interval:', error);
-                                alert(`Error updating sync interval: ${String(error)}`);
-                                await loadBlockPreferences();
-                              } finally {
-                                setSavingPreferences(false);
-                              }
-                            }}
-                            disabled={savingPreferences}
-                            className="bg-surface-secondary border border-border-subtle rounded px-2 py-1 text-xs text-text-primary"
-                          >
-                            <option value={15}>15 minutes</option>
-                            <option value={30}>30 minutes</option>
-                            <option value={45}>45 minutes</option>
-                            <option value={60}>60 minutes</option>
-                          </select>
-                        </label>
-                      )}
+                      <label className="flex items-center justify-between text-xs">
+                        <span className="text-text-secondary pl-0">Sync every</span>
+                        <select
+                          value={blockPreferences.auto_sync_ipfs_interval}
+                          onChange={async (e) => {
+                            const interval = parseInt(e.target.value);
+                            setSavingPreferences(true);
+                            setBlockPreferences(prev => ({ ...prev, auto_sync_ipfs_interval: interval }));
+                            try {
+                              const result = await invoke<BlockPreferences>('update_block_preferences', {
+                                userId,
+                                autoSyncIpfsInterval: interval,
+                              });
+                              setBlockPreferences(result);
+                            } catch (error) {
+                              console.error('Failed to update sync interval:', error);
+                              alert(`Error updating sync interval: ${String(error)}`);
+                              await loadBlockPreferences();
+                            } finally {
+                              setSavingPreferences(false);
+                            }
+                          }}
+                          disabled={savingPreferences || !blockPreferences.auto_sync_ipfs_periodic}
+                          className="bg-surface-secondary border border-border-subtle rounded px-2 py-1 text-xs text-text-primary disabled:opacity-40"
+                        >
+                          <option value={5}>5 minutes</option>
+                          <option value={15}>15 minutes</option>
+                          <option value={30}>30 minutes</option>
+                          <option value={60}>60 minutes</option>
+                        </select>
+                      </label>
                     </div>
                   </div>
+
                 </div>
               )}
                 </>

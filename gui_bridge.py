@@ -12132,6 +12132,25 @@ async def main():
                     lock_file.unlink()
                     debug_log(f"Lock file removed")
 
+                # IPFS sync after anchor — honour the auto_sync_ipfs_on_anchor setting
+                if blocks_anchored > 0:
+                    try:
+                        prefs = user_bridge.orchestrator.get_block_preferences()
+                        if prefs.auto_sync_ipfs_on_anchor:
+                            debug_log(f"auto_sync_ipfs_on_anchor enabled — syncing Qube to IPFS...")
+                            sync_result = await user_bridge.sync_qube_to_ipfs_backup(
+                                qube_id, password, password
+                            )
+                            if sync_result.get("success"):
+                                debug_log(f"IPFS sync OK, CID={sync_result.get('ipfs_cid')}")
+                                logger.info("auto_anchor_ipfs_sync_completed", qube_id=qube_id, cid=sync_result.get("ipfs_cid"))
+                            else:
+                                debug_log(f"IPFS sync failed (non-fatal): {sync_result.get('error')}")
+                                logger.warning("auto_anchor_ipfs_sync_failed", qube_id=qube_id, error=sync_result.get("error"))
+                    except Exception as ipfs_err:
+                        debug_log(f"IPFS sync error (non-fatal): {ipfs_err}")
+                        logger.warning("auto_anchor_ipfs_sync_error", qube_id=qube_id, error=str(ipfs_err))
+
             except Exception as e:
                 import traceback
                 tb = traceback.format_exc()
