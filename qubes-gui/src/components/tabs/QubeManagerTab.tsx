@@ -462,6 +462,7 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
         importPassword: restorePassword,
         masterPassword: masterPassword,
         walletSig: restoreWalletSig || null,
+        walletAddress: restoreWcAddress || null,
       });
 
       if (result.success) {
@@ -525,6 +526,7 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
           importPassword: restorePassword,
           masterPassword,
           walletSig: restoreWalletSig || null,
+          walletAddress: restoreWcAddress || null,
         }
       );
       if (result.success) {

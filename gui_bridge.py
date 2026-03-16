@@ -7512,7 +7512,7 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
                 except Exception:
                     pass
 
-    async def import_account_backup_ipfs(self, ipfs_cid: str, import_password: str, master_password: str, wallet_sig: str = "") -> Dict[str, Any]:
+    async def import_account_backup_ipfs(self, ipfs_cid: str, import_password: str, master_password: str, wallet_sig: str = "", wallet_address: str = "") -> Dict[str, Any]:
         """
         Restore full account backup from IPFS.
 
@@ -7566,7 +7566,7 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
                 tmp.write(backup_bytes)
                 tmp_path = tmp.name
 
-            return await self.import_account_backup(tmp_path, import_password, master_password, wallet_sig=wallet_sig)
+            return await self.import_account_backup(tmp_path, import_password, master_password, wallet_sig=wallet_sig, wallet_address=wallet_address)
 
         except Exception as e:
             logger.error(f"Failed to import account backup from IPFS: {e}", exc_info=True)
@@ -7619,7 +7619,7 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
             logger.error(f"Failed to cleanup incomplete qubes: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
 
-    async def import_account_backup(self, import_path: str, import_password: str, master_password: str, wallet_sig: str = "") -> Dict[str, Any]:
+    async def import_account_backup(self, import_path: str, import_password: str, master_password: str, wallet_sig: str = "", wallet_address: str = "") -> Dict[str, Any]:
         """
         Import a full account backup from a .qube-backup file.
 
@@ -7734,6 +7734,14 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
                     imported_count = 0
                     skipped_count = 0
 
+                    # Build NFT verifier once if wallet_address provided — used to
+                    # reject Qubes the wallet no longer owns (e.g. transferred away
+                    # before this backup was made).
+                    _nft_verifier = None
+                    if wallet_address:
+                        from blockchain.chain_sync import ChainSyncService
+                        _nft_verifier = ChainSyncService().nft_verifier
+
                     for qube_entry in manifest.get("qube_index", []):
                         qube_file = qube_entry["file"]
                         qube_name_entry = qube_entry["name"]
@@ -7757,6 +7765,25 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
                                 qube_export = self._decrypt_section_v2(enc_bytes, key)
                             except Exception:
                                 return {"success": False, "error": f"Wrong password — could not decrypt Qube {qube_name_entry}."}
+
+                            # ── NFT Ownership Check ───────────────────────────────────────────────
+                            # Reject Qubes whose NFT the restoring wallet no longer owns.
+                            # This closes the "old backup" loophole: if you transferred Van's NFT
+                            # away, an old backup file still containing Van should not restore it.
+                            # Qubes without nft_metadata (never minted) are restored unconditionally.
+                            if _nft_verifier:
+                                _nft_meta = qube_export.get("nft_metadata") or {}
+                                _category_id = _nft_meta.get("category_id")
+                                if _category_id:
+                                    _owns = await _nft_verifier.verify_ownership(_category_id, wallet_address)
+                                    if not _owns:
+                                        logger.warning(
+                                            f"Skipping Qube '{qube_name_entry}': "
+                                            f"wallet {wallet_address[:16]}... does not own NFT {_category_id[:16]}..."
+                                        )
+                                        skipped_count += 1
+                                        continue
+                            # ─────────────────────────────────────────────────────────────────────
 
                             qube_id = qube_export["qube_id"]
                             qube_name = qube_export["qube_name"]

@@ -129,6 +129,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
         importPassword: restorePassword,
         masterPassword: restoreMasterPassword,
         walletSig: walletSig,
+        walletAddress: wcAddress || null,
       });
 
       if (result.success) {
@@ -215,6 +216,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
         importPassword: ipfsRestorePassword,
         masterPassword: ipfsRestoreMasterPassword,
         walletSig: walletSig,
+        walletAddress: wcAddress || null,
       });
 
       if (result.success) {

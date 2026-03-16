@@ -6225,6 +6225,7 @@ async fn import_account_backup(app_handle: AppHandle,
     import_password: String,
     master_password: String,
     wallet_sig: Option<String>,
+    wallet_address: Option<String>,
 ) -> Result<ImportAccountBackupResponse, String> {
 
     validate_identifier(&user_id, "user_id")?;
@@ -6237,6 +6238,8 @@ async fn import_account_backup(app_handle: AppHandle,
     secrets.insert("import_password", import_password.as_str());
     let wallet_sig_str = wallet_sig.as_deref().unwrap_or("");
     secrets.insert("wallet_sig", wallet_sig_str);
+    let wallet_address_str = wallet_address.as_deref().unwrap_or("");
+    secrets.insert("wallet_address", wallet_address_str);
 
     let result = sidecar_execute_with_retry("import-account-backup", args, secrets, Some(&app_handle), Some(300)).await?;
 
@@ -6275,6 +6278,7 @@ async fn import_account_backup_ipfs(app_handle: AppHandle,
     import_password: String,
     master_password: String,
     wallet_sig: Option<String>,
+    wallet_address: Option<String>,
 ) -> Result<ImportAccountBackupResponse, String> {
 
     validate_identifier(&user_id, "user_id")?;
@@ -6287,6 +6291,8 @@ async fn import_account_backup_ipfs(app_handle: AppHandle,
     secrets.insert("import_password", import_password.as_str());
     let wallet_sig_str = wallet_sig.as_deref().unwrap_or("");
     secrets.insert("wallet_sig", wallet_sig_str);
+    let wallet_address_str = wallet_address.as_deref().unwrap_or("");
+    secrets.insert("wallet_address", wallet_address_str);
 
     let result = sidecar_execute_with_retry("import-account-backup-ipfs", args, secrets, Some(&app_handle), Some(300)).await?;
 
