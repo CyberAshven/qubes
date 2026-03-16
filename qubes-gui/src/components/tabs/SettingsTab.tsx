@@ -1311,7 +1311,7 @@ export const SettingsTab: React.FC = () => {
 
                   {/* BCH Anchor */}
                   <div className="border border-white/10 rounded-lg p-3 space-y-3">
-                    <h3 className="text-xs font-semibold text-text-primary uppercase tracking-wide">⛓️ BCH Anchor (local + on-chain hash)</h3>
+                    <h3 className="text-xs font-semibold text-text-primary uppercase tracking-wide">⚓ Auto-Anchor</h3>
 
                     {/* Individual Chat */}
                     <div className="space-y-2">
