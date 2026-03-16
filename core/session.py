@@ -1395,6 +1395,38 @@ class Session:
         block_count = len(self.session_blocks)
         self.session_blocks = []
 
+        # Cancel any pending auto-anchor before it can spawn
+        self._auto_anchor_pending = False
+
+        # Delete session block files from disk IMMEDIATELY so any already-spawned
+        # auto-anchor subprocess won't find them when it loads the qube
+        try:
+            from pathlib import Path
+            session_dir = Path(self.qube.data_dir) / "blocks" / "session"
+            if session_dir.exists():
+                for block_file in session_dir.glob("*.json"):
+                    try:
+                        block_file.unlink()
+                    except Exception:
+                        pass  # Best effort - cleanup() will retry
+                logger.info("session_block_files_deleted_on_discard", dir=str(session_dir))
+
+            # Write a discard marker so any in-flight subprocess knows to abort
+            marker = session_dir / ".discarded"
+            session_dir.mkdir(parents=True, exist_ok=True)
+            marker.write_text(self.session_id)
+        except Exception as e:
+            logger.warning("discard_file_cleanup_failed", error=str(e))
+
+        # Remove anchor lock file if it exists (prevents stale locks)
+        try:
+            from pathlib import Path
+            lock_file = Path(self.qube.data_dir) / "blocks" / "session" / ".anchor_lock"
+            if lock_file.exists():
+                lock_file.unlink()
+        except Exception:
+            pass
+
         # Rollback session-scoped data (skills, relationships, mood, owner_info)
         # to the snapshot taken when the session started
         try:

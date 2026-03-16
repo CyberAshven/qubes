@@ -228,8 +228,6 @@ jobs:
                  "$INTERNAL/torch/include" \
                  "$INTERNAL/torch/share" \
                  "$INTERNAL/torch/contrib" \
-                 "$INTERNAL/torch/futures" \
-                 "$INTERNAL/torch/multiprocessing" \
                  "$INTERNAL/torch/autograd/profiler"* \
                  "$INTERNAL/torch/package" 2>/dev/null || true
           # Torch C++ headers and static libs (not needed at runtime)
@@ -276,7 +274,7 @@ jobs:
             "torch/test", "torch/_inductor", "torch/_dynamo", "torch/_functorch",
             "torch/_export", "torch/distributed", "torch/ao", "torch/profiler",
             "torch/onnx", "torch/optim", "torch/include", "torch/share",
-            "torch/contrib", "torch/futures", "torch/multiprocessing", "torch/package",
+            "torch/contrib", "torch/package",
             "transformers/testing_utils", "transformers/models/deprecated",
             "test", "tests", "unittest", "tkinter", "_tk_data", "tcl"
           )

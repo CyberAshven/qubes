@@ -93,7 +93,9 @@ if _custom_models_dir is None:
         pass
 
 # Auto-detect bundled HuggingFace models (heavy bundle)
-# Sets HF_HOME so kokoro, sentence-transformers find pre-downloaded models
+# Sets HF_HOME so kokoro, sentence-transformers find pre-downloaded models.
+# Priority: custom QUBES_MODELS_DIR config > bundled auto-detect.
+# Always creates HF_HOME dir so models auto-download on first use.
 if not os.environ.get('HF_HOME'):
     if _custom_models_dir is not None:
         _hf_models = _custom_models_dir / "huggingface"
@@ -106,11 +108,12 @@ if not os.environ.get('HF_HOME'):
         # models are at Qubes/models/huggingface (one level up)
         _hf_models = _exe_dir.parent / "models" / "huggingface"
         if not _hf_models.exists():
-            # Flat layout: models next to exe
+            # Flat layout or fresh install: use models next to exe
             _hf_models = _exe_dir / "models" / "huggingface"
-        if _hf_models.exists():
-            os.environ['HF_HOME'] = str(_hf_models)
-            os.environ.setdefault('QUBES_MODELS_DIR', str(_hf_models.parent))
+        # Always set HF_HOME — create dir if needed, models will auto-download
+        _hf_models.mkdir(parents=True, exist_ok=True)
+        os.environ['HF_HOME'] = str(_hf_models)
+        os.environ.setdefault('QUBES_MODELS_DIR', str(_hf_models.parent))
 
 # CRITICAL: Disable all logging to stdout/stderr before importing anything
 # Set environment variable to disable structlog output
@@ -12007,13 +12010,31 @@ async def main():
                     logger.error("auto_anchor_background_qube_not_found", qube_id=qube_id)
                     sys.exit(1)
 
+                # Check for discard marker — if the session was discarded while
+                # this subprocess was starting up, abort immediately
+                session_dir = qube.data_dir / "blocks" / "session"
+                discard_marker = session_dir / ".discarded" if session_dir.exists() else None
+                if discard_marker and discard_marker.exists():
+                    debug_log(f"Session was discarded — aborting auto-anchor")
+                    logger.info("auto_anchor_aborted_session_discarded", qube_id=qube_id)
+                    try:
+                        discard_marker.unlink()
+                    except Exception:
+                        pass
+                    sys.exit(0)
+
                 # Log session state before anchoring
                 session_blocks_count = len(qube.current_session.session_blocks) if qube.current_session else 0
-                session_dir = qube.data_dir / "blocks" / "session"
                 session_files = list(session_dir.glob("*.json")) if session_dir.exists() else []
                 debug_log(f"Session state before anchor: in_memory_blocks={session_blocks_count}, session_files={len(session_files)}")
                 if session_files:
                     debug_log(f"Session files: {[f.name for f in session_files[:10]]}...")
+
+                # If no session files remain (discard deleted them), abort
+                if not session_files and session_blocks_count == 0:
+                    debug_log(f"No session blocks to anchor — aborting")
+                    logger.info("auto_anchor_aborted_no_blocks", qube_id=qube_id)
+                    sys.exit(0)
 
                 debug_log(f"Calling anchor_session(create_summary=True)...")
 
