@@ -98,7 +98,10 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
 
   // Import from wallet modal state (WalletConnect-based, no WIF)
   const [isScanning, setIsScanning] = useState(false);
-  const [importProgress, setImportProgress] = useState<{ current: number; total: number; name: string } | null>(null);
+  const [importProgress, setImportProgress] = useState<{
+    current: number; total: number; name: string;
+    step: 'downloading' | 'uploading' | 'done';
+  } | null>(null);
 
   // Account backup state
   const [showBackupModal, setShowBackupModal] = useState(false);
@@ -792,9 +795,10 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
     const errors: string[] = [];
 
     try {
+      // Step 1: Download + decrypt + save each Qube
       for (let i = 0; i < importable.length; i++) {
         const q = importable[i];
-        setImportProgress({ current: i + 1, total: importable.length, name: q.qube_name });
+        setImportProgress({ current: i + 1, total: importable.length, name: q.qube_name, step: 'downloading' });
 
         try {
           const result = await invoke<{
@@ -805,7 +809,7 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
             error?: string;
           }>('import_from_wallet', {
             userId,
-            walletWif: '',  // Empty = password-based decryption
+            walletWif: '',
             categoryId: q.category_id,
             password: masterPassword,
           });
@@ -823,17 +827,30 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
         }
       }
 
-      const summary = [`Imported ${imported} of ${importable.length} Qube(s).`];
-      if (failed > 0) summary.push(`\n${failed} failed:\n${errors.join('\n')}`);
-      alert(summary.join(''));
+      // Step 2: Upload to recipient's own Pinata
+      if (imported > 0 && pinataConfigured) {
+        setImportProgress({ current: importable.length, total: importable.length, name: 'All Qubes', step: 'uploading' });
+        try {
+          await invoke('export_account_backup_ipfs', {
+            userId,
+            exportPassword: masterPassword,
+            masterPassword,
+            walletSig: null,
+          });
+        } catch (e) {
+          console.warn('IPFS sync after import failed (non-fatal):', e);
+        }
+      }
 
       if (imported > 0) {
+        setImportProgress({ current: importable.length, total: importable.length, name: 'All Qubes', step: 'done' });
+        await new Promise(r => setTimeout(r, 1200));
         setShowImportFromWalletModal(false);
         resetImportState();
-        // Auto-sync to recipient's own IPFS after import so Qube is anchored to their account
-        if (pinataConfigured) {
-          handleIpfsBackupAll(true);
-        }
+      } else {
+        const summary = [`Imported ${imported} of ${importable.length} Qube(s).`];
+        if (failed > 0) summary.push(`\n${failed} failed:\n${errors.join('\n')}`);
+        alert(summary.join(''));
       }
     } catch (error) {
       alert(`Import failed: ${error}`);
@@ -1337,10 +1354,35 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
 
             {/* Import progress */}
             {importProgress && (
-              <div className="mb-4 p-3 bg-accent-primary/10 border border-accent-primary/30 rounded-lg">
-                <p className="text-accent-primary text-sm">
-                  Importing {importProgress.current} of {importProgress.total}: {importProgress.name}...
-                </p>
+              <div className="mb-4 p-4 bg-accent-primary/10 border border-accent-primary/30 rounded-lg">
+                {/* Progress bar */}
+                <div className="w-full bg-glass-bg rounded-full h-1.5 mb-3 overflow-hidden">
+                  <div
+                    className="bg-accent-primary h-1.5 rounded-full transition-all duration-700"
+                    style={{ width: importProgress.step === 'done' ? '100%' : importProgress.step === 'uploading' ? '80%' : `${Math.round((importProgress.current / importProgress.total) * 60)}%` }}
+                  />
+                </div>
+                {/* Steps */}
+                <div className="space-y-2">
+                  {[
+                    { key: 'downloading', icon: '⬇️', label: `Downloading & decrypting from IPFS (${importProgress.current}/${importProgress.total})` },
+                    { key: 'uploading',   icon: '☁️', label: 'Uploading to your Pinata backup...' },
+                    { key: 'done',        icon: '✅', label: 'All done — Qube(s) ready' },
+                  ].map(({ key, icon, label }) => {
+                    const steps = ['downloading', 'uploading', 'done'];
+                    const stepIdx = steps.indexOf(importProgress.step);
+                    const thisIdx = steps.indexOf(key);
+                    const isDone = thisIdx < stepIdx;
+                    const isActive = thisIdx === stepIdx;
+                    return (
+                      <div key={key} className={`flex items-center gap-2 text-xs ${isDone ? 'text-accent-success' : isActive ? 'text-accent-primary' : 'text-text-tertiary'}`}>
+                        <span>{isDone ? '✓' : isActive ? icon : '○'}</span>
+                        <span>{label}</span>
+                        {isActive && key !== 'done' && <span className="animate-pulse">...</span>}
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             )}
 
