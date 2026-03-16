@@ -20,6 +20,7 @@ import WalletConnectButton from '../WalletConnectButton';
 import { useModels } from '../../hooks/useModels';
 import { useChainState } from '../../contexts/ChainStateContext';
 import { useVoiceLibrary } from '../../contexts/VoiceLibraryContext';
+import { QRCodeCanvas } from 'qrcode.react';
 import {
   DndContext,
   closestCenter,
@@ -132,6 +133,8 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
   const [restoreWalletSig, setRestoreWalletSig] = useState('');
   const [restoreWcAddress, setRestoreWcAddress] = useState('');
   const [isSigningRestoreWc, setIsSigningRestoreWc] = useState(false);
+  const [restoreWcUri, setRestoreWcUri] = useState('');
+  const [restoreWcCopied, setRestoreWcCopied] = useState(false);
 
   // Pinata configuration check
   const [pinataConfigured, setPinataConfigured] = useState<boolean | null>(null);
@@ -440,6 +443,7 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
     setIpfsListError(null);
     setRestoreWalletSig('');
     setRestoreWcAddress('');
+    setRestoreWcUri('');
   };
 
   // Restore (merge) qubes from a backup file
@@ -536,13 +540,18 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
 
   const handleSignRestoreWc = async () => {
     setIsSigningRestoreWc(true);
+    setRestoreWcUri('');
     try {
-      const { getSession, signMessage: wcSignMessage } = await import('../../services/walletConnect');
-      const session = await getSession();
+      const { connect: wcConnect, getSession, signMessage: wcSignMessage } = await import('../../services/walletConnect');
+      let session = await getSession();
+      if (!session) {
+        session = await wcConnect((uri) => setRestoreWcUri(uri));
+        setRestoreWcUri('');
+      }
       if (session) {
         const sig = await wcSignMessage('qubes-backup-key:v1', 'Qubes needs to verify wallet ownership to decrypt your backup', session.topic);
         setRestoreWalletSig(sig);
-        setRestoreWcAddress(wallet.address || '');
+        setRestoreWcAddress(session.address || wallet.address || '');
       }
     } catch (err) {
       console.error('WC sign failed:', err);
@@ -1516,12 +1525,22 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
                     {!restoreWalletSig ? (
                       <>
                         <p className="text-[10px] text-text-tertiary mb-2">Connect your wallet to prove ownership. Required for all restores.</p>
-                        {wallet.connected ? (
-                          <GlassButton variant="secondary" onClick={handleSignRestoreWc} disabled={isSigningRestoreWc} className="w-full text-sm">
-                            {isSigningRestoreWc ? 'Signing...' : '🔗 Sign with Connected Wallet'}
-                          </GlassButton>
-                        ) : (
-                          <p className="text-[10px] text-text-tertiary">Connect your wallet first using the WalletConnect button.</p>
+                        <GlassButton variant="secondary" onClick={handleSignRestoreWc} disabled={isSigningRestoreWc} className="w-full text-sm">
+                          {isSigningRestoreWc ? 'Connecting...' : '🔗 Connect & Sign Wallet'}
+                        </GlassButton>
+                        {restoreWcUri && (
+                          <div className="mt-2 flex flex-col items-center gap-2">
+                            <p className="text-[10px] text-text-tertiary">Scan with Cashonize or Zapit:</p>
+                            <div className="bg-white p-2 rounded">
+                              <QRCodeCanvas value={restoreWcUri} size={140} />
+                            </div>
+                            <button
+                              onClick={() => { navigator.clipboard.writeText(restoreWcUri); setRestoreWcCopied(true); setTimeout(() => setRestoreWcCopied(false), 2000); }}
+                              className="text-xs text-accent-primary hover:underline"
+                            >
+                              {restoreWcCopied ? '✓ Copied!' : 'Copy URL'}
+                            </button>
+                          </div>
                         )}
                       </>
                     ) : (
@@ -1658,12 +1677,22 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
                     {!restoreWalletSig ? (
                       <>
                         <p className="text-[10px] text-text-tertiary mb-2">Connect your wallet to authenticate backup access. Required for all restores.</p>
-                        {wallet.connected ? (
-                          <GlassButton variant="secondary" onClick={handleSignRestoreWc} disabled={isSigningRestoreWc} className="w-full text-sm">
-                            {isSigningRestoreWc ? 'Signing...' : '🔗 Sign with Connected Wallet'}
-                          </GlassButton>
-                        ) : (
-                          <p className="text-[10px] text-text-tertiary">Connect your wallet first using the WalletConnect button.</p>
+                        <GlassButton variant="secondary" onClick={handleSignRestoreWc} disabled={isSigningRestoreWc} className="w-full text-sm">
+                          {isSigningRestoreWc ? 'Connecting...' : '🔗 Connect & Sign Wallet'}
+                        </GlassButton>
+                        {restoreWcUri && (
+                          <div className="mt-2 flex flex-col items-center gap-2">
+                            <p className="text-[10px] text-text-tertiary">Scan with Cashonize or Zapit:</p>
+                            <div className="bg-white p-2 rounded">
+                              <QRCodeCanvas value={restoreWcUri} size={140} />
+                            </div>
+                            <button
+                              onClick={() => { navigator.clipboard.writeText(restoreWcUri); setRestoreWcCopied(true); setTimeout(() => setRestoreWcCopied(false), 2000); }}
+                              className="text-xs text-accent-primary hover:underline"
+                            >
+                              {restoreWcCopied ? '✓ Copied!' : 'Copy URL'}
+                            </button>
+                          </div>
                         )}
                       </>
                     ) : (

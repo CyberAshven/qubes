@@ -258,7 +258,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
         <>
           <p className="text-text-tertiary text-xs mb-2">
             Connect your BCH wallet (Cashonize / Zapit) to authenticate.{' '}
-            <span className="text-accent-warning">Required for all backups and restores.</span>
+            <span className="text-accent-warning">Required for all restores.</span>
           </p>
           <button
             onClick={handleConnectWallet}
@@ -273,6 +273,12 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
               <div className="bg-white p-2 rounded">
                 <QRCodeCanvas value={wcUri} size={160} />
               </div>
+              <button
+                onClick={() => navigator.clipboard.writeText(wcUri)}
+                className="text-xs text-accent-primary hover:underline"
+              >
+                Copy URL
+              </button>
             </div>
           )}
           {wcError && <p className="text-accent-danger text-xs mt-2">{wcError}</p>}
