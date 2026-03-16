@@ -830,6 +830,10 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
       if (imported > 0) {
         setShowImportFromWalletModal(false);
         resetImportState();
+        // Auto-sync to recipient's own IPFS after import so Qube is anchored to their account
+        if (pinataConfigured) {
+          handleIpfsBackupAll(true);
+        }
       }
     } catch (error) {
       alert(`Import failed: ${error}`);
