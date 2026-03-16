@@ -52,6 +52,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
   const [walletSig, setWalletSig] = useState('');
   const [isConnectingWallet, setIsConnectingWallet] = useState(false);
   const [wcError, setWcError] = useState<string | null>(null);
+  const [wcCopied, setWcCopied] = useState(false);
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!username.trim() || !password.trim()) return;
@@ -325,13 +326,15 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
             Connect your BCH wallet (Cashonize / Zapit) to authenticate.{' '}
             <span className="text-accent-warning">Required for all restores.</span>
           </p>
-          <button
+          <GlassButton
+            variant="secondary"
             onClick={handleConnectWallet}
             disabled={isConnectingWallet}
-            className="w-full px-3 py-2 rounded bg-accent-primary/20 border border-accent-primary/40 text-accent-primary text-sm hover:bg-accent-primary/30 transition-colors disabled:opacity-50"
+            loading={isConnectingWallet}
+            className="w-full text-sm"
           >
             {isConnectingWallet ? 'Connecting...' : '🔗 Connect Wallet'}
-          </button>
+          </GlassButton>
           {wcUri && (
             <div className="mt-3 flex flex-col items-center gap-2">
               <p className="text-text-tertiary text-xs">Scan with Cashonize or Zapit:</p>
@@ -339,10 +342,10 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
                 <QRCodeCanvas value={wcUri} size={160} />
               </div>
               <button
-                onClick={() => navigator.clipboard.writeText(wcUri)}
+                onClick={() => { navigator.clipboard.writeText(wcUri); setWcCopied(true); setTimeout(() => setWcCopied(false), 2000); }}
                 className="text-xs text-accent-primary hover:underline"
               >
-                Copy URL
+                {wcCopied ? '✓ Copied!' : 'Copy URL'}
               </button>
             </div>
           )}
