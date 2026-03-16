@@ -49,6 +49,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
   const [walletSig, setWalletSig] = useState('');
   const [isConnectingWallet, setIsConnectingWallet] = useState(false);
   const [wcError, setWcError] = useState<string | null>(null);
+  const [restoreWalletBound, setRestoreWalletBound] = useState<boolean | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -72,7 +73,13 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
       directory: false,
     });
     if (selected) {
-      setRestoreFilePath(selected as string);
+      const path = selected as string;
+      setRestoreFilePath(path);
+      setRestoreWalletBound(null);
+      try {
+        const m = await invoke<{ success: boolean; wallet_bound?: boolean }>('peek_backup_manifest', { filePath: path });
+        setRestoreWalletBound(m.success ? (m.wallet_bound ?? false) : false);
+      } catch { setRestoreWalletBound(false); }
     }
   };
 
@@ -668,7 +675,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
               <GlassButton
                 variant="primary"
                 onClick={handleRestore}
-                disabled={!restoreFilePath || !restorePassword || !restoreMasterPassword || !restoreMasterPasswordConfirm || !walletSig || isRestoring}
+                disabled={!restoreFilePath || !restorePassword || !restoreMasterPassword || !restoreMasterPasswordConfirm || (restoreWalletBound !== false && !walletSig) || isRestoring}
                 loading={isRestoring}
               >
                 {isRestoring ? 'Restoring...' : 'Restore Account'}

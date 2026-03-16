@@ -132,6 +132,7 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
   const [restoreWalletSig, setRestoreWalletSig] = useState('');
   const [restoreWcAddress, setRestoreWcAddress] = useState('');
   const [isSigningRestoreWc, setIsSigningRestoreWc] = useState(false);
+  const [restoreWalletBound, setRestoreWalletBound] = useState<boolean | null>(null);
   // WC 2FA for backup
   const [backupWalletSig, setBackupWalletSig] = useState('');
   const [backupWcAddress, setBackupWcAddress] = useState('');
@@ -444,6 +445,7 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
     setIpfsListError(null);
     setRestoreWalletSig('');
     setRestoreWcAddress('');
+    setRestoreWalletBound(null);
   };
 
   // Restore (merge) qubes from a backup file
@@ -1532,7 +1534,14 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
                           multiple: false,
                           filters: [{ name: 'Qube Backup', extensions: ['qube-backup'] }],
                         });
-                        if (path && typeof path === 'string') setRestoreFilePath(path);
+                        if (path && typeof path === 'string') {
+                          setRestoreFilePath(path);
+                          setRestoreWalletBound(null);
+                          try {
+                            const m = await invoke<{ success: boolean; wallet_bound?: boolean }>('peek_backup_manifest', { filePath: path });
+                            setRestoreWalletBound(m.success ? (m.wallet_bound ?? false) : false);
+                          } catch { setRestoreWalletBound(false); }
+                        }
                       }}
                       className="w-full px-3 py-2 bg-glass-bg border border-glass-border rounded-lg text-text-primary text-sm text-left hover:border-accent-primary/50 transition-colors truncate"
                     >
@@ -1549,17 +1558,23 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
                       className="w-full px-3 py-2 bg-glass-bg border border-glass-border rounded-lg text-text-primary text-sm"
                     />
                   </div>
-                  {/* WC 2FA */}
+                  {/* WC 2FA — shown always; label adapts to wallet_bound */}
                   <div className="p-3 border border-glass-border rounded-lg bg-glass-bg/20">
                     <div className="flex items-center justify-between mb-1.5">
-                      <span className="text-xs text-text-tertiary uppercase tracking-wide">Required: Wallet 2FA</span>
+                      <span className="text-xs text-text-tertiary uppercase tracking-wide">
+                        {restoreWalletBound ? 'Required: Wallet 2FA' : 'Wallet 2FA'}
+                      </span>
                       {restoreWalletSig && (
                         <span className="text-xs text-accent-success">✓ {restoreWcAddress.slice(0, 16)}...</span>
                       )}
                     </div>
                     {!restoreWalletSig ? (
                       <>
-                        <p className="text-[10px] text-text-tertiary mb-2">Connect your wallet to authenticate backup access. Required for all restores.</p>
+                        <p className="text-[10px] text-text-tertiary mb-2">
+                          {restoreWalletBound
+                            ? 'This backup was created with wallet authentication. Connect your wallet to restore it.'
+                            : 'Connect your wallet to authenticate backup access. Required for all restores.'}
+                        </p>
                         {wallet.connected ? (
                           <GlassButton variant="secondary" onClick={handleSignRestoreWc} disabled={isSigningRestoreWc} className="w-full text-sm">
                             {isSigningRestoreWc ? 'Signing...' : '🔗 Sign with Connected Wallet'}
@@ -1585,7 +1600,7 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
                     <GlassButton
                       variant="primary"
                       onClick={handleRestoreFromBackup}
-                      disabled={isRestoring || !restoreFilePath || !restorePassword || !restoreWalletSig}
+                      disabled={isRestoring || !restoreFilePath || !restorePassword || (restoreWalletBound !== false && !restoreWalletSig)}
                       loading={isRestoring}
                     >
                       {isRestoring ? 'Restoring...' : 'Restore'}

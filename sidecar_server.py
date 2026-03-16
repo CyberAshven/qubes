@@ -82,6 +82,7 @@ PRE_BRIDGE_COMMANDS = {
     "install-wsl2",
     "get-wsl2-tts-managed-status",
     "warm-up",
+    "peek-backup-manifest",
 }
 
 # Commands that invalidate qube cache after execution
@@ -239,6 +240,8 @@ POSITIONAL_ARG_NAMES = {
     # Local TTS model management
     "check-local-tts-models": ["user_id"],
     "update-local-tts-models": ["user_id"],
+    # Backup inspection (no user_id needed)
+    "peek-backup-manifest": ["file_path"],
 }
 
 
@@ -698,6 +701,27 @@ class SidecarServer:
     # ====================================================================
     # Pre-bridge command handlers (no GUIBridge needed)
     # ====================================================================
+
+    async def _pre_peek_backup_manifest(self, params, secrets):
+        """Read manifest.json from a .qube-backup ZIP without decrypting anything."""
+        import zipfile, json
+        file_path = params.get("file_path", "")
+        if not file_path:
+            return {"success": False, "error": "file_path required"}
+        try:
+            with zipfile.ZipFile(file_path, 'r') as zf:
+                if "manifest.json" not in zf.namelist():
+                    return {"success": False, "error": "Not a valid .qube-backup file"}
+                manifest = json.loads(zf.read("manifest.json").decode("utf-8"))
+            return {
+                "success": True,
+                "wallet_bound": bool(manifest.get("wallet_bound", False)),
+                "version": manifest.get("version", "1.0"),
+                "type": manifest.get("type", "account-backup"),
+                "qube_count": manifest.get("qube_count", 0),
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
     async def _pre_check_first_run(self, params, secrets):
         from utils.paths import get_users_dir, get_app_data_dir, detect_legacy_data_dirs

@@ -6297,6 +6297,15 @@ async fn import_account_backup_ipfs(app_handle: AppHandle,
 }
 
 #[tauri::command]
+async fn peek_backup_manifest(app_handle: AppHandle,
+    file_path: String,
+) -> Result<serde_json::Value, String> {
+    let args = vec![file_path];
+    let secrets = HashMap::new();
+    sidecar_execute_with_retry("peek-backup-manifest", args, secrets, Some(&app_handle), Some(15)).await
+}
+
+#[tauri::command]
 async fn sync_qube_to_ipfs_backup(app_handle: AppHandle,
     user_id: String,
     qube_id: String,
@@ -7936,6 +7945,7 @@ pub fn run() {
             export_account_backup,
             import_account_backup,
             export_account_backup_ipfs,
+            peek_backup_manifest,
             sync_qube_to_ipfs_backup,
             list_account_backups_pinata,
             import_account_backup_ipfs,
