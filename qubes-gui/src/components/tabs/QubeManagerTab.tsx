@@ -125,7 +125,10 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
   // Restore mode
   const [restoreMode, setRestoreMode] = useState<'local' | 'ipfs'>('local');
   // IPFS restore state
-  const [ipfsInputMode, setIpfsInputMode] = useState<'jwt' | 'cid'>('jwt');
+  const [ipfsInputMode, setIpfsInputMode] = useState<'jwt' | 'cid' | 'scan'>('jwt');
+  const [restoreScanQubes, setRestoreScanQubes] = useState<Array<{ qube_id: string; qube_name: string; category_id: string; ipfs_cid: string; chain_length: number; already_imported?: boolean }>>([]);
+  const [isRestoreScanning, setIsRestoreScanning] = useState(false);
+  const [restoreScanProgress, setRestoreScanProgress] = useState<{ current: number; total: number; step: 'downloading' | 'uploading' | 'done' } | null>(null);
   const [ipfsPinataJwt, setIpfsPinataJwt] = useState('');
   const [ipfsDirectCid, setIpfsDirectCid] = useState('');
   const [ipfsBackupList, setIpfsBackupList] = useState<Array<{cid: string; name: string; date: string; size_bytes: number}>>([]);
@@ -782,6 +785,76 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
       alert(`Scan failed: ${error}`);
     } finally {
       setIsScanning(false);
+    }
+  };
+
+  // Scan wallet for Qubes in the restore modal context (uses restoreWcAddress)
+  const handleRestoreScanWallet = async () => {
+    if (!restoreWcAddress || !userId) return;
+    setIsRestoreScanning(true);
+    setRestoreScanQubes([]);
+    try {
+      const result = await invoke<{ success: boolean; qubes?: Array<{ qube_id: string; qube_name: string; category_id: string; ipfs_cid: string; chain_length: number; already_imported?: boolean }>; error?: string }>(
+        'scan_wallet', { userId, walletAddress: restoreWcAddress }
+      );
+      if (result.success && result.qubes) {
+        setRestoreScanQubes(result.qubes);
+        if (result.qubes.length === 0) alert('No Qubes found for this wallet address.');
+      } else {
+        alert(`Scan failed: ${result.error}`);
+      }
+    } catch (err) {
+      alert(`Scan failed: ${err}`);
+    } finally {
+      setIsRestoreScanning(false);
+    }
+  };
+
+  // Restore Qubes found by wallet scan (import_from_wallet + auto-anchor)
+  const handleScanModeRestore = async () => {
+    const importable = restoreScanQubes.filter(q => !q.already_imported);
+    if (!importable.length || !masterPassword) return;
+    setIsRestoring(true);
+    setRestoreScanProgress(null);
+    let imported = 0;
+    try {
+      for (let i = 0; i < importable.length; i++) {
+        const q = importable[i];
+        setRestoreScanProgress({ current: i + 1, total: importable.length, step: 'downloading' });
+        try {
+          const result = await invoke<{ success: boolean; qube_id?: string; error?: string }>('import_from_wallet', {
+            userId, walletWif: '', categoryId: q.category_id, password: masterPassword,
+          });
+          if (result.success) {
+            imported++;
+            window.dispatchEvent(new CustomEvent('qube-created', { detail: { qube_id: result.qube_id } }));
+          }
+        } catch (err) {
+          console.error(`Failed to import ${q.qube_name}:`, err);
+        }
+      }
+      if (imported > 0 && pinataConfigured) {
+        setRestoreScanProgress({ current: importable.length, total: importable.length, step: 'uploading' });
+        try {
+          await invoke('export_account_backup_ipfs', { userId, exportPassword: masterPassword, masterPassword, walletSig: null });
+        } catch (e) {
+          console.warn('IPFS sync after scan restore failed (non-fatal):', e);
+        }
+      }
+      if (imported > 0) {
+        setRestoreScanProgress({ current: importable.length, total: importable.length, step: 'done' });
+        await new Promise(r => setTimeout(r, 1200));
+        setShowRestoreModal(false);
+        resetRestoreState();
+        setRestoreScanQubes([]);
+        setRestoreScanProgress(null);
+      } else {
+        alert('No new Qubes were imported.');
+      }
+    } catch (err) {
+      alert(`Restore failed: ${err}`);
+    } finally {
+      setIsRestoring(false);
     }
   };
 
@@ -1642,6 +1715,16 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
                     >
                       Direct CID
                     </button>
+                    <button
+                      onClick={() => { setIpfsInputMode('scan'); setRestoreScanQubes([]); setRestoreScanProgress(null); }}
+                      className={`flex-1 py-1 px-2 rounded-md text-xs font-medium transition-all ${
+                        ipfsInputMode === 'scan'
+                          ? 'bg-accent-primary/20 text-accent-primary border border-accent-primary/30'
+                          : 'text-text-secondary hover:text-text-primary'
+                      }`}
+                    >
+                      Scan Wallet
+                    </button>
                   </div>
 
                   {ipfsInputMode === 'jwt' ? (
@@ -1690,7 +1773,7 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
                         </div>
                       )}
                     </div>
-                  ) : (
+                  ) : ipfsInputMode === 'cid' ? (
                     <div>
                       <label className="block text-sm text-text-secondary mb-1">IPFS CID</label>
                       <input
@@ -1701,9 +1784,68 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
                         className="w-full px-3 py-2 bg-glass-bg border border-glass-border rounded-lg text-text-primary text-sm font-mono"
                       />
                     </div>
+                  ) : (
+                    /* Scan Wallet mode */
+                    <div className="space-y-2">
+                      {!restoreWalletSig ? (
+                        <p className="text-xs text-text-tertiary">Connect your wallet using the section below, then scan.</p>
+                      ) : (
+                        <>
+                          {restoreScanQubes.length === 0 && !isRestoreScanning && (
+                            <GlassButton variant="secondary" onClick={handleRestoreScanWallet} className="w-full text-sm">
+                              🔍 Scan Wallet for Qubes
+                            </GlassButton>
+                          )}
+                          {isRestoreScanning && (
+                            <p className="text-text-tertiary text-sm animate-pulse">Scanning wallet for Qubes...</p>
+                          )}
+                          {restoreScanQubes.length > 0 && (
+                            <div className="space-y-1 max-h-44 overflow-y-auto">
+                              <p className="text-xs text-text-secondary">
+                                Found {restoreScanQubes.length} Qube(s)
+                                {restoreScanQubes.every(q => q.already_imported) && <span className="text-text-tertiary"> — all already imported</span>}
+                              </p>
+                              {restoreScanQubes.map(q => (
+                                <div key={q.qube_id} className={`p-2.5 rounded-lg border text-xs ${q.already_imported ? 'border-border-primary/40 opacity-50' : 'border-border-primary bg-surface-secondary'}`}>
+                                  <span className="text-text-primary font-medium">{q.qube_name}</span>
+                                  {q.already_imported && <span className="text-text-tertiary ml-2">(already imported)</span>}
+                                  <span className="text-text-tertiary ml-2">{q.chain_length || 1} block{(q.chain_length || 1) !== 1 ? 's' : ''}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                          {restoreScanProgress && (
+                            <div className="p-3 bg-accent-primary/10 border border-accent-primary/30 rounded-lg">
+                              <div className="w-full bg-glass-bg rounded-full h-1.5 mb-2 overflow-hidden">
+                                <div
+                                  className="bg-accent-primary h-1.5 rounded-full transition-all duration-700"
+                                  style={{ width: restoreScanProgress.step === 'done' ? '100%' : restoreScanProgress.step === 'uploading' ? '80%' : `${Math.round((restoreScanProgress.current / restoreScanProgress.total) * 60)}%` }}
+                                />
+                              </div>
+                              {[
+                                { key: 'downloading', icon: '⬇️', label: `Downloading & decrypting (${restoreScanProgress.current}/${restoreScanProgress.total})` },
+                                { key: 'uploading',   icon: '☁️', label: 'Uploading to your Pinata backup...' },
+                                { key: 'done',        icon: '✅', label: 'All done' },
+                              ].map(({ key, icon, label }) => {
+                                const steps = ['downloading', 'uploading', 'done'];
+                                const stepIdx = steps.indexOf(restoreScanProgress.step);
+                                const thisIdx = steps.indexOf(key);
+                                return (
+                                  <div key={key} className={`flex items-center gap-2 text-xs ${thisIdx < stepIdx ? 'text-accent-success' : thisIdx === stepIdx ? 'text-accent-primary' : 'text-text-tertiary'}`}>
+                                    <span>{thisIdx < stepIdx ? '✓' : thisIdx === stepIdx ? icon : '○'}</span>
+                                    <span>{label}</span>
+                                    {thisIdx === stepIdx && key !== 'done' && <span className="animate-pulse">...</span>}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
                   )}
 
-                  <div>
+                  {ipfsInputMode !== 'scan' && <div>
                     <label className="block text-sm text-text-secondary mb-1">Master Password</label>
                     <input
                       type="password"
@@ -1712,7 +1854,7 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
                       placeholder="Master password used to encrypt the backup"
                       className="w-full px-3 py-2 bg-glass-bg border border-glass-border rounded-lg text-text-primary text-sm"
                     />
-                  </div>
+                  </div>}
 
                   {/* WC 2FA */}
                   <div className="p-3 border border-glass-border rounded-lg bg-glass-bg/20">
@@ -1760,11 +1902,16 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
                     </GlassButton>
                     <GlassButton
                       variant="primary"
-                      onClick={handleIpfsRestore}
-                      disabled={isRestoring || !restorePassword || !restoreWalletSig || (ipfsInputMode === 'jwt' ? !ipfsSelectedCid : !ipfsDirectCid.trim())}
+                      onClick={ipfsInputMode === 'scan' ? handleScanModeRestore : handleIpfsRestore}
+                      disabled={
+                        isRestoring || !restoreWalletSig ||
+                        (ipfsInputMode === 'scan'
+                          ? restoreScanQubes.filter(q => !q.already_imported).length === 0
+                          : !restorePassword || (ipfsInputMode === 'jwt' ? !ipfsSelectedCid : !ipfsDirectCid.trim()))
+                      }
                       loading={isRestoring}
                     >
-                      {isRestoring ? 'Restoring...' : 'Restore from IPFS'}
+                      {isRestoring ? 'Restoring...' : ipfsInputMode === 'scan' ? 'Import from Wallet' : 'Restore from IPFS'}
                     </GlassButton>
                   </div>
                 </>
