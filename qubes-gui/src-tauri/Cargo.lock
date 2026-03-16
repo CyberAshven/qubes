@@ -2999,7 +2999,7 @@ dependencies = [
 
 [[package]]
 name = "qubes-gui"
-version = "0.8.1"
+version = "0.9.1"
 dependencies = [
  "base64 0.22.1",
  "chrono",

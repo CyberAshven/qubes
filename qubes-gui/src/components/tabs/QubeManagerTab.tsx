@@ -132,11 +132,6 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
   const [restoreWalletSig, setRestoreWalletSig] = useState('');
   const [restoreWcAddress, setRestoreWcAddress] = useState('');
   const [isSigningRestoreWc, setIsSigningRestoreWc] = useState(false);
-  const [restoreWalletBound, setRestoreWalletBound] = useState<boolean | null>(null);
-  // WC 2FA for backup
-  const [backupWalletSig, setBackupWalletSig] = useState('');
-  const [backupWcAddress, setBackupWcAddress] = useState('');
-  const [isSigningBackupWc, setIsSigningBackupWc] = useState(false);
 
   // Pinata configuration check
   const [pinataConfigured, setPinataConfigured] = useState<boolean | null>(null);
@@ -376,7 +371,7 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
         exportPath: filePath,
         exportPassword: masterPassword,
         masterPassword: masterPassword,
-        walletSig: backupWalletSig || null,
+        walletSig: null,
       });
 
       if (result.success) {
@@ -445,7 +440,6 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
     setIpfsListError(null);
     setRestoreWalletSig('');
     setRestoreWcAddress('');
-    setRestoreWalletBound(null);
   };
 
   // Restore (merge) qubes from a backup file
@@ -554,23 +548,6 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
       console.error('WC sign failed:', err);
     } finally {
       setIsSigningRestoreWc(false);
-    }
-  };
-
-  const handleSignBackupWc = async () => {
-    setIsSigningBackupWc(true);
-    try {
-      const { getSession, signMessage: wcSignMessage } = await import('../../services/walletConnect');
-      const session = await getSession();
-      if (session) {
-        const sig = await wcSignMessage('qubes-backup-key:v1', 'Qubes needs to verify wallet ownership to encrypt your backup', session.topic);
-        setBackupWalletSig(sig);
-        setBackupWcAddress(wallet.address || '');
-      }
-    } catch (err) {
-      console.error('WC sign failed:', err);
-    } finally {
-      setIsSigningBackupWc(false);
     }
   };
 
@@ -1432,37 +1409,12 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
             <h2 className="text-xl font-bold text-text-primary mb-4">Backup</h2>
             <p className="text-text-secondary text-sm mb-4">
               Export your entire account (credentials + all Qubes) to a portable <code>.qube-backup</code> file.
-              Encrypted with your master password + wallet signature.
+              Encrypted with your master password. Wallet signature required to restore.
             </p>
-            {/* Required: Wallet 2FA */}
-            <div className="p-3 border border-glass-border rounded-lg bg-glass-bg/20 mb-4">
-              <div className="flex items-center justify-between mb-1.5">
-                <span className="text-xs text-text-tertiary uppercase tracking-wide">Required: Wallet 2FA</span>
-                {backupWalletSig && (
-                  <span className="text-xs text-accent-success">✓ {backupWcAddress.slice(0, 16)}...</span>
-                )}
-              </div>
-              {!backupWalletSig ? (
-                <>
-                  <p className="text-[10px] text-text-tertiary mb-2">Bind this backup to your BCH wallet. Required to restore on any device.</p>
-                  {wallet.connected ? (
-                    <GlassButton variant="secondary" onClick={handleSignBackupWc} disabled={isSigningBackupWc} className="w-full text-sm">
-                      {isSigningBackupWc ? 'Signing...' : '🔗 Sign with Connected Wallet'}
-                    </GlassButton>
-                  ) : (
-                    <p className="text-[10px] text-text-tertiary">Connect your wallet first using the WalletConnect button.</p>
-                  )}
-                </>
-              ) : (
-                <GlassButton variant="secondary" onClick={() => { setBackupWalletSig(''); setBackupWcAddress(''); }} className="text-xs">
-                  Clear Signature
-                </GlassButton>
-              )}
-            </div>
             <div className="flex gap-3">
               <GlassButton
                 variant="secondary"
-                onClick={() => { setShowBackupModal(false); setBackupWalletSig(''); setBackupWcAddress(''); }}
+                onClick={() => setShowBackupModal(false)}
                 disabled={isBackingUp}
               >
                 Cancel
@@ -1470,7 +1422,7 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
               <GlassButton
                 variant="primary"
                 onClick={handleBackupAccount}
-                disabled={isBackingUp || !backupWalletSig}
+                disabled={isBackingUp}
                 loading={isBackingUp}
               >
                 {isBackingUp ? 'Backing up...' : 'Create Backup'}
@@ -1536,11 +1488,6 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
                         });
                         if (path && typeof path === 'string') {
                           setRestoreFilePath(path);
-                          setRestoreWalletBound(null);
-                          try {
-                            const m = await invoke<{ success: boolean; wallet_bound?: boolean }>('peek_backup_manifest', { filePath: path });
-                            setRestoreWalletBound(m.success ? (m.wallet_bound ?? false) : false);
-                          } catch { setRestoreWalletBound(false); }
                         }
                       }}
                       className="w-full px-3 py-2 bg-glass-bg border border-glass-border rounded-lg text-text-primary text-sm text-left hover:border-accent-primary/50 transition-colors truncate"
@@ -1558,23 +1505,17 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
                       className="w-full px-3 py-2 bg-glass-bg border border-glass-border rounded-lg text-text-primary text-sm"
                     />
                   </div>
-                  {/* WC 2FA — shown always; label adapts to wallet_bound */}
+                  {/* WC 2FA — always required */}
                   <div className="p-3 border border-glass-border rounded-lg bg-glass-bg/20">
                     <div className="flex items-center justify-between mb-1.5">
-                      <span className="text-xs text-text-tertiary uppercase tracking-wide">
-                        {restoreWalletBound ? 'Required: Wallet 2FA' : 'Wallet 2FA'}
-                      </span>
+                      <span className="text-xs text-text-tertiary uppercase tracking-wide">Required: Wallet 2FA</span>
                       {restoreWalletSig && (
                         <span className="text-xs text-accent-success">✓ {restoreWcAddress.slice(0, 16)}...</span>
                       )}
                     </div>
                     {!restoreWalletSig ? (
                       <>
-                        <p className="text-[10px] text-text-tertiary mb-2">
-                          {restoreWalletBound
-                            ? 'This backup was created with wallet authentication. Connect your wallet to restore it.'
-                            : 'Connect your wallet to authenticate backup access. Required for all restores.'}
-                        </p>
+                        <p className="text-[10px] text-text-tertiary mb-2">Connect your wallet to prove ownership. Required for all restores.</p>
                         {wallet.connected ? (
                           <GlassButton variant="secondary" onClick={handleSignRestoreWc} disabled={isSigningRestoreWc} className="w-full text-sm">
                             {isSigningRestoreWc ? 'Signing...' : '🔗 Sign with Connected Wallet'}
@@ -1600,7 +1541,7 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
                     <GlassButton
                       variant="primary"
                       onClick={handleRestoreFromBackup}
-                      disabled={isRestoring || !restoreFilePath || !restorePassword || (restoreWalletBound !== false && !restoreWalletSig)}
+                      disabled={isRestoring || !restoreFilePath || !restorePassword || !restoreWalletSig}
                       loading={isRestoring}
                     >
                       {isRestoring ? 'Restoring...' : 'Restore'}
