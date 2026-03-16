@@ -6799,6 +6799,8 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
                     ipfs_cid = upload_result["IpfsHash"]
 
             logger.info(f"Account backup uploaded to IPFS: {ipfs_cid}")
+            # Unpin old versions — keep only the latest
+            await self._pinata_unpin_old(pinata_key, filename, keep_cid=ipfs_cid)
             return {
                 "success": True,
                 "ipfs_cid": ipfs_cid,
@@ -6815,6 +6817,47 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
                     os.unlink(tmp_path)
                 except Exception:
                     pass
+
+    async def _pinata_unpin_old(self, pinata_key: str, filename: str, keep_cid: str) -> int:
+        """
+        Unpin all Pinata pins whose metadata name equals `filename`, except `keep_cid`.
+        Called after a successful upload to keep only the latest backup per Qube/account.
+        Returns the number of CIDs unpinned.
+        """
+        import aiohttp
+        unpinned = 0
+        try:
+            headers = {"Authorization": f"Bearer {pinata_key}"}
+            params = {"metadata[name]": filename, "status": "pinned", "pageLimit": "100"}
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    "https://api.pinata.cloud/data/pinList",
+                    headers=headers,
+                    params=params,
+                    timeout=aiohttp.ClientTimeout(total=30)
+                ) as resp:
+                    if resp.status != 200:
+                        return 0
+                    data = await resp.json()
+                    rows = data.get("rows", [])
+
+                for row in rows:
+                    cid = row.get("ipfs_pin_hash", "")
+                    if cid and cid != keep_cid:
+                        async with aiohttp.ClientSession() as s:
+                            async with s.delete(
+                                f"https://api.pinata.cloud/pinning/unpin/{cid}",
+                                headers=headers,
+                                timeout=aiohttp.ClientTimeout(total=15)
+                            ) as del_resp:
+                                if del_resp.status == 200:
+                                    unpinned += 1
+                                    logger.info(f"Unpinned old backup {cid} ({filename})")
+                                else:
+                                    logger.warning(f"Failed to unpin {cid}: {del_resp.status}")
+        except Exception as e:
+            logger.warning(f"_pinata_unpin_old failed for {filename}: {e}")
+        return unpinned
 
     async def list_account_backups_pinata(self, pinata_jwt: str) -> Dict[str, Any]:
         """
@@ -7450,6 +7493,8 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
                     ipfs_cid = upload_result["IpfsHash"]
 
             logger.info(f"Qube {qube_id} backup uploaded to IPFS: {ipfs_cid}")
+            # Unpin old versions — keep only the latest per Qube
+            await self._pinata_unpin_old(pinata_key, filename, keep_cid=ipfs_cid)
             return {
                 "success": True,
                 "ipfs_cid": ipfs_cid,
