@@ -302,6 +302,7 @@ export const SettingsTab: React.FC = () => {
   const [ollamaModels, setOllamaModels] = useState<string[]>([]);
   const [isPullingModel, setIsPullingModel] = useState<string | null>(null);
   const [pullProgress, setPullProgress] = useState<{ status: string; completed?: number; total?: number } | null>(null);
+  const [newModelInput, setNewModelInput] = useState('');
   const [ttsModelStatus, setTtsModelStatus] = useState<{
     kokoro_installed: boolean;
     sentence_transformers_installed: boolean;
@@ -1959,6 +1960,29 @@ export const SettingsTab: React.FC = () => {
                         )}
                       </div>
                     )}
+
+                    {/* Download new model */}
+                    <div className="mt-3">
+                      <p className="text-[10px] text-text-tertiary mb-1">Download a new model (e.g. llama3.2:3b)</p>
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          value={newModelInput}
+                          onChange={(e) => setNewModelInput(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter' && newModelInput.trim()) { handlePullModel(newModelInput.trim()); setNewModelInput(''); } }}
+                          placeholder="model:tag"
+                          className="flex-1 bg-bg-primary/60 border border-glass-border rounded px-3 py-1.5 text-xs text-text-primary placeholder:text-text-disabled focus:outline-none focus:border-accent-primary"
+                          disabled={isPullingModel !== null}
+                        />
+                        <GlassButton
+                          variant="primary"
+                          onClick={() => { if (newModelInput.trim()) { handlePullModel(newModelInput.trim()); setNewModelInput(''); } }}
+                          disabled={isPullingModel !== null || !newModelInput.trim()}
+                        >
+                          Download
+                        </GlassButton>
+                      </div>
+                    </div>
                   </div>
 
                   {/* Voice & Embedding Models */}

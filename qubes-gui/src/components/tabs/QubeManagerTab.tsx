@@ -923,43 +923,52 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
           >
             Restore
           </GlassButton>
-          {/* Total Balance Widget */}
-          <div className="flex items-stretch border border-glass-border rounded-lg overflow-hidden bg-glass-bg backdrop-blur-glass">
-            <div className="px-3 py-1 flex flex-col justify-center min-w-[120px]">
+          <GlassButton variant="primary" onClick={onCreateQube}>
+            + New Qube
+          </GlassButton>
+
+          {/* Total Balance Widget — after New Qube */}
+          <div className="flex flex-col border border-glass-border rounded-lg overflow-hidden bg-glass-bg backdrop-blur-glass min-w-[140px]">
+            {/* Top row: label + refresh */}
+            <div className="flex items-center justify-between px-3 pt-1.5 pb-0">
               <span className="text-[9px] text-text-tertiary uppercase tracking-wider">Total Balance</span>
+              <button
+                onClick={handleRefreshAllBalances}
+                disabled={isRefreshingAll}
+                title="Refresh all balances"
+                className="text-text-tertiary hover:text-accent-primary transition-colors disabled:opacity-40 text-xs leading-none"
+              >
+                {isRefreshingAll ? '⟳' : '↻'}
+              </button>
+            </div>
+            {/* Balance amount */}
+            <div className="px-3 pb-1">
               <span className={`font-mono text-xs font-bold ${hasAnyBalance ? 'text-accent-primary' : 'text-text-disabled'}`}>
                 {isRefreshingAll ? '...' : `${(totalSats / 1e8).toFixed(8)} BCH`}
               </span>
             </div>
-            <button
-              onClick={handleRefreshAllBalances}
-              disabled={isRefreshingAll}
-              title="Refresh all balances"
-              className="px-2 border-l border-glass-border text-text-tertiary hover:text-accent-primary transition-colors disabled:opacity-40"
-            >
-              {isRefreshingAll ? '⟳' : '↻'}
-            </button>
+            {/* Sweep row — below balance */}
             {!showSweepAllModal ? (
               <button
                 onClick={() => { if (hasAnyBalance) setShowSweepAllModal(true); }}
                 disabled={!hasAnyBalance || isSweepingAll}
                 title={hasAnyBalance ? 'Sweep all balances to one address' : 'No balance to sweep'}
-                className={`px-2 border-l border-glass-border text-xs font-medium transition-colors ${
+                className={`w-full px-3 py-1 border-t border-glass-border text-[10px] font-medium text-left transition-colors ${
                   hasAnyBalance
                     ? 'text-accent-primary hover:bg-accent-primary/10 cursor-pointer'
                     : 'text-text-disabled cursor-not-allowed'
                 }`}
               >
-                ↓ Sweep
+                ↓ Sweep All
               </button>
             ) : (
-              <div className="flex items-center gap-1 px-2 border-l border-glass-border">
+              <div className="flex items-center gap-1 px-2 py-1 border-t border-glass-border">
                 <input
                   type="text"
                   value={sweepAllAddress}
                   onChange={(e) => setSweepAllAddress(e.target.value)}
                   placeholder="bitcoincash:q..."
-                  className="bg-transparent text-[10px] text-text-primary placeholder:text-text-disabled font-mono focus:outline-none w-40"
+                  className="bg-transparent text-[10px] text-text-primary placeholder:text-text-disabled font-mono focus:outline-none flex-1 min-w-0"
                   autoFocus
                 />
                 <button
@@ -981,10 +990,6 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
               {sweepAllResult}
             </div>
           )}
-
-          <GlassButton variant="primary" onClick={onCreateQube}>
-            + New Qube
-          </GlassButton>
         </div>
       </div>
 
