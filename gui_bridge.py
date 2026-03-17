@@ -63,21 +63,57 @@ sys.path.insert(0, str(Path(__file__).parent))
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")
 
+# ============================================================================
+# CUSTOM MODELS PATH (qubes-config.json or QUBES_MODELS_DIR env var)
+# ============================================================================
+# Allow users to store models on any drive/path they want.
+# Priority: QUBES_MODELS_DIR env var > qubes-config.json models_path > auto-detect
+_custom_models_dir = None
+
+# 1. Check env var (set by .env file or OS)
+if os.environ.get('QUBES_MODELS_DIR'):
+    _custom_models_dir = Path(os.environ['QUBES_MODELS_DIR'])
+
+# 2. Check qubes-config.json next to the exe
+if _custom_models_dir is None:
+    try:
+        import json as _json
+        _exe_dir_cfg = Path(sys.executable).parent
+        for _cfg_path in [
+            _exe_dir_cfg.parent / "qubes-config.json",
+            _exe_dir_cfg / "qubes-config.json",
+            Path(__file__).parent.parent / "qubes-config.json",
+        ]:
+            if _cfg_path.exists():
+                _cfg = _json.loads(_cfg_path.read_text(encoding="utf-8"))
+                if _cfg.get("models_path"):
+                    _custom_models_dir = Path(_cfg["models_path"])
+                break
+    except Exception:
+        pass
+
 # Auto-detect bundled HuggingFace models (heavy bundle)
 # Sets HF_HOME so kokoro, sentence-transformers find pre-downloaded models.
-# Always set HF_HOME in bundled mode — if models aren't pre-bundled,
-# HuggingFace will auto-download them to this location on first use.
-if not os.environ.get('HF_HOME') and getattr(sys, 'frozen', False):
-    _exe_dir = Path(sys.executable).parent
-    # --onedir layout: exe is at Qubes/qubes-backend/qubes-backend
-    # models are at Qubes/models/huggingface (one level up)
-    _hf_models = _exe_dir.parent / "models" / "huggingface"
-    if not _hf_models.exists():
-        # Flat layout or fresh install: use models next to exe
-        _hf_models = _exe_dir / "models" / "huggingface"
-    # Always set HF_HOME — create dir if needed, models will auto-download
-    _hf_models.mkdir(parents=True, exist_ok=True)
-    os.environ['HF_HOME'] = str(_hf_models)
+# Priority: custom QUBES_MODELS_DIR config > bundled auto-detect.
+# Always creates HF_HOME dir so models auto-download on first use.
+if not os.environ.get('HF_HOME'):
+    if _custom_models_dir is not None:
+        _hf_models = _custom_models_dir / "huggingface"
+        _hf_models.mkdir(parents=True, exist_ok=True)
+        os.environ['HF_HOME'] = str(_hf_models)
+        os.environ.setdefault('QUBES_MODELS_DIR', str(_custom_models_dir))
+    elif getattr(sys, 'frozen', False):
+        _exe_dir = Path(sys.executable).parent
+        # --onedir layout: exe is at Qubes/qubes-backend/qubes-backend
+        # models are at Qubes/models/huggingface (one level up)
+        _hf_models = _exe_dir.parent / "models" / "huggingface"
+        if not _hf_models.exists():
+            # Flat layout or fresh install: use models next to exe
+            _hf_models = _exe_dir / "models" / "huggingface"
+        # Always set HF_HOME — create dir if needed, models will auto-download
+        _hf_models.mkdir(parents=True, exist_ok=True)
+        os.environ['HF_HOME'] = str(_hf_models)
+        os.environ.setdefault('QUBES_MODELS_DIR', str(_hf_models.parent))
 
 # CRITICAL: Disable all logging to stdout/stderr before importing anything
 # Set environment variable to disable structlog output
@@ -6763,6 +6799,8 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
                     ipfs_cid = upload_result["IpfsHash"]
 
             logger.info(f"Account backup uploaded to IPFS: {ipfs_cid}")
+            # Unpin old versions — keep only the latest
+            await self._pinata_unpin_old(pinata_key, filename, keep_cid=ipfs_cid)
             return {
                 "success": True,
                 "ipfs_cid": ipfs_cid,
@@ -6779,6 +6817,47 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
                     os.unlink(tmp_path)
                 except Exception:
                     pass
+
+    async def _pinata_unpin_old(self, pinata_key: str, filename: str, keep_cid: str) -> int:
+        """
+        Unpin all Pinata pins whose metadata name equals `filename`, except `keep_cid`.
+        Called after a successful upload to keep only the latest backup per Qube/account.
+        Returns the number of CIDs unpinned.
+        """
+        import aiohttp
+        unpinned = 0
+        try:
+            headers = {"Authorization": f"Bearer {pinata_key}"}
+            params = {"metadata[name]": filename, "status": "pinned", "pageLimit": "100"}
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    "https://api.pinata.cloud/data/pinList",
+                    headers=headers,
+                    params=params,
+                    timeout=aiohttp.ClientTimeout(total=30)
+                ) as resp:
+                    if resp.status != 200:
+                        return 0
+                    data = await resp.json()
+                    rows = data.get("rows", [])
+
+                async with aiohttp.ClientSession() as s:
+                    for row in rows:
+                        cid = row.get("ipfs_pin_hash", "")
+                        if cid and cid != keep_cid:
+                            async with s.delete(
+                                f"https://api.pinata.cloud/pinning/unpin/{cid}",
+                                headers=headers,
+                                timeout=aiohttp.ClientTimeout(total=15)
+                            ) as del_resp:
+                                if del_resp.status == 200:
+                                    unpinned += 1
+                                    logger.info(f"Unpinned old backup {cid} ({filename})")
+                                else:
+                                    logger.warning(f"Failed to unpin {cid}: {del_resp.status}")
+        except Exception as e:
+            logger.warning(f"_pinata_unpin_old failed for {filename}: {e}")
+        return unpinned
 
     async def list_account_backups_pinata(self, pinata_jwt: str) -> Dict[str, Any]:
         """
@@ -7414,6 +7493,8 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
                     ipfs_cid = upload_result["IpfsHash"]
 
             logger.info(f"Qube {qube_id} backup uploaded to IPFS: {ipfs_cid}")
+            # Unpin old versions — keep only the latest per Qube
+            await self._pinata_unpin_old(pinata_key, filename, keep_cid=ipfs_cid)
             return {
                 "success": True,
                 "ipfs_cid": ipfs_cid,
@@ -7431,7 +7512,7 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
                 except Exception:
                     pass
 
-    async def import_account_backup_ipfs(self, ipfs_cid: str, import_password: str, master_password: str, wallet_sig: str = "") -> Dict[str, Any]:
+    async def import_account_backup_ipfs(self, ipfs_cid: str, import_password: str, master_password: str, wallet_sig: str = "", wallet_address: str = "") -> Dict[str, Any]:
         """
         Restore full account backup from IPFS.
 
@@ -7485,7 +7566,7 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
                 tmp.write(backup_bytes)
                 tmp_path = tmp.name
 
-            return await self.import_account_backup(tmp_path, import_password, master_password, wallet_sig=wallet_sig)
+            return await self.import_account_backup(tmp_path, import_password, master_password, wallet_sig=wallet_sig, wallet_address=wallet_address)
 
         except Exception as e:
             logger.error(f"Failed to import account backup from IPFS: {e}", exc_info=True)
@@ -7538,7 +7619,7 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
             logger.error(f"Failed to cleanup incomplete qubes: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
 
-    async def import_account_backup(self, import_path: str, import_password: str, master_password: str, wallet_sig: str = "") -> Dict[str, Any]:
+    async def import_account_backup(self, import_path: str, import_password: str, master_password: str, wallet_sig: str = "", wallet_address: str = "") -> Dict[str, Any]:
         """
         Import a full account backup from a .qube-backup file.
 
@@ -7653,6 +7734,14 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
                     imported_count = 0
                     skipped_count = 0
 
+                    # Build NFT verifier once if wallet_address provided — used to
+                    # reject Qubes the wallet no longer owns (e.g. transferred away
+                    # before this backup was made).
+                    _nft_verifier = None
+                    if wallet_address:
+                        from blockchain.chain_sync import ChainSyncService
+                        _nft_verifier = ChainSyncService().nft_verifier
+
                     for qube_entry in manifest.get("qube_index", []):
                         qube_file = qube_entry["file"]
                         qube_name_entry = qube_entry["name"]
@@ -7676,6 +7765,25 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
                                 qube_export = self._decrypt_section_v2(enc_bytes, key)
                             except Exception:
                                 return {"success": False, "error": f"Wrong password — could not decrypt Qube {qube_name_entry}."}
+
+                            # ── NFT Ownership Check ───────────────────────────────────────────────
+                            # Reject Qubes whose NFT the restoring wallet no longer owns.
+                            # This closes the "old backup" loophole: if you transferred Van's NFT
+                            # away, an old backup file still containing Van should not restore it.
+                            # Qubes without nft_metadata (never minted) are restored unconditionally.
+                            if _nft_verifier:
+                                _nft_meta = qube_export.get("nft_metadata") or {}
+                                _category_id = _nft_meta.get("category_id")
+                                if _category_id:
+                                    _owns = await _nft_verifier.verify_ownership(_category_id, wallet_address)
+                                    if not _owns:
+                                        logger.warning(
+                                            f"Skipping Qube '{qube_name_entry}': "
+                                            f"wallet {wallet_address[:16]}... does not own NFT {_category_id[:16]}..."
+                                        )
+                                        skipped_count += 1
+                                        continue
+                            # ─────────────────────────────────────────────────────────────────────
 
                             qube_id = qube_export["qube_id"]
                             qube_name = qube_export["qube_name"]
@@ -12024,6 +12132,25 @@ async def main():
                     lock_file.unlink()
                     debug_log(f"Lock file removed")
 
+                # IPFS sync after anchor — honour the auto_sync_ipfs_on_anchor setting
+                if blocks_anchored > 0:
+                    try:
+                        prefs = user_bridge.orchestrator.get_block_preferences()
+                        if prefs.auto_sync_ipfs_on_anchor:
+                            debug_log(f"auto_sync_ipfs_on_anchor enabled — syncing Qube to IPFS...")
+                            sync_result = await user_bridge.sync_qube_to_ipfs_backup(
+                                qube_id, password, password
+                            )
+                            if sync_result.get("success"):
+                                debug_log(f"IPFS sync OK, CID={sync_result.get('ipfs_cid')}")
+                                logger.info("auto_anchor_ipfs_sync_completed", qube_id=qube_id, cid=sync_result.get("ipfs_cid"))
+                            else:
+                                debug_log(f"IPFS sync failed (non-fatal): {sync_result.get('error')}")
+                                logger.warning("auto_anchor_ipfs_sync_failed", qube_id=qube_id, error=sync_result.get("error"))
+                    except Exception as ipfs_err:
+                        debug_log(f"IPFS sync error (non-fatal): {ipfs_err}")
+                        logger.warning("auto_anchor_ipfs_sync_error", qube_id=qube_id, error=str(ipfs_err))
+
             except Exception as e:
                 import traceback
                 tb = traceback.format_exc()
@@ -12582,6 +12709,36 @@ async def main():
             user_bridge = GUIBridge(user_id=user_id)
             result = await user_bridge.uninstall_gpu_acceleration(user_id)
             print(json.dumps(result))
+
+        elif command == "sweep-qube-wallet":
+            if len(sys.argv) < 5:
+                print(json.dumps({"error": "user_id, qube_id, sweep_address required"}), file=sys.stderr)
+                sys.exit(1)
+            user_id = sys.argv[2]
+            qube_id = sys.argv[3]
+            sweep_address = sys.argv[4]
+            password = get_secret("password", argv_index=5)
+            user_bridge = GUIBridge(user_id=user_id)
+            if password:
+                user_bridge.orchestrator.set_master_key(password)
+            swept_sats = await user_bridge.orchestrator._sweep_before_delete(qube_id, password, sweep_address)
+            print(json.dumps({"success": True, "swept_sats": swept_sats or 0}))
+
+        elif command == "check-local-tts-models":
+            if len(sys.argv) < 3:
+                print(json.dumps({"error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            from audio.tts_model_utils import check_local_tts_models
+            print(json.dumps(check_local_tts_models()))
+
+        elif command == "update-local-tts-models":
+            if len(sys.argv) < 3:
+                print(json.dumps({"error": "User ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            from audio.tts_model_utils import update_local_tts_models
+            print(json.dumps(update_local_tts_models()))
 
         elif command == "update-qwen3-preferences":
             if len(sys.argv) < 3:

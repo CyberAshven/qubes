@@ -30,7 +30,10 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
 
   // Restore from IPFS state
   const [showIpfsRestoreModal, setShowIpfsRestoreModal] = useState(false);
-  const [ipfsInputMode, setIpfsInputMode] = useState<'jwt' | 'cid'>('jwt');
+  const [ipfsInputMode, setIpfsInputMode] = useState<'jwt' | 'cid' | 'scan'>('jwt');
+  const [loginScanQubes, setLoginScanQubes] = useState<Array<{ qube_id: string; qube_name: string; category_id: string; ipfs_cid: string; chain_length: number; already_imported?: boolean }>>([]);
+  const [isLoginScanning, setIsLoginScanning] = useState(false);
+  const [loginScanProgress, setLoginScanProgress] = useState<{ current: number; total: number; step: 'downloading' | 'uploading' | 'done' } | null>(null);
   const [ipfsPinataJwt, setIpfsPinataJwt] = useState('');
   const [ipfsDirectCid, setIpfsDirectCid] = useState('');
   const [ipfsBackupList, setIpfsBackupList] = useState<Array<{cid: string; name: string; date: string; size_bytes: number}>>([]);
@@ -49,7 +52,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
   const [walletSig, setWalletSig] = useState('');
   const [isConnectingWallet, setIsConnectingWallet] = useState(false);
   const [wcError, setWcError] = useState<string | null>(null);
-
+  const [wcCopied, setWcCopied] = useState(false);
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!username.trim() || !password.trim()) return;
@@ -130,6 +133,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
         importPassword: restorePassword,
         masterPassword: restoreMasterPassword,
         walletSig: walletSig,
+        walletAddress: wcAddress || null,
       });
 
       if (result.success) {
@@ -155,6 +159,66 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
       setRestoreError(`${err}`);
     } finally {
       setIsRestoring(false);
+    }
+  };
+
+  const handleLoginScanWallet = async () => {
+    if (!wcAddress) return;
+    setIsLoginScanning(true);
+    setLoginScanQubes([]);
+    try {
+      const result = await invoke<{ success: boolean; qubes?: Array<{ qube_id: string; qube_name: string; category_id: string; ipfs_cid: string; chain_length: number; already_imported?: boolean }>; error?: string }>(
+        'scan_wallet', { userId: '_restore', walletAddress: wcAddress }
+      );
+      if (result.success && result.qubes) {
+        setLoginScanQubes(result.qubes);
+        if (result.qubes.length === 0) setIpfsListError('No Qubes found for this wallet address.');
+      } else {
+        setIpfsListError(result.error || 'Scan failed');
+      }
+    } catch (err) {
+      setIpfsListError(`${err}`);
+    } finally {
+      setIsLoginScanning(false);
+    }
+  };
+
+  const handleLoginScanRestore = async () => {
+    const importable = loginScanQubes.filter(q => !q.already_imported);
+    if (!importable.length || !ipfsRestoreMasterPassword) return;
+    if (ipfsRestoreMasterPassword !== ipfsRestoreMasterPasswordConfirm) { setIpfsRestoreError('Master passwords do not match.'); return; }
+    if (ipfsRestoreMasterPassword.length < 8) { setIpfsRestoreError('Master password must be at least 8 characters.'); return; }
+    setIsIpfsRestoring(true);
+    setIpfsRestoreError(null);
+    setLoginScanProgress(null);
+    let imported = 0;
+    try {
+      for (let i = 0; i < importable.length; i++) {
+        const q = importable[i];
+        setLoginScanProgress({ current: i + 1, total: importable.length, step: 'downloading' });
+        try {
+          const result = await invoke<{ success: boolean; qube_id?: string; error?: string }>('import_from_wallet', {
+            userId: '_restore', walletWif: '', categoryId: q.category_id, password: ipfsRestoreMasterPassword,
+          });
+          if (result.success) imported++;
+        } catch (err) {
+          console.error(`Failed to import ${q.qube_name}:`, err);
+        }
+      }
+      if (imported > 0) {
+        setLoginScanProgress({ current: importable.length, total: importable.length, step: 'done' });
+        await new Promise(r => setTimeout(r, 1200));
+        alert(`${imported} Qube(s) imported from wallet.\n\nPlease sign in with your master password.`);
+        setShowIpfsRestoreModal(false);
+        setUsername('_restore');
+        setPassword(ipfsRestoreMasterPassword);
+      } else {
+        setIpfsRestoreError('No new Qubes were imported.');
+      }
+    } catch (err) {
+      setIpfsRestoreError(`${err}`);
+    } finally {
+      setIsIpfsRestoring(false);
     }
   };
 
@@ -216,6 +280,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
         importPassword: ipfsRestorePassword,
         masterPassword: ipfsRestoreMasterPassword,
         walletSig: walletSig,
+        walletAddress: wcAddress || null,
       });
 
       if (result.success) {
@@ -259,21 +324,29 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
         <>
           <p className="text-text-tertiary text-xs mb-2">
             Connect your BCH wallet (Cashonize / Zapit) to authenticate.{' '}
-            <span className="text-accent-warning">Required for wallet-bound backups.</span>
+            <span className="text-accent-warning">Required for all restores.</span>
           </p>
-          <button
+          <GlassButton
+            variant="secondary"
             onClick={handleConnectWallet}
             disabled={isConnectingWallet}
-            className="w-full px-3 py-2 rounded bg-accent-primary/20 border border-accent-primary/40 text-accent-primary text-sm hover:bg-accent-primary/30 transition-colors disabled:opacity-50"
+            loading={isConnectingWallet}
+            className="w-full text-sm"
           >
             {isConnectingWallet ? 'Connecting...' : '🔗 Connect Wallet'}
-          </button>
+          </GlassButton>
           {wcUri && (
             <div className="mt-3 flex flex-col items-center gap-2">
               <p className="text-text-tertiary text-xs">Scan with Cashonize or Zapit:</p>
               <div className="bg-white p-2 rounded">
                 <QRCodeCanvas value={wcUri} size={160} />
               </div>
+              <button
+                onClick={() => { navigator.clipboard.writeText(wcUri); setWcCopied(true); setTimeout(() => setWcCopied(false), 2000); }}
+                className="text-xs text-accent-primary hover:underline"
+              >
+                {wcCopied ? '✓ Copied!' : 'Copy URL'}
+              </button>
             </div>
           )}
           {wcError && <p className="text-accent-danger text-xs mt-2">{wcError}</p>}
@@ -371,7 +444,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
             onClick={() => setShowRestoreModal(true)}
             className="text-accent-secondary hover:text-accent-secondary/80 text-sm font-medium transition-colors"
           >
-            Restore from File
+            Restore from Local File
           </button>
           <span className="text-text-tertiary">|</span>
           <button
@@ -405,6 +478,12 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
                 className={`flex-1 py-1.5 rounded text-sm font-medium transition-colors ${ipfsInputMode === 'cid' ? 'bg-accent-primary/20 border border-accent-primary/50 text-accent-primary' : 'bg-surface-secondary border border-border-primary text-text-secondary hover:text-text-primary'}`}
               >
                 Enter CID
+              </button>
+              <button
+                onClick={() => { setIpfsInputMode('scan'); setIpfsListError(null); setLoginScanQubes([]); setLoginScanProgress(null); }}
+                className={`flex-1 py-1.5 rounded text-sm font-medium transition-colors ${ipfsInputMode === 'scan' ? 'bg-accent-primary/20 border border-accent-primary/50 text-accent-primary' : 'bg-surface-secondary border border-border-primary text-text-secondary hover:text-text-primary'}`}
+              >
+                Scan Wallet
               </button>
             </div>
 
@@ -445,6 +524,61 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
                   className="w-full bg-surface-secondary border border-border-primary rounded-lg px-3 py-2 text-text-primary text-sm font-mono"
                   disabled={isIpfsRestoring}
                 />
+              </div>
+            )}
+
+            {/* Scan Wallet mode */}
+            {ipfsInputMode === 'scan' && (
+              <div className="mb-4 space-y-2">
+                {!walletSig ? (
+                  <p className="text-text-tertiary text-xs">Connect your wallet below first, then scan.</p>
+                ) : (
+                  <>
+                    {loginScanQubes.length === 0 && !isLoginScanning && (
+                      <button
+                        onClick={handleLoginScanWallet}
+                        className="w-full px-3 py-2 rounded bg-accent-primary/20 border border-accent-primary/40 text-accent-primary text-sm hover:bg-accent-primary/30 transition-colors"
+                      >
+                        🔍 Scan Wallet for Qubes
+                      </button>
+                    )}
+                    {isLoginScanning && <p className="text-text-tertiary text-sm animate-pulse">Scanning wallet for Qubes...</p>}
+                    {loginScanQubes.length > 0 && (
+                      <div className="space-y-1 max-h-36 overflow-y-auto">
+                        <p className="text-xs text-text-secondary">Found {loginScanQubes.length} Qube(s)</p>
+                        {loginScanQubes.map(q => (
+                          <div key={q.qube_id} className={`p-2 rounded-lg border text-xs ${q.already_imported ? 'border-border-primary/40 opacity-50' : 'border-border-primary bg-surface-secondary'}`}>
+                            <span className="text-text-primary font-medium">{q.qube_name}</span>
+                            {q.already_imported && <span className="text-text-tertiary ml-2">(already imported)</span>}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {loginScanProgress && (
+                      <div className="p-3 bg-accent-primary/10 border border-accent-primary/30 rounded-lg">
+                        <div className="w-full bg-surface-secondary rounded-full h-1.5 mb-2 overflow-hidden">
+                          <div className="bg-accent-primary h-1.5 rounded-full transition-all duration-700"
+                            style={{ width: loginScanProgress.step === 'done' ? '100%' : loginScanProgress.step === 'uploading' ? '80%' : `${Math.round((loginScanProgress.current / loginScanProgress.total) * 60)}%` }} />
+                        </div>
+                        {[
+                          { key: 'downloading', icon: '⬇️', label: `Downloading (${loginScanProgress.current}/${loginScanProgress.total})` },
+                          { key: 'done', icon: '✅', label: 'Done — sign in with your master password' },
+                        ].map(({ key, icon, label }) => {
+                          const steps = ['downloading', 'done'];
+                          const stepIdx = steps.indexOf(loginScanProgress.step);
+                          const thisIdx = steps.indexOf(key);
+                          return (
+                            <div key={key} className={`flex items-center gap-2 text-xs ${thisIdx < stepIdx ? 'text-accent-success' : thisIdx === stepIdx ? 'text-accent-primary' : 'text-text-tertiary'}`}>
+                              <span>{thisIdx < stepIdx ? '✓' : thisIdx === stepIdx ? icon : '○'}</span>
+                              <span>{label}</span>
+                              {thisIdx === stepIdx && key !== 'done' && <span className="animate-pulse">...</span>}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </>
+                )}
               </div>
             )}
 
@@ -491,8 +625,8 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
             {/* WalletConnect — always visible once modal is open */}
             {walletConnectBlock}
 
-            {/* Passwords — shown when CID is known */}
-            {(ipfsInputMode === 'cid' ? ipfsDirectCid.trim() : ipfsSelectedCid) && (
+            {/* Passwords — shown when CID is known or in scan mode */}
+            {(ipfsInputMode === 'scan' ? loginScanQubes.length > 0 : (ipfsInputMode === 'cid' ? ipfsDirectCid.trim() : ipfsSelectedCid)) && (
               <>
                 <div className="mb-4">
                   <label className="block text-text-secondary text-sm mb-1">Master Password (from original device)</label>
@@ -564,14 +698,17 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
               >
                 Cancel
               </GlassButton>
-              {(ipfsInputMode === 'cid' ? ipfsDirectCid.trim() : ipfsSelectedCid) && (
+              {(ipfsInputMode === 'scan' ? loginScanQubes.filter(q => !q.already_imported).length > 0 : (ipfsInputMode === 'cid' ? ipfsDirectCid.trim() : ipfsSelectedCid)) && (
                 <GlassButton
                   variant="primary"
-                  onClick={handleIpfsRestore}
-                  disabled={!ipfsRestorePassword || !ipfsRestoreMasterPassword || !ipfsRestoreMasterPasswordConfirm || isIpfsRestoring}
+                  onClick={ipfsInputMode === 'scan' ? handleLoginScanRestore : handleIpfsRestore}
+                  disabled={
+                    isIpfsRestoring || !walletSig || !ipfsRestoreMasterPassword || !ipfsRestoreMasterPasswordConfirm ||
+                    (ipfsInputMode !== 'scan' && !ipfsRestorePassword)
+                  }
                   loading={isIpfsRestoring}
                 >
-                  {isIpfsRestoring ? 'Restoring...' : 'Restore Account'}
+                  {isIpfsRestoring ? 'Restoring...' : ipfsInputMode === 'scan' ? 'Import from Wallet' : 'Restore Account'}
                 </GlassButton>
               )}
             </div>
@@ -579,11 +716,11 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
         </div>
       )}
 
-      {/* Restore from File Modal */}
+      {/* Restore from Local File Modal */}
       {showRestoreModal && (
         <div className="fixed inset-0 bg-black/95 backdrop-blur-sm flex items-center justify-center z-50">
           <GlassCard variant="elevated" className="w-full max-w-md p-6 mx-4">
-            <h2 className="text-xl font-bold text-text-primary mb-4">Restore from File</h2>
+            <h2 className="text-xl font-bold text-text-primary mb-4">Restore from Local File</h2>
             <p className="text-text-secondary text-sm mb-4">
               Restore your entire account from a <code>.qube-backup</code> file.
               This will set up your account and import all Qubes from the backup.
@@ -668,7 +805,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccou
               <GlassButton
                 variant="primary"
                 onClick={handleRestore}
-                disabled={!restoreFilePath || !restorePassword || !restoreMasterPassword || !restoreMasterPasswordConfirm || isRestoring}
+                disabled={!restoreFilePath || !restorePassword || !restoreMasterPassword || !restoreMasterPasswordConfirm || !walletSig || isRestoring}
                 loading={isRestoring}
               >
                 {isRestoring ? 'Restoring...' : 'Restore Account'}

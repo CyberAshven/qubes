@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { GlassCard, GlassButton, GlassInput } from '../glass';
 import { useAuth } from '../../hooks/useAuth';
 import { useChainState } from '../../contexts/ChainStateContext';
@@ -125,8 +126,8 @@ export const SettingsTab: React.FC = () => {
     individual_anchor_threshold: 10,
     group_auto_anchor: true,
     group_anchor_threshold: 5,
-    auto_sync_ipfs_on_anchor: false,
-    auto_sync_ipfs_periodic: false,
+    auto_sync_ipfs_on_anchor: true,
+    auto_sync_ipfs_periodic: true,
     auto_sync_ipfs_interval: 15,
   });
   const [loadingPreferences, setLoadingPreferences] = useState(true);
@@ -209,6 +210,23 @@ export const SettingsTab: React.FC = () => {
   const [changePwError, setChangePwError] = useState<string | null>(null);
   const [changePwSuccess, setChangePwSuccess] = useState<string | null>(null);
 
+  // Toast notification state
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error'; isExiting?: boolean } | null>(null);
+
+  useEffect(() => {
+    if (toast && !toast.isExiting) {
+      const t = setTimeout(() => setToast(prev => prev ? { ...prev, isExiting: true } : null), 2000);
+      return () => clearTimeout(t);
+    } else if (toast && toast.isExiting) {
+      const t = setTimeout(() => setToast(null), 200);
+      return () => clearTimeout(t);
+    }
+  }, [toast]);
+
+  const notify = (message: string, type: 'success' | 'error' = 'success') => {
+    setToast({ message: message.replace(/^[✅❌]\s*/, ''), type });
+  };
+
   // Collapsible panel state (all collapsed by default)
   const [collapsedPanels, setCollapsedPanels] = useState<Record<string, boolean>>({
     apiKeys: true,
@@ -219,6 +237,7 @@ export const SettingsTab: React.FC = () => {
     trustPersonality: true,
     voiceSettings: true,
     gpuAcceleration: true,
+    localModels: true,
     decisionIntelligence: true,
     security: true,
     celebrationSettings: true,
@@ -295,6 +314,21 @@ export const SettingsTab: React.FC = () => {
   }>({});
   const [gpuUninstalling, setGpuUninstalling] = useState(false);
   const [gpuError, setGpuError] = useState<string | null>(null);
+
+  // Local Models state
+  const [ollamaModels, setOllamaModels] = useState<string[]>([]);
+  const [isPullingModel, setIsPullingModel] = useState<string | null>(null);
+  const [pullProgress, setPullProgress] = useState<{ status: string; completed?: number; total?: number } | null>(null);
+  const [newModelInput, setNewModelInput] = useState('');
+  const [ttsModelStatus, setTtsModelStatus] = useState<{
+    kokoro_installed: boolean;
+    sentence_transformers_installed: boolean;
+    whisper_installed: boolean;
+    models_dir: string;
+  } | null>(null);
+  const [isUpdatingTts, setIsUpdatingTts] = useState(false);
+  const [ttsUpdateResult, setTtsUpdateResult] = useState<string | null>(null);
+  const pullListenerRef = useRef<(() => void) | null>(null);
 
   const formatBytes = (bytes: number): string => {
     if (bytes === 0) return '0 B';
@@ -378,6 +412,93 @@ export const SettingsTab: React.FC = () => {
       checkGpuAcceleration();
     }
   }, [userId]);
+
+  // Listen for Ollama pull progress events
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    listen<{ model: string; status: string; completed?: number; total?: number }>('ollama-pull-progress', (event) => {
+      if (event.payload.status === 'done') {
+        setPullProgress(null);
+        setIsPullingModel(null);
+        // Refresh model list after pull
+        checkOllamaModels();
+      } else {
+        setPullProgress({ status: event.payload.status, completed: event.payload.completed, total: event.payload.total });
+      }
+    }).then((fn) => {
+      unlisten = fn;
+      pullListenerRef.current = fn;
+    });
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
+
+  const checkOllamaModels = async () => {
+    try {
+      const result = await invoke<{ running: boolean; models: string[] }>('check_ollama_status');
+      if (result.running) {
+        setOllamaModels(result.models);
+      }
+    } catch (err) {
+      console.error('Failed to check Ollama models:', err);
+    }
+  };
+
+  const checkTtsModels = async () => {
+    if (!userId) return;
+    try {
+      const result = await invoke<any>('check_local_tts_models', { userId });
+      setTtsModelStatus(result);
+    } catch (err) {
+      console.error('Failed to check TTS models:', err);
+    }
+  };
+
+  const handlePullModel = async (modelName: string) => {
+    if (isPullingModel) return;
+    setIsPullingModel(modelName);
+    setPullProgress({ status: 'starting...' });
+    try {
+      await invoke('pull_ollama_model', { modelName });
+    } catch (err) {
+      setIsPullingModel(null);
+      setPullProgress(null);
+      notify(`Failed to pull ${modelName}: ${err}`, 'error');
+    }
+  };
+
+  const handleUpdateAllOllamaModels = async () => {
+    if (isPullingModel || ollamaModels.length === 0) return;
+    for (const model of ollamaModels) {
+      setIsPullingModel(model);
+      setPullProgress({ status: 'starting...' });
+      try {
+        await invoke('pull_ollama_model', { modelName: model });
+      } catch (err) {
+        console.error(`Failed to pull ${model}:`, err);
+      }
+    }
+  };
+
+  const handleUpdateTtsModels = async () => {
+    if (!userId || isUpdatingTts) return;
+    setIsUpdatingTts(true);
+    setTtsUpdateResult(null);
+    try {
+      const result = await invoke<{ success: boolean; updated: string[]; errors: string[] }>('update_local_tts_models', { userId });
+      if (result.success) {
+        setTtsUpdateResult(`Updated: ${result.updated.join(', ') || 'already up to date'}`);
+      } else {
+        setTtsUpdateResult(`Errors: ${result.errors.join('; ')}`);
+      }
+      await checkTtsModels();
+    } catch (err) {
+      setTtsUpdateResult(`Failed: ${err}`);
+    } finally {
+      setIsUpdatingTts(false);
+    }
+  };
 
   const checkGpuAcceleration = async () => {
     try {
@@ -475,10 +596,10 @@ export const SettingsTab: React.FC = () => {
         userId,
         path: googleTTSPath.trim() === '' ? 'none' : googleTTSPath,
       });
-      alert('✅ Google TTS credentials path saved');
+      notify('Google TTS credentials path saved');
     } catch (error) {
       console.error('Failed to save Google TTS path:', error);
-      alert(`❌ Error saving path: ${String(error)}`);
+      notify(`Error saving path: ${String(error)}`, 'error');
     } finally {
       setSavingGoogleTTSPath(false);
     }
@@ -512,7 +633,7 @@ export const SettingsTab: React.FC = () => {
       });
     } catch (error) {
       console.error('Failed to update decision config:', error);
-      alert(`❌ Error updating config: ${String(error)}`);
+      notify(`Error updating config: ${String(error)}`, 'error');
       // Reload to get the correct state
       await loadDecisionConfig();
     } finally {
@@ -564,7 +685,7 @@ export const SettingsTab: React.FC = () => {
       });
     } catch (error) {
       console.error('Failed to update memory config:', error);
-      alert(`❌ Error updating config: ${String(error)}`);
+      notify(`Error updating config: ${String(error)}`, 'error');
       // Reload to get the correct state
       await loadMemoryConfig();
     } finally {
@@ -621,10 +742,10 @@ export const SettingsTab: React.FC = () => {
       invalidateCache(selectedQubeForTrust);
       await loadChainState(selectedQubeForTrust, true);
 
-      alert(`✅ Trust personality updated to "${personality}"`);
+      notify(`Trust personality updated to "${personality}"`);
     } catch (error) {
       console.error('Failed to update trust personality:', error);
-      alert(`❌ Error updating trust personality: ${String(error)}`);
+      notify(`Error updating trust personality: ${String(error)}`, 'error');
       // Reload to get correct state
       await loadTrustPersonality(selectedQubeForTrust);
     } finally {
@@ -679,7 +800,7 @@ export const SettingsTab: React.FC = () => {
   const handleSaveKey = async (provider: string) => {
     const apiKey = apiKeys[provider];
     if (!apiKey || !apiKey.trim()) {
-      alert('Please enter an API key');
+      notify('Please enter an API key', 'error');
       return;
     }
 
@@ -705,13 +826,13 @@ export const SettingsTab: React.FC = () => {
         // Clear input field
         setApiKeys(prev => ({ ...prev, [provider]: '' }));
 
-        alert(`✅ ${providerLabels[provider]} API key saved successfully`);
+        notify(`${providerLabels[provider]} API key saved successfully`);
       } else {
-        alert(`❌ Failed to save API key: ${result.error}`);
+        notify(`Failed to save API key: ${result.error}`, 'error');
       }
     } catch (error) {
       console.error('Failed to save API key:', error);
-      alert(`❌ Error saving API key: ${String(error)}`);
+      notify(`Error saving API key: ${String(error)}`, 'error');
     } finally {
       setSavingKey(null);
     }
@@ -723,7 +844,7 @@ export const SettingsTab: React.FC = () => {
 
     // If input field is empty but key is configured, test the saved key
     if ((!apiKey || !apiKey.trim()) && !isConfigured) {
-      alert('Please enter an API key to validate');
+      notify('Please enter an API key to validate', 'error');
       return;
     }
 
@@ -750,13 +871,13 @@ export const SettingsTab: React.FC = () => {
       }));
 
       if (result.valid) {
-        alert(`✅ ${providerLabels[provider]}: ${result.message}`);
+        notify(`${providerLabels[provider]}: ${result.message}`);
       } else {
-        alert(`❌ ${providerLabels[provider]}: ${result.message}`);
+        notify(`${providerLabels[provider]}: ${result.message}`, 'error');
       }
     } catch (error) {
       console.error('Failed to validate API key:', error);
-      alert(`❌ Error validating API key: ${String(error)}`);
+      notify(`Error validating API key: ${String(error)}`, 'error');
 
       setKeyStatuses(prev => ({
         ...prev,
@@ -794,13 +915,13 @@ export const SettingsTab: React.FC = () => {
           },
         }));
 
-        alert(`✅ ${providerLabels[provider]} API key deleted`);
+        notify(`${providerLabels[provider]} API key deleted`);
       } else {
-        alert(`❌ Failed to delete API key: ${result.error}`);
+        notify(`Failed to delete API key: ${result.error}`, 'error');
       }
     } catch (error) {
       console.error('Failed to delete API key:', error);
-      alert(`❌ Error deleting API key: ${String(error)}`);
+      notify(`Error deleting API key: ${String(error)}`, 'error');
     }
   };
 
@@ -852,7 +973,7 @@ export const SettingsTab: React.FC = () => {
       }
     } catch (error) {
       console.error('Failed to update preference:', error);
-      alert(`❌ Error updating preference: ${String(error)}`);
+      notify(`Error updating preference: ${String(error)}`, 'error');
       await loadBlockPreferences();
     } finally {
       setSavingPreferences(false);
@@ -895,7 +1016,7 @@ export const SettingsTab: React.FC = () => {
       }
     } catch (error) {
       console.error('Failed to update preference:', error);
-      alert(`❌ Error updating preference: ${String(error)}`);
+      notify(`Error updating preference: ${String(error)}`, 'error');
       await loadBlockPreferences();
     } finally {
       setSavingPreferences(false);
@@ -937,25 +1058,15 @@ export const SettingsTab: React.FC = () => {
       });
 
       setRelationshipSettings(result);
-      alert(`✅ Relationship difficulty updated to "${result.description}"`);
+      notify(`Relationship difficulty updated to "${result.description}"`);
     } catch (error) {
       console.error('Failed to update relationship difficulty:', error);
-      alert(`❌ Error updating difficulty: ${String(error)}`);
+      notify(`Error updating difficulty: ${String(error)}`, 'error');
       await loadRelationshipSettings();
     } finally {
       setSavingRelationshipSettings(false);
     }
   };
-
-  if (loadingKeys) {
-    return (
-      <div className="p-6">
-        <GlassCard className="p-6">
-          <p className="text-text-secondary">Loading settings...</p>
-        </GlassCard>
-      </div>
-    );
-  }
 
   return (
     <div className="p-4">
@@ -1191,7 +1302,7 @@ export const SettingsTab: React.FC = () => {
                 className="w-full flex items-center justify-between text-left"
               >
                 <h2 className="text-lg font-display text-text-primary">
-                  ⚓ Auto-Anchor
+                  ⚓ Anchor &amp; Backup
                 </h2>
                 <span className={`text-text-tertiary transition-transform ${collapsedPanels.blockSettings ? '' : 'rotate-180'}`}>
                   ▼
@@ -1203,15 +1314,17 @@ export const SettingsTab: React.FC = () => {
               {loadingPreferences ? (
                 <p className="text-xs text-text-tertiary">Loading...</p>
               ) : (
-                <div className="space-y-3">
-                  {/* Individual Chat Settings */}
-                  <div className="border-b border-white/10 pb-3">
-                    <h3 className="text-xs font-medium text-text-primary mb-2">
-                      Individual Chat
-                    </h3>
+                <div className="space-y-4 mt-3">
+
+                  {/* BCH Anchor */}
+                  <div className="border border-white/10 rounded-lg p-3 space-y-3">
+                    <h3 className="text-xs font-semibold text-text-primary uppercase tracking-wide">⚓ Auto-Anchor</h3>
+
+                    {/* Individual Chat */}
                     <div className="space-y-2">
+                      <p className="text-[10px] text-text-tertiary font-medium">Individual Chat</p>
                       <label className="flex items-center justify-between text-xs">
-                        <span className="text-text-secondary">Auto-anchor</span>
+                        <span className="text-text-secondary">Auto-anchor enabled</span>
                         <input
                           type="checkbox"
                           checked={blockPreferences.individual_auto_anchor}
@@ -1220,33 +1333,31 @@ export const SettingsTab: React.FC = () => {
                           className="w-4 h-4 rounded bg-surface-secondary border-border-subtle accent-accent-primary"
                         />
                       </label>
-                      <label className="flex items-center justify-between text-xs">
-                        <span className="text-text-secondary">Anchor every</span>
-                        <div className="flex items-center gap-1">
-                          <input
-                            type="number"
-                            min="5"
-                            max="50"
-                            value={individualThresholdInput}
-                            onChange={(e) => setIndividualThresholdInput(e.target.value)}
-                            onBlur={(e) => handleThresholdBlur('individual_anchor_threshold', e.target.value)}
-                            disabled={savingPreferences}
-                            className="w-14 h-6 px-2 text-xs rounded bg-white/90 border border-border-subtle text-gray-900 focus:outline-none focus:border-accent-primary"
-                          />
-                          <span className="text-text-tertiary text-[10px]">blocks</span>
-                        </div>
-                      </label>
+                      {blockPreferences.individual_auto_anchor && (
+                        <label className="flex items-center justify-between text-xs">
+                          <span className="text-text-secondary">Anchor every</span>
+                          <div className="flex items-center gap-1">
+                            <input
+                              type="number"
+                              min="5"
+                              max="50"
+                              value={individualThresholdInput}
+                              onChange={(e) => setIndividualThresholdInput(e.target.value)}
+                              onBlur={(e) => handleThresholdBlur('individual_anchor_threshold', e.target.value)}
+                              disabled={savingPreferences}
+                              className="w-14 h-6 px-2 text-xs rounded bg-white/90 border border-border-subtle text-gray-900 focus:outline-none focus:border-accent-primary"
+                            />
+                            <span className="text-text-tertiary text-[10px]">blocks (~{Math.round(parseInt(individualThresholdInput||'10')/2)} msgs)</span>
+                          </div>
+                        </label>
+                      )}
                     </div>
-                  </div>
 
-                  {/* Group Chat Settings */}
-                  <div className="border-b border-white/10 pb-3">
-                    <h3 className="text-xs font-medium text-text-primary mb-2">
-                      Group Chat
-                    </h3>
-                    <div className="space-y-2">
+                    {/* Group Chat */}
+                    <div className="space-y-2 pt-1 border-t border-white/5">
+                      <p className="text-[10px] text-text-tertiary font-medium pt-1">Group Chat</p>
                       <label className="flex items-center justify-between text-xs">
-                        <span className="text-text-secondary">Auto-anchor</span>
+                        <span className="text-text-secondary">Auto-anchor enabled</span>
                         <input
                           type="checkbox"
                           checked={blockPreferences.group_auto_anchor}
@@ -1255,33 +1366,35 @@ export const SettingsTab: React.FC = () => {
                           className="w-4 h-4 rounded bg-surface-secondary border-border-subtle accent-accent-primary"
                         />
                       </label>
-                      <label className="flex items-center justify-between text-xs">
-                        <span className="text-text-secondary">Anchor every</span>
-                        <div className="flex items-center gap-1">
-                          <input
-                            type="number"
-                            min="5"
-                            max="50"
-                            value={groupThresholdInput}
-                            onChange={(e) => setGroupThresholdInput(e.target.value)}
-                            onBlur={(e) => handleThresholdBlur('group_anchor_threshold', e.target.value)}
-                            disabled={savingPreferences}
-                            className="w-14 h-6 px-2 text-xs rounded bg-white/90 border border-border-subtle text-gray-900 focus:outline-none focus:border-accent-primary"
-                          />
-                          <span className="text-text-tertiary text-[10px]">blocks</span>
-                        </div>
-                      </label>
+                      {blockPreferences.group_auto_anchor && (
+                        <label className="flex items-center justify-between text-xs">
+                          <span className="text-text-secondary">Anchor every</span>
+                          <div className="flex items-center gap-1">
+                            <input
+                              type="number"
+                              min="5"
+                              max="50"
+                              value={groupThresholdInput}
+                              onChange={(e) => setGroupThresholdInput(e.target.value)}
+                              onBlur={(e) => handleThresholdBlur('group_anchor_threshold', e.target.value)}
+                              disabled={savingPreferences}
+                              className="w-14 h-6 px-2 text-xs rounded bg-white/90 border border-border-subtle text-gray-900 focus:outline-none focus:border-accent-primary"
+                            />
+                            <span className="text-text-tertiary text-[10px]">blocks (~{Math.round(parseInt(groupThresholdInput||'5')/2)} msgs)</span>
+                          </div>
+                        </label>
+                      )}
                     </div>
                   </div>
 
-                  {/* IPFS Sync Settings */}
-                  <div>
-                    <h3 className="text-xs font-medium text-text-primary mb-2">
-                      IPFS Sync
-                    </h3>
-                    <div className="space-y-2">
+                  {/* IPFS Backup */}
+                  <div className="border border-white/10 rounded-lg p-3 space-y-3">
+                    <h3 className="text-xs font-semibold text-text-primary uppercase tracking-wide">☁️ IPFS Backup (Pinata)</h3>
+
+                    {/* After anchor */}
+                    <div className="space-y-1">
                       <label className="flex items-center justify-between text-xs">
-                        <span className="text-text-secondary">Sync to IPFS after auto-anchor</span>
+                        <span className="text-text-secondary">After each anchor</span>
                         <input
                           type="checkbox"
                           checked={blockPreferences.auto_sync_ipfs_on_anchor}
@@ -1291,10 +1404,13 @@ export const SettingsTab: React.FC = () => {
                         />
                       </label>
                       <p className="text-[10px] text-text-tertiary">
-                        Automatically upload .qube package to IPFS after each auto-anchor
+                        Upload to Pinata immediately after every auto-anchor (new CID replaces old)
                       </p>
+                    </div>
 
-                      <label className="flex items-center justify-between text-xs pt-2">
+                    {/* Periodic */}
+                    <div className="space-y-1 pt-1 border-t border-white/5">
+                      <label className="flex items-center justify-between text-xs pt-1">
                         <span className="text-text-secondary">Periodic background sync</span>
                         <input
                           type="checkbox"
@@ -1304,45 +1420,40 @@ export const SettingsTab: React.FC = () => {
                           className="w-4 h-4 rounded bg-surface-secondary border-border-subtle accent-accent-primary"
                         />
                       </label>
-                      <p className="text-[10px] text-text-tertiary">
-                        Automatically sync all Qubes to IPFS on a timer
-                      </p>
-
-                      {blockPreferences.auto_sync_ipfs_periodic && (
-                        <label className="flex items-center justify-between text-xs pt-1">
-                          <span className="text-text-secondary">Sync interval</span>
-                          <select
-                            value={blockPreferences.auto_sync_ipfs_interval}
-                            onChange={async (e) => {
-                              const interval = parseInt(e.target.value);
-                              setSavingPreferences(true);
-                              setBlockPreferences(prev => ({ ...prev, auto_sync_ipfs_interval: interval }));
-                              try {
-                                const result = await invoke<BlockPreferences>('update_block_preferences', {
-                                  userId,
-                                  autoSyncIpfsInterval: interval,
-                                });
-                                setBlockPreferences(result);
-                              } catch (error) {
-                                console.error('Failed to update sync interval:', error);
-                                alert(`Error updating sync interval: ${String(error)}`);
-                                await loadBlockPreferences();
-                              } finally {
-                                setSavingPreferences(false);
-                              }
-                            }}
-                            disabled={savingPreferences}
-                            className="bg-surface-secondary border border-border-subtle rounded px-2 py-1 text-xs text-text-primary"
-                          >
-                            <option value={15}>15 minutes</option>
-                            <option value={30}>30 minutes</option>
-                            <option value={45}>45 minutes</option>
-                            <option value={60}>60 minutes</option>
-                          </select>
-                        </label>
-                      )}
+                      <label className="flex items-center justify-between text-xs">
+                        <span className="text-text-secondary pl-0">Sync every</span>
+                        <select
+                          value={blockPreferences.auto_sync_ipfs_interval}
+                          onChange={async (e) => {
+                            const interval = parseInt(e.target.value);
+                            setSavingPreferences(true);
+                            setBlockPreferences(prev => ({ ...prev, auto_sync_ipfs_interval: interval }));
+                            try {
+                              const result = await invoke<BlockPreferences>('update_block_preferences', {
+                                userId,
+                                autoSyncIpfsInterval: interval,
+                              });
+                              setBlockPreferences(result);
+                            } catch (error) {
+                              console.error('Failed to update sync interval:', error);
+                              notify(`Error updating sync interval: ${String(error)}`, 'error');
+                              await loadBlockPreferences();
+                            } finally {
+                              setSavingPreferences(false);
+                            }
+                          }}
+                          disabled={savingPreferences || !blockPreferences.auto_sync_ipfs_periodic}
+                          className="bg-surface-secondary border border-border-subtle rounded px-2 py-1 text-xs text-text-primary disabled:opacity-40"
+                        >
+                          <option value={5}>5 minutes</option>
+                          <option value={15}>15 minutes</option>
+                          <option value={30}>30 minutes</option>
+                          <option value={60}>60 minutes</option>
+                        </select>
+                      </label>
                     </div>
                   </div>
+
                 </div>
               )}
                 </>
@@ -1772,6 +1883,158 @@ export const SettingsTab: React.FC = () => {
                   ) : (
                     <p className="text-xs text-text-tertiary">Checking GPU status...</p>
                   )}
+                </>
+              )}
+            </GlassCard>
+
+            {/* Local Models */}
+            <GlassCard className="p-4 mt-4">
+              <button
+                onClick={() => {
+                  togglePanel('localModels');
+                  if (collapsedPanels.localModels) {
+                    checkOllamaModels();
+                    checkTtsModels();
+                  }
+                }}
+                className="w-full flex items-center justify-between text-left"
+              >
+                <h2 className="text-lg font-display text-text-primary">
+                  📦 Local Models
+                </h2>
+                <span className={`text-text-tertiary transition-transform ${collapsedPanels.localModels ? '' : 'rotate-180'}`}>
+                  ▼
+                </span>
+              </button>
+
+              {!collapsedPanels.localModels && (
+                <>
+                  <p className="text-[10px] text-text-tertiary mb-4 mt-2">
+                    Update AI models (Ollama) and voice/embedding models (Kokoro TTS, Sentence Transformers).
+                  </p>
+
+                  {/* Ollama Models */}
+                  <div className="mb-4">
+                    <h3 className="text-sm font-medium text-text-secondary mb-2">🤖 AI Models (Ollama)</h3>
+                    {ollamaModels.length > 0 ? (
+                      <div className="space-y-2">
+                        {ollamaModels.map((model) => (
+                          <div key={model} className="flex items-center justify-between bg-bg-primary/40 rounded px-3 py-2">
+                            <div>
+                              <span className="text-xs text-text-primary font-mono">{model}</span>
+                              <span className="ml-2 text-[10px] text-green-400">✓ installed</span>
+                            </div>
+                            <GlassButton
+                              variant="secondary"
+                              onClick={() => handlePullModel(model)}
+                              disabled={isPullingModel !== null}
+                            >
+                              {isPullingModel === model ? 'Updating...' : 'Update'}
+                            </GlassButton>
+                          </div>
+                        ))}
+                        <GlassButton
+                          variant="primary"
+                          onClick={handleUpdateAllOllamaModels}
+                          disabled={isPullingModel !== null}
+                          className="w-full mt-2"
+                        >
+                          {isPullingModel ? `Updating ${isPullingModel}...` : 'Update All Ollama Models'}
+                        </GlassButton>
+                      </div>
+                    ) : (
+                      <div className="text-xs text-text-tertiary italic">No Ollama models installed yet.</div>
+                    )}
+
+                    {/* Pull progress */}
+                    {pullProgress && (
+                      <div className="mt-3 p-3 bg-bg-primary/60 rounded border border-glass-border">
+                        <div className="flex justify-between text-xs text-text-secondary mb-1">
+                          <span>{pullProgress.status}</span>
+                          {pullProgress.total && pullProgress.total > 0 && (
+                            <span>
+                              {formatBytes(pullProgress.completed ?? 0)} / {formatBytes(pullProgress.total)}
+                            </span>
+                          )}
+                        </div>
+                        {pullProgress.total && pullProgress.total > 0 && (
+                          <div className="w-full bg-bg-quaternary rounded-full h-1.5">
+                            <div
+                              className="bg-accent-primary h-1.5 rounded-full transition-all"
+                              style={{ width: `${Math.min(100, ((pullProgress.completed ?? 0) / pullProgress.total) * 100)}%` }}
+                            />
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Download new model */}
+                    <div className="mt-3">
+                      <p className="text-[10px] text-text-tertiary mb-1">Download a new model (e.g. llama3.2:3b)</p>
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          value={newModelInput}
+                          onChange={(e) => setNewModelInput(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter' && newModelInput.trim()) { handlePullModel(newModelInput.trim()); setNewModelInput(''); } }}
+                          placeholder="model:tag"
+                          className="flex-1 bg-bg-primary/60 border border-glass-border rounded px-3 py-1.5 text-xs text-text-primary placeholder:text-text-disabled focus:outline-none focus:border-accent-primary"
+                          disabled={isPullingModel !== null}
+                        />
+                        <GlassButton
+                          variant="primary"
+                          onClick={() => { if (newModelInput.trim()) { handlePullModel(newModelInput.trim()); setNewModelInput(''); } }}
+                          disabled={isPullingModel !== null || !newModelInput.trim()}
+                        >
+                          Download
+                        </GlassButton>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Voice & Embedding Models */}
+                  <div>
+                    <h3 className="text-sm font-medium text-text-secondary mb-2">🎙️ Voice & Embedding Models</h3>
+                    {ttsModelStatus ? (
+                      <div className="space-y-2 mb-3">
+                        <div className="flex items-center justify-between bg-bg-primary/40 rounded px-3 py-2">
+                          <span className="text-xs text-text-primary">Kokoro TTS 82M</span>
+                          <span className={`text-[10px] ${ttsModelStatus.kokoro_installed ? 'text-green-400' : 'text-red-400'}`}>
+                            {ttsModelStatus.kokoro_installed ? '✓ installed' : '✗ missing'}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between bg-bg-primary/40 rounded px-3 py-2">
+                          <span className="text-xs text-text-primary">Sentence Transformers</span>
+                          <span className={`text-[10px] ${ttsModelStatus.sentence_transformers_installed ? 'text-green-400' : 'text-red-400'}`}>
+                            {ttsModelStatus.sentence_transformers_installed ? '✓ installed' : '✗ missing'}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between bg-bg-primary/40 rounded px-3 py-2">
+                          <span className="text-xs text-text-primary">Whisper STT</span>
+                          <span className={`text-[10px] ${ttsModelStatus.whisper_installed ? 'text-green-400' : 'text-red-400'}`}>
+                            {ttsModelStatus.whisper_installed ? '✓ installed' : '✗ missing'}
+                          </span>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-xs text-text-tertiary italic mb-3">Click to check model status...</div>
+                    )}
+
+                    <GlassButton
+                      variant="secondary"
+                      onClick={handleUpdateTtsModels}
+                      disabled={isUpdatingTts}
+                      className="w-full"
+                    >
+                      {isUpdatingTts ? 'Re-downloading...' : 'Re-download Voice Models'}
+                    </GlassButton>
+
+                    {ttsUpdateResult && (
+                      <p className={`text-xs mt-2 ${ttsUpdateResult.startsWith('Updated') ? 'text-green-400' : 'text-red-400'}`}>
+                        {ttsUpdateResult}
+                      </p>
+                    )}
+                  </div>
                 </>
               )}
             </GlassCard>
@@ -2587,6 +2850,32 @@ export const SettingsTab: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Toast Notification */}
+      {toast && (
+        <div
+          className="fixed top-1/2 left-1/2 z-50 px-6 py-3 rounded-lg shadow-2xl border backdrop-blur-md"
+          style={{
+            backgroundColor: toast.type === 'success' ? 'rgba(0, 255, 136, 0.15)' : 'rgba(255, 51, 102, 0.15)',
+            borderColor: toast.type === 'success' ? '#00ff88' : '#ff3366',
+            opacity: toast.isExiting ? 0 : 1,
+            transform: toast.isExiting
+              ? 'translate(-50%, -50%) scale(0.95)'
+              : 'translate(-50%, -50%) scale(1)',
+            transition: 'opacity 0.2s ease-out, transform 0.2s ease-out'
+          }}
+        >
+          <div className="flex items-center gap-2">
+            <span className="text-lg">{toast.type === 'success' ? '✓' : '✕'}</span>
+            <span
+              className="font-medium text-sm"
+              style={{ color: toast.type === 'success' ? '#00ff88' : '#ff3366' }}
+            >
+              {toast.message}
+            </span>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

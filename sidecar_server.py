@@ -121,6 +121,7 @@ POSITIONAL_ARG_NAMES = {
     "get-qube-blocks": ["user_id", "qube_id", "limit", "offset"],
     "recall-last-context": ["user_id", "qube_id"],
     "delete-qube": ["user_id", "qube_id", "--sweep-address"],
+    "sweep-qube-wallet": ["user_id", "qube_id", "sweep_address"],
     "reset-qube": ["user_id", "qube_id"],
     "update-qube-avatar": ["user_id", "qube_id", "avatar_path"],
     "save-image": ["user_id", "qube_id", "image_url"],
@@ -236,6 +237,9 @@ POSITIONAL_ARG_NAMES = {
     "delete-user-account": ["user_id"],
     "migrate-user-data": ["old_data_dir", "user_id"],
     "check-first-run": [],
+    # Local TTS model management
+    "check-local-tts-models": ["user_id"],
+    "update-local-tts-models": ["user_id"],
 }
 
 
@@ -1413,3 +1417,13 @@ class SidecarServer:
             return stop_server()
         except ImportError:
             return {"error": "WSL2 TTS not available"}
+
+    async def _handle_check_local_tts_models(self, bridge, params, secrets, request_id):
+        """Check which local TTS/embedding models are installed."""
+        from audio.tts_model_utils import check_local_tts_models
+        return check_local_tts_models()
+
+    async def _handle_update_local_tts_models(self, bridge, params, secrets, request_id):
+        """Re-download/update local TTS and embedding models from HuggingFace."""
+        from audio.tts_model_utils import update_local_tts_models
+        return update_local_tts_models()
