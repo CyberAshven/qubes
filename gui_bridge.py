@@ -6841,10 +6841,10 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
                     data = await resp.json()
                     rows = data.get("rows", [])
 
-                for row in rows:
-                    cid = row.get("ipfs_pin_hash", "")
-                    if cid and cid != keep_cid:
-                        async with aiohttp.ClientSession() as s:
+                async with aiohttp.ClientSession() as s:
+                    for row in rows:
+                        cid = row.get("ipfs_pin_hash", "")
+                        if cid and cid != keep_cid:
                             async with s.delete(
                                 f"https://api.pinata.cloud/pinning/unpin/{cid}",
                                 headers=headers,

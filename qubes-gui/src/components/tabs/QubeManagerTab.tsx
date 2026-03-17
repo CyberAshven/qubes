@@ -2330,7 +2330,6 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
   const [walletBalanceError, setWalletBalanceError] = useState<string | null>(cachedWalletData?.error ?? null);
   const [showSweepModal, setShowSweepModal] = useState(false);
   const [sweepAddress, setSweepAddress] = useState('');
-  const [sweepPassword, setSweepPassword] = useState('');
   const [isSweeping, setIsSweeping] = useState(false);
   const [sweepResult, setSweepResult] = useState<string | null>(null);
 
@@ -2343,7 +2342,7 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
         userId,
         qubeId: qube.qube_id,
         sweepAddress,
-        password: sweepPassword || masterPassword,
+        password: masterPassword,
       });
       if (result.success) {
         const bch = (result.swept_sats / 1e8).toFixed(8);
