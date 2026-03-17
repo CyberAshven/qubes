@@ -12717,7 +12717,7 @@ async def main():
             user_id = sys.argv[2]
             qube_id = sys.argv[3]
             sweep_address = sys.argv[4]
-            password = sys.argv[5] if len(sys.argv) > 5 else None
+            password = get_secret("password", argv_index=5)
             user_bridge = GUIBridge(user_id=user_id)
             if password:
                 user_bridge.orchestrator.set_master_key(password)

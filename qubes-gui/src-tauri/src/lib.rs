@@ -5904,8 +5904,9 @@ async fn start_ollama() -> Result<bool, String> {
 /// Sweep all BCH from a single Qube's wallet to a target address (without deleting the Qube)
 #[tauri::command]
 async fn sweep_qube_wallet(app_handle: AppHandle, user_id: String, qube_id: String, sweep_address: String, password: String) -> Result<serde_json::Value, String> {
-    let args = vec![user_id, qube_id, sweep_address, password];
-    let secrets = HashMap::new();
+    let args = vec![user_id, qube_id, sweep_address];
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
     let result = sidecar_execute_with_retry("sweep-qube-wallet", args, secrets, Some(&app_handle), None).await?;
     let response: serde_json::Value = serde_json::from_value(result)
         .map_err(|e| format!("Failed to parse sweep-qube-wallet response: {}", e))?;
