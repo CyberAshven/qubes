@@ -210,6 +210,23 @@ export const SettingsTab: React.FC = () => {
   const [changePwError, setChangePwError] = useState<string | null>(null);
   const [changePwSuccess, setChangePwSuccess] = useState<string | null>(null);
 
+  // Toast notification state
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error'; isExiting?: boolean } | null>(null);
+
+  useEffect(() => {
+    if (toast && !toast.isExiting) {
+      const t = setTimeout(() => setToast(prev => prev ? { ...prev, isExiting: true } : null), 2000);
+      return () => clearTimeout(t);
+    } else if (toast && toast.isExiting) {
+      const t = setTimeout(() => setToast(null), 200);
+      return () => clearTimeout(t);
+    }
+  }, [toast]);
+
+  const notify = (message: string, type: 'success' | 'error' = 'success') => {
+    setToast({ message: message.replace(/^[✅❌]\s*/, ''), type });
+  };
+
   // Collapsible panel state (all collapsed by default)
   const [collapsedPanels, setCollapsedPanels] = useState<Record<string, boolean>>({
     apiKeys: true,
@@ -447,7 +464,7 @@ export const SettingsTab: React.FC = () => {
     } catch (err) {
       setIsPullingModel(null);
       setPullProgress(null);
-      alert(`Failed to pull ${modelName}: ${err}`);
+      notify(`Failed to pull ${modelName}: ${err}`, 'error');
     }
   };
 
@@ -579,10 +596,10 @@ export const SettingsTab: React.FC = () => {
         userId,
         path: googleTTSPath.trim() === '' ? 'none' : googleTTSPath,
       });
-      alert('✅ Google TTS credentials path saved');
+      notify('Google TTS credentials path saved');
     } catch (error) {
       console.error('Failed to save Google TTS path:', error);
-      alert(`❌ Error saving path: ${String(error)}`);
+      notify(`Error saving path: ${String(error)}`, 'error');
     } finally {
       setSavingGoogleTTSPath(false);
     }
@@ -616,7 +633,7 @@ export const SettingsTab: React.FC = () => {
       });
     } catch (error) {
       console.error('Failed to update decision config:', error);
-      alert(`❌ Error updating config: ${String(error)}`);
+      notify(`Error updating config: ${String(error)}`, 'error');
       // Reload to get the correct state
       await loadDecisionConfig();
     } finally {
@@ -668,7 +685,7 @@ export const SettingsTab: React.FC = () => {
       });
     } catch (error) {
       console.error('Failed to update memory config:', error);
-      alert(`❌ Error updating config: ${String(error)}`);
+      notify(`Error updating config: ${String(error)}`, 'error');
       // Reload to get the correct state
       await loadMemoryConfig();
     } finally {
@@ -725,10 +742,10 @@ export const SettingsTab: React.FC = () => {
       invalidateCache(selectedQubeForTrust);
       await loadChainState(selectedQubeForTrust, true);
 
-      alert(`✅ Trust personality updated to "${personality}"`);
+      notify(`Trust personality updated to "${personality}"`);
     } catch (error) {
       console.error('Failed to update trust personality:', error);
-      alert(`❌ Error updating trust personality: ${String(error)}`);
+      notify(`Error updating trust personality: ${String(error)}`, 'error');
       // Reload to get correct state
       await loadTrustPersonality(selectedQubeForTrust);
     } finally {
@@ -783,7 +800,7 @@ export const SettingsTab: React.FC = () => {
   const handleSaveKey = async (provider: string) => {
     const apiKey = apiKeys[provider];
     if (!apiKey || !apiKey.trim()) {
-      alert('Please enter an API key');
+      notify('Please enter an API key', 'error');
       return;
     }
 
@@ -809,13 +826,13 @@ export const SettingsTab: React.FC = () => {
         // Clear input field
         setApiKeys(prev => ({ ...prev, [provider]: '' }));
 
-        alert(`✅ ${providerLabels[provider]} API key saved successfully`);
+        notify(`${providerLabels[provider]} API key saved successfully`);
       } else {
-        alert(`❌ Failed to save API key: ${result.error}`);
+        notify(`Failed to save API key: ${result.error}`, 'error');
       }
     } catch (error) {
       console.error('Failed to save API key:', error);
-      alert(`❌ Error saving API key: ${String(error)}`);
+      notify(`Error saving API key: ${String(error)}`, 'error');
     } finally {
       setSavingKey(null);
     }
@@ -827,7 +844,7 @@ export const SettingsTab: React.FC = () => {
 
     // If input field is empty but key is configured, test the saved key
     if ((!apiKey || !apiKey.trim()) && !isConfigured) {
-      alert('Please enter an API key to validate');
+      notify('Please enter an API key to validate', 'error');
       return;
     }
 
@@ -854,13 +871,13 @@ export const SettingsTab: React.FC = () => {
       }));
 
       if (result.valid) {
-        alert(`✅ ${providerLabels[provider]}: ${result.message}`);
+        notify(`${providerLabels[provider]}: ${result.message}`);
       } else {
-        alert(`❌ ${providerLabels[provider]}: ${result.message}`);
+        notify(`${providerLabels[provider]}: ${result.message}`, 'error');
       }
     } catch (error) {
       console.error('Failed to validate API key:', error);
-      alert(`❌ Error validating API key: ${String(error)}`);
+      notify(`Error validating API key: ${String(error)}`, 'error');
 
       setKeyStatuses(prev => ({
         ...prev,
@@ -898,13 +915,13 @@ export const SettingsTab: React.FC = () => {
           },
         }));
 
-        alert(`✅ ${providerLabels[provider]} API key deleted`);
+        notify(`${providerLabels[provider]} API key deleted`);
       } else {
-        alert(`❌ Failed to delete API key: ${result.error}`);
+        notify(`Failed to delete API key: ${result.error}`, 'error');
       }
     } catch (error) {
       console.error('Failed to delete API key:', error);
-      alert(`❌ Error deleting API key: ${String(error)}`);
+      notify(`Error deleting API key: ${String(error)}`, 'error');
     }
   };
 
@@ -956,7 +973,7 @@ export const SettingsTab: React.FC = () => {
       }
     } catch (error) {
       console.error('Failed to update preference:', error);
-      alert(`❌ Error updating preference: ${String(error)}`);
+      notify(`Error updating preference: ${String(error)}`, 'error');
       await loadBlockPreferences();
     } finally {
       setSavingPreferences(false);
@@ -999,7 +1016,7 @@ export const SettingsTab: React.FC = () => {
       }
     } catch (error) {
       console.error('Failed to update preference:', error);
-      alert(`❌ Error updating preference: ${String(error)}`);
+      notify(`Error updating preference: ${String(error)}`, 'error');
       await loadBlockPreferences();
     } finally {
       setSavingPreferences(false);
@@ -1041,25 +1058,15 @@ export const SettingsTab: React.FC = () => {
       });
 
       setRelationshipSettings(result);
-      alert(`✅ Relationship difficulty updated to "${result.description}"`);
+      notify(`Relationship difficulty updated to "${result.description}"`);
     } catch (error) {
       console.error('Failed to update relationship difficulty:', error);
-      alert(`❌ Error updating difficulty: ${String(error)}`);
+      notify(`Error updating difficulty: ${String(error)}`, 'error');
       await loadRelationshipSettings();
     } finally {
       setSavingRelationshipSettings(false);
     }
   };
-
-  if (loadingKeys) {
-    return (
-      <div className="p-6">
-        <GlassCard className="p-6">
-          <p className="text-text-secondary">Loading settings...</p>
-        </GlassCard>
-      </div>
-    );
-  }
 
   return (
     <div className="p-4">
@@ -1429,7 +1436,7 @@ export const SettingsTab: React.FC = () => {
                               setBlockPreferences(result);
                             } catch (error) {
                               console.error('Failed to update sync interval:', error);
-                              alert(`Error updating sync interval: ${String(error)}`);
+                              notify(`Error updating sync interval: ${String(error)}`, 'error');
                               await loadBlockPreferences();
                             } finally {
                               setSavingPreferences(false);
@@ -2843,6 +2850,32 @@ export const SettingsTab: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Toast Notification */}
+      {toast && (
+        <div
+          className="fixed top-1/2 left-1/2 z-50 px-6 py-3 rounded-lg shadow-2xl border backdrop-blur-md"
+          style={{
+            backgroundColor: toast.type === 'success' ? 'rgba(0, 255, 136, 0.15)' : 'rgba(255, 51, 102, 0.15)',
+            borderColor: toast.type === 'success' ? '#00ff88' : '#ff3366',
+            opacity: toast.isExiting ? 0 : 1,
+            transform: toast.isExiting
+              ? 'translate(-50%, -50%) scale(0.95)'
+              : 'translate(-50%, -50%) scale(1)',
+            transition: 'opacity 0.2s ease-out, transform 0.2s ease-out'
+          }}
+        >
+          <div className="flex items-center gap-2">
+            <span className="text-lg">{toast.type === 'success' ? '✓' : '✕'}</span>
+            <span
+              className="font-medium text-sm"
+              style={{ color: toast.type === 'success' ? '#00ff88' : '#ff3366' }}
+            >
+              {toast.message}
+            </span>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

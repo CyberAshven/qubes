@@ -121,6 +121,7 @@ POSITIONAL_ARG_NAMES = {
     "get-qube-blocks": ["user_id", "qube_id", "limit", "offset"],
     "recall-last-context": ["user_id", "qube_id"],
     "delete-qube": ["user_id", "qube_id", "--sweep-address"],
+    "sweep-qube-wallet": ["user_id", "qube_id", "sweep_address"],
     "reset-qube": ["user_id", "qube_id"],
     "update-qube-avatar": ["user_id", "qube_id", "avatar_path"],
     "save-image": ["user_id", "qube_id", "image_url"],
@@ -1419,56 +1420,10 @@ class SidecarServer:
 
     async def _handle_check_local_tts_models(self, bridge, params, secrets, request_id):
         """Check which local TTS/embedding models are installed."""
-        import os
-        from pathlib import Path
-        hf_home = os.environ.get("HF_HOME", "")
-        models_dir = os.environ.get("QUBES_MODELS_DIR", "")
-        kokoro_installed = False
-        st_installed = False
-        whisper_installed = False
-        if hf_home:
-            hf_path = Path(hf_home)
-            kokoro_path = hf_path / "hub" / "models--hexgrad--Kokoro-82M"
-            st_path = hf_path / "hub" / "models--sentence-transformers--all-MiniLM-L6-v2"
-            kokoro_installed = kokoro_path.exists()
-            st_installed = st_path.exists()
-        if models_dir:
-            whisper_path = Path(models_dir) / "whisper"
-            whisper_installed = any(whisper_path.glob("*.bin")) if whisper_path.exists() else False
-        return {
-            "kokoro_installed": kokoro_installed,
-            "sentence_transformers_installed": st_installed,
-            "whisper_installed": whisper_installed,
-            "hf_home": hf_home,
-            "models_dir": str(models_dir or hf_home),
-        }
+        from audio.tts_model_utils import check_local_tts_models
+        return check_local_tts_models()
 
     async def _handle_update_local_tts_models(self, bridge, params, secrets, request_id):
         """Re-download/update local TTS and embedding models from HuggingFace."""
-        import os
-        from pathlib import Path
-        updated = []
-        errors = []
-        try:
-            from huggingface_hub import snapshot_download
-            hf_home = os.environ.get("HF_HOME", None)
-            dl_kwargs = {}
-            if hf_home:
-                dl_kwargs["cache_dir"] = str(Path(hf_home) / "hub")
-            try:
-                snapshot_download("hexgrad/Kokoro-82M", local_files_only=False, **dl_kwargs)
-                updated.append("kokoro-82m")
-            except Exception as e:
-                errors.append(f"Kokoro: {str(e)}")
-            try:
-                snapshot_download("sentence-transformers/all-MiniLM-L6-v2", local_files_only=False, **dl_kwargs)
-                updated.append("sentence-transformers")
-            except Exception as e:
-                errors.append(f"sentence-transformers: {str(e)}")
-        except ImportError as e:
-            errors.append(f"huggingface_hub not available: {str(e)}")
-        return {
-            "success": len(errors) == 0,
-            "updated": updated,
-            "errors": errors,
-        }
+        from audio.tts_model_utils import update_local_tts_models
+        return update_local_tts_models()
