@@ -869,8 +869,8 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
 
     // Regular expression to detect image URLs (including DALL-E Azure Blob Storage URLs)
     const imageUrlRegex = /(https?:\/\/[^\s\)]+?(?:\.(?:png|jpg|jpeg|gif|webp)|blob\.core\.windows\.net\/[^\s\)]+))/gi;
-    // Regular expression to detect local Windows file paths to images (both absolute and relative)
-    const localPathRegex = /([A-Za-z]:\\[^\s\)]+\.(?:png|jpg|jpeg|gif|webp)|data[\\\/][^\s\)]+\.(?:png|jpg|jpeg|gif|webp))/gi;
+    // Regular expression to detect local file paths (Windows and Unix)
+    const localPathRegex = /([A-Za-z]:[\\\/][^\s\)]+\.(?:png|jpg|jpeg|gif|webp)|\/[^\s\)]+\.(?:png|jpg|jpeg|gif|webp))/gi;
 
     // Remove complete markdown image syntax ![...](url)
     cleaned = cleaned.replace(/!\[([^\]]*)\]\([^\)]+\)/gi, '');
@@ -924,8 +924,8 @@ export const MultiQubeChatInterface: React.FC<MultiQubeChatInterfaceProps> = ({
   const renderMessageContent = (content: string, speakerId: string) => {
     // Regular expression to detect image URLs (including DALL-E Azure Blob Storage URLs)
     const imageUrlRegex = /(https?:\/\/[^\s\)]+?(?:\.(?:png|jpg|jpeg|gif|webp)|blob\.core\.windows\.net\/[^\s\)]+))/gi;
-    // Regular expression to detect local Windows file paths to images (both absolute and relative)
-    const localPathRegex = /([A-Za-z]:\\[^\s\)]+\.(?:png|jpg|jpeg|gif|webp)|data[\\\/][^\s\)]+\.(?:png|jpg|jpeg|gif|webp))/gi;
+    // Regular expression to detect local file paths (Windows and Unix)
+    const localPathRegex = /([A-Za-z]:[\\\/][^\s\)]+\.(?:png|jpg|jpeg|gif|webp)|\/[^\s\)]+\.(?:png|jpg|jpeg|gif|webp))/gi;
     // Regular expression to detect any URLs
     const anyUrlRegex = /(https?:\/\/[^\s\)]+)/gi;
 

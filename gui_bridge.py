@@ -124,9 +124,11 @@ log_dir = Path(__file__).parent / "logs"
 try:
     log_dir.mkdir(exist_ok=True)
 except OSError:
-    # Read-only filesystem (e.g., AppImage mount) - use platform writable location
+    # Read-only filesystem (e.g., AppImage mount, macOS .app) - use platform writable location
     if sys.platform == 'win32':
         _base = Path(os.environ.get('LOCALAPPDATA', str(Path.home() / 'AppData' / 'Local'))) / 'Qubes'
+    elif sys.platform == 'darwin':
+        _base = Path.home() / 'Library' / 'Application Support' / 'Qubes'
     else:
         _base = Path(os.environ.get('XDG_DATA_HOME', str(Path.home() / '.local' / 'share'))) / 'Qubes'
     log_dir = _base / "logs"

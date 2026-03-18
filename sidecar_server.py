@@ -800,6 +800,7 @@ class SidecarServer:
         ollama_path = shutil.which("ollama")
         if not ollama_path:
             for p in [Path.home() / "AppData/Local/Programs/Ollama/ollama.exe",
+                      Path("/opt/homebrew/bin/ollama"),
                       Path("/usr/local/bin/ollama"), Path("/usr/bin/ollama")]:
                 if p.exists():
                     ollama_path = str(p)

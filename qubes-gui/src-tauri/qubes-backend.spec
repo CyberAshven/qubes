@@ -14,7 +14,7 @@ numpy_libs_dir = os.path.join(site_packages, 'numpy.libs')
 if os.path.isdir(numpy_libs_dir):
     for lib_file in os.listdir(numpy_libs_dir):
         lib_path = os.path.join(numpy_libs_dir, lib_file)
-        if os.path.isfile(lib_path) and ('.so' in lib_file or '.dll' in lib_file):
+        if os.path.isfile(lib_path) and ('.so' in lib_file or '.dylib' in lib_file or '.dll' in lib_file):
             extra_binaries.append((lib_path, 'numpy.libs'))
 
 

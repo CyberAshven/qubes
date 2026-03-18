@@ -159,7 +159,9 @@ def _get_wheel_url(package: str, version: str, cuda_tag: str = "cu124") -> str:
     """Construct PyTorch wheel URL for the current platform."""
     py_tag = f"cp{sys.version_info.major}{sys.version_info.minor}"
 
-    if sys.platform == 'linux':
+    if sys.platform == 'darwin':
+        raise RuntimeError("GPU acceleration uses Metal (MPS) on macOS — CUDA wheel install is not needed")
+    elif sys.platform == 'linux':
         plat_tag = "linux_x86_64"
     elif sys.platform == 'win32':
         plat_tag = "win_amd64"
