@@ -260,7 +260,20 @@ jobs:
           find "$INTERNAL" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
           find "$INTERNAL" -name "*.pyc" -delete 2>/dev/null || true
           # Strip debug symbols from .so files
-          find "$INTERNAL" -name "*.so" -exec strip --strip-debug {} + 2>/dev/null || true
+          find "$INTERNAL" -name "*.so" -exec strip -S {} + 2>/dev/null || true
+          # Torch stubs: replace deleted torch.distributed/futures/rpc with lightweight stubs
+          # so TTS code that imports them doesn't crash
+          echo "Installing torch stub modules..."
+          for subdir in distributed futures rpc; do
+            mkdir -p "$INTERNAL/torch/$subdir"
+            cp "patches/torch/$subdir/__init__.py" "$INTERNAL/torch/$subdir/__init__.py"
+            echo "  Installed torch.$subdir stub"
+          done
+          # Also patch torch.nn if the patch exists (fixes circular import)
+          if [ -f "patches/torch/nn/__init__.py" ]; then
+            cp "patches/torch/nn/__init__.py" "$INTERNAL/torch/nn/__init__.py"
+            echo "  Installed torch.nn patch"
+          fi
           echo "Backend size after strip: $(du -sh "qubes-gui/src-tauri/dist/qubes-backend" | cut -f1)"
 
       - name: Strip bundle bloat (Windows)
@@ -301,6 +314,20 @@ jobs:
           Write-Host "numpy.libs contents: $(Get-ChildItem $numpyLibs -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)"
           # Remove __pycache__ and .pyc
           Get-ChildItem -Path $internal -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+          # Torch stubs: replace deleted torch.distributed/futures/rpc with lightweight stubs
+          Write-Host "Installing torch stub modules..."
+          foreach ($subdir in @("distributed", "futures", "rpc")) {
+            $destDir = Join-Path $internal "torch/$subdir"
+            New-Item -ItemType Directory -Force -Path $destDir | Out-Null
+            Copy-Item "patches/torch/$subdir/__init__.py" (Join-Path $destDir "__init__.py") -Force
+            Write-Host "  Installed torch.$subdir stub"
+          }
+          # Also patch torch.nn if the patch exists (fixes circular import)
+          $nnPatch = "patches/torch/nn/__init__.py"
+          if (Test-Path $nnPatch) {
+            Copy-Item $nnPatch (Join-Path $internal "torch/nn/__init__.py") -Force
+            Write-Host "  Installed torch.nn patch"
+          }
           $sizeAfter = (Get-ChildItem -Recurse "qubes-gui/src-tauri/dist/qubes-backend" | Measure-Object -Property Length -Sum).Sum / 1MB
           Write-Host "Backend size after strip: $([math]::Round($sizeAfter))MB (saved $([math]::Round($sizeBefore - $sizeAfter))MB)"
 

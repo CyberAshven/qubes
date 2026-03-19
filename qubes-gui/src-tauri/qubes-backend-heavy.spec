@@ -74,6 +74,7 @@ a = Analysis(
         # AI Providers
         'openai', 'anthropic', 'google.genai', 'google.cloud.texttospeech',
         # System & Logging
+        'certifi',
         'pytz', 'colorama', 'bs4', 'structlog', 'dotenv', 'psutil',
         # Resilience & Monitoring
         'tenacity', 'prometheus_client', 'pybreaker',

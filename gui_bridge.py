@@ -63,6 +63,15 @@ sys.path.insert(0, str(Path(__file__).parent))
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")
 
+# macOS PyInstaller SSL fix: bundled Python can't find system CA certificates.
+# Set SSL_CERT_FILE to certifi's CA bundle so aiohttp/requests work over HTTPS.
+if not os.environ.get('SSL_CERT_FILE'):
+    try:
+        import certifi
+        os.environ['SSL_CERT_FILE'] = certifi.where()
+    except ImportError:
+        pass
+
 # ============================================================================
 # CUSTOM MODELS PATH (qubes-config.json or QUBES_MODELS_DIR env var)
 # ============================================================================
