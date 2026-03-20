@@ -532,10 +532,10 @@ class WSL2TTSProvider(TTSProvider):
 
             # Add clone parameters if in clone mode
             if mode == "cloned":
-                # Convert Windows path to WSL path if needed
+                # Convert Windows path to WSL path if needed (any drive letter)
                 clone_path_str = str(clone_audio_path)
-                if clone_path_str.startswith("C:") or clone_path_str.startswith("c:"):
-                    # Convert C:\path to /mnt/c/path for WSL
+                if len(clone_path_str) >= 2 and clone_path_str[1] == ':' and clone_path_str[0].isalpha():
+                    # Convert X:\path to /mnt/x/path for WSL
                     clone_path_str = "/mnt/" + clone_path_str[0].lower() + clone_path_str[2:].replace("\\", "/")
                 payload["clone_audio_path"] = clone_path_str
                 payload["clone_audio_text"] = clone_audio_text
