@@ -654,7 +654,10 @@ export const GroupChatInterface: React.FC<GroupChatInterfaceProps> = ({
         await playTTS(userId!, qube.qube_id, ttsText, password!);
       } catch (err) {
         console.error('TTS error:', err);
-        // Continue without TTS — don't leave status stuck on generating_tts
+        const errMsg = String(err);
+        if (!errMsg.includes('TTS skipped')) {
+          setError(`TTS error: ${errMsg}`);
+        }
       }
     }
 
@@ -929,6 +932,10 @@ export const GroupChatInterface: React.FC<GroupChatInterfaceProps> = ({
           await playPrefetchedTTS(pipeline.prefetchedAudio, ttsText);
         } catch (err) {
           console.error('Prefetched TTS playback error:', err);
+          const errMsg = String(err);
+          if (!errMsg.includes('TTS skipped')) {
+            setError(`TTS error: ${errMsg}`);
+          }
         }
       } else {
         // No prefetched audio, generate now
@@ -938,6 +945,10 @@ export const GroupChatInterface: React.FC<GroupChatInterfaceProps> = ({
           await playTTS(userId!, qube.qube_id, ttsText, password!);
         } catch (err) {
           console.error('TTS error:', err);
+          const errMsg = String(err);
+          if (!errMsg.includes('TTS skipped')) {
+            setError(`TTS error: ${errMsg}`);
+          }
         }
       }
     }

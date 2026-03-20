@@ -656,8 +656,9 @@ class AudioManager:
             # Fall back to local provider
             voice_config.provider = "piper"
 
-        # Try providers in order (with Gemini and Google as fallback options)
-        providers = [voice_config.provider, "gemini", "google", "openai", "piper"]
+        # Try providers in order (with local and cloud fallbacks)
+        # Use dict.fromkeys to deduplicate while preserving order
+        providers = list(dict.fromkeys([voice_config.provider, "kokoro", "gemini", "google", "openai", "piper"]))
 
         for provider_name in providers:
             if provider_name not in self.tts_providers:
@@ -892,22 +893,22 @@ class AudioManager:
                     wsl2_error = AIError(f"WSL2 server not available: {availability.get('error')}")
                     logger.debug("wsl2_tts_not_available", error=availability.get("error"))
 
-            # WSL2 not available or failed - try other local providers (Kokoro, native Qwen3)
+            # WSL2 not available or failed — report the error clearly.
+            # Policy: never silently substitute a different voice/provider.
+            # Try to find an available local provider and tell the user which one is being used.
             local_fallback_provider = None
+            local_fallback_name = None
             for local_fallback in ("kokoro", "qwen3"):
                 if local_fallback not in self.tts_providers:
                     continue
                 if local_fallback == "qwen3":
-                    # Lazy-load Qwen3 if needed (marker is None)
                     qwen3 = self._get_qwen3_provider()
                     if qwen3 is None:
                         continue
                     local_fallback_provider = qwen3
                 else:
                     local_fallback_provider = self.tts_providers[local_fallback]
-                logger.info("local_tts_fallback", original=provider, fallback=local_fallback)
-                provider = local_fallback
-                extension = "wav"
+                local_fallback_name = local_fallback
                 break
 
             if local_fallback_provider is None:
@@ -917,6 +918,13 @@ class AudioManager:
                     f"Local TTS failed: {error_msg}",
                     context={"provider": provider, "voice": voice_model}
                 )
+
+            # Log the fallback clearly so it's visible in diagnostics
+            logger.warning("local_tts_provider_fallback",
+                          requested=provider, using=local_fallback_name,
+                          reason=str(wsl2_error) if wsl2_error else "WSL2 not available")
+            provider = local_fallback_name
+            extension = "wav"
             tts_provider = local_fallback_provider
         else:
             # Non-local provider (openai, gemini, etc.) - use directly
