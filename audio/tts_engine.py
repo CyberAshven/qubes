@@ -551,13 +551,14 @@ class GoogleTTS(TTSProvider):
                             If None, uses GOOGLE_APPLICATION_CREDENTIALS env var.
         """
         self.credentials_path = credentials_path
-
-        # Set credentials if provided
-        if credentials_path:
-            import os
-            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = credentials_path
-
         logger.info("google_tts_initialized", credentials=bool(credentials_path))
+
+    def _create_client(self):
+        """Create a Google TTS client using credentials file or env var."""
+        from google.cloud import texttospeech
+        if self.credentials_path:
+            return texttospeech.TextToSpeechClient.from_service_account_json(self.credentials_path)
+        return texttospeech.TextToSpeechClient()
 
     async def synthesize_stream(
         self, text: str, voice_config: VoiceConfig
@@ -566,8 +567,7 @@ class GoogleTTS(TTSProvider):
         try:
             from google.cloud import texttospeech
 
-            # Create client
-            client = texttospeech.TextToSpeechClient()
+            client = self._create_client()
 
             logger.debug(
                 "tts_synthesizing",
@@ -648,8 +648,7 @@ class GoogleTTS(TTSProvider):
         try:
             from google.cloud import texttospeech
 
-            # Create client
-            client = texttospeech.TextToSpeechClient()
+            client = self._create_client()
 
             # Parse voice_id format
             voice_parts = voice_config.voice_id.split("-")

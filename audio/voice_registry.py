@@ -216,8 +216,21 @@ class VoiceRegistry:
 
     @classmethod
     def is_valid_voice(cls, voice_id: str) -> bool:
-        """Check if a voice ID is valid."""
-        return voice_id in cls.VOICES
+        """Check if a voice ID is valid across all providers (registry, Kokoro, custom)."""
+        if voice_id in cls.VOICES:
+            return True
+        # Kokoro voices follow the pattern: {lang}{gender}_{name} (e.g., af_heart, bm_george)
+        try:
+            from audio.kokoro_tts import KokoroTTSProvider
+            for voices in KokoroTTSProvider.VOICES.values():
+                if voice_id in voices:
+                    return True
+        except ImportError:
+            pass
+        # Custom and Qwen3 voices are user-defined — always valid
+        if voice_id.startswith(("custom:", "qwen3:", "qwen:")):
+            return True
+        return False
 
     @classmethod
     def list_voices(cls) -> Dict[str, Dict[str, Any]]:
