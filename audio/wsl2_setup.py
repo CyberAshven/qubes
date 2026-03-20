@@ -13,7 +13,7 @@ Setup flow:
 6. Create tts_server.py for serving requests
 7. Test the installation
 
-The TTS server runs at http://localhost:19533 in WSL2.
+The TTS server runs at http://localhost:19532 in WSL2.
 """
 
 import asyncio
@@ -535,7 +535,7 @@ def _generate_tts_server_script() -> str:
 Qwen3-TTS Server for Qubes
 
 FastAPI server that provides TTS generation via HTTP.
-Runs at http://0.0.0.0:19533 (accessible from Windows as localhost:19533).
+Runs at http://0.0.0.0:19532 (accessible from Windows as localhost:19532).
 
 Endpoints:
 - GET /health - Health check and readiness status
@@ -717,7 +717,7 @@ async def generate(request: GenerateRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=19533, log_level="info")
+    uvicorn.run(app, host="0.0.0.0", port=19532, log_level="info")
 '''
 
 
