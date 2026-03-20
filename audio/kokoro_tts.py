@@ -281,9 +281,14 @@ class KokoroTTSProvider(TTSProvider):
                         devnull = StringIO()
                         with redirect_stdout(devnull), redirect_stderr(devnull):
                             from kokoro import KPipeline
-                            # Use GPU if available, fall back to CPU
+                            # Use GPU if available: CUDA (NVIDIA) > MPS (Apple Silicon) > CPU
                             import torch
-                            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+                            if torch.cuda.is_available():
+                                device = 'cuda'
+                            elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                                device = 'mps'
+                            else:
+                                device = 'cpu'
                             logger.info("kokoro_device", device=device)
                             self._pipeline = KPipeline(lang_code=lang_code, repo_id='hexgrad/Kokoro-82M', device=device)
 
