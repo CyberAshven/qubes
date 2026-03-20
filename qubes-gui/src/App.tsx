@@ -207,65 +207,62 @@ function App() {
   useEffect(() => {
     if (!isAuthenticated) return;
 
+    // Shared logic: check for active sessions and show dialog or exit
+    const checkSessionsAndExit = async () => {
+      if (allowClose) {
+        try { await invoke('force_exit'); } catch {}
+        return;
+      }
+      if (isLocked) {
+        try { await invoke('force_exit'); } catch {}
+        return;
+      }
+
+      let hasAnySessions = false;
+      for (const qube of qubes) {
+        try {
+          const result = await invoke<{ has_session: boolean }>('check_sessions', {
+            userId,
+            qubeId: qube.qube_id
+          });
+          if (result.has_session) {
+            hasAnySessions = true;
+            break;
+          }
+        } catch (err) {
+          console.error('Failed to check sessions for qube:', qube.qube_id, err);
+        }
+      }
+
+      if (hasAnySessions) {
+        setShowExitDialog(true);
+      } else {
+        try { await invoke('force_exit'); } catch {}
+      }
+    };
+
     const setupCloseListener = async () => {
       const appWindow = getCurrentWindow();
 
-      const unlisten = await appWindow.onCloseRequested(async (event) => {
-        // If we've processed the session, allow close
-        if (allowClose) {
-          return; // Don't prevent, let it close
-        }
-
-        // If locked, just exit immediately (no dialog needed)
-        if (isLocked) {
-          try {
-            await invoke('force_exit');
-          } catch (err) {
-            console.error('force_exit failed:', err);
-          }
-          return;
-        }
-
-        // Prevent the window from closing
+      // Window close button (red X on all platforms)
+      const unlistenClose = await appWindow.onCloseRequested(async (event) => {
+        if (allowClose) return;
         event.preventDefault();
-
-        // Check if any qube has session blocks
-        let hasAnySessions = false;
-        for (const qube of qubes) {
-          try {
-            const result = await invoke<{ has_session: boolean }>('check_sessions', {
-              userId,
-              qubeId: qube.qube_id
-            });
-            if (result.has_session) {
-              hasAnySessions = true;
-              break;
-            }
-          } catch (err) {
-            console.error('Failed to check sessions for qube:', qube.qube_id, err);
-          }
-        }
-
-        if (hasAnySessions) {
-          // Show exit confirmation dialog
-          setShowExitDialog(true);
-        } else {
-          // No sessions, just exit immediately
-          try {
-            await invoke('force_exit');
-          } catch (err) {
-            console.error('force_exit failed:', err);
-          }
-        }
+        await checkSessionsAndExit();
       });
 
-      return unlisten;
+      // macOS Cmd+Q: Rust emits 'app-exit-requested' instead of quitting immediately
+      const unlistenQuit = await listen('app-exit-requested', async () => {
+        await checkSessionsAndExit();
+      });
+
+      return () => { unlistenClose(); unlistenQuit(); };
     };
 
     const unlistenPromise = setupCloseListener();
 
     return () => {
-      unlistenPromise.then(unlisten => unlisten());
+      unlistenPromise.then(cleanup => cleanup());
     };
   }, [isAuthenticated, isLocked, allowClose, qubes, userId]);
 

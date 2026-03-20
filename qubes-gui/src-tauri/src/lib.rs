@@ -8173,7 +8173,20 @@ pub fn run() {
                 }
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            // On macOS, Cmd+Q sends ExitRequested at the app level, bypassing
+            // the window's onCloseRequested handler. Prevent the immediate exit
+            // and emit a close request on the main window so the frontend can
+            // show the anchor/discard dialog.
+            if let tauri::RunEvent::ExitRequested { api, .. } = &event {
+                if let Some(window) = app_handle.get_webview_window("main") {
+                    api.prevent_exit();
+                    // Emit custom event — frontend listens and shows exit dialog
+                    let _ = window.emit("app-exit-requested", ());
+                }
+            }
+        });
 }
 
