@@ -3056,16 +3056,41 @@ async fn play_audio_native(
     let path_str = absolute_path.to_string_lossy().to_string();
 
     // Find the best available audio player (platform-specific)
+    let is_mp3 = path_str.ends_with(".mp3");
     let (player_cmd, player_args, append_path): (String, Vec<String>, bool) = if cfg!(target_os = "windows") {
-        // Use ffplay (ffmpeg) for audio playback - no GUI, supports WAV/MP3
-        ("ffplay".to_string(), vec!["-nodisp".to_string(), "-autoexit".to_string(), "-loglevel".to_string(), "quiet".to_string()], true)
+        // Prefer ffplay if installed; otherwise use PowerShell built-in audio playback
+        if std::process::Command::new("ffplay").arg("-version").output().is_ok() {
+            ("ffplay".to_string(), vec!["-nodisp".to_string(), "-autoexit".to_string(), "-loglevel".to_string(), "quiet".to_string()], true)
+        } else if is_mp3 {
+            // MP3: use PowerShell with WPF MediaPlayer (built into Windows 10/11)
+            ("powershell".to_string(), vec![
+                "-NoProfile".to_string(), "-Command".to_string(),
+                format!(
+                    "Add-Type -AssemblyName PresentationCore; \
+                     $p = New-Object System.Windows.Media.MediaPlayer; \
+                     $p.Open([Uri]::new('{}')); $p.Play(); \
+                     Start-Sleep -Milliseconds 500; \
+                     while(-not $p.NaturalDuration.HasTimeSpan){{Start-Sleep -Milliseconds 100}}; \
+                     while($p.Position -lt $p.NaturalDuration.TimeSpan){{Start-Sleep -Milliseconds 100}}; \
+                     $p.Close()",
+                    absolute_path.to_string_lossy().replace("'", "''")
+                ),
+            ], false)
+        } else {
+            // WAV: use PowerShell with SoundPlayer (built into all Windows)
+            ("powershell".to_string(), vec![
+                "-NoProfile".to_string(), "-Command".to_string(),
+                format!(
+                    "(New-Object Media.SoundPlayer '{}').PlaySync()",
+                    absolute_path.to_string_lossy().replace("'", "''")
+                ),
+            ], false)
+        }
     } else if cfg!(target_os = "linux") {
-        // Try pw-play (PipeWire) first, then ffplay (universal), then aplay (ALSA, WAV only)
-        let is_mp3 = path_str.ends_with(".mp3");
-        if std::process::Command::new("pw-play").arg("--help").output().is_ok() {
+        // pw-play (PipeWire) for WAV only, ffplay for MP3, aplay as last resort
+        if !is_mp3 && std::process::Command::new("pw-play").arg("--help").output().is_ok() {
             ("pw-play".to_string(), vec![], true)
-        } else if is_mp3 || std::process::Command::new("ffplay").arg("-version").output().is_ok() {
-            // aplay can't play MP3, so prefer ffplay for MP3 files or as general fallback
+        } else if std::process::Command::new("ffplay").arg("-version").output().is_ok() {
             ("ffplay".to_string(), vec!["-nodisp".to_string(), "-autoexit".to_string(), "-loglevel".to_string(), "quiet".to_string()], true)
         } else {
             ("aplay".to_string(), vec![], true)
