@@ -3091,36 +3091,49 @@ async fn play_audio_native(
             cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
         }
 
-        match cmd.spawn() {
+        let playback_error: Option<String> = match cmd.spawn() {
             Ok(mut child) => {
                 // Store PID for stop functionality
                 if let Ok(mut lock) = NATIVE_AUDIO_PID.lock() {
                     *lock = Some(child.id());
                 }
 
-                match child.wait() {
+                let err = match child.wait() {
                     Ok(status) => {
                         if !status.success() {
-                            eprintln!("[play_audio_native] Player exited with error status: {}", status);
+                            let msg = format!("Audio player exited with error: {}", status);
+                            eprintln!("[play_audio_native] {}", msg);
+                            Some(msg)
+                        } else {
+                            None
                         }
                     }
                     Err(e) => {
-                        eprintln!("[play_audio_native] Failed to wait for player: {}", e);
+                        let msg = format!("Audio player error: {}", e);
+                        eprintln!("[play_audio_native] {}", msg);
+                        Some(msg)
                     }
-                }
+                };
 
                 // Clear PID
                 if let Ok(mut lock) = NATIVE_AUDIO_PID.lock() {
                     *lock = None;
                 }
+                err
             }
             Err(e) => {
-                eprintln!("[play_audio_native] Failed to spawn player: {}", e);
+                let msg = format!("Failed to start audio player '{}': {}", player_cmd, e);
+                eprintln!("[play_audio_native] {}", msg);
+                Some(msg)
             }
-        }
+        };
 
-        // Emit event when playback ends
-        let _ = app_handle.emit("audio-playback-ended", ());
+        // Emit event when playback ends — include error if playback failed
+        let payload = serde_json::json!({
+            "success": playback_error.is_none(),
+            "error": playback_error,
+        });
+        let _ = app_handle.emit("audio-playback-ended", payload);
     });
 
     Ok(serde_json::json!({

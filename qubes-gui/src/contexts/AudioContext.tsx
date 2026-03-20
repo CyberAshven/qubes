@@ -207,9 +207,15 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
     // Listen for native audio playback ending
     let mounted = true;
-    listen('audio-playback-ended', () => {
+    listen<{ success: boolean; error?: string }>('audio-playback-ended', (event) => {
       if (!mounted) return;
       clearPlaybackTimeout();
+
+      // Log playback errors (player not found, exit error, etc.)
+      if (event.payload && !event.payload.success && event.payload.error) {
+        console.error('[AudioContext] Playback failed:', event.payload.error);
+      }
+
       const player = playerRef.current;
       if (!player) return;
 
