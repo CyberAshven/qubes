@@ -167,7 +167,7 @@ class OpenAITTS(TTSProvider):
 
 
 class ElevenLabsTTS(TTSProvider):
-    """ElevenLabs TTS provider (premium quality)"""
+    """ElevenLabs TTS provider (premium quality) — uses v2 SDK"""
 
     # Pricing (as of 2025)
     PRICING = {
@@ -178,16 +178,23 @@ class ElevenLabsTTS(TTSProvider):
 
     def __init__(self, api_key: str):
         self.api_key = api_key
+        self._client = None
         logger.info("elevenlabs_tts_initialized")
+
+    def _get_client(self):
+        if self._client is None:
+            from elevenlabs.client import ElevenLabs
+            self._client = ElevenLabs(api_key=self.api_key)
+        return self._client
 
     async def synthesize_stream(
         self, text: str, voice_config: VoiceConfig
     ) -> AsyncIterator[bytes]:
         """Stream audio from ElevenLabs"""
         try:
-            from elevenlabs import generate, set_api_key
+            from elevenlabs.types import VoiceSettings
 
-            set_api_key(self.api_key)
+            client = self._get_client()
 
             logger.debug(
                 "tts_synthesizing",
@@ -196,16 +203,14 @@ class ElevenLabsTTS(TTSProvider):
                 length=len(text)
             )
 
-            # v3 model (v1 deprecated Dec 15, 2025)
-            audio_stream = generate(
+            audio_stream = client.text_to_speech.stream(
+                voice_id=voice_config.voice_id,
                 text=text,
-                voice=voice_config.voice_id,
-                model="eleven_turbo_v2_5",  # v3 model
-                stream=True,
-                voice_settings={
-                    "stability": voice_config.stability or 0.5,
-                    "similarity_boost": 0.75,
-                }
+                model_id="eleven_turbo_v2_5",
+                voice_settings=VoiceSettings(
+                    stability=voice_config.stability or 0.5,
+                    similarity_boost=0.75,
+                ),
             )
 
             for chunk in audio_stream:
@@ -226,22 +231,23 @@ class ElevenLabsTTS(TTSProvider):
     ) -> Path:
         """Generate complete audio file"""
         try:
-            from elevenlabs import generate, save, set_api_key
+            from elevenlabs.types import VoiceSettings
 
-            set_api_key(self.api_key)
+            client = self._get_client()
 
-            # v3 model (v1 deprecated Dec 15, 2025)
-            audio = generate(
+            audio_iter = client.text_to_speech.convert(
+                voice_id=voice_config.voice_id,
                 text=text,
-                voice=voice_config.voice_id,
-                model="eleven_turbo_v2_5",  # v3 model
-                voice_settings={
-                    "stability": voice_config.stability or 0.5,
-                    "similarity_boost": 0.75,
-                }
+                model_id="eleven_turbo_v2_5",
+                voice_settings=VoiceSettings(
+                    stability=voice_config.stability or 0.5,
+                    similarity_boost=0.75,
+                ),
             )
 
-            save(audio, str(output_path))
+            with open(output_path, "wb") as f:
+                for chunk in audio_iter:
+                    f.write(chunk)
 
             logger.info("tts_file_saved", path=str(output_path))
 
