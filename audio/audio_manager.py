@@ -6,6 +6,7 @@ From docs/27_Audio_TTS_STT_Integration.md Section 5.1
 """
 
 import os
+import shutil
 import sys
 from pathlib import Path
 from typing import Dict, Optional, Any, Tuple
@@ -273,9 +274,9 @@ class AudioManager:
             except Exception as e:
                 logger.warning("tts_provider_init_failed", provider="google", error=str(e))
 
-        # Piper TTS (local)
+        # Piper TTS (local) — only register if binary is actually installed
         piper_model = self.config.get("piper_model_path")
-        if piper_model:
+        if piper_model and shutil.which("piper"):
             try:
                 self.tts_providers["piper"] = PiperTTS(model_path=piper_model)
                 logger.info("tts_provider_initialized", provider="piper")

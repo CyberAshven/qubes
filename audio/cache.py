@@ -73,11 +73,13 @@ class AudioCache:
             Path to cached audio file, or None if not found
         """
         key = self.get_cache_key(text, voice_config)
-        cache_file = self.cache_dir / f"{key}.mp3"
 
-        if cache_file.exists():
-            logger.info("audio_cache_hit", text=text[:30], key=key[:16])
-            return cache_file
+        # Check for cached file with any audio extension (WAV or MP3)
+        for ext in ("mp3", "wav"):
+            cache_file = self.cache_dir / f"{key}.{ext}"
+            if cache_file.exists():
+                logger.info("audio_cache_hit", text=text[:30], key=key[:16])
+                return cache_file
 
         logger.debug("audio_cache_miss", text=text[:30], key=key[:16])
         return None
@@ -95,7 +97,9 @@ class AudioCache:
             Path to cached file
         """
         key = self.get_cache_key(text, voice_config)
-        cache_file = self.cache_dir / f"{key}.mp3"
+        # Preserve the original file's extension (WAV, MP3, etc.)
+        ext = audio_path.suffix or ".mp3"
+        cache_file = self.cache_dir / f"{key}{ext}"
 
         try:
             # Copy to cache
@@ -122,7 +126,7 @@ class AudioCache:
         try:
             # Get all cache files sorted by modification time
             cache_files = sorted(
-                self.cache_dir.glob("*.mp3"),
+                [f for ext in ("*.mp3", "*.wav") for f in self.cache_dir.glob(ext)],
                 key=lambda p: p.stat().st_mtime
             )
 
@@ -161,7 +165,7 @@ class AudioCache:
         """
         try:
             files_deleted = 0
-            for cache_file in self.cache_dir.glob("*.mp3"):
+            for cache_file in [f for ext in ("*.mp3", "*.wav") for f in self.cache_dir.glob(ext)]:
                 cache_file.unlink()
                 files_deleted += 1
 
@@ -180,7 +184,7 @@ class AudioCache:
             Dict with cache stats (file_count, total_size_mb)
         """
         try:
-            cache_files = list(self.cache_dir.glob("*.mp3"))
+            cache_files = [f for ext in ("*.mp3", "*.wav") for f in self.cache_dir.glob(ext)]
             total_size = sum(f.stat().st_size for f in cache_files)
 
             stats = {
