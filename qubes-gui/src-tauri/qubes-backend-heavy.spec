@@ -104,18 +104,18 @@ a = Analysis(
     runtime_hooks=[],
     excludes=[
         # Trim torch bloat (~500MB savings) - we only need inference, not training/compiling
+        # NOTE: torch.distributed, torch.futures, torch.rpc are NOT excluded — they're only
+        # ~8MB and are imported transitively by torch.nn.parallel. Excluding them breaks Kokoro TTS.
         'torch.testing',
         'torch._inductor',
         'torch._dynamo',
         'torch._functorch',
-        'torch.distributed',
         'torch._export',
         'torch.ao',
         'torch.profiler',
         'torch.onnx',
         'torch.optim',
         'torch.autograd.profiler',
-        'torch.futures',
         'torch.contrib',
         'torch.multiprocessing',
         # Trim transformers bloat - we only need the models we use
