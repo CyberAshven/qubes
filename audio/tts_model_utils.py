@@ -24,12 +24,20 @@ def check_local_tts_models() -> Dict[str, Any]:
     st_installed = False
     whisper_installed = False
 
+    # Check HF_HOME first, then fall back to default HuggingFace cache location
+    hf_cache_dirs = []
     if hf_home:
-        hf_path = Path(hf_home)
-        kokoro_path = hf_path / "hub" / "models--hexgrad--Kokoro-82M"
-        st_path = hf_path / "hub" / "models--sentence-transformers--all-MiniLM-L6-v2"
-        kokoro_installed = kokoro_path.exists()
-        st_installed = st_path.exists()
+        hf_cache_dirs.append(Path(hf_home) / "hub")
+    # Default HuggingFace cache location
+    default_hf = Path.home() / ".cache" / "huggingface" / "hub"
+    if default_hf.exists() and default_hf not in [Path(hf_home) / "hub" if hf_home else None]:
+        hf_cache_dirs.append(default_hf)
+
+    for hf_hub in hf_cache_dirs:
+        if not kokoro_installed:
+            kokoro_installed = (hf_hub / "models--hexgrad--Kokoro-82M").exists()
+        if not st_installed:
+            st_installed = (hf_hub / "models--sentence-transformers--all-MiniLM-L6-v2").exists()
 
     if models_dir:
         whisper_path = Path(models_dir) / "whisper"
@@ -54,12 +62,16 @@ def update_local_tts_models() -> Dict[str, Any]:
     errors: List[str] = []
 
     try:
+        import sys
         from huggingface_hub import snapshot_download
 
         hf_home = os.environ.get("HF_HOME", None)
         dl_kwargs: Dict[str, Any] = {}
         if hf_home:
             dl_kwargs["cache_dir"] = str(Path(hf_home) / "hub")
+        # Windows: disable symlinks to avoid WinError 1314 (requires admin/dev mode)
+        if sys.platform == "win32":
+            dl_kwargs["local_dir_use_symlinks"] = False
 
         try:
             snapshot_download("hexgrad/Kokoro-82M", local_files_only=False, **dl_kwargs)
