@@ -1,6 +1,7 @@
 import { Skill, SkillCategory } from '../types';
 
-// All tools available to qubes (matches ALWAYS_AVAILABLE_TOOLS in Python)
+// Core tools always available regardless of skill level (17 tools)
+// Planet and moon tools must be unlocked through XP progression
 export const ALWAYS_AVAILABLE_TOOLS = [
   // Utility tools (no XP)
   'get_system_state',
@@ -19,54 +20,10 @@ export const ALWAYS_AVAILABLE_TOOLS = [
   'web_search',
   'browse_url',
   'generate_image',
-  // Planet tools (unlocked from start)
-  // AI Reasoning planets
-  'find_analogy',
-  'analyze_mistake',
-  'replicate_success',
-  'self_reflect',
-  'synthesize_learnings',
-  // Social Intelligence planets
-  'recall_relationship_history',
-  'read_emotional_state',
-  'adapt_communication_style',
-  'steelman',
-  'assess_trust_level',
-  // Coding planets
-  'run_tests',
-  'debug_code',
-  'benchmark_code',
-  'security_scan',
-  'review_code',
-  // Creative Expression planets
-  'compose_text',
-  'compose_music',
-  'craft_narrative',
-  'describe_my_avatar',
-  // Memory & Recall planets
-  'recall',
-  'store_fact',
-  'tag_memory',
-  'synthesize_knowledge',
-  'create_summary',
-  // Security & Privacy planets
-  'audit_chain',
-  'assess_sensitivity',
-  'vet_qube',
-  'detect_threat',
-  'defend_reasoning',
-  // Board Games planets
-  'chess_move',
-  'property_tycoon_action',
-  'race_home_action',
-  'mystery_mansion_action',
-  'life_journey_action',
-  // Finance planets
-  'validate_transaction',
-  'check_wallet_health',
-  'get_market_data',
-  'plan_savings',
-  'identify_token',
+  // Standalone tools (no skill node, always available)
+  'describe_my_avatar',       // Look in the mirror
+  'recall',                   // Universal memory recall
+  'process_document',         // Document processing (automatic, tracked for XP)
 ] as const;
 
 // Tool descriptions for display in the UI
@@ -74,7 +31,8 @@ export const TOOL_DESCRIPTIONS: Record<string, { name: string; description: stri
   get_system_state: { name: 'Get System State', description: 'Read the current system state', icon: '📊' },
   get_skill_tree: { name: 'Get Skill Tree', description: 'View all possible skills and progress', icon: '🌳' },
   update_system_state: { name: 'Update System State', description: 'Modify the system state', icon: '✏️' },
-  search_memory: { name: 'Search Memory', description: 'Search through memories', icon: '🔍' },
+  recall: { name: 'Memory Recall', description: 'Search all storage systems for memories and knowledge', icon: '🔍' },
+  process_document: { name: 'Process Document', description: 'Extract text from PDFs, images, or documents', icon: '📄' },
   describe_my_avatar: { name: 'Describe Avatar', description: 'Describe your avatar', icon: '🖼️' },
   web_search: { name: 'Web Search', description: 'Search the web', icon: '🌐' },
   browse_url: { name: 'Browse URL', description: 'Visit a web page', icon: '🔗' },
@@ -174,7 +132,7 @@ export const TOOL_DESCRIPTIONS: Record<string, { name: string; description: stri
   set_aspirations: { name: 'Set Aspirations', description: 'Set your goals and aspirations', icon: '🎯' },
   // Memory & Recall tools (Phase 5)
   store_knowledge: { name: 'Store Knowledge', description: 'Store knowledge explicitly in memory', icon: '📚' },
-  recall: { name: 'Recall', description: 'Universal memory recall across all storage', icon: '🔍' },
+  // recall is defined above in the always-available section
   store_fact: { name: 'Store Fact', description: 'Store a specific fact about a subject', icon: '💾' },
   tag_memory: { name: 'Tag Memory', description: 'Add tags to organize memories', icon: '🏷️' },
   synthesize_knowledge: { name: 'Synthesize Knowledge', description: 'Combine information for new insights', icon: '✨' },
@@ -1790,8 +1748,8 @@ export function generateSkillsForQube(qubeId: string): Skill[] {
         level: 0,
         xp: 0,
         maxXP: skillDef.nodeType === 'sun' ? 1000 : skillDef.nodeType === 'planet' ? 500 : 250,
-        // Sun and Planet nodes start unlocked, only Moons need to be unlocked
-        unlocked: skillDef.nodeType === 'sun' || skillDef.nodeType === 'planet',
+        // Only Sun nodes start unlocked; Planets and Moons must be earned
+        unlocked: skillDef.nodeType === 'sun',
         prerequisite: skillDef.prerequisite,
         parentSkill: skillDef.parentSkill,
         toolCallReward: skillDef.toolCallReward,

@@ -1,25 +1,50 @@
 # Skills System
 
-Qubes have 112 skills across 8 categories, visualized as a solar system.
+Qubes have 141 skills across 8 categories, visualized as a solar system.
 
 ## Overview
 
 The skills system uses a 3-tier hierarchy:
 - **Sun** (8): Major categories, always unlocked
-- **Planets** (35): Specific skills, unlock via prerequisites
-- **Moons** (70): Sub-skills, unlock via parent planet
+- **Planets** (40): Specific skills, must be earned through progression
+- **Moons** (93): Sub-skills, must be earned through progression
+
+## Always-Available Tools (17)
+
+Every qube starts with 17 tools regardless of skill level:
+
+| Tool | Purpose |
+|------|---------|
+| `get_system_state` | Read all state: relationships, skills, owner_info, mood, wallet |
+| `update_system_state` | Write state: owner_info, mood, skills, settings |
+| `get_skill_tree` | View all possible skills and progress |
+| `recall_similar` | AI Reasoning Sun — find similar past experiences |
+| `store_knowledge` | Memory & Recall Sun — store knowledge explicitly |
+| `switch_model` | Creative Expression Sun — change AI model |
+| `play_game` | Board Games Sun — start or continue a game |
+| `send_bch` | Finance Sun — send Bitcoin Cash |
+| `get_relationship_context` | Social Intelligence Sun — get relationship info |
+| `verify_chain_integrity` | Security & Privacy Sun — verify chain integrity |
+| `develop_code` | Coding Sun — write and develop code |
+| `web_search` | Search the web for current information |
+| `browse_url` | Fetch and read content from a URL |
+| `generate_image` | Create images using AI image generation |
+| `describe_my_avatar` | Look in the mirror — see own appearance |
+| `recall` | Universal memory recall — search all storage systems |
+| `process_document` | Document processing (automatic, tracked for progression) |
 
 ## Categories
 
-| Category | Icon | Color | Description |
-|----------|------|-------|-------------|
-| AI Reasoning | 🧠 | #4A90E2 | Problem-solving, code generation |
-| Social Intelligence | 🤝 | #FF69B4 | Emotional intelligence, communication |
-| Technical Expertise | 💻 | #00FF88 | Programming, DevOps, architecture |
-| Creative Expression | 🎨 | #FFB347 | Writing, design, music |
-| Knowledge Domains | 📚 | #9B59B6 | Science, history, philosophy |
-| Security & Privacy | 🛡️ | #E74C3C | Cryptography, authentication |
-| Games | 🎮 | #F39C12 | Chess, poker, strategy games |
+| Category | Icon | Skills | Breakdown |
+|----------|------|--------|-----------|
+| AI Reasoning | 🧠 | 14 | 1S / 5P / 8M |
+| Social Intelligence | 🤝 | 16 | 1S / 5P / 10M |
+| Coding | 💻 | 18 | 1S / 5P / 12M |
+| Creative Expression | 🎨 | 19 | 1S / 5P / 13M |
+| Memory & Recall | 📚 | 16 | 1S / 5P / 10M |
+| Security & Privacy | 🛡️ | 16 | 1S / 5P / 10M |
+| Board Games | 🎮 | 28 | 1S / 5P / 22M |
+| Finance | 💰 | 14 | 1S / 5P / 8M |
 
 ## Skill Structure
 
@@ -27,9 +52,9 @@ Each skill has:
 
 ```json
 {
-  "id": "prompt_engineering",
-  "name": "Prompt Engineering",
-  "description": "Craft effective prompts to elicit desired AI responses",
+  "id": "pattern_recognition",
+  "name": "Pattern Recognition",
+  "description": "Finding similar situations in past experience",
   "category": "ai_reasoning",
   "nodeType": "planet",
   "tier": "novice",
@@ -37,20 +62,20 @@ Each skill has:
   "xp": 0,
   "maxXP": 500,
   "unlocked": false,
-  "parentSkill": "ai_reasoning_sun",
-  "prerequisite": null,
-  "toolCallReward": "analyze_prompt_quality",
-  "icon": "✍️",
+  "parentSkill": "ai_reasoning",
+  "prerequisite": "ai_reasoning",
+  "toolCallReward": "find_analogy",
+  "icon": "🔍",
   "evidence": []
 }
 ```
 
-## XP and Levels
+## Progression and Levels
 
-### XP Requirements
+### Progress Requirements
 
-| Node Type | Max XP per Level |
-|-----------|------------------|
+| Node Type | Max Progress per Level |
+|-----------|----------------------|
 | Sun | 1000 |
 | Planet | 500 |
 | Moon | 250 |
@@ -64,9 +89,9 @@ Each skill has:
 | 50-74 | Advanced |
 | 75-100 | Expert |
 
-### XP Flow
+### Progress Flow
 
-When XP is awarded to a locked skill, it flows to the nearest unlocked parent:
+When progress is awarded to a locked skill, it flows to the nearest unlocked parent:
 
 ```
 Locked Moon → Parent Planet (if unlocked) → Parent Sun
@@ -74,112 +99,106 @@ Locked Moon → Parent Planet (if unlocked) → Parent Sun
 
 ## Unlocking Skills
 
-### Prerequisites
-- Suns: Always unlocked (starting point)
-- Planets: Require parent Sun to be at a certain level
-- Moons: Require parent Planet to be unlocked
+- **Suns**: Always unlocked (starting point for each category)
+- **Planets**: Must be earned — require parent Sun progression
+- **Moons**: Must be earned — require parent Planet to be unlocked
 
-### Tool Rewards
-When a skill reaches level 100, it unlocks a tool:
+When a skill reaches level 100, it unlocks a tool reward specific to that skill.
 
-| Skill | Tool Unlocked |
-|-------|---------------|
-| AI Reasoning Sun | `describe_my_avatar` |
-| Technical Expertise Sun | `web_search` |
-| Knowledge Domains Sun | `search_memory` |
-| Security & Privacy Sun | `verify_chain_integrity` |
-| Games Sun | `describe_my_skills` |
+## Skill Tree
 
-## XP Sources
+### AI Reasoning (14 skills)
 
-XP is awarded based on demonstrated skill usage:
-
-### From AI Reasoning
-- Using chain-of-thought → Chain of Thought skill
-- Writing code → Code Generation skill
-- Analyzing content → Analysis & Critique skill
-
-### From Tool Calls
-- Web search → Technical Expertise
-- Memory search → Knowledge Domains
-- Decision making → AI Reasoning
-
-### From Conversations
-- Emotional topics → Emotional Intelligence
-- Conflict resolution → Conflict Resolution skill
-- Creative writing → Writing skill
-
-## Evidence Tracking
-
-Each skill tracks evidence of usage:
-
-```json
-{
-  "evidence": [
-    {
-      "block_id": "5_ACTION_1699999999",
-      "xp_gained": 25,
-      "timestamp": "2024-11-14T12:00:00Z",
-      "description": "Used web_search to find Python documentation"
-    }
-  ]
-}
-```
-
-This creates an auditable trail of skill development.
-
-## Skill Definitions
-
-### AI Reasoning (16 skills)
-
-**Sun**: AI Reasoning
-**Planets**: Prompt Engineering, Chain of Thought, Code Generation, Analysis & Critique, Multi-step Planning
-**Moons**: Clarity & Precision, Context Building, Problem Decomposition, Step Verification, Design Patterns, Code Optimization, Deep Analysis, Constructive Feedback, Strategic Planning, Plan Adaptation
+**Sun**: AI Reasoning — `recall_similar`
+- **Pattern Recognition** → Trend Detection, Quick Insight
+- **Learning from Failure** → Root Cause Analysis
+- **Building on Success** → Success Factors
+- **Self-Reflection** → Growth Tracking, Bias Detection
+- **Knowledge Synthesis** → Cross-Pollinate, Reflect on Topic
 
 ### Social Intelligence (16 skills)
 
-**Sun**: Social Intelligence
-**Planets**: Emotional Intelligence, Communication, Empathy, Relationship Building, Conflict Resolution
-**Moons**: Self-Awareness, Emotion Regulation, Active Listening, Persuasion, Perspective Taking, Compassion, Trust Building, Rapport Building, Negotiation, Mediation
+**Sun**: Social Intelligence — `get_relationship_context`
+- **Relationship Memory** → Interaction Patterns, Relationship Timeline
+- **Emotional Learning** → Emotional History, Mood Awareness
+- **Communication Adaptation** → Style Matching, Tone Calibration
+- **Debate & Persuasion** → Counter Arguments, Logical Analysis
+- **Trust & Boundaries** → Social Manipulation Detection, Boundary Setting
 
-### Technical Expertise (16 skills)
+### Coding (18 skills)
 
-**Sun**: Technical Expertise
-**Planets**: Programming, DevOps, System Architecture, Debugging, API Integration
-**Moons**: Algorithms, Data Structures, CI/CD, Containerization, Microservices, Scalability, Performance Profiling, Testing Strategies, REST APIs, GraphQL
+**Sun**: Coding — `develop_code`
+- **Testing** → Unit Tests, Test Coverage
+- **Debugging** → Error Analysis, Root Cause
+- **Algorithms** → Complexity Analysis, Performance Tuning
+- **Hacking** → Exploits, Reverse Engineering, Penetration Testing
+- **Code Review** → Refactoring, Version Control, Documentation
 
-### Creative Expression (16 skills)
+### Creative Expression (19 skills)
 
-**Sun**: Creative Expression
-**Planets**: Writing, Visual Design, Music, Storytelling, Creative Problem Solving
-**Moons**: Style & Voice, Grammar & Syntax, Composition, Color Theory, Music Theory, Music Composition, Plot Development, Character Development, Brainstorming, Lateral Thinking
+**Sun**: Creative Expression — `switch_model`
+- **Visual Art** → Composition, Color Theory
+- **Writing** → Prose, Poetry
+- **Music & Audio** → Melody, Harmony
+- **Storytelling** → Plot, Characters, Worldbuilding
+- **Self-Definition** → Aesthetics, Voice, Personality, Aspirations
 
-### Knowledge Domains (16 skills)
+### Memory & Recall (16 skills)
 
-**Sun**: Knowledge Domains
-**Planets**: Science, History, Philosophy, Mathematics, Languages
-**Moons**: Physics, Biology, World History, Historical Patterns, Ethics, Logic, Algebra, Calculus, Translation, Cultural Understanding
+**Sun**: Memory & Recall — `store_knowledge`
+- **Memory Search** → Keyword Search, Semantic Search, Filtered Search
+- **Knowledge Storage** → Procedures
+- **Memory Organization** → Topic Tagging, Memory Linking
+- **Knowledge Synthesis** → Pattern Recognition, Insight Generation
+- **Documentation** → Summary Writing, Knowledge Export
 
 ### Security & Privacy (16 skills)
 
-**Sun**: Security & Privacy
-**Planets**: Cryptography, Authentication, Network Security, Privacy Protection, Threat Analysis
-**Moons**: Symmetric Encryption, Asymmetric Encryption, Multi-Factor Auth, OAuth & SSO, Firewalls, VPN & Tunneling, Data Minimization, Anonymization, Vulnerability Scanning, Penetration Testing
+**Sun**: Security & Privacy — `verify_chain_integrity`
+- **Chain Security** → Tamper Detection, Anchor Verification
+- **Privacy Protection** → Data Classification, Sharing Control
+- **Qube Network Security** → Reputation Check, Group Security
+- **Threat Detection** → Technical Manipulation, Hostile Qube Detection
+- **Self-Defense** → Injection Defense, Reasoning Validation
 
-### Games (16 skills)
+### Board Games (28 skills)
 
-**Sun**: Games
-**Planets**: Chess, Checkers, Battleship, Poker, Tic-Tac-Toe
-**Moons**: Opening Theory, Endgame Technique, Strategic Play, Tactical Moves, Ship Placement, Targeting Strategy, Pot Odds, Player Reading, Perfect Play, Variant Games
+**Sun**: Board Games — `play_game`
+- **Chess** → Opening Scholar, Endgame Master, Speed Demon, Comeback Kid, Grandmaster
+- **Property Tycoon** → Monopolist, Hotel Mogul, Bankruptcy Survivor, Rent Collector, Tycoon
+- **Race Home** → Bump King, Clean Sweep, Speed Runner, Sorry Not Sorry
+- **Mystery Mansion** → Master Detective, Perfect Deduction, First Guess, Interrogator
+- **Life Journey** → Millionaire, Full House, Career Climber, Risk Taker
+
+### Finance (14 skills)
+
+**Sun**: Finance — `send_bch`
+- **Transaction Mastery** → Fee Optimization, Transaction Tracking
+- **Wallet Management** → Balance Monitoring, Multi-sig Operations
+- **Market Awareness** → Price Alerts, Market Trend Analysis
+- **Savings Strategies** → Dollar Cost Averaging
+- **Token Knowledge** → CashToken Operations
 
 ## Storage
 
-Skills are stored in:
+Skills use compact storage in chain state to minimize size:
+
+```json
+{
+  "skills": {
+    "skill_xp": {
+      "ai_reasoning": {"xp": 150, "level": 3},
+      "pattern_recognition": {"xp": 75, "level": 1}
+    },
+    "extra_unlocked": ["pattern_recognition"],
+    "total_xp": 225,
+    "history": [],
+    "last_xp_gain": "2026-03-25T..."
+  }
+}
 ```
-data/users/{user}/qubes/{qube_id}/skills/
-├── skills.json        # Current skill states
-└── skill_history.json # XP gain events (last 1000)
-```
+
+Only skills with progress > 0 are stored. Default unlocked suns are computed at runtime.
 
 ## Visualization
 
@@ -189,4 +208,9 @@ The frontend displays skills as a solar system:
 - Planets orbit their category sun
 - Moons orbit their parent planet
 - Brightness indicates level
-- Size indicates XP progress
+- Size indicates progress
+- Locked skills appear grey with a lock icon
+
+## Future: On-Chain Skill Badges
+
+See [skill-nft-badges.md](skill-nft-badges.md) for the planned NFT badge system that will replace local-only progression with on-chain verifiable skill credentials.

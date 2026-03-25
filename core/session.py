@@ -1891,12 +1891,12 @@ Summary:"""
             prompt = parameters.get("prompt", "")[:60]
             return f"[Generated Image: \"{prompt}...\"]"
 
-        elif action_type == "search_memory":
+        elif action_type in ("search_memory", "recall"):
             query = parameters.get("query", "unknown")
             result_count = 0
             if isinstance(result, dict):
                 result_count = len(result.get("results", []))
-            return f"[Memory Search: \"{query}\" - {result_count} results]"
+            return f"[Memory Recall: \"{query}\" - {result_count} results]"
 
         elif action_type == "get_relationships":
             # Legacy tool - kept for backward compatibility with existing blocks

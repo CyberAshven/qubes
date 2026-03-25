@@ -51,7 +51,7 @@ class VoiceCommandParser:
             "args": {"qube_name": 1},
         },
         r"search (?:memory|memories) (?:for )?(.+)": {
-            "action": "search_memory",
+            "action": "recall",
             "args": {"query": 1},
         },
         r"(?:shutdown|stop|exit|quit)": {

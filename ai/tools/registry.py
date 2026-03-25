@@ -112,7 +112,8 @@ SMALL_MODEL_CORE_TOOLS: Set[str] = {
 }
 
 # Core tools that are always available regardless of skill level
-# These are essential for basic qube functionality
+# These are essential for basic qube functionality (17 tools)
+# Planet and moon tools must be unlocked through XP progression
 ALWAYS_AVAILABLE_TOOLS: Set[str] = {
     # Utility tools (no XP)
     "get_system_state",      # Read all state: relationships, skills, owner_info, mood, wallet, etc.
@@ -134,56 +135,10 @@ ALWAYS_AVAILABLE_TOOLS: Set[str] = {
     "browse_url",
     "generate_image",
 
-    # Planet tools (unlocked from start)
-    # AI Reasoning planets
-    "find_analogy",
-    "analyze_mistake",
-    "replicate_success",
-    "self_reflect",
-    "synthesize_learnings",
-    # Social Intelligence planets
-    "recall_relationship_history",
-    "read_emotional_state",
-    "adapt_communication_style",
-    "steelman",
-    "assess_trust_level",
-    # Coding planets
-    "run_tests",
-    "debug_code",
-    "benchmark_code",
-    "security_scan",
-    "review_code",
-    # Creative Expression planets
-    "compose_text",
-    "compose_music",
-    "craft_narrative",
-    "describe_my_avatar",
-    # Memory & Recall planets
-    "recall",
-    "store_fact",
-    "tag_memory",
-    "synthesize_knowledge",
-    "create_summary",
-    # Security & Privacy planets
-    "audit_chain",
-    "assess_sensitivity",
-    "vet_qube",
-    "detect_threat",
-    "defend_reasoning",
-    # Board Games planets
-    "chess_move",
-    "property_tycoon_action",
-    "race_home_action",
-    "mystery_mansion_action",
-    "life_journey_action",
-    # Finance planets
-    "validate_transaction",
-    "check_wallet_health",
-    "get_market_data",
-    "plan_savings",
-    "identify_token",
-    # Note: Document processing happens automatically in gui_bridge.py
-    # No tool needed - results injected as tool results in reasoner.py
+    # Standalone tools (no skill node, always available)
+    "describe_my_avatar",        # Look in the mirror - see own appearance
+    "recall",                    # Universal memory recall - search all storage systems
+    "process_document",          # Document processing (automatic, tracked for XP)
 }
 
 
@@ -948,9 +903,8 @@ class ToolRegistry:
             "change_model": "switch_model",
             "set_model": "switch_model",
             # Memory aliases
-            "memory_search": "search_memory",
-            "recall": "search_memory",
-            "remember": "search_memory",
+            "memory_search": "recall",
+            "remember": "recall",
             "save_memory": "add_memory",
             "store_memory": "add_memory",
             "create_memory": "add_memory",

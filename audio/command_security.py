@@ -153,9 +153,8 @@ async def _dispatch_command(command: Dict[str, Any], orchestrator) -> str:
         # await orchestrator.mint_nft(qube_name=qube_name)
         return f"Minting NFT for Qube '{qube_name}'..."
 
-    elif action == "search_memory":
+    elif action == "recall":
         query = args.get("query", "")
-        # results = await orchestrator.search_memory(query)
         return f"Searching memory for: {query[:50]}..."
 
     elif action == "show_status":
@@ -194,7 +193,7 @@ ALLOWED_COMMANDS = {
     "export_data",
     "delete_qube",
     "mint_nft",
-    "search_memory",
+    "recall",
     "show_status",
     "show_help",
     "connect_p2p",

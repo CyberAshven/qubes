@@ -269,14 +269,19 @@ class SidecarState:
             bridge = self.bridges[user_id]
 
             if password:
-                if user_id not in self.master_keys:
-                    # First time: expensive PBKDF2 derivation (~300ms)
+                # Hash password to detect changes (e.g., wrong password then correct one)
+                import hashlib
+                pw_hash = hashlib.sha256(password.encode()).digest()
+                cached = self.master_keys.get(user_id)
+
+                if cached is None or cached[1] != pw_hash:
+                    # First time or password changed: derive key (~300ms PBKDF2)
                     bridge.orchestrator.set_master_key(password)
-                    self.master_keys[user_id] = bridge.orchestrator.master_key
+                    self.master_keys[user_id] = (bridge.orchestrator.master_key, pw_hash)
                     logger.info(f"master_key_derived_and_cached user_id={user_id}")
                 elif not bridge.orchestrator.master_key:
                     # Restore cached key (0ms)
-                    bridge.orchestrator.master_key = self.master_keys[user_id]
+                    bridge.orchestrator.master_key = cached[0]
 
             # LRU eviction if too many qubes loaded
             if len(bridge.orchestrator.qubes) > self.MAX_CACHED_QUBES:
@@ -752,7 +757,9 @@ class SidecarServer:
             }, f, indent=2)
 
         # Cache master key for subsequent requests
-        self.state.master_keys[user_id] = orchestrator.master_key
+        import hashlib
+        pw_hash = hashlib.sha256(password.encode()).digest()
+        self.state.master_keys[user_id] = (orchestrator.master_key, pw_hash)
         return {"success": True, "user_id": user_id, "data_dir": str(user_data_dir.absolute())}
 
     async def _pre_delete_user_account(self, params, secrets):
@@ -973,7 +980,8 @@ class SidecarServer:
         provider = params["provider"]
         api_key = secrets.get("api_key", "")
         if api_key == "__SAVED__":
-            api_key = bridge.orchestrator.get_api_key(provider)
+            keys = bridge.orchestrator.get_api_keys()
+            api_key = getattr(keys, provider, None) or ""
         result = await bridge.orchestrator.validate_api_key(provider, api_key)
         return result if isinstance(result, dict) else {"valid": bool(result)}
 
@@ -1231,8 +1239,10 @@ class SidecarServer:
         """Batch save multiple API keys (from setup wizard)."""
         password = secrets.get("password")
         if password and params["user_id"] not in self.state.master_keys:
+            import hashlib
             bridge.orchestrator.set_master_key(password)
-            self.state.master_keys[params["user_id"]] = bridge.orchestrator.master_key
+            pw_hash = hashlib.sha256(password.encode()).digest()
+            self.state.master_keys[params["user_id"]] = (bridge.orchestrator.master_key, pw_hash)
         providers = {k: v for k, v in params.items() if k not in ("user_id", "_positional") and v}
         for provider, key in providers.items():
             bridge.orchestrator.update_api_key(provider, key)

@@ -1479,7 +1479,7 @@ Make your move using the chess_move tool. Use one of the legal moves listed abov
                     "update_system_state": "Update owner info, your profile, or preferences",
                     "switch_model": "Change to a different AI model mid-conversation",
                     # Memory
-                    "search_memory": "Search past conversations and stored knowledge by keyword",
+                    "recall": "Search all storage systems - conversations, knowledge, profile, and locker",
                     # Web & Research
                     "browse_url": "Fetch and read content from a specific URL",
                     "web_search": "Search the web for current information",
@@ -1500,7 +1500,7 @@ Make your move using the chess_move tool. Use one of the legal moves listed abov
                 # Define tool categories (core tools only - skill-unlocked tools added dynamically)
                 tool_categories = {
                     "Core System": ["get_system_state", "update_system_state", "switch_model"],
-                    "Memory": ["search_memory"],
+                    "Memory": ["recall"],
                     "Web & Research": ["browse_url", "web_search"],
                     "Wallet": ["send_bch"],
                     "Visual & Creative": ["generate_image", "describe_my_avatar"],
@@ -1632,7 +1632,7 @@ Use **update_system_state** to:
   - Example: `{{"section": "qube_profile", "path": "preferences.favorite_music", "value": "Progressive metal"}}`
   - Categories: preferences, traits, opinions, goals, style, interests, custom_sections
 
-Use **search_memory** to recall past conversations (not for identity questions).
+Use **recall** to search past conversations and knowledge (not for identity questions).
 {tools_section}
 {model_mode_section}
 
@@ -2037,7 +2037,7 @@ Use **update_system_state** to:
   - Example: `{{"section": "qube_profile", "path": "preferences.favorite_music", "value": "Progressive metal"}}`
   - Categories: preferences, traits, opinions, goals, style, interests, custom_sections
 
-Use **search_memory** to recall past conversations (not for identity questions).
+Use **recall** to search past conversations and knowledge (not for identity questions).
 {tools_section}
 {model_mode_section}
 
@@ -3802,7 +3802,7 @@ Multiple entities present. Be careful about what you share.
                 domain = url.split('/')[2] if url.startswith('http') and len(url.split('/')) > 2 else url[:50]
                 text = f"Browsed {domain}"
 
-            elif tool_name == "search_memory":
+            elif tool_name in ("search_memory", "recall"):
                 query = params.get('query', '')[:40]
                 count = result.get('count', 0) if isinstance(result, dict) else 0
                 text = f"Recalled {count} memories about \"{query}\""

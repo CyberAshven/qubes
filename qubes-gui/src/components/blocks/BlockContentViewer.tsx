@@ -376,19 +376,25 @@ const DecisionBlockContent: React.FC<{ content: any }> = memo(({ content }) => {
 });
 
 const GenesisBlockContent: React.FC<{ content: any }> = memo(({ content }) => {
-  // Core tools that are always available to every Qube (11 tools)
+  // Core tools that are always available to every Qube (17 tools)
   const alwaysAvailableTools = [
     { id: 'get_system_state', name: 'Get System State', icon: '📊' },
     { id: 'update_system_state', name: 'Update System State', icon: '✏️' },
     { id: 'get_skill_tree', name: 'Skill Tree', icon: '🌳' },
-    { id: 'search_memory', name: 'Search Memory', icon: '🔍' },
-    { id: 'describe_my_avatar', name: 'Describe Avatar', icon: '🖼️' },
+    { id: 'recall_similar', name: 'Recall Similar', icon: '🧠' },
+    { id: 'store_knowledge', name: 'Store Knowledge', icon: '📚' },
+    { id: 'switch_model', name: 'Switch Model', icon: '🔄' },
+    { id: 'play_game', name: 'Play Game', icon: '🎮' },
+    { id: 'send_bch', name: 'Send BCH', icon: '💰' },
+    { id: 'get_relationship_context', name: 'Relationship Context', icon: '🤝' },
+    { id: 'verify_chain_integrity', name: 'Verify Chain', icon: '🛡️' },
+    { id: 'develop_code', name: 'Develop Code', icon: '💻' },
     { id: 'web_search', name: 'Web Search', icon: '🌐' },
     { id: 'browse_url', name: 'Browse URL', icon: '🔗' },
     { id: 'generate_image', name: 'Generate Image', icon: '🎨' },
-    { id: 'chess_move', name: 'Chess Move', icon: '♟️' },
-    { id: 'send_bch', name: 'Send BCH', icon: '💰' },
-    { id: 'switch_model', name: 'Switch Model', icon: '🔄' },
+    { id: 'describe_my_avatar', name: 'Describe Avatar', icon: '🖼️' },
+    { id: 'recall', name: 'Memory Recall', icon: '🔍' },
+    { id: 'process_document', name: 'Process Document', icon: '📄' },
   ];
 
   // Format voice model nicely (e.g., "openai:fable" -> "OpenAI: Fable")

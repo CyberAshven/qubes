@@ -364,10 +364,10 @@ export const SettingsTab: React.FC = () => {
     deepgram: '...',
   };
 
-  // Load API keys on mount
+  // Load API keys on mount and when password changes (e.g., after failed login attempt)
   useEffect(() => {
     loadConfiguredKeys();
-  }, [userId]);
+  }, [userId, password]);
 
   // Load block preferences on mount
   useEffect(() => {

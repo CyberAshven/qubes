@@ -225,7 +225,7 @@ TOOL_TO_SKILL_MAPPING = {
     # Moons
     "keyword_search": "keyword_search_skill",
     "semantic_search": "semantic_search_skill",
-    "search_memory": "filtered_search",
+    # search_memory removed in favor of recall
 
     # Planet 2: Knowledge Storage
     "store_fact": "knowledge_storage",

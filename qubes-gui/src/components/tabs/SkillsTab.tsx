@@ -452,10 +452,10 @@ export const SkillsTab: React.FC<SkillsTabProps> = ({ qubes }) => {
         } else {
           loadedSkills = response.skills as Skill[];
 
-          // Ensure Suns and Planets are always unlocked (migration for existing data)
+          // Ensure Suns are always unlocked (migration for existing data)
           let needsSave = false;
           loadedSkills = loadedSkills.map(skill => {
-            if ((skill.nodeType === 'sun' || skill.nodeType === 'planet') && !skill.unlocked) {
+            if (skill.nodeType === 'sun' && !skill.unlocked) {
               needsSave = true;
               return { ...skill, unlocked: true };
             }

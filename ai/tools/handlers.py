@@ -528,33 +528,6 @@ def register_default_tools(registry: ToolRegistry) -> None:
         handler=lambda params: image_generation_handler(qube, params)
     ))
 
-    # Memory Search
-    registry.register(ToolDefinition(
-        name="search_memory",
-        description="Search through past conversation messages and interactions stored in the memory chain. Use this to recall previous conversations, thoughts, actions, or decisions. DO NOT use this for identity information (name, birth date, creator, etc.) - that information is already provided in your system prompt.",
-        parameters={
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "What to search for in memory"
-                },
-                "block_types": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Filter by block types (MESSAGE, THOUGHT, ACTION, etc.)"
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum results to return",
-                    "default": 10
-                }
-            },
-            "required": ["query"]
-        },
-        handler=lambda params: memory_search_handler(qube, params)
-    ))
-
     # Describe Avatar (Vision)
     registry.register(ToolDefinition(
         name="describe_my_avatar",
@@ -1117,9 +1090,7 @@ def register_default_tools(registry: ToolRegistry) -> None:
         handler=lambda params: memory_tools.semantic_search(qube, params)
     ))
 
-    # Moon 1.3: search_memory (Filtered Search)
-    # Note: This updates the existing search_memory tool with new capabilities
-    # The original search_memory is kept for backwards compatibility at line 401
+    # Moon 1.3: Filtered Search (search_memory removed in favor of recall)
 
     # Moon 2.1: record_skill (Procedures)
     registry.register(ToolDefinition(
