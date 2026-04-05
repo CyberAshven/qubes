@@ -307,6 +307,40 @@ jobs:
           $sizeAfter = (Get-ChildItem -Recurse "qubes-gui/src-tauri/dist/qubes-backend" | Measure-Object -Property Length -Sum).Sum / 1MB
           Write-Host "Backend size after strip: $([math]::Round($sizeAfter))MB (saved $([math]::Round($sizeBefore - $sizeAfter))MB)"
 
+      # ========== Apply Torch Patches ==========
+      # Fixes circular import issues in PyInstaller-bundled torch (e.g.,
+      # "cannot import name 'nn' from partially initialized module 'torch'")
+      - name: Apply torch patches (Unix)
+        if: matrix.platform != 'windows-latest'
+        run: |
+          INTERNAL="qubes-gui/src-tauri/dist/qubes-backend/_internal"
+          if [ -d "$INTERNAL/torch" ]; then
+            cp -v patches/torch/nn/__init__.py "$INTERNAL/torch/nn/__init__.py"
+            mkdir -p "$INTERNAL/torch/distributed" "$INTERNAL/torch/futures" "$INTERNAL/torch/rpc"
+            cp -v patches/torch/distributed/__init__.py "$INTERNAL/torch/distributed/__init__.py"
+            cp -v patches/torch/futures/__init__.py "$INTERNAL/torch/futures/__init__.py"
+            cp -v patches/torch/rpc/__init__.py "$INTERNAL/torch/rpc/__init__.py"
+            echo "Torch patches applied successfully"
+          else
+            echo "WARNING: torch directory not found in bundle, skipping patches"
+          fi
+
+      - name: Apply torch patches (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          $internal = "qubes-gui/src-tauri/dist/qubes-backend/_internal"
+          if (Test-Path "$internal/torch") {
+            Copy-Item "patches/torch/nn/__init__.py" "$internal/torch/nn/__init__.py" -Force
+            New-Item -ItemType Directory -Force -Path "$internal/torch/distributed", "$internal/torch/futures", "$internal/torch/rpc" | Out-Null
+            Copy-Item "patches/torch/distributed/__init__.py" "$internal/torch/distributed/__init__.py" -Force
+            Copy-Item "patches/torch/futures/__init__.py" "$internal/torch/futures/__init__.py" -Force
+            Copy-Item "patches/torch/rpc/__init__.py" "$internal/torch/rpc/__init__.py" -Force
+            Write-Host "Torch patches applied successfully"
+          } else {
+            Write-Host "WARNING: torch directory not found in bundle, skipping patches"
+          }
+
       # ========== Install Frontend Dependencies ==========
       - name: Install frontend dependencies
         working-directory: qubes-gui
