@@ -21,14 +21,30 @@ class VoiceRegistry:
     # Voice definitions with provider, characteristics, and metadata
     VOICES: Dict[str, Dict[str, Any]] = {
         # =====================================================================
-        # OpenAI TTS Voices (tts-1, tts-1-hd models)
+        # OpenAI TTS Voices
+        # alloy-shimmer: available on tts-1, tts-1-hd, and gpt-4o-mini-tts
+        # ballad-cedar: gpt-4o-mini-tts only
         # =====================================================================
         "alloy": {
             "provider": "openai",
             "name": "Alloy",
-            "gender": "neutral",
+            "gender": "female",
             "description": "Neutral and balanced, versatile for many use cases",
             "characteristics": ["neutral", "balanced", "clear"],
+        },
+        "ash": {
+            "provider": "openai",
+            "name": "Ash",
+            "gender": "male",
+            "description": "Conversational and versatile",
+            "characteristics": ["conversational", "versatile", "warm"],
+        },
+        "coral": {
+            "provider": "openai",
+            "name": "Coral",
+            "gender": "female",
+            "description": "Warm and friendly, natural delivery",
+            "characteristics": ["warm", "friendly", "natural"],
         },
         "echo": {
             "provider": "openai",
@@ -40,16 +56,9 @@ class VoiceRegistry:
         "fable": {
             "provider": "openai",
             "name": "Fable",
-            "gender": "neutral",
+            "gender": "male",
             "description": "Expressive and dramatic, great for narratives",
             "characteristics": ["expressive", "dramatic", "theatrical"],
-        },
-        "onyx": {
-            "provider": "openai",
-            "name": "Onyx",
-            "gender": "male",
-            "description": "Deep and authoritative, professional tone",
-            "characteristics": ["deep", "authoritative", "professional"],
         },
         "nova": {
             "provider": "openai",
@@ -58,6 +67,20 @@ class VoiceRegistry:
             "description": "Friendly and upbeat, energetic delivery",
             "characteristics": ["friendly", "upbeat", "energetic"],
         },
+        "onyx": {
+            "provider": "openai",
+            "name": "Onyx",
+            "gender": "male",
+            "description": "Deep and authoritative, professional tone",
+            "characteristics": ["deep", "authoritative", "professional"],
+        },
+        "sage": {
+            "provider": "openai",
+            "name": "Sage",
+            "gender": "female",
+            "description": "Calm and thoughtful, professional tone",
+            "characteristics": ["calm", "thoughtful", "professional"],
+        },
         "shimmer": {
             "provider": "openai",
             "name": "Shimmer",
@@ -65,52 +88,73 @@ class VoiceRegistry:
             "description": "Clear and gentle, soft-spoken",
             "characteristics": ["clear", "gentle", "soft"],
         },
+        # gpt-4o-mini-tts exclusive voices
+        "ballad": {
+            "provider": "openai",
+            "name": "Ballad",
+            "gender": "male",
+            "description": "Warm and melodic, storytelling voice",
+            "characteristics": ["warm", "melodic", "storytelling"],
+            "tts_model": "gpt-4o-mini-tts",
+        },
+        "verse": {
+            "provider": "openai",
+            "name": "Verse",
+            "gender": "male",
+            "description": "Measured and poetic, calm delivery",
+            "characteristics": ["measured", "poetic", "calm"],
+            "tts_model": "gpt-4o-mini-tts",
+        },
+        "marin": {
+            "provider": "openai",
+            "name": "Marin",
+            "gender": "female",
+            "description": "Bright and clear, recommended for quality",
+            "characteristics": ["bright", "clear", "natural"],
+            "tts_model": "gpt-4o-mini-tts",
+        },
+        "cedar": {
+            "provider": "openai",
+            "name": "Cedar",
+            "gender": "male",
+            "description": "Rich and grounded, natural feel",
+            "characteristics": ["rich", "grounded", "natural"],
+            "tts_model": "gpt-4o-mini-tts",
+        },
 
         # =====================================================================
-        # Gemini TTS Voices (gemini-2.5-flash-preview-tts)
+        # Gemini TTS Voices (gemini-2.5-flash-preview-tts) — 30 voices
         # =====================================================================
-        "Puck": {
-            "provider": "gemini",
-            "name": "Puck",
-            "gender": "neutral",
-            "description": "Upbeat and playful",
-            "characteristics": ["upbeat", "playful", "energetic"],
-        },
-        "Charon": {
-            "provider": "gemini",
-            "name": "Charon",
-            "gender": "neutral",
-            "description": "Informative and clear",
-            "characteristics": ["informative", "clear", "educational"],
-        },
-        "Kore": {
-            "provider": "gemini",
-            "name": "Kore",
-            "gender": "female",
-            "description": "Calm and soothing",
-            "characteristics": ["calm", "soothing", "relaxed"],
-        },
-        "Fenrir": {
-            "provider": "gemini",
-            "name": "Fenrir",
-            "gender": "male",
-            "description": "Authoritative and commanding",
-            "characteristics": ["authoritative", "commanding", "strong"],
-        },
-        "Aoede": {
-            "provider": "gemini",
-            "name": "Aoede",
-            "gender": "female",
-            "description": "Expressive and musical",
-            "characteristics": ["expressive", "musical", "artistic"],
-        },
-        "Zephyr": {
-            "provider": "gemini",
-            "name": "Zephyr",
-            "gender": "neutral",
-            "description": "Bright and airy",
-            "characteristics": ["bright", "airy", "light"],
-        },
+        "Achernar": {"provider": "gemini", "name": "Achernar", "gender": "male", "description": "Warm and clear", "characteristics": ["warm", "clear"]},
+        "Achird": {"provider": "gemini", "name": "Achird", "gender": "female", "description": "Friendly and bright", "characteristics": ["friendly", "bright"]},
+        "Algenib": {"provider": "gemini", "name": "Algenib", "gender": "male", "description": "Confident and steady", "characteristics": ["confident", "steady"]},
+        "Algieba": {"provider": "gemini", "name": "Algieba", "gender": "female", "description": "Smooth and engaging", "characteristics": ["smooth", "engaging"]},
+        "Alnilam": {"provider": "gemini", "name": "Alnilam", "gender": "male", "description": "Resonant and strong", "characteristics": ["resonant", "strong"]},
+        "Aoede": {"provider": "gemini", "name": "Aoede", "gender": "female", "description": "Expressive and musical", "characteristics": ["expressive", "musical"]},
+        "Autonoe": {"provider": "gemini", "name": "Autonoe", "gender": "female", "description": "Gentle and thoughtful", "characteristics": ["gentle", "thoughtful"]},
+        "Callirrhoe": {"provider": "gemini", "name": "Callirrhoe", "gender": "female", "description": "Elegant and poised", "characteristics": ["elegant", "poised"]},
+        "Charon": {"provider": "gemini", "name": "Charon", "gender": "male", "description": "Informative and clear", "characteristics": ["informative", "clear"]},
+        "Despina": {"provider": "gemini", "name": "Despina", "gender": "female", "description": "Lively and energetic", "characteristics": ["lively", "energetic"]},
+        "Enceladus": {"provider": "gemini", "name": "Enceladus", "gender": "female", "description": "Calm and measured", "characteristics": ["calm", "measured"]},
+        "Erinome": {"provider": "gemini", "name": "Erinome", "gender": "female", "description": "Warm and natural", "characteristics": ["warm", "natural"]},
+        "Fenrir": {"provider": "gemini", "name": "Fenrir", "gender": "male", "description": "Authoritative and commanding", "characteristics": ["authoritative", "commanding"]},
+        "Gacrux": {"provider": "gemini", "name": "Gacrux", "gender": "male", "description": "Deep and mature", "characteristics": ["deep", "mature"]},
+        "Iapetus": {"provider": "gemini", "name": "Iapetus", "gender": "male", "description": "Clear and precise", "characteristics": ["clear", "precise"]},
+        "Kore": {"provider": "gemini", "name": "Kore", "gender": "female", "description": "Calm and soothing", "characteristics": ["calm", "soothing"]},
+        "Laomedeia": {"provider": "gemini", "name": "Laomedeia", "gender": "female", "description": "Soft and melodic", "characteristics": ["soft", "melodic"]},
+        "Leda": {"provider": "gemini", "name": "Leda", "gender": "female", "description": "Light and airy", "characteristics": ["light", "airy"]},
+        "Orus": {"provider": "gemini", "name": "Orus", "gender": "male", "description": "Steady and reliable", "characteristics": ["steady", "reliable"]},
+        "Puck": {"provider": "gemini", "name": "Puck", "gender": "male", "description": "Upbeat and playful", "characteristics": ["upbeat", "playful"]},
+        "Pulcherrima": {"provider": "gemini", "name": "Pulcherrima", "gender": "female", "description": "Rich and beautiful", "characteristics": ["rich", "beautiful"]},
+        "Rasalgethi": {"provider": "gemini", "name": "Rasalgethi", "gender": "male", "description": "Warm and resonant", "characteristics": ["warm", "resonant"]},
+        "Sadachbia": {"provider": "gemini", "name": "Sadachbia", "gender": "male", "description": "Friendly and open", "characteristics": ["friendly", "open"]},
+        "Sadaltager": {"provider": "gemini", "name": "Sadaltager", "gender": "male", "description": "Calm and grounded", "characteristics": ["calm", "grounded"]},
+        "Schedar": {"provider": "gemini", "name": "Schedar", "gender": "female", "description": "Professional and polished", "characteristics": ["professional", "polished"]},
+        "Sulafat": {"provider": "gemini", "name": "Sulafat", "gender": "female", "description": "Bright and cheerful", "characteristics": ["bright", "cheerful"]},
+        "Umbriel": {"provider": "gemini", "name": "Umbriel", "gender": "male", "description": "Mysterious and deep", "characteristics": ["mysterious", "deep"]},
+        "Vindemiatrix": {"provider": "gemini", "name": "Vindemiatrix", "gender": "female", "description": "Graceful and elegant", "characteristics": ["graceful", "elegant"]},
+        "Zephyr": {"provider": "gemini", "name": "Zephyr", "gender": "male", "description": "Bright and airy", "characteristics": ["bright", "airy"]},
+        "Zubenelgenubi": {"provider": "gemini", "name": "Zubenelgenubi", "gender": "female", "description": "Unique and distinctive", "characteristics": ["unique", "distinctive"]},
 
         # =====================================================================
         # ElevenLabs Voices (common presets - actual availability depends on account)

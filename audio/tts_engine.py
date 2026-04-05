@@ -75,11 +75,15 @@ class TTSProvider(ABC):
 class OpenAITTS(TTSProvider):
     """OpenAI TTS provider"""
 
-    # Pricing per 1M characters (as of 2025)
+    # Pricing per 1M characters (as of 2026)
     PRICING = {
-        "tts-1": 15.00,      # Standard quality
-        "tts-1-hd": 30.00,   # HD quality
+        "tts-1": 15.00,           # Standard quality
+        "tts-1-hd": 30.00,        # HD quality
+        "gpt-4o-mini-tts": 12.00, # Steerable, newest voices
     }
+
+    # Voices that require gpt-4o-mini-tts model
+    GPT4O_MINI_TTS_ONLY = {"ballad", "verse", "marin", "cedar"}
 
     def __init__(self, api_key: str):
         self.api_key = api_key
@@ -101,11 +105,14 @@ class OpenAITTS(TTSProvider):
                 length=len(text)
             )
 
+            # Select model: gpt-4o-mini-tts for exclusive voices, tts-1 otherwise
+            model = "gpt-4o-mini-tts" if voice_config.voice_id in self.GPT4O_MINI_TTS_ONLY else "tts-1"
+
             # Record start
-            MetricsRecorder.record_ai_api_call("openai_tts", "tts-1", "started")
+            MetricsRecorder.record_ai_api_call("openai_tts", model, "started")
 
             response = await client.audio.speech.create(
-                model="tts-1",  # Standard quality for streaming
+                model=model,
                 voice=voice_config.voice_id,
                 input=text,
                 speed=voice_config.speed,
@@ -118,12 +125,12 @@ class OpenAITTS(TTSProvider):
                 yield chunk
 
             # Record success
-            MetricsRecorder.record_ai_api_call("openai_tts", "tts-1", "success")
+            MetricsRecorder.record_ai_api_call("openai_tts", model, "success")
 
             # Estimate cost
             chars = len(text)
-            cost = (chars / 1_000_000) * self.PRICING["tts-1"]
-            MetricsRecorder.record_ai_cost(cost, "openai", "tts-1")
+            cost = (chars / 1_000_000) * self.PRICING[model]
+            MetricsRecorder.record_ai_cost(cost, "openai", model)
 
             logger.info(
                 "tts_completed",
@@ -133,7 +140,7 @@ class OpenAITTS(TTSProvider):
             )
 
         except Exception as e:
-            MetricsRecorder.record_ai_api_call("openai_tts", "tts-1", "error")
+            MetricsRecorder.record_ai_api_call("openai_tts", model, "error")
             logger.error("openai_tts_failed", error=str(e), exc_info=True)
             raise AIError(f"OpenAI TTS failed: {e}", cause=e)
 
@@ -146,8 +153,11 @@ class OpenAITTS(TTSProvider):
 
             client = AsyncOpenAI(api_key=self.api_key)
 
+            # gpt-4o-mini-tts for exclusive voices, tts-1-hd otherwise
+            model = "gpt-4o-mini-tts" if voice_config.voice_id in self.GPT4O_MINI_TTS_ONLY else "tts-1-hd"
+
             response = await client.audio.speech.create(
-                model="tts-1-hd",  # HD quality for saved files
+                model=model,
                 voice=voice_config.voice_id,
                 input=text,
                 speed=voice_config.speed,
@@ -266,12 +276,13 @@ class GeminiTTS(TTSProvider):
 
     # 30 available voices with different characteristics
     AVAILABLE_VOICES = [
-        "Puck",      # Upbeat
-        "Charon",    # Informative
-        "Kore",      # Calm
-        "Fenrir",    # Authoritative
-        "Aoede",     # Expressive
-        "Zephyr",    # Bright
+        "Achernar", "Achird", "Algenib", "Algieba", "Alnilam",
+        "Aoede", "Autonoe", "Callirrhoe", "Charon", "Despina",
+        "Enceladus", "Erinome", "Fenrir", "Gacrux", "Iapetus",
+        "Kore", "Laomedeia", "Leda", "Orus", "Puck",
+        "Pulcherrima", "Rasalgethi", "Sadachbia", "Sadaltager",
+        "Schedar", "Sulafat", "Umbriel", "Vindemiatrix", "Zephyr",
+        "Zubenelgenubi",
     ]
 
     def __init__(self, api_key: str):
