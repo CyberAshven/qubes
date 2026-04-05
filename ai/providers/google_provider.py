@@ -38,7 +38,7 @@ class GoogleModel(AIModelInterface):
         "gemini-2.5-flash-lite": 1000000,
         "gemini-2.0-flash": 1000000,
         "gemini-1.5-pro": 2000000,
-        "gemini-3-pro-preview": 2000000,
+        "gemini-3.1-pro-preview": 2000000,
         "gemini-3-flash-preview": 1000000,
     }
 
@@ -47,7 +47,7 @@ class GoogleModel(AIModelInterface):
     # Gemini 3 models use prompt-based tools because native tool calling requires
     # thoughtSignature which the SDK doesn't fully support yet
     PROMPT_BASED_TOOL_MODELS = {
-        "gemini-3-pro-preview",
+        "gemini-3.1-pro-preview",
         "gemini-3-flash-preview",
         "gemini-3-pro-image-preview",
     }

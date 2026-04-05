@@ -59,7 +59,7 @@ def select_from_menu(
             console.print("[red]Invalid selection. Try again.[/red]")
 
 
-def select_ai_model(default: str = "claude-sonnet-4.5") -> str:
+def select_ai_model(default: str = "claude-sonnet-4-6") -> str:
     """
     Interactive AI model selection menu.
 
@@ -70,30 +70,32 @@ def select_ai_model(default: str = "claude-sonnet-4.5") -> str:
         Selected AI model name
     """
     models = [
-        "claude-sonnet-4.5",
-        "claude-opus-4.1",
-        "claude-3.7-sonnet",
-        "gpt-5",
-        "gpt-5-mini",
+        "claude-sonnet-4-6",
+        "claude-opus-4-6",
+        "claude-sonnet-4-5",
+        "gpt-5.4",
+        "gpt-5.4-mini",
         "gpt-4o",
-        "gemini-2.5-pro",
+        "gemini-3.1-pro-preview",
         "gemini-2.5-flash",
         "sonar-pro",
+        "deepseek-chat",
         "llama3.3:70b",
         "qwen3:235b",
         "Custom (enter model ID)"
     ]
 
     descriptions = [
-        "Anthropic - Balanced performance",
+        "Anthropic - Latest balanced",
         "Anthropic - Highest capability",
         "Anthropic - Previous generation",
         "OpenAI - Latest flagship",
         "OpenAI - Fast and efficient",
         "OpenAI - Multimodal",
-        "Google - Advanced reasoning",
+        "Google - Latest flagship",
         "Google - Fast responses",
         "Perplexity - Search-focused",
+        "DeepSeek - Very affordable",
         "Meta - Open source large",
         "Alibaba - Open source extra large",
         "Enter your own model ID"

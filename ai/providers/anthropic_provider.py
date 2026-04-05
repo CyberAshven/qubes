@@ -21,25 +21,25 @@ logger = get_logger(__name__)
 class AnthropicModel(AIModelInterface):
     """Anthropic Claude model provider"""
 
-    # Pricing per 1M tokens (as of 2025)
+    # Pricing per 1M tokens (as of 2026)
     PRICING = {
+        "claude-opus-4-6-20260204": {"input": 5.00, "output": 25.00},
+        "claude-sonnet-4-6-20260217": {"input": 3.00, "output": 15.00},
         "claude-sonnet-4-5-20250929": {"input": 3.00, "output": 15.00},
         "claude-opus-4-1-20250805": {"input": 15.00, "output": 75.00},
-        "claude-opus-4-20250514": {"input": 15.00, "output": 75.00},
         "claude-sonnet-4-20250514": {"input": 3.00, "output": 15.00},
-        "claude-3-7-sonnet-20250219": {"input": 3.00, "output": 15.00},
+        "claude-haiku-4-5-20251001": {"input": 1.00, "output": 5.00},
         "claude-3-5-haiku-20241022": {"input": 0.25, "output": 1.25},
-        "claude-3-haiku-20240307": {"input": 0.25, "output": 1.25},
     }
 
     CONTEXT_WINDOWS = {
+        "claude-opus-4-6-20260204": 1000000,
+        "claude-sonnet-4-6-20260217": 1000000,
         "claude-sonnet-4-5-20250929": 200000,
         "claude-opus-4-1-20250805": 200000,
-        "claude-opus-4-20250514": 200000,
         "claude-sonnet-4-20250514": 1000000,
-        "claude-3-7-sonnet-20250219": 200000,
+        "claude-haiku-4-5-20251001": 200000,
         "claude-3-5-haiku-20241022": 200000,
-        "claude-3-haiku-20240307": 200000,
     }
 
     @anthropic_retry(max_attempts=3)

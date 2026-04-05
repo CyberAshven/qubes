@@ -50,10 +50,12 @@ class VeniceModel(AIModelInterface):
         "qwen3-coder-480b-a35b-instruct": {"input": 0.70, "output": 0.75},
         "qwen3-4b": {"input": 0.05, "output": 0.05},
         "mistral-31-24b": {"input": 0.15, "output": 0.15},
-        "claude-opus-45": {"input": 1.50, "output": 7.50},
-        "openai-gpt-52": {"input": 1.75, "output": 7.00},
-        "openai-gpt-oss-120b": {"input": 0.50, "output": 0.50},
-        "gemini-3-pro-preview": {"input": 1.00, "output": 2.00},
+        "openai-gpt-54": {"input": 2.00, "output": 8.00},
+        "claude-opus-46": {"input": 1.80, "output": 7.50},
+        "claude-sonnet-46": {"input": 1.20, "output": 6.00},
+        "glm-5": {"input": 0.50, "output": 0.50},
+        "minimax-m25": {"input": 0.50, "output": 0.50},
+        "qwen3.5-35b-a3b": {"input": 0.30, "output": 0.30},
         "gemini-3-flash-preview": {"input": 0.30, "output": 0.60},
         "grok-41-fast": {"input": 0.50, "output": 0.50},
         "grok-code-fast-1": {"input": 0.50, "output": 0.50},
@@ -77,10 +79,12 @@ class VeniceModel(AIModelInterface):
         "qwen3-coder-480b-a35b-instruct": 131072,
         "qwen3-4b": 131072,
         "mistral-31-24b": 131072,
-        "claude-opus-45": 200000,
-        "openai-gpt-52": 256000,
-        "openai-gpt-oss-120b": 131072,
-        "gemini-3-pro-preview": 1000000,
+        "openai-gpt-54": 256000,
+        "claude-opus-46": 1000000,
+        "claude-sonnet-46": 1000000,
+        "glm-5": 131072,
+        "minimax-m25": 1000000,
+        "qwen3.5-35b-a3b": 131072,
         "gemini-3-flash-preview": 1000000,
         "grok-41-fast": 131072,
         "grok-code-fast-1": 131072,
@@ -109,8 +113,8 @@ class VeniceModel(AIModelInterface):
         "qwen3-235b-a22b-thinking-2507",  # Thinking models should use prompt-based
         "google-gemma-3-27b-it",    # Gemma has weak native tool support
         # Models proxied through Venice use their native format, not OpenAI format
-        "claude-opus-45",           # Claude uses Anthropic format
-        "openai-gpt-52",            # GPT through Venice proxy
+        "claude-opus-46",           # Claude uses Anthropic format
+        "openai-gpt-54",            # GPT through Venice proxy
         # Legacy aliases
         "dolphin-2.9.3-mistral-7b",
     }
@@ -129,7 +133,6 @@ class VeniceModel(AIModelInterface):
         # Map registry names to actual Venice API model names
         # This allows using unique registry keys while sending correct names to Venice
         MODEL_NAME_MAP = {
-            "venice/gemini-3-pro": "gemini-3-pro-preview",
             "venice/gemini-3-flash": "gemini-3-flash-preview",
         }
         actual_model_name = MODEL_NAME_MAP.get(model_name, model_name)

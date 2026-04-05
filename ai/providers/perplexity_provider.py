@@ -25,7 +25,6 @@ class PerplexityModel(AIModelInterface):
         "sonar-pro": {"input": 3.00, "output": 15.00},
         "sonar": {"input": 0.20, "output": 0.20},
         "sonar-reasoning-pro": {"input": 5.00, "output": 20.00},
-        "sonar-reasoning": {"input": 1.00, "output": 5.00},
         "sonar-deep-research": {"input": 10.00, "output": 30.00},
     }
 
@@ -33,7 +32,6 @@ class PerplexityModel(AIModelInterface):
         "sonar-pro": 127000,
         "sonar": 127000,
         "sonar-reasoning-pro": 127000,
-        "sonar-reasoning": 127000,
         "sonar-deep-research": 127000,
     }
 
@@ -45,7 +43,6 @@ class PerplexityModel(AIModelInterface):
         "sonar",                # Basic model, no native tools
         "sonar-pro",            # Pro model, no native tools
         "sonar-deep-research",  # Research model, no native tools
-        "sonar-reasoning",      # Reasoning model - tools unreliable
         "sonar-reasoning-pro",  # Reasoning pro - tools unreliable
     ]
 

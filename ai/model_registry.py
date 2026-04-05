@@ -26,102 +26,96 @@ logger = get_logger(__name__)
 
 class ModelRegistry:
     """
-    Registry of available AI models (Updated: January 2026)
+    Registry of available AI models (Updated: April 2026)
 
     Latest models across 7 providers with support for reasoning,
     vision, and extended context windows.
     """
 
-    # Pricing is average of input/output costs per 1k tokens (approximate, 2025 rates)
+    # Pricing is average of input/output costs per 1k tokens (approximate, 2025-2026 rates)
     MODELS: Dict[str, Dict[str, Any]] = {
         # OpenAI - Latest models (2025-2026)
+        "gpt-5.4": {"provider": "openai", "class": OpenAIModel, "description": "GPT-5.4, Mar 2026, 256k context", "cost_per_1k_tokens": 0.018},
+        "gpt-5.4-mini": {"provider": "openai", "class": OpenAIModel, "description": "GPT-5.4 Mini, 128k context", "cost_per_1k_tokens": 0.004},
+        "gpt-5.4-nano": {"provider": "openai", "class": OpenAIModel, "description": "GPT-5.4 Nano, 128k context", "cost_per_1k_tokens": 0.001},
         "gpt-5.2": {"provider": "openai", "class": OpenAIModel, "description": "GPT-5.2, Dec 2025, 256k context", "temperature_fixed": 1.0, "cost_per_1k_tokens": 0.015},
-        # Note: gpt-5.2-pro removed - requires OpenAI Responses API which we don't support
-        "gpt-5.2-chat-latest": {"provider": "openai", "class": OpenAIModel, "description": "GPT-5.2 Chat, 256k context", "cost_per_1k_tokens": 0.010},
-        "gpt-5.2-codex": {"provider": "openai", "class": OpenAIModel, "description": "GPT-5.2 Codex, 256k context", "cost_per_1k_tokens": 0.012},
-        "gpt-5.1": {"provider": "openai", "class": OpenAIModel, "description": "GPT-5.1, 256k context", "temperature_fixed": 1.0, "cost_per_1k_tokens": 0.012},
-        "gpt-5.1-chat-latest": {"provider": "openai", "class": OpenAIModel, "description": "GPT-5.1 Chat, 256k context", "cost_per_1k_tokens": 0.008},
-        "gpt-5-turbo": {"provider": "openai", "class": OpenAIModel, "description": "GPT-5 Turbo, 256k context", "cost_per_1k_tokens": 0.006},
         "gpt-5": {"provider": "openai", "class": OpenAIModel, "description": "GPT-5, Aug 2025, 256k context", "temperature_fixed": 1.0, "cost_per_1k_tokens": 0.010},
         "gpt-5-mini": {"provider": "openai", "class": OpenAIModel, "description": "GPT-5 Mini, 128k context", "cost_per_1k_tokens": 0.002},
         "gpt-4.1": {"provider": "openai", "class": OpenAIModel, "description": "GPT-4.1, 1M context", "cost_per_1k_tokens": 0.008},
         "gpt-4.1-mini": {"provider": "openai", "class": OpenAIModel, "description": "GPT-4.1 Mini, 128k context", "cost_per_1k_tokens": 0.002},
         "gpt-4o": {"provider": "openai", "class": OpenAIModel, "description": "GPT-4o, multimodal, 128k context", "cost_per_1k_tokens": 0.005},
         "gpt-4o-mini": {"provider": "openai", "class": OpenAIModel, "description": "GPT-4o Mini, 128k context", "cost_per_1k_tokens": 0.0004},
-        "o4": {"provider": "openai", "class": OpenAIModel, "description": "O4 reasoning, 200k context", "temperature_fixed": 1.0, "cost_per_1k_tokens": 0.020},
         "o4-mini": {"provider": "openai", "class": OpenAIModel, "description": "O4 Mini reasoning, 200k context", "temperature_fixed": 1.0, "cost_per_1k_tokens": 0.006},
+        "o3": {"provider": "openai", "class": OpenAIModel, "description": "O3 reasoning, 200k context", "temperature_fixed": 1.0, "cost_per_1k_tokens": 0.015},
+        "o3-pro": {"provider": "openai", "class": OpenAIModel, "description": "O3 Pro reasoning, 200k context", "temperature_fixed": 1.0, "cost_per_1k_tokens": 0.030},
         "o3-mini": {"provider": "openai", "class": OpenAIModel, "description": "O3 Mini reasoning, 200k context", "temperature_fixed": 1.0, "cost_per_1k_tokens": 0.004},
         "o1": {"provider": "openai", "class": OpenAIModel, "description": "O1 reasoning, 200k context", "temperature_fixed": 1.0, "cost_per_1k_tokens": 0.015},
 
-        # Anthropic - Claude 4 generation (2025)
-        "claude-sonnet-4-5-20250929": {"provider": "anthropic", "class": AnthropicModel, "description": "Claude 4.5 Sonnet, Sep 2025, 200k context", "cost_per_1k_tokens": 0.009},
-        "claude-opus-4-1-20250805": {"provider": "anthropic", "class": AnthropicModel, "description": "Claude 4.1 Opus, Aug 2025, 200k context", "cost_per_1k_tokens": 0.045},
-        "claude-opus-4-20250514": {"provider": "anthropic", "class": AnthropicModel, "description": "Claude 4 Opus, May 2025, 200k context", "cost_per_1k_tokens": 0.045},
-        "claude-sonnet-4-20250514": {"provider": "anthropic", "class": AnthropicModel, "description": "Claude 4 Sonnet, 1M context", "cost_per_1k_tokens": 0.009},
-        "claude-3-7-sonnet-20250219": {"provider": "anthropic", "class": AnthropicModel, "description": "Claude 3.7 Sonnet, Feb 2025, 200k context", "cost_per_1k_tokens": 0.006},
+        # Anthropic - Claude 4.6 generation (2025-2026)
+        "claude-opus-4-6-20260204": {"provider": "anthropic", "class": AnthropicModel, "description": "Claude Opus 4.6, Feb 2026, 1M context", "cost_per_1k_tokens": 0.015},
+        "claude-sonnet-4-6-20260217": {"provider": "anthropic", "class": AnthropicModel, "description": "Claude Sonnet 4.6, Feb 2026, 1M context", "cost_per_1k_tokens": 0.009},
+        "claude-haiku-4-5-20251001": {"provider": "anthropic", "class": AnthropicModel, "description": "Claude Haiku 4.5, Oct 2025, 200k context", "cost_per_1k_tokens": 0.003},
+        "claude-sonnet-4-5-20250929": {"provider": "anthropic", "class": AnthropicModel, "description": "Claude Sonnet 4.5, Sep 2025, 200k context", "cost_per_1k_tokens": 0.009},
+        "claude-opus-4-1-20250805": {"provider": "anthropic", "class": AnthropicModel, "description": "Claude Opus 4.1, Aug 2025, 200k context", "cost_per_1k_tokens": 0.045},
+        "claude-sonnet-4-20250514": {"provider": "anthropic", "class": AnthropicModel, "description": "Claude Sonnet 4, 1M context", "cost_per_1k_tokens": 0.009},
         "claude-3-5-haiku-20241022": {"provider": "anthropic", "class": AnthropicModel, "description": "Claude 3.5 Haiku, Oct 2024, 200k context", "cost_per_1k_tokens": 0.001},
-        "claude-3-haiku-20240307": {"provider": "anthropic", "class": AnthropicModel, "description": "Claude 3 Haiku, Mar 2024, 200k context", "cost_per_1k_tokens": 0.0005},
         # Anthropic aliases (short names for convenience)
+        "claude-opus-4-6": {"provider": "anthropic", "class": AnthropicModel, "alias_for": "claude-opus-4-6-20260204", "description": "Alias for Claude Opus 4.6", "cost_per_1k_tokens": 0.015},
+        "claude-sonnet-4-6": {"provider": "anthropic", "class": AnthropicModel, "alias_for": "claude-sonnet-4-6-20260217", "description": "Alias for Claude Sonnet 4.6", "cost_per_1k_tokens": 0.009},
+        "claude-haiku-4-5": {"provider": "anthropic", "class": AnthropicModel, "alias_for": "claude-haiku-4-5-20251001", "description": "Alias for Claude Haiku 4.5", "cost_per_1k_tokens": 0.003},
         "claude-opus-4-1": {"provider": "anthropic", "class": AnthropicModel, "alias_for": "claude-opus-4-1-20250805", "description": "Alias for Claude Opus 4.1", "cost_per_1k_tokens": 0.045},
-        "claude-opus-4": {"provider": "anthropic", "class": AnthropicModel, "alias_for": "claude-opus-4-20250514", "description": "Alias for Claude Opus 4", "cost_per_1k_tokens": 0.045},
         "claude-sonnet-4-5": {"provider": "anthropic", "class": AnthropicModel, "alias_for": "claude-sonnet-4-5-20250929", "description": "Alias for Claude Sonnet 4.5", "cost_per_1k_tokens": 0.009},
         "claude-sonnet-4": {"provider": "anthropic", "class": AnthropicModel, "alias_for": "claude-sonnet-4-20250514", "description": "Alias for Claude Sonnet 4", "cost_per_1k_tokens": 0.009},
-        "claude-3-7-sonnet": {"provider": "anthropic", "class": AnthropicModel, "alias_for": "claude-3-7-sonnet-20250219", "description": "Alias for Claude 3.7 Sonnet", "cost_per_1k_tokens": 0.006},
         "claude-3-5-haiku": {"provider": "anthropic", "class": AnthropicModel, "alias_for": "claude-3-5-haiku-20241022", "description": "Alias for Claude 3.5 Haiku", "cost_per_1k_tokens": 0.001},
-        "claude-3-haiku": {"provider": "anthropic", "class": AnthropicModel, "alias_for": "claude-3-haiku-20240307", "description": "Alias for Claude 3 Haiku", "cost_per_1k_tokens": 0.0005},
 
-        # Google - Gemini 3 and 2.5 generation (2025-2026)
-        "gemini-3-pro-preview": {"provider": "google", "class": GoogleModel, "description": "Gemini 3 Pro Preview, multimodal, 2M context", "cost_per_1k_tokens": 0.004},
+        # Google - Gemini 3.1 and 2.5 generation (2025-2026)
+        "gemini-3.1-pro-preview": {"provider": "google", "class": GoogleModel, "description": "Gemini 3.1 Pro Preview, Feb 2026, 2M context", "cost_per_1k_tokens": 0.004},
         "gemini-3-flash-preview": {"provider": "google", "class": GoogleModel, "description": "Gemini 3 Flash Preview, 1M context", "cost_per_1k_tokens": 0.001},
-        "gemini-3-pro-image-preview": {"provider": "google", "class": GoogleModel, "description": "Gemini 3 Pro Image Preview, 2M context", "cost_per_1k_tokens": 0.004},
         "gemini-2.5-pro": {"provider": "google", "class": GoogleModel, "description": "Gemini 2.5 Pro, 2M context", "cost_per_1k_tokens": 0.003},
         "gemini-2.5-flash": {"provider": "google", "class": GoogleModel, "description": "Gemini 2.5 Flash, 1M context", "cost_per_1k_tokens": 0.0005},
-        "gemini-2.5-flash-preview-09-2025": {"provider": "google", "class": GoogleModel, "description": "Gemini 2.5 Flash Preview, Sep 2025, 1M context", "cost_per_1k_tokens": 0.0005},
         "gemini-2.5-flash-lite": {"provider": "google", "class": GoogleModel, "description": "Gemini 2.5 Flash Lite, 1M context", "cost_per_1k_tokens": 0.0002},
         "gemini-2.0-flash": {"provider": "google", "class": GoogleModel, "description": "Gemini 2.0 Flash, Jan 2025, 1M context", "cost_per_1k_tokens": 0.0003},
         "gemini-1.5-pro": {"provider": "google", "class": GoogleModel, "description": "Gemini 1.5 Pro, 2M context", "cost_per_1k_tokens": 0.002},
         # Google/Gemini aliases (short names for convenience)
-        "gemini-3-pro": {"provider": "google", "class": GoogleModel, "alias_for": "gemini-3-pro-preview", "description": "Alias for Gemini 3 Pro Preview", "cost_per_1k_tokens": 0.004},
+        "gemini-3-pro": {"provider": "google", "class": GoogleModel, "alias_for": "gemini-3.1-pro-preview", "description": "Alias for Gemini 3.1 Pro Preview", "cost_per_1k_tokens": 0.004},
         "gemini-3-flash": {"provider": "google", "class": GoogleModel, "alias_for": "gemini-3-flash-preview", "description": "Alias for Gemini 3 Flash Preview", "cost_per_1k_tokens": 0.001},
-        "gemini-3": {"provider": "google", "class": GoogleModel, "alias_for": "gemini-3-pro-preview", "description": "Alias for Gemini 3 Pro Preview", "cost_per_1k_tokens": 0.004},
+        "gemini-3": {"provider": "google", "class": GoogleModel, "alias_for": "gemini-3.1-pro-preview", "description": "Alias for Gemini 3.1 Pro Preview", "cost_per_1k_tokens": 0.004},
         "gemini-2.5": {"provider": "google", "class": GoogleModel, "alias_for": "gemini-2.5-pro", "description": "Alias for Gemini 2.5 Pro", "cost_per_1k_tokens": 0.003},
         "gemini-2": {"provider": "google", "class": GoogleModel, "alias_for": "gemini-2.0-flash", "description": "Alias for Gemini 2.0 Flash", "cost_per_1k_tokens": 0.0003},
         "gemini": {"provider": "google", "class": GoogleModel, "alias_for": "gemini-2.5-pro", "description": "Alias for Gemini 2.5 Pro (default)", "cost_per_1k_tokens": 0.003},
 
-        # Perplexity - Sonar generation (2025)
+        # Perplexity - Sonar generation (2025-2026)
         "sonar-pro": {"provider": "perplexity", "class": PerplexityModel, "description": "Sonar Pro, web search, 200k context", "cost_per_1k_tokens": 0.003},
         "sonar": {"provider": "perplexity", "class": PerplexityModel, "description": "Sonar, Llama 3.3 based, 128k context", "cost_per_1k_tokens": 0.001},
         "sonar-reasoning-pro": {"provider": "perplexity", "class": PerplexityModel, "description": "Sonar Reasoning Pro, 128k context", "cost_per_1k_tokens": 0.005},
-        "sonar-reasoning": {"provider": "perplexity", "class": PerplexityModel, "description": "Sonar Reasoning, 128k context", "cost_per_1k_tokens": 0.002},
         "sonar-deep-research": {"provider": "perplexity", "class": PerplexityModel, "description": "Sonar Deep Research, 128k context", "cost_per_1k_tokens": 0.008},
 
-        # DeepSeek - V3.2 and R1 (2025) - Very affordable pricing
-        "deepseek-chat": {"provider": "deepseek", "class": DeepSeekModel, "description": "DeepSeek V3.2, 64k context", "cost_per_1k_tokens": 0.00014},
-        "deepseek-reasoner": {"provider": "deepseek", "class": DeepSeekModel, "description": "DeepSeek R1, 64k context", "cost_per_1k_tokens": 0.00055},
+        # DeepSeek - V3.2 and R1 (2025-2026) - Very affordable pricing
+        "deepseek-chat": {"provider": "deepseek", "class": DeepSeekModel, "description": "DeepSeek V3.2, 128k context", "cost_per_1k_tokens": 0.00014},
+        "deepseek-reasoner": {"provider": "deepseek", "class": DeepSeekModel, "description": "DeepSeek Reasoner (R1), 128k context", "cost_per_1k_tokens": 0.00055},
 
         # Venice - Privacy-first AI (2025-2026)
-        # Note: Venice uses specific model names - check docs.venice.ai for current list
-        # Some models use prompt-based tool calling (injected into system prompt)
-        "venice-uncensored": {"provider": "venice", "class": VeniceModel, "description": "Venice Uncensored 1.1 (Dolphin), 32k context", "cost_per_1k_tokens": 0.0005},
+        "openai-gpt-54": {"provider": "venice", "class": VeniceModel, "description": "GPT-5.4 via Venice, 256k context", "cost_per_1k_tokens": 0.020},
+        "claude-opus-46": {"provider": "venice", "class": VeniceModel, "description": "Claude Opus 4.6 via Venice, 1M context", "cost_per_1k_tokens": 0.018},
+        "claude-sonnet-46": {"provider": "venice", "class": VeniceModel, "description": "Claude Sonnet 4.6 via Venice, 1M context", "cost_per_1k_tokens": 0.012},
+        "venice-uncensored": {"provider": "venice", "class": VeniceModel, "description": "Venice Uncensored 1.1, 32k context", "cost_per_1k_tokens": 0.0005},
         "llama-3.3-70b": {"provider": "venice", "class": VeniceModel, "description": "Llama 3.3 70B via Venice, 128k context", "cost_per_1k_tokens": 0.001},
         "llama-3.2-3b": {"provider": "venice", "class": VeniceModel, "description": "Llama 3.2 3B via Venice, 128k context", "cost_per_1k_tokens": 0.0002},
         "qwen3-235b-a22b-instruct-2507": {"provider": "venice", "class": VeniceModel, "description": "Qwen3 235B Instruct via Venice, 128k context", "cost_per_1k_tokens": 0.003},
         "qwen3-235b-a22b-thinking-2507": {"provider": "venice", "class": VeniceModel, "description": "Qwen3 235B Thinking via Venice, 128k context", "cost_per_1k_tokens": 0.003},
         "qwen3-next-80b": {"provider": "venice", "class": VeniceModel, "description": "Qwen3 Next 80B via Venice, 128k context", "cost_per_1k_tokens": 0.002},
         "qwen3-coder-480b-a35b-instruct": {"provider": "venice", "class": VeniceModel, "description": "Qwen3 Coder 480B via Venice, 128k context", "cost_per_1k_tokens": 0.004},
+        "qwen3.5-35b-a3b": {"provider": "venice", "class": VeniceModel, "description": "Qwen 3.5 35B via Venice, 128k context", "cost_per_1k_tokens": 0.001},
         "qwen3-4b": {"provider": "venice", "class": VeniceModel, "description": "Qwen3 4B via Venice, 32k context", "cost_per_1k_tokens": 0.0002},
         "mistral-31-24b": {"provider": "venice", "class": VeniceModel, "description": "Mistral 3.1 24B via Venice, 128k context", "cost_per_1k_tokens": 0.0008},
-        "claude-opus-45": {"provider": "venice", "class": VeniceModel, "description": "Claude Opus 4.5 via Venice, 200k context", "cost_per_1k_tokens": 0.050},
-        "openai-gpt-52": {"provider": "venice", "class": VeniceModel, "description": "GPT-5.2 via Venice, 256k context", "cost_per_1k_tokens": 0.018},
-        "openai-gpt-oss-120b": {"provider": "venice", "class": VeniceModel, "description": "OpenAI GPT OSS 120B via Venice, 128k context", "cost_per_1k_tokens": 0.002},
-        "venice/gemini-3-pro": {"provider": "venice", "class": VeniceModel, "description": "Gemini 3 Pro via Venice, 2M context", "cost_per_1k_tokens": 0.005},
-        "venice/gemini-3-flash": {"provider": "venice", "class": VeniceModel, "description": "Gemini 3 Flash via Venice, 1M context", "cost_per_1k_tokens": 0.002},
         "grok-41-fast": {"provider": "venice", "class": VeniceModel, "description": "Grok 4.1 via Venice, 128k context", "cost_per_1k_tokens": 0.010},
         "grok-code-fast-1": {"provider": "venice", "class": VeniceModel, "description": "Grok Code 1 via Venice, 128k context", "cost_per_1k_tokens": 0.008},
+        "glm-5": {"provider": "venice", "class": VeniceModel, "description": "GLM 5 via Venice, 128k context", "cost_per_1k_tokens": 0.002},
         "zai-org-glm-4.7": {"provider": "venice", "class": VeniceModel, "description": "GLM 4.7 via Venice, 128k context", "cost_per_1k_tokens": 0.002},
-        "kimi-k2-thinking": {"provider": "venice", "class": VeniceModel, "description": "Kimi K2 Thinking via Venice, 256k context, 1T MoE", "cost_per_1k_tokens": 0.003},
+        "kimi-k2-thinking": {"provider": "venice", "class": VeniceModel, "description": "Kimi K2 Thinking via Venice, 256k context", "cost_per_1k_tokens": 0.003},
+        "minimax-m25": {"provider": "venice", "class": VeniceModel, "description": "MiniMax M2.5 via Venice, 1M context", "cost_per_1k_tokens": 0.002},
         "minimax-m21": {"provider": "venice", "class": VeniceModel, "description": "MiniMax M2.1 via Venice, 1M context", "cost_per_1k_tokens": 0.002},
-        "deepseek-v3.2": {"provider": "venice", "class": VeniceModel, "description": "DeepSeek V3.2 via Venice, 64k context", "cost_per_1k_tokens": 0.0003},
+        "deepseek-v3.2": {"provider": "venice", "class": VeniceModel, "description": "DeepSeek V3.2 via Venice, 128k context", "cost_per_1k_tokens": 0.0003},
         "google-gemma-3-27b-it": {"provider": "venice", "class": VeniceModel, "description": "Gemma 3 27B via Venice, 128k context", "cost_per_1k_tokens": 0.0006},
         "hermes-3-llama-3.1-405b": {"provider": "venice", "class": VeniceModel, "description": "Hermes 3 Llama 405B via Venice, 128k context", "cost_per_1k_tokens": 0.003},
         # Legacy alias
@@ -395,12 +389,12 @@ class ModelRegistry:
 
         defaults = {
             "ollama": "deepseek-r1:8b",
-            "openai": "gpt-5.2",
-            "anthropic": "claude-sonnet-4-5-20250929",
+            "openai": "gpt-5.4",
+            "anthropic": "claude-sonnet-4-6-20260217",
             "google": "gemini-3-flash-preview",
             "perplexity": "sonar",
             "deepseek": "deepseek-chat",
-            "venice": "openai-gpt-52",
+            "venice": "openai-gpt-54",
             "nanogpt": "nanogpt/gpt-4o-mini",
         }
 
@@ -438,50 +432,49 @@ class ModelRegistry:
         # Model display name mappings
         label_map = {
             # OpenAI
-            "gpt-5.2": "GPT-5.2",  # No trailing space
-            "gpt-5.2-chat-latest": "GPT-5.2 Instant",
-            "gpt-5.2-codex": "GPT-5.2 Codex",
-            "gpt-5.1": "GPT-5.1",
-            "gpt-5.1-chat-latest": "GPT-5.1 Instant",
-            "gpt-5-turbo": "GPT-5 Turbo",
+            "gpt-5.4": "GPT-5.4",
+            "gpt-5.4-mini": "GPT-5.4 Mini",
+            "gpt-5.4-nano": "GPT-5.4 Nano",
+            "gpt-5.2": "GPT-5.2",
             "gpt-5": "GPT-5",
             "gpt-5-mini": "GPT-5 Mini",
             "gpt-4.1": "GPT-4.1",
             "gpt-4.1-mini": "GPT-4.1 Mini",
-            "o4": "GPT-O4",
-            "o4-mini": "GPT-O4 Mini",
-            "o3-mini": "GPT-O3 Mini",
-            "o1": "GPT-O1",
+            "o4-mini": "O4 Mini (Reasoning)",
+            "o3": "O3 (Reasoning)",
+            "o3-pro": "O3 Pro (Reasoning)",
+            "o3-mini": "O3 Mini (Reasoning)",
+            "o1": "O1 (Reasoning)",
             "gpt-4o": "GPT-4o",
             "gpt-4o-mini": "GPT-4o Mini",
             # Anthropic
+            "claude-opus-4-6-20260204": "Claude Opus 4.6",
+            "claude-sonnet-4-6-20260217": "Claude Sonnet 4.6",
+            "claude-haiku-4-5-20251001": "Claude Haiku 4.5",
             "claude-sonnet-4-5-20250929": "Claude Sonnet 4.5",
             "claude-opus-4-1-20250805": "Claude Opus 4.1",
-            "claude-opus-4-20250514": "Claude Opus 4",
             "claude-sonnet-4-20250514": "Claude Sonnet 4",
-            "claude-3-7-sonnet-20250219": "Claude 3.7 Sonnet",
             "claude-3-5-haiku-20241022": "Claude 3.5 Haiku",
-            "claude-3-haiku-20240307": "Claude 3 Haiku",
             # Google
-            "gemini-3-pro-preview": "Gemini 3 Pro",
+            "gemini-3.1-pro-preview": "Gemini 3.1 Pro",
             "gemini-3-flash-preview": "Gemini 3 Flash",
-            "gemini-3-pro-image-preview": "Gemini 3 Pro Vision",
             "gemini-2.5-pro": "Gemini 2.5 Pro",
             "gemini-2.5-flash": "Gemini 2.5 Flash",
-            "gemini-2.5-flash-preview-09-2025": "Gemini 2.5 Flash Preview",
             "gemini-2.5-flash-lite": "Gemini 2.5 Flash Lite",
             "gemini-2.0-flash": "Gemini 2.0 Flash",
             "gemini-1.5-pro": "Gemini 1.5 Pro",
             # Perplexity
-            "sonar": "Sonar (Fast)",
+            "sonar": "Sonar",
             "sonar-pro": "Sonar Pro",
-            "sonar-reasoning": "Sonar Reasoning",
             "sonar-reasoning-pro": "Sonar Reasoning Pro",
             "sonar-deep-research": "Sonar Deep Research",
             # DeepSeek
             "deepseek-chat": "DeepSeek Chat (V3.2)",
             "deepseek-reasoner": "DeepSeek Reasoner (R1)",
             # Venice
+            "openai-gpt-54": "GPT-5.4 (Venice)",
+            "claude-opus-46": "Claude Opus 4.6 (Venice)",
+            "claude-sonnet-46": "Claude Sonnet 4.6 (Venice)",
             "venice-uncensored": "Venice Uncensored",
             "llama-3.3-70b": "Llama 3.3 70B",
             "llama-3.2-3b": "Llama 3.2 3B",
@@ -489,17 +482,15 @@ class ModelRegistry:
             "qwen3-235b-a22b-thinking-2507": "Qwen3 235B Thinking",
             "qwen3-next-80b": "Qwen3 Next 80B",
             "qwen3-coder-480b-a35b-instruct": "Qwen3 Coder 480B",
+            "qwen3.5-35b-a3b": "Qwen 3.5 35B",
             "qwen3-4b": "Venice Small (Fast)",
             "mistral-31-24b": "Venice Medium",
-            "claude-opus-45": "Claude Opus 4.5 (Venice)",
-            "openai-gpt-52": "GPT-5.2 (Venice)",
-            "openai-gpt-oss-120b": "GPT OSS 120B (Venice)",
-            "venice/gemini-3-pro": "Gemini 3 Pro (Venice)",
-            "venice/gemini-3-flash": "Gemini 3 Flash (Venice)",
             "grok-41-fast": "Grok 4.1 Fast",
-            "grok-code-fast-1": "Grok Code Fast 1",
+            "grok-code-fast-1": "Grok Code Fast",
+            "glm-5": "GLM 5",
             "zai-org-glm-4.7": "GLM 4.7",
             "kimi-k2-thinking": "Kimi K2 Thinking",
+            "minimax-m25": "MiniMax M2.5",
             "minimax-m21": "MiniMax M2.1",
             "deepseek-v3.2": "DeepSeek V3.2",
             "google-gemma-3-27b-it": "Gemma 3 27B",
