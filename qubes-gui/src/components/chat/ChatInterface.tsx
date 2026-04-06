@@ -1335,8 +1335,10 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, all
               wakeToStreamTransitionRef.current = true;
               isWakeWordActiveRef.current = false;
               try { recognition.stop(); } catch (_) {}
+              // Null the ref so cleanup doesn't interfere
+              wakeWordRecognitionRef.current = null;
 
-              // Enter Stream Mode + send phrase
+              // Enter Stream Mode after wake word fully stops
               setTimeout(() => {
                 if (!isStreamModeRef.current && toggleStreamModeRef.current) {
                   toggleStreamModeRef.current();
@@ -1346,7 +1348,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, all
                     handleStreamSendRef.current?.(phrase);
                   }, 300);
                 }
-              }, 200);
+              }, 500);
             }, WAKE_PHRASE_DELAY),
           };
 
