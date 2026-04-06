@@ -159,6 +159,94 @@ def chunk_text_for_tts(text: str, max_chars: int = 4000) -> list[str]:
     return chunks if chunks else [text]
 
 
+# --- Streaming TTS utilities ---
+
+import re as _re
+import time as _time
+
+SENTENCE_BOUNDARY = _re.compile(r'(?<=[.!?])(?<!\.\.\.)(?<!\. \. \.)\s+|(?<=[.!?])(?<!\.\.\.)$')
+
+URL_PATTERN = _re.compile(r'https?://\S+|www\.\S+')
+
+ABBREVIATIONS = {
+    # Titles
+    'Mr.', 'Mrs.', 'Ms.', 'Dr.', 'Jr.', 'Sr.', 'Prof.', 'Rev.', 'Gen.', 'Gov.',
+    # Latin
+    'vs.', 'etc.', 'e.g.', 'i.e.', 'approx.', 'dept.', 'est.',
+    # Places & addresses
+    'St.', 'Ave.', 'Blvd.', 'Rd.', 'Ln.',
+    # Organizations
+    'Corp.', 'Inc.', 'Ltd.', 'Co.', 'Bros.',
+    # Measurements
+    'ft.', 'oz.', 'lb.', 'pt.', 'qt.',
+    # Other
+    'No.', 'vol.', 'Fig.', 'Ref.',
+    # Geographic / political
+    'U.S.', 'D.C.', 'U.K.', 'E.U.',
+    # Time
+    'a.m.', 'p.m.',
+}
+
+MIN_SENTENCE_LENGTH = 20
+MAX_SENTENCE_LENGTH = 500
+
+
+def extract_complete_sentences(buffer: str) -> tuple:
+    """Extract complete sentences from buffer for streaming TTS.
+
+    Returns (complete_sentences: list[str], remaining_buffer: str)
+
+    Handles abbreviations, URLs, ellipses, and run-on sentences.
+    """
+    sentences = []
+    remaining = buffer
+
+    while True:
+        match = SENTENCE_BOUNDARY.search(remaining)
+        if not match:
+            break
+
+        candidate = remaining[:match.end()].strip()
+
+        if len(candidate) < MIN_SENTENCE_LENGTH:
+            break
+
+        # Skip if the period is inside a URL
+        pre_match = remaining[:match.start()]
+        url_match = URL_PATTERN.search(pre_match)
+        if url_match and url_match.end() >= match.start():
+            break
+
+        is_abbreviation = any(
+            candidate.rstrip().endswith(abbr)
+            for abbr in ABBREVIATIONS
+        )
+        if is_abbreviation:
+            break
+
+        sentences.append(candidate)
+        remaining = remaining[match.end():]
+
+    # Force split for run-on sentences
+    if len(remaining) > MAX_SENTENCE_LENGTH:
+        split_point = max(
+            remaining.rfind(', ', 0, MAX_SENTENCE_LENGTH),
+            remaining.rfind('; ', 0, MAX_SENTENCE_LENGTH),
+            remaining.rfind(' — ', 0, MAX_SENTENCE_LENGTH),
+            remaining.rfind(': ', 0, MAX_SENTENCE_LENGTH),
+        )
+        if split_point > MIN_SENTENCE_LENGTH:
+            sentences.append(remaining[:split_point + 1].strip())
+            remaining = remaining[split_point + 1:].strip()
+
+    return sentences, remaining
+
+
+def clean_text_for_tts(text: str) -> str:
+    """Clean text for streaming TTS. Wraps clean_text_for_speech."""
+    return clean_text_for_speech(text)
+
+
 class AudioManager:
     """Unified audio manager with TTS/STT and fallback handling"""
 
@@ -230,6 +318,73 @@ class AudioManager:
             ),
             "qwen3_models_dir": _models_base / "qwen3-tts",
         }
+
+    async def generate_sentence_audio(
+        self,
+        text: str,
+        voice_model: str,
+        provider: str,
+        chunk_index: int,
+        custom_voice_config: dict = None,
+    ) -> Path:
+        """Generate TTS for a single sentence. Used by streaming pipeline.
+
+        Args:
+            text: Sentence text to synthesize
+            voice_model: Voice ID (e.g., "alloy", "Vivian")
+            provider: TTS provider name (e.g., "openai", "custom", "wsl2")
+            chunk_index: Sentence index in the stream (for file naming)
+            custom_voice_config: Pre-resolved custom voice config from gui_bridge
+
+        Returns:
+            Path to the generated audio file
+        """
+        from utils.paths import get_app_data_dir
+
+        audio_dir = (self.qube_data_dir / "audio") if self.qube_data_dir else get_app_data_dir() / "audio"
+        audio_dir.mkdir(parents=True, exist_ok=True)
+
+        # Custom voices route to WSL2 with full clone/design config
+        actual_provider = provider
+        if provider == "custom" and custom_voice_config:
+            actual_provider = "wsl2"
+
+        extension = "wav" if actual_provider in ("gemini", "wsl2", "qwen3", "kokoro") else "mp3"
+        filename = f"stream_{chunk_index}_{int(_time.time() * 1000)}.{extension}"
+        output_path = audio_dir / filename
+
+        if custom_voice_config:
+            voice_config = VoiceConfig(
+                provider=actual_provider,
+                voice_id=voice_model,
+                voice_mode=custom_voice_config.get("voice_mode", "cloned"),
+                clone_audio_path=custom_voice_config.get("clone_audio_path"),
+                clone_audio_text=custom_voice_config.get("clone_audio_text"),
+                voice_design_prompt=custom_voice_config.get("design_prompt"),
+                language=custom_voice_config.get("language", "en"),
+            )
+        else:
+            voice_config = VoiceConfig(provider=actual_provider, voice_id=voice_model)
+
+        tts_provider = self._get_tts_provider_with_fallback(actual_provider)
+        await tts_provider.synthesize_file(text, voice_config, output_path)
+        return output_path
+
+    def _get_tts_provider_with_fallback(self, provider: str):
+        """Get TTS provider, falling back for local providers if unavailable."""
+        tts_provider = self.tts_providers.get(provider)
+        if tts_provider:
+            return tts_provider
+
+        # Fallback chain for local TTS (mirrors generate_speech_file)
+        if provider in ("wsl2", "qwen3", "qwen"):
+            for fallback in ("kokoro", "qwen3"):
+                fb = self.tts_providers.get(fallback)
+                if fb:
+                    logger.warning("tts_provider_fallback", requested=provider, using=fallback)
+                    return fb
+
+        raise ValueError(f"TTS provider '{provider}' not available")
 
     def _init_tts_providers(self):
         """Initialize available TTS providers"""

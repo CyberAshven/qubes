@@ -36,11 +36,13 @@ interface ChatResponse {
   current_model?: string;
   current_provider?: string;
   error?: string;
+  streaming?: boolean;
+  total_chunks?: number;
 }
 
 export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQubeModelChange }) => {
   const { userId, password } = useAuth();
-  const { playTTS, audioElement } = useAudio();
+  const { playTTS, audioElement, stopAudio, startStreamingPlayback, resetStreamingState, isPlaying, currentSentence } = useAudio();
   const { invalidateCache, loadChainState, startWatching, stopWatching } = useChainState();
   const { getMessages, addMessage, clearMessages, getUploadedFiles, addUploadedFile, removeUploadedFile, clearUploadedFiles } = useChatMessages();
   const currentTab = useQubeSelection(state => state.currentTab);
@@ -51,7 +53,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
   const [error, setError] = useState<string | null>(null);
   const [failedMessage, setFailedMessage] = useState<string | null>(null); // Store message for retry
   const [lastResponseText, setLastResponseText] = useState<string>('');
-  const [pendingResponse, setPendingResponse] = useState<{ qubeName: string; content: string; timestamp?: number; blockNumber?: number } | null>(null);
+  const [pendingResponse, setPendingResponse] = useState<{ qubeName: string; content: string; timestamp?: number; blockNumber?: number; streaming?: boolean } | null>(null);
   const [activeTypewriterMessageId, setActiveTypewriterMessageId] = useState<string | null>(null);
   const [currentModel, setCurrentModel] = useState<string | null>(null); // Local model state for header updates
   const [isRecording, setIsRecording] = useState(false);
@@ -85,6 +87,28 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const emojiPickerRef = useRef<HTMLDivElement>(null);
   const processedModelSwitches = useRef<Set<number>>(new Set()); // Track which switch_model actions we've already processed
+
+  // Streaming TTS state
+  const [streamingText, setStreamingText] = useState('');
+  const [isStreaming, setIsStreaming] = useState(false);
+  const streamingMessageIdRef = useRef<string | null>(null);
+  const streamingTextRef = useRef('');  // Accumulator (no re-render per token)
+  const flushIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const currentSentenceRef = useRef<string | null>(null);  // For interval to read (avoids stale closure)
+  const streamingBlockNumberRef = useRef<number | undefined>(undefined);  // Block number from invoke response
+
+  // Stream Mode (continuous voice conversation)
+  const [isStreamMode, setIsStreamMode] = useState(false);
+  const [isListening, setIsListening] = useState(false);
+  const [interimTranscript, setInterimTranscript] = useState('');
+  const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const originalHandlersRef = useRef<{ onresult: any; onend: any; onerror: any } | null>(null);
+  const isStreamModeRef = useRef(false);
+  const isPlayingRef = useRef(false);
+  const isLoadingRef = useRef(false);
+  const [silenceTimeoutMs, setSilenceTimeoutMs] = useState(() =>
+    parseInt(localStorage.getItem('stream_silence_timeout_ms') || '1500')
+  );
   // Track when we first saw each tool call (by timestamp) for minimum display time
   const toolCallFirstSeen = useRef<Map<number, number>>(new Map()); // tool timestamp -> Date.now() when first seen
   const MIN_TOOL_DISPLAY_MS = 1000; // Show tool indicator for at least 1 second
@@ -403,6 +427,404 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
 
     return cleaned;
   };
+
+  // --- Streaming TTS helpers ---
+
+  // Completed sentences accumulated (shown permanently in the bubble)
+  const completedSentencesRef = useRef('');
+  // Previous sentence (to detect transitions)
+  const prevSentenceRef = useRef<string | null>(null);
+  // Full text saved from tts-stream-end (for finalization after all audio plays)
+  const streamEndFullTextRef = useRef<string | null>(null);
+
+  const startStreamingText = useCallback(() => {
+    streamingTextRef.current = '';
+    completedSentencesRef.current = '';
+    prevSentenceRef.current = null;
+    streamEndFullTextRef.current = null;
+    setStreamingText('');
+    setIsStreaming(true);
+  }, []);
+
+  const stopStreamingText = useCallback(() => {
+    if (flushIntervalRef.current) {
+      clearInterval(flushIntervalRef.current);
+      flushIntervalRef.current = null;
+    }
+  }, []);
+
+  // Audio-synced text reveal: character-by-character using audioElement.currentTime
+  // Reads ALL values from refs (not closure-captured state) to avoid stale reads.
+  useEffect(() => {
+    if (!isStreaming) return;
+
+    if (flushIntervalRef.current) {
+      clearInterval(flushIntervalRef.current);
+    }
+
+    flushIntervalRef.current = setInterval(() => {
+      const sentence = currentSentenceRef.current;  // Read from ref, not state
+      const audio = audioElement;  // audioElement is stable (set once at mount)
+
+      // When sentence changes, the previous one is now fully spoken
+      if (sentence !== prevSentenceRef.current) {
+        if (prevSentenceRef.current) {
+          completedSentencesRef.current += prevSentenceRef.current + ' ';
+        }
+        prevSentenceRef.current = sentence;
+      }
+
+      if (!sentence || !audio) {
+        // No audio playing — just show completed sentences
+        if (completedSentencesRef.current) {
+          setStreamingText(completedSentencesRef.current);
+          scrollToBottom();
+        }
+        return;
+      }
+
+      // Reveal current sentence's text based on audio playback progress
+      const duration = audio.duration || 5;
+      const currentTime = audio.currentTime || 0;
+      const progress = Math.min(currentTime / duration, 1);
+      const charsToShow = Math.ceil(sentence.length * progress);
+      const partialSentence = sentence.substring(0, charsToShow);
+
+      setStreamingText(completedSentencesRef.current + partialSentence);
+      scrollToBottom();
+    }, 50);
+
+    return () => {
+      if (flushIntervalRef.current) {
+        clearInterval(flushIntervalRef.current);
+        flushIntervalRef.current = null;
+      }
+    };
+  }, [isStreaming, audioElement, scrollToBottom]);
+
+  // Finalize message when ALL audio has finished playing (not when stream-end fires)
+  useEffect(() => {
+    if (!isStreaming) return;
+    // All audio done: isPlaying is false AND we have the full text from stream-end
+    if (!isPlaying && streamEndFullTextRef.current) {
+      const fullText = streamEndFullTextRef.current;
+      const messageId = streamingMessageIdRef.current;
+
+      // Add finalized message FIRST, then hide streaming bubble in same batch.
+      // Don't clear streamingText beforehand — avoids empty→full flash.
+      if (messageId && selectedQubes.length > 0) {
+        const currentQube = selectedQubes[0];
+        addMessage(currentQube.qube_id, {
+          id: messageId,
+          sender: 'qube' as const,
+          qubeName: currentQube.name,
+          content: cleanContentForDisplay(fullText),
+          timestamp: new Date(),
+          blockNumber: streamingBlockNumberRef.current,
+        });
+        streamingBlockNumberRef.current = undefined;
+      }
+
+      // NOW clean up streaming state (bubble hides in same render as message appears)
+      stopStreamingText();
+      setStreamingText('');
+      setIsStreaming(false);
+      streamingMessageIdRef.current = null;
+      streamEndFullTextRef.current = null;
+      completedSentencesRef.current = '';
+      prevSentenceRef.current = null;
+
+      // Stabilize scroll after DOM swap (streaming bubble → finalized message)
+      setTimeout(() => scrollToBottom(), 50);
+    }
+  }, [isStreaming, isPlaying, selectedQubes, addMessage, stopStreamingText, scrollToBottom]);
+
+
+  // Keep refs in sync with state (for stable closures in intervals/handlers)
+  useEffect(() => { isStreamModeRef.current = isStreamMode; }, [isStreamMode]);
+  useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
+  useEffect(() => { isLoadingRef.current = isLoading; }, [isLoading]);
+  useEffect(() => { currentSentenceRef.current = currentSentence; }, [currentSentence]);
+  const silenceTimeoutRef = useRef(silenceTimeoutMs);
+  useEffect(() => { silenceTimeoutRef.current = silenceTimeoutMs; }, [silenceTimeoutMs]);
+
+  // --- Stream Mode (continuous voice conversation) ---
+
+  const handleStreamSend = useCallback(async (text: string) => {
+    if (!text.trim() || !userId || !password || selectedQubes.length === 0) return;
+    const currentQube = selectedQubes[0];
+
+    // Add user message to chat
+    addMessage(currentQube.qube_id, {
+      id: Date.now().toString(),
+      sender: 'user' as const,
+      content: text,
+      timestamp: new Date(),
+    });
+
+    // Clear silence timer (prevent double-send)
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = null;
+    }
+
+    // Send via streaming command
+    setIsLoading(true);
+    startStreamingText();
+    streamingMessageIdRef.current = (Date.now() + 1).toString();
+    startStreamingPlayback();
+
+    try {
+      const response = await invoke<ChatResponse>('send_message_streaming', {
+        userId, qubeId: currentQube.qube_id,
+        message: text, password,
+      });
+
+      // Set pending response for model change detection etc.
+      if (response.success && response.response) {
+        // Save block number for message finalization
+        const blockNum = response.block_number !== undefined && response.block_number !== null
+          ? Number(response.block_number) : undefined;
+        streamingBlockNumberRef.current = blockNum;
+
+        setPendingResponse({
+          qubeName: response.qube_name || currentQube.name,
+          content: response.response,
+          timestamp: response.timestamp ? Number(response.timestamp) : undefined,
+          blockNumber: blockNum,
+          streaming: true,
+        });
+        setLastResponseText(cleanContentForDisplay(response.response));
+
+        if (response.current_model) {
+          setCurrentModel(response.current_model);
+          emit('qube-model-changed', {
+            qubeId: currentQube.qube_id,
+            newModel: response.current_model,
+            newProvider: response.current_provider,
+          });
+        }
+      }
+    } catch (err) {
+      console.error('[StreamMode] Send failed:', err);
+      setError('Stream Mode send failed. Please try again.');
+    } finally {
+      setIsLoading(false);
+      isSendingRef.current = false;
+    }
+  }, [userId, password, selectedQubes, addMessage, startStreamingText, startStreamingPlayback]);
+
+  const startListening = useCallback(() => {
+    const recognition = recognitionRef.current;
+    if (!recognition) return;
+
+    // Save original handlers before overriding
+    if (!originalHandlersRef.current) {
+      originalHandlersRef.current = {
+        onresult: recognition.onresult,
+        onend: recognition.onend,
+        onerror: recognition.onerror,
+      };
+    }
+
+    recognition.continuous = true;
+    recognition.interimResults = true;
+
+    recognition.onresult = (event: any) => {
+      // Accumulate ALL results (finalized + interim) to preserve text across pauses
+      let finalTranscript = '';
+      let interimText = '';
+      for (let i = 0; i < event.results.length; i++) {
+        if (event.results[i].isFinal) {
+          finalTranscript += event.results[i][0].transcript;
+        } else {
+          interimText += event.results[i][0].transcript;
+        }
+      }
+      const transcript = applySttAliases((finalTranscript + interimText).trim());
+
+      // Mic is muted during playback — discard any recognition results
+      // (use spacebar to interrupt instead)
+      if (isPlayingRef.current || isLoadingRef.current) {
+        return;
+      }
+
+      setInterimTranscript(transcript);
+
+      // Reset silence timer
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = setTimeout(() => {
+        if (transcript.trim()) {
+          handleStreamSend(transcript.trim());
+          setInterimTranscript('');
+        }
+      }, silenceTimeoutRef.current);
+    };
+
+    // Auto-restart: Web Speech API can silently stop
+    // BUT: don't restart if qube is responding (mic is intentionally muted)
+    recognition.onend = () => {
+      setIsListening(false);
+      if (isStreamModeRef.current) {
+        setTimeout(() => {
+          // Only restart if still in stream mode AND qube is NOT responding
+          if (isStreamModeRef.current && !isPlayingRef.current && !isLoadingRef.current) {
+            try {
+              recognition.start();
+              setIsListening(true);
+            } catch (_) {
+              // Already started or other error
+            }
+          }
+        }, 300);
+      }
+    };
+
+    recognition.onerror = (event: any) => {
+      console.error('[StreamMode] Recognition error:', event.error);
+      if (event.error !== 'no-speech' && event.error !== 'aborted') {
+        setIsListening(false);
+      }
+    };
+
+    try {
+      recognition.start();
+      setIsListening(true);
+    } catch (err) {
+      console.error('[StreamMode] Failed to start listening:', err);
+    }
+  }, [handleStreamSend, stopAudio, resetStreamingState, stopStreamingText, userId, password, selectedQubes]);
+
+  const toggleStreamMode = useCallback(() => {
+    if (isStreamMode) {
+      // EXIT Stream Mode
+      const recognition = recognitionRef.current;
+      if (recognition) {
+        recognition.stop();
+        // Restore original handlers
+        if (originalHandlersRef.current) {
+          recognition.onresult = originalHandlersRef.current.onresult;
+          recognition.onend = originalHandlersRef.current.onend;
+          recognition.onerror = originalHandlersRef.current.onerror;
+          originalHandlersRef.current = null;
+        }
+      }
+      setIsStreamMode(false);
+      setIsListening(false);
+      setInterimTranscript('');
+      if (silenceTimerRef.current) {
+        clearTimeout(silenceTimerRef.current);
+        silenceTimerRef.current = null;
+      }
+    } else {
+      // ENTER Stream Mode
+      if (!recognitionRef.current) {
+        setError('Speech recognition not supported in this browser');
+        return;
+      }
+      // Stop any existing recording first
+      if (isRecording) {
+        recognitionRef.current.stop();
+        setIsRecording(false);
+      }
+      setIsStreamMode(true);
+      startListening();
+    }
+  }, [isStreamMode, isRecording, startListening]);
+
+  // Keyboard shortcuts for Stream Mode
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Ctrl+M: toggle Stream Mode
+      if (e.ctrlKey && e.key === 'm') {
+        e.preventDefault();
+        toggleStreamMode();
+        return;
+      }
+
+      // Spacebar: interrupt qube while it's responding in Stream Mode
+      // Only when not focused on an input/textarea
+      if (e.key === ' ' && isStreamModeRef.current &&
+          (isPlayingRef.current || isLoadingRef.current) &&
+          !(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement)) {
+        e.preventDefault();
+
+        // Clear refs FIRST — prevents finalization useEffect from firing
+        // during Zustand's synchronous re-render from addMessage below
+        const spokenText = (completedSentencesRef.current || '') + (currentSentenceRef.current || '');
+        const messageId = streamingMessageIdRef.current;
+        streamEndFullTextRef.current = null;
+        streamingMessageIdRef.current = null;
+        completedSentencesRef.current = '';
+        prevSentenceRef.current = null;
+        currentSentenceRef.current = null;
+
+        // Stop everything
+        stopAudio();
+        invoke('cancel_stream', { userId, qubeId: selectedQubes[0]?.qube_id, password }).catch(() => {});
+        resetStreamingState();
+        stopStreamingText();
+        setStreamingText('');
+        setIsStreaming(false);
+        setIsLoading(false);
+        isSendingRef.current = false;
+
+        // NOW add the partial message (after all refs are cleared)
+        // Include a blockNumber so tool calls from this turn associate correctly
+        // Use the lowest (most negative) session block number as reference
+        if (spokenText.trim() && selectedQubes[0]) {
+          const sessionBlocks = completedActionBlocks
+            .filter(b => b.fromSession)
+            .map(b => b.blockNumber);
+          const refBlockNumber = sessionBlocks.length > 0
+            ? Math.min(...sessionBlocks) - 1  // One below the lowest action block
+            : undefined;
+
+          addMessage(selectedQubes[0].qube_id, {
+            id: messageId || Date.now().toString(),
+            sender: 'qube' as const,
+            qubeName: selectedQubes[0].name,
+            content: cleanContentForDisplay(spokenText) + '\n\n*[interrupted]*',
+            timestamp: new Date(),
+            blockNumber: refBlockNumber,
+          });
+        }
+
+        // Resume listening immediately
+        setTimeout(() => {
+          if (isStreamModeRef.current) {
+            startListening();
+          }
+        }, 300);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [toggleStreamMode, stopAudio, resetStreamingState, stopStreamingText,
+      addMessage, startListening, userId, password, selectedQubes]);
+
+  // Mute mic during playback, resume when qube finishes
+  useEffect(() => {
+    if (!isStreamMode) return;
+
+    if (isPlaying || isLoading || isStreaming) {
+      // Qube is responding — mute mic (use spacebar to interrupt)
+      if (isListening && recognitionRef.current) {
+        try { recognitionRef.current.stop(); } catch (_) {}
+        setIsListening(false);
+      }
+    } else {
+      // Qube finished — resume listening
+      if (!isListening) {
+        const timer = setTimeout(() => {
+          if (isStreamModeRef.current && !isPlayingRef.current && !isLoadingRef.current) {
+            startListening();
+          }
+        }, 200);
+        return () => clearTimeout(timer);
+      }
+    }
+  }, [isStreamMode, isLoading, isPlaying, isListening, isStreaming, startListening]);
 
   // Helper function to clean and truncate text for TTS
   // Removes non-speakable elements and respects OpenAI's 4096 char limit
@@ -734,15 +1156,40 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
   // STT name aliases for common misrecognitions
   // Keys are regex patterns (case-insensitive), values are replacements
   const applySttAliases = (text: string): string => {
-    const aliases: Record<string, string> = {
-      '\\bAlf\\b': 'Alph',
-    };
+    // Order matters: multi-word patterns first, then single-word replacements
+    const aliases: [string, string][] = [
+      // Websites (must run BEFORE cube→qube to catch "cube dot cash")
+      ['\\bcube\\.cash\\b', 'qube.cash'],
+      ['\\bqube\\.cash\\b', 'qube.cash'],
+      ['\\bcube dot cash\\b', 'qube.cash'],
+      ['\\bqube dot cash\\b', 'qube.cash'],
+      ['\\bQ dot cash\\b', 'qube.cash'],
+      // Multi-word terms
+      ['\\bQ universe\\b', 'Qniverse'],
+      ['\\bCuniverse\\b', 'Qniverse'],
+      ['\\bkuniverse\\b', 'Qniverse'],
+      // Single-word replacements (after multi-word)
+      ['\\bAlf\\b', 'Alph'],
+      ['\\bcubes\\b', 'qubes'],
+      ['\\bCubes\\b', 'Qubes'],
+      ['\\bcube\\b', 'qube'],
+      ['\\bCube\\b', 'Qube'],
+    ];
     let result = text;
-    for (const [pattern, replacement] of Object.entries(aliases)) {
+    for (const [pattern, replacement] of aliases) {
       result = result.replace(new RegExp(pattern, 'gi'), replacement);
     }
     return result;
   };
+
+  // Listen for stream settings changes from Settings tab
+  useEffect(() => {
+    const handleSettingsChanged = () => {
+      setSilenceTimeoutMs(parseInt(localStorage.getItem('stream_silence_timeout_ms') || '1500'));
+    };
+    window.addEventListener('stream-settings-changed', handleSettingsChanged);
+    return () => window.removeEventListener('stream-settings-changed', handleSettingsChanged);
+  }, []);
 
   // Initialize speech recognition
   useEffect(() => {
@@ -784,6 +1231,38 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
     };
   }, []);
 
+  // --- Streaming TTS event listeners ---
+
+  useEffect(() => {
+    let mounted = true;
+
+    const unlistenToken = listen<{ qube_id: string; token: string }>('tts-text-token', (event) => {
+      if (!mounted || !isStreaming) return;
+      streamingTextRef.current += event.payload.token;
+
+      // Clear loading indicator on first token
+      if (isLoading) {
+        setIsLoading(false);
+        setProcessingStage(null);
+      }
+    });
+
+    const unlistenEnd = listen<{ qube_id: string; full_text: string; total_chunks: number; error?: string }>('tts-stream-end', (event) => {
+      if (!mounted || !isStreaming) return;
+
+      // DON'T finalize here — audio may still be playing.
+      // Just save the full text. The finalization useEffect will
+      // add the message when isPlaying becomes false.
+      streamEndFullTextRef.current = event.payload.full_text;
+    });
+
+    return () => {
+      mounted = false;
+      unlistenToken.then(u => u());
+      unlistenEnd.then(u => u());
+    };
+  }, [isStreaming, isLoading, selectedQubes, addMessage, stopStreamingText]);
+
   // Construct avatar path from chain folder
   const getAvatarPath = (qube: Qube): string => {
     // Priority 1: IPFS URL from backend
@@ -810,6 +1289,42 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
         chatClearedAtRef.current = Date.now();
         setError(null);
         setLastResponseText('');
+        // Streaming cleanup
+        stopAudio();
+        resetStreamingState();
+        stopStreamingText();
+        setStreamingText('');
+        setIsStreaming(false);
+        streamingMessageIdRef.current = null;
+        setActiveTypewriterMessageId(null);
+        pendingTypewriterRef.current = null;
+        setIsLoading(false);
+        isSendingRef.current = false;
+        setProcessingStage(null);
+        setIsGeneratingTTS(false);
+        // Exit Stream Mode if active
+        if (isStreamMode) {
+          recognitionRef.current?.stop();
+          if (originalHandlersRef.current) {
+            const recognition = recognitionRef.current;
+            if (recognition) {
+              recognition.onresult = originalHandlersRef.current.onresult;
+              recognition.onend = originalHandlersRef.current.onend;
+              recognition.onerror = originalHandlersRef.current.onerror;
+            }
+            originalHandlersRef.current = null;
+          }
+          setIsStreamMode(false);
+          setIsListening(false);
+          setInterimTranscript('');
+          if (silenceTimerRef.current) {
+            clearTimeout(silenceTimerRef.current);
+            silenceTimerRef.current = null;
+          }
+        }
+        if (isStreaming) {
+          invoke('cancel_stream', { userId, qubeId: selectedQubes[0].qube_id, password }).catch(() => {});
+        }
       }
     };
 
@@ -912,11 +1427,75 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
     return message;
   };
 
+  // Send message via streaming or non-streaming path
+  const sendToBackend = async (preparedMessage: string): Promise<ChatResponse> => {
+    const currentQube = selectedQubes[0];
+    // Use streaming when TTS is enabled (streaming_tts_enabled defaults to true)
+    if (currentQube.tts_enabled && (currentQube as any).streaming_tts_enabled !== false) {
+      // Streaming path
+      startStreamingText();
+      streamingMessageIdRef.current = (Date.now() + 1).toString();
+      startStreamingPlayback();
+
+      const response = await invoke<ChatResponse>('send_message_streaming', {
+        userId, qubeId: currentQube.qube_id,
+        message: preparedMessage, password,
+      });
+      return response;
+    } else {
+      // Non-streaming path: existing behavior unchanged
+      return await invoke<ChatResponse>('send_message', {
+        userId: userId,
+        qubeId: currentQube.qube_id,
+        message: preparedMessage,
+        password: password
+      });
+    }
+  };
+
   const handleSend = async () => {
     // Guard against double-sending (e.g., double-click, Enter key repeat)
     // useRef is checked FIRST because React state closures can be stale
     // when multiple keypress events fire before a re-render
     if (isSendingRef.current || isLoading) return;
+
+    // If streaming is active, interrupt and save partial response first
+    if (isStreaming) {
+      const spokenText = (completedSentencesRef.current || '') + (currentSentenceRef.current || '');
+      const messageId = streamingMessageIdRef.current;
+      streamEndFullTextRef.current = null;
+      streamingMessageIdRef.current = null;
+      completedSentencesRef.current = '';
+      prevSentenceRef.current = null;
+      currentSentenceRef.current = null;
+
+      stopAudio();
+      invoke('cancel_stream', { userId, qubeId: selectedQubes[0]?.qube_id, password }).catch(() => {});
+      resetStreamingState();
+      stopStreamingText();
+      setStreamingText('');
+      setIsStreaming(false);
+      streamingBlockNumberRef.current = undefined;
+
+      if (spokenText.trim() && selectedQubes[0]) {
+        const sessionBlocks = completedActionBlocks
+          .filter(b => b.fromSession)
+          .map(b => b.blockNumber);
+        const refBlockNumber = sessionBlocks.length > 0
+          ? Math.min(...sessionBlocks) - 1
+          : undefined;
+
+        addMessage(selectedQubes[0].qube_id, {
+          id: messageId || Date.now().toString(),
+          sender: 'qube' as const,
+          qubeName: selectedQubes[0].name,
+          content: cleanContentForDisplay(spokenText) + '\n\n*[interrupted]*',
+          timestamp: new Date(),
+          blockNumber: refBlockNumber,
+        });
+      }
+    }
+
     isSendingRef.current = true;
 
     if ((!inputValue.trim() && uploadedFiles.length === 0) || selectedQubes.length === 0 || !userId) {
@@ -1037,12 +1616,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
           // Prepare message for IPC (writes to temp file if >100KB)
           const preparedMessage = await prepareMessageForIPC(fullMessage);
 
-          const textResponse = await invoke<ChatResponse>('send_message', {
-            userId: userId,
-            qubeId: selectedQubes[0].qube_id,
-            message: preparedMessage,
-            password: password
-          });
+          const textResponse = await sendToBackend(preparedMessage);
 
 
           if (textResponse.success && textResponse.response) {
@@ -1056,6 +1630,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
               content: combinedResponse,
               timestamp: textResponse.timestamp ? Number(textResponse.timestamp) : undefined,
               blockNumber: textResponse.block_number ? Number(textResponse.block_number) : undefined,
+              streaming: textResponse.streaming,
             });
             setLastResponseText(cleanContentForDisplay(combinedResponse));
 
@@ -1086,23 +1661,17 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
         // Prepare message for IPC (writes to temp file if >100KB)
         const preparedMessage = await prepareMessageForIPC(messageToSend);
 
-        const response = await invoke<ChatResponse>('send_message', {
-          userId: userId,
-          qubeId: selectedQubes[0].qube_id,
-          message: preparedMessage,
-          password: password
-        });
+        const response = await sendToBackend(preparedMessage);
 
         if (response.success && response.response) {
           setPendingResponse({
             qubeName: response.qube_name || selectedQubes[0].name,
             content: response.response,
             timestamp: response.timestamp ? Number(response.timestamp) : undefined,
-            // block_number is the authoritative sequence for ACTION block association
-            // Note: session blocks have negative numbers, so we can't use truthiness check
             blockNumber: response.block_number !== undefined && response.block_number !== null
               ? Number(response.block_number)
               : undefined,
+            streaming: response.streaming,
           });
           setLastResponseText(cleanContentForDisplay(response.response));
 
@@ -1277,6 +1846,16 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
     const generateAndPlayTTS = async () => {
       // Skip if no response text or pending response
       if (!lastResponseText || !pendingResponse || !userId || !password || selectedQubes.length === 0) {
+        return;
+      }
+
+      // Streaming path: TTS already handled by backend pipeline
+      if (pendingResponse?.streaming) {
+        setPendingResponse(null);
+        setIsLoading(false);
+        isSendingRef.current = false;
+        setProcessingStage(null);
+        processingResponseRef.current = null;
         return;
       }
 
@@ -1833,8 +2412,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
               </React.Fragment>
             ))}
 
-            {/* Current turn tool calls (shown during loading AND TTS generation) */}
-            {(isLoading || isGeneratingTTS) && selectedQubes.length > 0 && (() => {
+            {/* Current turn tool calls (shown during loading, TTS generation, AND streaming) */}
+            {(isLoading || isGeneratingTTS || isStreaming) && selectedQubes.length > 0 && (() => {
               // Get the block number of the last qube message
               let lastQubeBlockNumber: number | null = null;
               for (let i = messages.length - 1; i >= 0; i--) {
@@ -2068,6 +2647,31 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
               );
             })()}
 
+            {/* Streaming message — text grows as tokens arrive */}
+            {isStreaming && streamingText && selectedQubes.length > 0 && (
+              <div className="flex justify-start">
+                <div className="rounded-lg px-4 py-3 max-w-[85%] border-2" style={{
+                  backgroundColor: 'var(--bg-tertiary)',
+                  borderColor: selectedQubes[0].favorite_color,
+                }}>
+                  <div className="flex items-start gap-3">
+                    <img
+                      src={getAvatarPath(selectedQubes[0])}
+                      alt={selectedQubes[0].name}
+                      className="w-8 h-8 rounded-full object-cover border-2 flex-shrink-0 mt-0.5"
+                      style={{ borderColor: selectedQubes[0].favorite_color }}
+                      onError={(e) => {
+                        (e.target as HTMLImageElement).style.display = 'none';
+                      }}
+                    />
+                    <div className="text-sm text-text-primary whitespace-pre-wrap break-words">
+                      {renderMessageContent(streamingText)}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {isLoading && !isGeneratingTTS && activeToolCalls.length === 0 && selectedQubes.length > 0 && (
               <div className="flex justify-start">
                 <div className="rounded-lg px-4 py-2 border-2" style={{
@@ -2163,11 +2767,42 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
                 </div>
               </div>
             )}
+            {/* Stream Mode: show user's interim transcript */}
+            {isStreamMode && interimTranscript && (
+              <div className="flex justify-end">
+                <div className="rounded-lg px-4 py-2 max-w-[85%] opacity-70 italic" style={{
+                  backgroundColor: 'var(--accent-primary)',
+                  color: 'white',
+                }}>
+                  {interimTranscript}...
+                </div>
+              </div>
+            )}
+
             <div ref={messagesEndRef} />
           </div>
         )}
         </div>
       </GlassCard>
+
+      {/* Stream Mode indicator */}
+      {isStreamMode && selectedQubes.length > 0 && (
+        <div className="flex justify-center -mt-2 mb-1">
+          <div className="bg-accent-primary/10 border border-accent-primary/30 rounded-full px-4 py-1 text-xs text-accent-primary flex items-center gap-2">
+            <span className={`w-2 h-2 rounded-full ${
+              isListening ? 'bg-accent-danger animate-pulse'
+              : (isPlaying || isLoading || isStreaming) ? 'bg-yellow-500'
+              : 'bg-text-secondary'
+            }`} />
+            Stream Mode {
+              isListening ? '— listening'
+              : (isPlaying || isLoading || isStreaming) ? '— mic paused'
+              : '— waiting'
+            } ({selectedQubes[0].name})
+            <span className="text-text-secondary ml-1">{(isPlaying || isStreaming) ? 'Space to interrupt' : 'Ctrl+M to stop'}</span>
+          </div>
+        </div>
+      )}
 
       {/* Input Area */}
       <GlassCard className="p-4">
@@ -2213,38 +2848,56 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
           </div>
         )}
 
-        <div className="flex gap-2">
-          <button
-            onClick={toggleRecording}
-            className={`px-3 py-2 rounded-lg transition-all ${
-              isRecording
-                ? 'bg-accent-danger/20 text-accent-danger animate-pulse'
-                : 'bg-bg-secondary text-text-secondary hover:text-accent-primary hover:bg-bg-tertiary'
-            }`}
-            title={isRecording ? 'Stop recording' : 'Start voice input'}
-            disabled={isLoading}
-          >
-            {isRecording ? '🔴' : '🎤'}
-          </button>
+        <div className="flex items-center gap-1.5">
+          {/* Voice input button */}
+          {recognitionRef.current && !isStreamMode && (
+            <button
+              onClick={toggleRecording}
+              className={`w-10 h-10 flex-shrink-0 flex items-center justify-center rounded-lg border transition-all ${
+                isRecording
+                  ? 'bg-accent-danger/20 border-accent-danger/50 text-accent-danger animate-pulse'
+                  : 'bg-bg-secondary border-accent-primary/30 text-text-secondary hover:text-accent-primary hover:border-accent-primary/50'
+              }`}
+              title={isRecording ? 'Stop recording' : 'Start voice input'}
+              disabled={isLoading}
+            >
+              <span className="text-xl leading-none">{isRecording ? '🔴' : '🎤'}</span>
+            </button>
+          )}
+          {/* Stream Mode button (Ctrl+M) */}
+          {recognitionRef.current && selectedQubes[0]?.tts_enabled && (
+            <button
+              onClick={toggleStreamMode}
+              className={`w-10 h-10 flex-shrink-0 flex items-center justify-center rounded-lg border transition-all ${
+                isStreamMode
+                  ? 'bg-accent-danger/20 border-accent-danger/50 text-accent-danger animate-pulse'
+                  : 'bg-bg-secondary border-accent-primary/30 text-text-secondary hover:text-accent-primary hover:border-accent-primary/50'
+              }`}
+              title={isStreamMode ? 'Stop Stream Mode (Ctrl+M)' : 'Stream Mode — voice conversation (Ctrl+M)'}
+              disabled={isLoading && !isStreamMode}
+            >
+              <span className="text-xl leading-none">{isStreamMode ? '⏹' : '🎙'}</span>
+            </button>
+          )}
           <button
             onClick={handleFileUpload}
-            className="px-3 py-2 rounded-lg transition-all bg-bg-secondary text-text-secondary hover:text-accent-primary hover:bg-bg-tertiary"
+            className="w-10 h-10 flex-shrink-0 flex items-center justify-center rounded-lg border border-accent-primary/30 transition-all bg-bg-secondary text-text-secondary hover:text-accent-primary hover:border-accent-primary/50"
             title="Upload file or image"
             disabled={isLoading}
           >
-            📎
+            <span className="text-xl leading-none">📎</span>
           </button>
           <button
             onClick={() => setShowEmojiPicker(!showEmojiPicker)}
-            className={`px-3 py-2 rounded-lg transition-all ${
+            className={`w-10 h-10 flex-shrink-0 flex items-center justify-center rounded-lg border transition-all ${
               showEmojiPicker
-                ? 'bg-accent-primary/20 text-accent-primary'
-                : 'bg-bg-secondary text-text-secondary hover:text-accent-primary hover:bg-bg-tertiary'
+                ? 'bg-accent-primary/20 border-accent-primary/50 text-accent-primary'
+                : 'bg-bg-secondary border-accent-primary/30 text-text-secondary hover:text-accent-primary hover:border-accent-primary/50'
             }`}
             title="Insert emoji"
             disabled={isLoading}
           >
-            😊
+            <span className="text-xl leading-none">😊</span>
           </button>
           {showEmojiPicker && (
             <div className="absolute bottom-20 left-24 z-50" ref={emojiPickerRef}>
@@ -2264,7 +2917,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
             onChange={(e) => setInputValue(e.target.value)}
             onKeyPress={handleKeyPress}
             placeholder={`Message ${selectedQubes[0].name}...`}
-            className="flex-1 bg-bg-secondary text-text-primary placeholder-text-tertiary rounded-lg px-4 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-accent-primary/50"
+            className="flex-1 bg-bg-secondary text-text-primary placeholder-text-tertiary rounded-lg border border-accent-primary/30 px-4 py-2 resize-none focus:outline-none focus:border-accent-primary/50 focus:shadow-glow-primary transition-all"
             rows={1}
             disabled={isLoading}
           />

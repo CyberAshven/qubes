@@ -5,10 +5,11 @@ Main reasoning loop for Qube AI agents with tool calling support.
 Matches documentation in docs/09_AI_Integration_Tool_Calling.md Section 6.3
 """
 
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Callable
 from datetime import datetime, timezone
 import json
 import asyncio
+import re
 
 from ai.model_registry import ModelRegistry
 from ai.providers.base import AIModelInterface, ModelResponse
@@ -129,6 +130,9 @@ class QubeReasoner:
         # Flag to indicate internal calls (e.g., self-evaluation) that shouldn't update runtime model
         self._is_internal_call = False
 
+        # Streaming TTS support
+        self._cancel_streaming = False
+
         logger.info("reasoner_initialized", qube_id=qube.qube_id, fallback_enabled=enable_fallback)
 
     def get_dynamic_parameters(self, task_type: Optional[str] = None) -> Dict[str, Any]:
@@ -202,13 +206,36 @@ class QubeReasoner:
 
         return params
 
+    async def _emit_response_tokens(self, text: str, token_callback: Callable) -> bool:
+        """Emit a complete response word-by-word via token_callback.
+
+        Throttle is set so text paces with TTS generation — first sentence
+        should complete ~1-2s before its TTS finishes, giving audio time to
+        start while text is still appearing.
+
+        Returns False if cancelled mid-stream, True if completed.
+        """
+        tokens = re.findall(r'\S+\s*', text)
+        for i, token in enumerate(tokens):
+            if self._cancel_streaming:
+                return False
+            await token_callback(token)
+            # Emit first 10 words fast (get first sentence to TTS quickly),
+            # then slow down to pace with TTS generation
+            if i < 10:
+                await asyncio.sleep(0.02)   # 20ms — fast start
+            else:
+                await asyncio.sleep(0.06)   # 60ms — pace with TTS
+        return True
+
     async def process_input(
         self,
         input_message: str,
         sender_id: str = "human",
         model_name: Optional[str] = None,
         max_iterations: int = 10,
-        temperature: float = 0.7
+        temperature: float = 0.7,
+        token_callback: Optional[Callable] = None,
     ) -> str:
         """
         Main reasoning loop
@@ -773,6 +800,12 @@ class QubeReasoner:
                             })
 
                         if final_retry.content:
+                            if token_callback:
+                                self._cancel_streaming = False
+                                try:
+                                    await self._emit_response_tokens(final_retry.content, token_callback)
+                                except Exception as e:
+                                    logger.warning("token_emission_failed", error=str(e))
                             return final_retry.content
                         else:
                             # Include diagnostic info in error message
@@ -1046,6 +1079,13 @@ class QubeReasoner:
                         "provider": provider,
                         "is_internal": self._is_internal_call
                     })
+
+                if token_callback and response.content:
+                    self._cancel_streaming = False
+                    try:
+                        await self._emit_response_tokens(response.content, token_callback)
+                    except Exception as e:
+                        logger.warning("token_emission_failed", error=str(e))
 
                 return final_response
 

@@ -52,16 +52,18 @@ class ModelRegistry:
         "o1": {"provider": "openai", "class": OpenAIModel, "description": "O1 reasoning, 200k context", "temperature_fixed": 1.0, "cost_per_1k_tokens": 0.015},
 
         # Anthropic - Claude 4.6 generation (2025-2026)
-        "claude-opus-4-6-20260204": {"provider": "anthropic", "class": AnthropicModel, "description": "Claude Opus 4.6, Feb 2026, 1M context", "cost_per_1k_tokens": 0.015},
-        "claude-sonnet-4-6-20260217": {"provider": "anthropic", "class": AnthropicModel, "description": "Claude Sonnet 4.6, Feb 2026, 1M context", "cost_per_1k_tokens": 0.009},
+        # Use short model IDs (Anthropic API resolves to latest snapshot automatically)
+        "claude-opus-4-6": {"provider": "anthropic", "class": AnthropicModel, "description": "Claude Opus 4.6, 1M context", "cost_per_1k_tokens": 0.015},
+        "claude-sonnet-4-6": {"provider": "anthropic", "class": AnthropicModel, "description": "Claude Sonnet 4.6, 1M context", "cost_per_1k_tokens": 0.009},
         "claude-haiku-4-5-20251001": {"provider": "anthropic", "class": AnthropicModel, "description": "Claude Haiku 4.5, Oct 2025, 200k context", "cost_per_1k_tokens": 0.003},
         "claude-sonnet-4-5-20250929": {"provider": "anthropic", "class": AnthropicModel, "description": "Claude Sonnet 4.5, Sep 2025, 200k context", "cost_per_1k_tokens": 0.009},
         "claude-opus-4-1-20250805": {"provider": "anthropic", "class": AnthropicModel, "description": "Claude Opus 4.1, Aug 2025, 200k context", "cost_per_1k_tokens": 0.045},
         "claude-sonnet-4-20250514": {"provider": "anthropic", "class": AnthropicModel, "description": "Claude Sonnet 4, 1M context", "cost_per_1k_tokens": 0.009},
         "claude-3-5-haiku-20241022": {"provider": "anthropic", "class": AnthropicModel, "description": "Claude 3.5 Haiku, Oct 2024, 200k context", "cost_per_1k_tokens": 0.001},
         # Anthropic aliases (short names for convenience)
-        "claude-opus-4-6": {"provider": "anthropic", "class": AnthropicModel, "alias_for": "claude-opus-4-6-20260204", "description": "Alias for Claude Opus 4.6", "cost_per_1k_tokens": 0.015},
-        "claude-sonnet-4-6": {"provider": "anthropic", "class": AnthropicModel, "alias_for": "claude-sonnet-4-6-20260217", "description": "Alias for Claude Sonnet 4.6", "cost_per_1k_tokens": 0.009},
+        # Legacy dated aliases for 4.6 models (resolve to short IDs)
+        "claude-opus-4-6-20260204": {"provider": "anthropic", "class": AnthropicModel, "alias_for": "claude-opus-4-6", "description": "Alias for Claude Opus 4.6", "cost_per_1k_tokens": 0.015},
+        "claude-sonnet-4-6-20260217": {"provider": "anthropic", "class": AnthropicModel, "alias_for": "claude-sonnet-4-6", "description": "Alias for Claude Sonnet 4.6", "cost_per_1k_tokens": 0.009},
         "claude-haiku-4-5": {"provider": "anthropic", "class": AnthropicModel, "alias_for": "claude-haiku-4-5-20251001", "description": "Alias for Claude Haiku 4.5", "cost_per_1k_tokens": 0.003},
         "claude-opus-4-1": {"provider": "anthropic", "class": AnthropicModel, "alias_for": "claude-opus-4-1-20250805", "description": "Alias for Claude Opus 4.1", "cost_per_1k_tokens": 0.045},
         "claude-sonnet-4-5": {"provider": "anthropic", "class": AnthropicModel, "alias_for": "claude-sonnet-4-5-20250929", "description": "Alias for Claude Sonnet 4.5", "cost_per_1k_tokens": 0.009},
@@ -390,7 +392,7 @@ class ModelRegistry:
         defaults = {
             "ollama": "deepseek-r1:8b",
             "openai": "gpt-5.4",
-            "anthropic": "claude-sonnet-4-6-20260217",
+            "anthropic": "claude-sonnet-4-6",
             "google": "gemini-3-flash-preview",
             "perplexity": "sonar",
             "deepseek": "deepseek-chat",
@@ -448,8 +450,8 @@ class ModelRegistry:
             "gpt-4o": "GPT-4o",
             "gpt-4o-mini": "GPT-4o Mini",
             # Anthropic
-            "claude-opus-4-6-20260204": "Claude Opus 4.6",
-            "claude-sonnet-4-6-20260217": "Claude Sonnet 4.6",
+            "claude-opus-4-6": "Claude Opus 4.6",
+            "claude-sonnet-4-6": "Claude Sonnet 4.6",
             "claude-haiku-4-5-20251001": "Claude Haiku 4.5",
             "claude-sonnet-4-5-20250929": "Claude Sonnet 4.5",
             "claude-opus-4-1-20250805": "Claude Opus 4.1",

@@ -33,8 +33,8 @@ class AnthropicModel(AIModelInterface):
     }
 
     CONTEXT_WINDOWS = {
-        "claude-opus-4-6-20260204": 1000000,
-        "claude-sonnet-4-6-20260217": 1000000,
+        "claude-opus-4-6": 1000000,
+        "claude-sonnet-4-6": 1000000,
         "claude-sonnet-4-5-20250929": 200000,
         "claude-opus-4-1-20250805": 200000,
         "claude-sonnet-4-20250514": 1000000,
@@ -55,8 +55,8 @@ class AnthropicModel(AIModelInterface):
         try:
             from anthropic import AsyncAnthropic
 
-            # Set 60-second timeout to prevent indefinite hangs
-            client = AsyncAnthropic(api_key=self.api_key, timeout=60.0)
+            # Timeout: 120s for large models (Opus 4.6 with 1M context can be slow)
+            client = AsyncAnthropic(api_key=self.api_key, timeout=120.0)
 
             # Anthropic requires max_tokens
             if not max_tokens:
@@ -245,8 +245,11 @@ class AnthropicModel(AIModelInterface):
                     cause=e
                 )
             elif "timeout" in error_msg or "timed out" in error_msg:
-                raise ModelAPIError(
-                    f"Request timed out. Anthropic may be experiencing high load. Try again. "
+                # Raise as ModelNotAvailableError (NOT retryable) — retrying a timeout
+                # just wastes another 120s. Let the user know immediately.
+                raise ModelNotAvailableError(
+                    f"Request to '{self.model_name}' timed out after 120s. "
+                    f"This model may be too slow or Anthropic is under heavy load. Try again or use a faster model. "
                     f"Original error: {error_str}",
                     context={"model": self.model_name, "error_type": "timeout"},
                     cause=e
@@ -285,8 +288,8 @@ class AnthropicModel(AIModelInterface):
         try:
             from anthropic import AsyncAnthropic
 
-            # Set 60-second timeout to prevent indefinite hangs
-            client = AsyncAnthropic(api_key=self.api_key, timeout=60.0)
+            # Timeout: 120s for large models (Opus 4.6 with 1M context can be slow)
+            client = AsyncAnthropic(api_key=self.api_key, timeout=120.0)
 
             if not max_tokens:
                 max_tokens = 4096

@@ -77,6 +77,43 @@ interface MemoryConfig {
   relationship_weight: number;
 }
 
+// Small self-contained component with its own state so the slider updates visually
+const SilenceTimeoutSlider: React.FC = () => {
+  const [value, setValue] = useState(() =>
+    parseInt(localStorage.getItem('stream_silence_timeout_ms') || '1500')
+  );
+
+  return (
+    <>
+      <div className="flex items-center gap-3">
+        <label className="text-xs text-text-tertiary whitespace-nowrap">
+          Silence timeout
+        </label>
+        <input
+          type="range"
+          min="1000"
+          max="10000"
+          step="500"
+          value={value}
+          onChange={(e) => {
+            const ms = parseInt(e.target.value);
+            setValue(ms);
+            localStorage.setItem('stream_silence_timeout_ms', String(ms));
+            window.dispatchEvent(new CustomEvent('stream-settings-changed'));
+          }}
+          className="flex-1 accent-accent-primary"
+        />
+        <span className="text-xs text-text-tertiary w-12 text-right">
+          {(value / 1000).toFixed(1)}s
+        </span>
+      </div>
+      <p className="text-[10px] text-text-tertiary mt-1">
+        How long to wait after you stop speaking before auto-sending in Stream Mode.
+      </p>
+    </>
+  );
+};
+
 export const SettingsTab: React.FC = () => {
   const { userId, password, autoLockEnabled, autoLockTimeout, setAutoLockSettings } = useAuth();
   const { invalidateCache, loadChainState } = useChainState();
@@ -1668,14 +1705,14 @@ export const SettingsTab: React.FC = () => {
               )}
             </GlassCard>
 
-            {/* Custom Voices */}
+            {/* Voices */}
             <GlassCard className="p-4 mt-4">
               <button
                 onClick={() => togglePanel('voiceSettings')}
                 className="w-full flex items-center justify-between text-left"
               >
                 <h2 className="text-lg font-display text-text-primary">
-                  🎤 Custom Voices
+                  🎤 Voices
                 </h2>
                 <span className={`text-text-tertiary transition-transform ${collapsedPanels.voiceSettings ? '' : 'rotate-180'}`}>
                   ▼
@@ -1684,7 +1721,17 @@ export const SettingsTab: React.FC = () => {
 
               {!collapsedPanels.voiceSettings && (
                 <>
-                  <p className="text-[10px] text-text-tertiary mb-3 mt-2">
+                  {/* Stream Mode Settings */}
+                  <div className="mb-4 mt-3">
+                    <h3 className="text-sm font-semibold text-text-secondary mb-2">Stream Mode</h3>
+                    <SilenceTimeoutSlider />
+                  </div>
+
+                  <hr className="border-border-primary mb-3" />
+
+                  {/* Custom Voices */}
+                  <h3 className="text-sm font-semibold text-text-secondary mb-2">Custom Voices</h3>
+                  <p className="text-[10px] text-text-tertiary mb-3">
                     Create unique voices for your Qubes using AI voice design, cloning, or presets.
                   </p>
 

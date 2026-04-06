@@ -24,8 +24,11 @@ interface AudioContextType {
   prefetchTTS: (userId: string, qubeId: string, text: string, password: string) => Promise<string>;
   playPrefetchedTTS: (blobUrl: string, text: string) => Promise<void>;
   stopAudio: () => void;
+  startStreamingPlayback: () => void;
+  resetStreamingState: () => void;
   isPlaying: boolean;
   audioElement: AudioPlaybackElement | null;
+  currentSentence: string | null;
   totalChunks: number;
   currentChunk: number;
   isLastChunk: boolean;
@@ -149,6 +152,16 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [currentChunk, setCurrentChunk] = React.useState(1);
   const [isLastChunk, setIsLastChunk] = React.useState(true);
 
+  // Streaming TTS: ordered chunk map guarantees playback order
+  const streamingChunkMap = useRef<Map<number, string | null>>(new Map());
+  const streamingSentenceMap = useRef<Map<number, string>>(new Map());  // chunk_index → sentence text
+  const nextExpectedChunk = useRef(1);
+  const isStreamingActive = useRef(false);
+  const streamingDone = useRef(false);
+  const isPlayingChunk = useRef(false);  // Guard against concurrent playback
+  // Current sentence being spoken (for text-audio sync)
+  const [currentSentence, setCurrentSentence] = React.useState<string | null>(null);
+
   const clearPlaybackTimeout = () => {
     if (playbackTimeoutRef.current) {
       clearTimeout(playbackTimeoutRef.current);
@@ -164,6 +177,72 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setCurrentChunk(1);
     setIsLastChunk(true);
   };
+
+  const resetStreamingState = useCallback(() => {
+    streamingChunkMap.current.clear();
+    streamingSentenceMap.current.clear();
+    nextExpectedChunk.current = 1;
+    isStreamingActive.current = false;
+    streamingDone.current = false;
+    isPlayingChunk.current = false;
+    setCurrentSentence(null);
+  }, []);
+
+  const startStreamingPlayback = useCallback(() => {
+    resetStreamingState();
+    isStreamingActive.current = true;
+  }, [resetStreamingState]);
+
+  const playNextStreamingChunk = useCallback(async () => {
+    // Guard: prevent concurrent playback
+    if (isPlayingChunk.current) return;
+
+    const chunkIndex = nextExpectedChunk.current;
+    const path = streamingChunkMap.current.get(chunkIndex);
+
+    if (path === undefined) {
+      // Chunk not arrived yet
+      if (streamingDone.current) {
+        setIsPlaying(false);
+        isPlayingChunk.current = false;
+        resetStreamingState();
+      }
+      // Otherwise, wait — tts-audio-ready listener will call us
+      return;
+    }
+
+    // Advance past this chunk
+    nextExpectedChunk.current = chunkIndex + 1;
+    streamingChunkMap.current.delete(chunkIndex);
+
+    if (path === null) {
+      // Error/skipped chunk — advance to next
+      playNextStreamingChunk();
+      return;
+    }
+
+    isPlayingChunk.current = true;
+
+    try {
+      // Set the sentence being spoken (for text-audio sync in ChatInterface)
+      const sentence = streamingSentenceMap.current.get(chunkIndex) || null;
+      setCurrentSentence(sentence);
+      streamingSentenceMap.current.delete(chunkIndex);
+
+      setIsPlaying(true);
+      const player = playerRef.current;
+      if (!player) return;
+      player.reset();
+      const result = await invoke<NativePlayResult>('play_audio_native', { filePath: path });
+      player.setDuration(result.duration);
+      player.startPlayback();
+      startPlaybackTimeout(result.duration);
+    } catch (err) {
+      console.error('[AudioContext] Streaming chunk playback failed:', err);
+      isPlayingChunk.current = false;
+      playNextStreamingChunk();
+    }
+  }, [resetStreamingState]);
 
   // Safety timeout: if audio-playback-ended is never emitted (player crash, thread panic),
   // auto-recover after duration + 10 seconds to prevent permanently stuck "playing" state.
@@ -219,6 +298,14 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       const player = playerRef.current;
       if (!player) return;
 
+      // Streaming mode: play next from ordered chunk map
+      if (isStreamingActive.current || streamingChunkMap.current.size > 0) {
+        isPlayingChunk.current = false;  // Previous chunk done — allow next
+        playNextStreamingChunk();
+        return;
+      }
+
+      // Non-streaming mode: existing sequential chunk logic
       const nextChunkIndex = currentChunkIndexRef.current + 1;
       if (nextChunkIndex < chunkPathsRef.current.length) {
         // Play next chunk
@@ -247,12 +334,63 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       unlistenRef.current = unlisten;
     });
 
+    // Listen for streaming TTS audio chunks
+    let unlistenAudioReady: UnlistenFn | null = null;
+    listen<{
+      qube_id: string;
+      audio_path?: string;
+      chunk_index: number;
+      is_final: boolean;
+      error?: boolean;
+      sentence_text?: string;
+    }>('tts-audio-ready', (event) => {
+      if (!mounted) return;
+      const { audio_path, chunk_index, is_final, error, sentence_text } = event.payload;
+
+      streamingChunkMap.current.set(
+        chunk_index,
+        error ? null : (audio_path ?? null)
+      );
+
+      // Store sentence text for audio-synced text reveal
+      if (sentence_text) {
+        streamingSentenceMap.current.set(chunk_index, sentence_text);
+      }
+
+      if (is_final) {
+        streamingDone.current = true;
+      }
+
+      // If we're waiting for this chunk, start/resume playback
+      if (chunk_index === nextExpectedChunk.current) {
+        playNextStreamingChunk();
+      }
+    }).then(u => { unlistenAudioReady = u; });
+
+    // Listen for stream-end
+    let unlistenStreamEnd: UnlistenFn | null = null;
+    listen<{
+      qube_id: string;
+      total_chunks: number;
+      full_text: string;
+    }>('tts-stream-end', (event) => {
+      if (!mounted) return;
+      streamingDone.current = true;
+      // If nothing is playing and queue is empty, clean up
+      if (streamingChunkMap.current.size === 0 && !isStreamingActive.current) {
+        resetStreamingState();
+      }
+    }).then(u => { unlistenStreamEnd = u; });
+
     return () => {
       mounted = false;
       if (unlistenRef.current) {
         unlistenRef.current();
       }
+      if (unlistenAudioReady) unlistenAudioReady();
+      if (unlistenStreamEnd) unlistenStreamEnd();
       resetChunkState();
+      resetStreamingState();
     };
   }, []);
 
@@ -375,8 +513,11 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     prefetchTTS,
     playPrefetchedTTS,
     stopAudio,
+    startStreamingPlayback,
+    resetStreamingState,
     isPlaying,
     audioElement,
+    currentSentence,
     totalChunks,
     currentChunk,
     isLastChunk,

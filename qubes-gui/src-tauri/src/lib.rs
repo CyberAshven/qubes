@@ -590,6 +590,9 @@ struct ChatResponse {
     current_model: Option<String>,
     current_provider: Option<String>,
     error: Option<String>,
+    // Streaming TTS fields (None for non-streaming responses)
+    streaming: Option<bool>,
+    total_chunks: Option<i64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -2188,6 +2191,34 @@ async fn send_message(app_handle: AppHandle, user_id: String, qube_id: String, m
         .map_err(|e| format!("Failed to parse send-message response: {}", e))?;
 
     Ok(chat_response)
+}
+
+#[tauri::command]
+async fn send_message_streaming(app_handle: AppHandle, user_id: String, qube_id: String, message: String, password: String) -> Result<ChatResponse, String> {
+    check_rate_limit("send_message")?;
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let args = vec![user_id, qube_id, message];
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
+
+    let result = sidecar_execute_with_retry("send-message-streaming", args, secrets, Some(&app_handle), Some(300)).await?;
+
+    let chat_response: ChatResponse = serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse send-message-streaming response: {}", e))?;
+
+    Ok(chat_response)
+}
+
+#[tauri::command]
+async fn cancel_stream(app_handle: AppHandle, user_id: String, qube_id: String, password: String) -> Result<serde_json::Value, String> {
+    let args = vec![user_id, qube_id];
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
+
+    let result = sidecar_execute_with_retry("cancel-stream", args, secrets, Some(&app_handle), Some(10)).await?;
+    Ok(result)
 }
 
 #[tauri::command]
@@ -7845,6 +7876,8 @@ pub fn run() {
             save_cropped_avatar,
             list_pending_registrations,
             send_message,
+            send_message_streaming,
+            cancel_stream,
             generate_speech,
             get_audio_base64,
             play_audio_native,

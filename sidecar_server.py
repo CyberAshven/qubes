@@ -103,6 +103,8 @@ POSITIONAL_ARG_NAMES = {
     "discard-last-block": ["user_id", "qube_id"],
     # Chat
     "send-message": ["user_id", "qube_id", "message"],
+    "send-message-streaming": ["user_id", "qube_id", "message"],
+    "cancel-stream": ["user_id", "qube_id"],
     # Voice / TTS
     "generate-speech": ["user_id", "qube_id", "text"],
     "get-voice-settings": ["user_id", "qube_id"],
@@ -879,6 +881,38 @@ class SidecarServer:
     # Special command handlers (need bridge but non-standard dispatch)
     # Signature: async def _handle_<command_underscored>(self, bridge, params, secrets, request_id)
     # ====================================================================
+
+    # --- Streaming TTS ---
+
+    async def _handle_send_message_streaming(self, bridge, params, secrets, request_id):
+        """Send message with streaming TTS — emits events as sentences complete."""
+        qube_id = params["qube_id"]
+        message = params.get("message", "")
+
+        async def stream_callback(event_type, data):
+            await self.send_stream(request_id, event_type, data)
+
+        result = await bridge.send_message_streaming(
+            qube_id=qube_id,
+            message=message,
+            password=secrets.get("password"),
+            stream_callback=stream_callback,
+        )
+        return result
+
+    async def _handle_cancel_stream(self, bridge, params, secrets, request_id):
+        """Cancel an in-progress streaming response."""
+        qube_id = params["qube_id"]
+        # 1. Set cancellation flag on the reasoner (stops token emission loop)
+        qube = bridge.orchestrator.qubes.get(qube_id)
+        if qube and qube.reasoner:
+            qube.reasoner._cancel_streaming = True
+        # 2. Cancel in-flight TTS tasks (stops wasted API calls)
+        active_tasks = bridge._active_tts_tasks.get(qube_id, [])
+        for idx, task in active_tasks:
+            if not task.done():
+                task.cancel()
+        return {"success": True}
 
     # --- Sessions ---
 

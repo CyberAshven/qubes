@@ -5,7 +5,7 @@ Updated to match documentation exactly
 """
 
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Callable
 from cryptography.hazmat.primitives.asymmetric import ec
 from datetime import datetime
 
@@ -1124,7 +1124,8 @@ class Qube:
         message: str,
         sender_id: str = "human",
         model: Optional[str] = None,
-        action_blocks: Optional[list] = None
+        action_blocks: Optional[list] = None,
+        token_callback: Optional[Callable] = None,
     ) -> str:
         """
         Process incoming message with AI reasoning
@@ -1134,6 +1135,7 @@ class Qube:
             sender_id: Who sent the message
             model: Optional model override
             action_blocks: Optional list of ACTION blocks to add before AI processing
+            token_callback: Optional async callback for streaming TTS token emission
 
         Returns:
             AI response
@@ -1207,7 +1209,8 @@ class Qube:
         response = await self.reasoner.process_input(
             input_message=message,
             sender_id=sender_id,
-            model_name=model
+            model_name=model,
+            token_callback=token_callback,
         )
 
         # Extract usage data from reasoner for block metadata

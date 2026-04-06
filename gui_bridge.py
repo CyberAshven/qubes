@@ -309,6 +309,9 @@ class GUIBridge:
         self.orchestrator = UserOrchestrator(user_id=user_id)
         # Store background task references to prevent garbage collection
         self._background_tasks: set = set()
+        # Streaming TTS support
+        self._streaming_locks: Dict[str, asyncio.Lock] = {}
+        self._active_tts_tasks: Dict[str, list] = {}
 
     def _get_connections_file(self, qube_id: str) -> Path:
         """
@@ -1230,6 +1233,303 @@ class GUIBridge:
                 "success": False,
                 "error": str(e)
             }
+
+    # --- Shared post-processing helpers (used by send_message and send_message_streaming) ---
+
+    def _get_latest_response_block(self, qube) -> tuple:
+        """Get timestamp and block_number of most recent qube_to_human MESSAGE block."""
+        response_timestamp = None
+        response_block_number = None
+        if qube.current_session:
+            for block in reversed(qube.current_session.session_blocks):
+                if block.block_type == 'MESSAGE':
+                    content = block.content if isinstance(block.content, dict) else {}
+                    if content.get('message_type') == 'qube_to_human':
+                        response_timestamp = block.timestamp
+                        response_block_number = block.block_number
+                        break
+        return response_timestamp, response_block_number
+
+    def _record_relationship_interaction(self, qube, response_text: str):
+        """Record relationship interaction if applicable."""
+        if not response_text:
+            return
+        try:
+            user_rel = qube.relationships.storage.get_relationship(self.orchestrator.user_id)
+            if not user_rel:
+                user_rel = qube.relationships.create_relationship(
+                    entity_id=self.orchestrator.user_id,
+                    entity_type="human",
+                    entity_name=self.orchestrator.user_id,
+                    has_met=True
+                )
+            qube.relationships.record_message(
+                entity_id=self.orchestrator.user_id,
+                is_outgoing=False,
+                auto_create=True
+            )
+            user_rel = qube.relationships.get_relationship(self.orchestrator.user_id)
+            if user_rel:
+                progressed = qube.relationships.progression_manager.check_and_progress(
+                    user_rel,
+                    trust_profile=None,
+                    qube_id=qube.qube_id
+                )
+                if progressed:
+                    logger.info(f"Relationship progressed: {self.orchestrator.user_id} -> {user_rel.relationship_status}")
+        except Exception as e:
+            logger.warning(f"Failed to record relationship: {e}")
+
+    def _get_current_model_info(self, qube) -> tuple:
+        """Get current model and provider from chain_state."""
+        current_model = qube.chain_state.get_current_model() if qube.chain_state else getattr(qube, 'current_ai_model', None) or qube.genesis_block.ai_model
+        runtime = qube.chain_state.state.get("runtime", {}) if qube.chain_state else {}
+        current_provider = runtime.get("current_provider") or qube.genesis_block.ai_provider
+        return current_model, current_provider
+
+    def _resolve_voice_config(self, qube) -> tuple:
+        """Resolve voice model, provider, and custom voice config for TTS.
+
+        Returns (provider, voice_name, custom_voice_config_or_None)
+        """
+        voice_model_str = None
+        if qube.chain_state:
+            voice_model_str = qube.chain_state.get_voice_model()
+        if not voice_model_str:
+            voice_model_str = getattr(qube.genesis_block, 'voice_model', 'openai:alloy')
+        if not voice_model_str:
+            voice_model_str = 'openai:alloy'
+
+        if ':' in voice_model_str:
+            provider, voice_name = voice_model_str.split(':', 1)
+        else:
+            provider = 'openai'
+            voice_name = voice_model_str
+
+        # Pre-resolve custom voice config
+        custom_voice_config = None
+        if provider == "custom":
+            try:
+                from config.user_preferences import UserPreferencesManager
+                from utils.paths import get_user_data_dir
+                if qube.data_dir:
+                    user_id = qube.data_dir.parent.parent.name
+                    user_data_dir = get_user_data_dir(user_id)
+                    prefs_manager = UserPreferencesManager(user_data_dir)
+                    voice_library = prefs_manager.get_voice_library()
+                    if voice_name in voice_library:
+                        voice_entry = voice_library[voice_name]
+                        custom_voice_config = {
+                            "voice_mode": "cloned" if voice_entry.voice_type == "cloned" else "designed",
+                            "clone_audio_path": voice_entry.clone_audio_path,
+                            "clone_audio_text": voice_entry.clone_audio_text,
+                            "design_prompt": voice_entry.design_prompt,
+                            "language": voice_entry.language,
+                        }
+            except Exception as e:
+                logger.warning(f"Failed to resolve custom voice: {e}")
+
+        return provider, voice_name, custom_voice_config
+
+    # --- Streaming TTS ---
+
+    async def send_message_streaming(
+        self, qube_id: str, message: str, password: str = None,
+        stream_callback=None,
+    ) -> Dict[str, Any]:
+        """Send message with streaming TTS generation.
+
+        Delegates to process_message with a token callback that buffers
+        sentences and fires concurrent TTS generation tasks.
+        """
+        if qube_id not in self._streaming_locks:
+            self._streaming_locks[qube_id] = asyncio.Lock()
+
+        async with self._streaming_locks[qube_id]:
+            return await self._send_message_streaming_impl(
+                qube_id, message, password, stream_callback
+            )
+
+    async def _send_message_streaming_impl(
+        self, qube_id: str, message: str, password: str,
+        stream_callback,
+    ) -> Dict[str, Any]:
+        from audio.audio_manager import extract_complete_sentences, clean_text_for_tts
+
+        try:
+            # Same setup as send_message
+            if password:
+                self.orchestrator.set_master_key(password)
+            if qube_id not in self.orchestrator.qubes:
+                await self.orchestrator.load_qube(qube_id)
+            qube = self.orchestrator.qubes[qube_id]
+
+            # Process document tags in message
+            processed_message, doc_action_blocks = await self._process_documents_to_action_blocks(
+                qube_id=qube_id, message=message, qube=qube
+            )
+
+            # Resolve voice config ONCE
+            tts_provider_name, tts_voice, custom_voice_config = self._resolve_voice_config(qube)
+            tts_enabled = qube.chain_state.is_tts_enabled() if qube.chain_state else False
+            has_audio_manager = qube.audio_manager is not None
+
+            sentence_buffer = ""
+            chunk_index = 0
+            tts_tasks = []
+            audio_paths = []
+            self._active_tts_tasks[qube_id] = tts_tasks
+
+            async def on_token(token):
+                nonlocal sentence_buffer, chunk_index
+                sentence_buffer += token
+
+                # Emit text token for frontend (always, even if TTS off)
+                if stream_callback:
+                    await stream_callback("tts-text-token", {
+                        "qube_id": qube_id,
+                        "token": token,
+                    })
+
+                if not tts_enabled or not has_audio_manager:
+                    return
+
+                # Check for complete sentences
+                sentences, remaining = extract_complete_sentences(sentence_buffer)
+                sentence_buffer = remaining
+
+                for sentence in sentences:
+                    chunk_index += 1
+                    clean_sentence = clean_text_for_tts(sentence)
+                    if not clean_sentence.strip():
+                        continue
+
+                    task = asyncio.create_task(
+                        asyncio.wait_for(
+                            self._generate_and_emit_sentence(
+                                qube, clean_sentence, chunk_index, qube_id,
+                                tts_voice, tts_provider_name, custom_voice_config,
+                                stream_callback, is_final=False,
+                                display_text=sentence,  # Original with formatting
+                            ),
+                            timeout=30.0
+                        )
+                    )
+                    tts_tasks.append((chunk_index, task))
+
+            # Delegate to process_message — handles dedup, blocks, token usage, auto-anchor
+            try:
+                response_text = await qube.process_message(
+                    processed_message,
+                    sender_id=self.orchestrator.user_id,
+                    action_blocks=doc_action_blocks if doc_action_blocks else None,
+                    token_callback=on_token,
+                )
+            except Exception as e:
+                # Emit stream-end with partial text so frontend can finalize
+                if stream_callback:
+                    await stream_callback("tts-stream-end", {
+                        "qube_id": qube_id,
+                        "total_chunks": chunk_index,
+                        "full_text": sentence_buffer,
+                        "error": str(e),
+                    })
+                raise
+
+            # Handle remaining buffer (last partial sentence)
+            if sentence_buffer.strip() and tts_enabled and has_audio_manager:
+                chunk_index += 1
+                clean = clean_text_for_tts(sentence_buffer.strip())
+                if clean.strip():
+                    task = asyncio.create_task(
+                        asyncio.wait_for(
+                            self._generate_and_emit_sentence(
+                                qube, clean, chunk_index, qube_id,
+                                tts_voice, tts_provider_name, custom_voice_config,
+                                stream_callback, is_final=True,
+                                display_text=sentence_buffer.strip(),
+                            ),
+                            timeout=30.0
+                        )
+                    )
+                    tts_tasks.append((chunk_index, task))
+
+            # Wait for all TTS tasks to complete
+            for idx, task in tts_tasks:
+                try:
+                    audio_path = await task
+                    if audio_path:
+                        audio_paths.append(audio_path)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    logger.warning("tts_sentence_skipped", chunk=idx, qube_id=qube_id)
+
+            # Clean up task tracking
+            self._active_tts_tasks.pop(qube_id, None)
+
+            # Post-processing (mirrors send_message)
+            response_timestamp, response_block_number = self._get_latest_response_block(qube)
+            self._record_relationship_interaction(qube, response_text)
+            current_model, current_provider = self._get_current_model_info(qube)
+
+            # Emit stream-end
+            if stream_callback:
+                await stream_callback("tts-stream-end", {
+                    "qube_id": qube_id,
+                    "total_chunks": chunk_index,
+                    "full_text": response_text,
+                })
+
+            return {
+                "success": True,
+                "qube_id": qube_id,
+                "qube_name": qube.genesis_block.qube_name,
+                "message": message,
+                "response": response_text,
+                "timestamp": response_timestamp,
+                "block_number": response_block_number,
+                "current_model": current_model,
+                "current_provider": current_provider,
+                "total_chunks": chunk_index,
+                "streaming": True,
+            }
+        except Exception as e:
+            logger.error(f"Failed to send streaming message to qube {qube_id}: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _generate_and_emit_sentence(
+        self, qube, sentence: str, chunk_index: int, qube_id: str,
+        tts_voice: str, tts_provider_name: str, custom_voice_config: dict,
+        stream_callback, is_final: bool, display_text: str = None,
+    ):
+        """Generate TTS for one sentence and emit audio-ready event."""
+        try:
+            audio_path = await qube.audio_manager.generate_sentence_audio(
+                text=sentence,
+                voice_model=tts_voice,
+                provider=tts_provider_name,
+                chunk_index=chunk_index,
+                custom_voice_config=custom_voice_config,
+            )
+            if stream_callback:
+                await stream_callback("tts-audio-ready", {
+                    "qube_id": qube_id,
+                    "audio_path": str(audio_path),
+                    "chunk_index": chunk_index,
+                    "is_final": is_final,
+                    "sentence_text": display_text or sentence,
+                })
+            return audio_path
+        except Exception as e:
+            logger.error("streaming_tts_sentence_failed",
+                         chunk=chunk_index, error=str(e))
+            if stream_callback:
+                await stream_callback("tts-audio-ready", {
+                    "qube_id": qube_id,
+                    "chunk_index": chunk_index,
+                    "is_final": is_final,
+                    "error": True,
+                })
+            return None
 
     async def _process_permanent_block(self, qube, qube_id: str, block_num: int) -> Dict[str, Any]:
         """Process a single permanent block (optimized for parallel execution)"""
