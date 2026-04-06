@@ -2212,8 +2212,9 @@ async fn send_message_streaming(app_handle: AppHandle, user_id: String, qube_id:
 }
 
 #[tauri::command]
-async fn cancel_stream(app_handle: AppHandle, user_id: String, qube_id: String, password: String) -> Result<serde_json::Value, String> {
-    let args = vec![user_id, qube_id];
+async fn cancel_stream(app_handle: AppHandle, user_id: String, qube_id: String, password: String, spoken_chars: Option<i64>) -> Result<serde_json::Value, String> {
+    let spoken = spoken_chars.unwrap_or(0).to_string();
+    let args = vec![user_id, qube_id, spoken];
     let mut secrets = HashMap::new();
     secrets.insert("password", password.as_str());
 

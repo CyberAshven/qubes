@@ -312,6 +312,7 @@ class GUIBridge:
         # Streaming TTS support
         self._streaming_locks: Dict[str, asyncio.Lock] = {}
         self._active_tts_tasks: Dict[str, list] = {}
+        self._spoken_chars_on_cancel: Dict[str, int] = {}
 
     def _get_connections_file(self, qube_id: str) -> Path:
         """
@@ -1380,9 +1381,12 @@ class GUIBridge:
             audio_paths = []
             self._active_tts_tasks[qube_id] = tts_tasks
 
+            emitted_text = ""
+
             async def on_token(token):
-                nonlocal sentence_buffer, chunk_index
+                nonlocal sentence_buffer, chunk_index, emitted_text
                 sentence_buffer += token
+                emitted_text += token
 
                 # Emit text token for frontend (always, even if TTS off)
                 if stream_callback:
@@ -1465,6 +1469,28 @@ class GUIBridge:
 
             # Clean up task tracking
             self._active_tts_tasks.pop(qube_id, None)
+
+            # Check if streaming was interrupted — truncate the MESSAGE block
+            was_interrupted = qube.reasoner._cancel_streaming
+            spoken_chars = self._spoken_chars_on_cancel.pop(qube_id, 0)
+            if was_interrupted and spoken_chars > 0 and spoken_chars < len(emitted_text):
+                # The user interrupted — only spoken_chars worth of text was heard.
+                # Use the raw emitted text truncated to what the frontend reported as spoken.
+                interrupted_text = emitted_text[:spoken_chars].strip()
+                if qube.current_session:
+                    for block in reversed(qube.current_session.session_blocks):
+                        if block.block_type == 'MESSAGE':
+                            content = block.content if isinstance(block.content, dict) else {}
+                            if content.get('message_type') == 'qube_to_human':
+                                content['message_body'] = interrupted_text + '\n\n[interrupted by user]'
+                                content['interrupted'] = True
+                                block.content = content
+                                break
+                response_text = interrupted_text
+                logger.info("streaming_interrupted",
+                           qube_id=qube_id,
+                           emitted_chars=len(emitted_text),
+                           total_chars=len(response_text))
 
             # Post-processing (mirrors send_message)
             response_timestamp, response_block_number = self._get_latest_response_block(qube)

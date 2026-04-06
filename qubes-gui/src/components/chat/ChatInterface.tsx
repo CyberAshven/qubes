@@ -432,8 +432,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, all
 
   // --- Streaming TTS helpers ---
 
-  // Completed sentences accumulated (shown permanently in the bubble)
-  const completedSentencesRef = useRef('');
+  // Track how many characters of the raw token stream have been "spoken"
+  const charsSpokenRef = useRef(0);
   // Previous sentence (to detect transitions)
   const prevSentenceRef = useRef<string | null>(null);
   // Full text saved from tts-stream-end (for finalization after all audio plays)
@@ -441,10 +441,13 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, all
 
   const startStreamingText = useCallback(() => {
     streamingTextRef.current = '';
-    completedSentencesRef.current = '';
+    charsSpokenRef.current = 0;
     prevSentenceRef.current = null;
     streamEndFullTextRef.current = null;
+    cumulativeAudioTimeRef.current = 0;
+    lastAudioTimeRef.current = 0;
     setStreamingText('');
+    isStreamingRef.current = true;
     setIsStreaming(true);
   }, []);
 
@@ -455,8 +458,12 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, all
     }
   }, []);
 
-  // Audio-synced text reveal: character-by-character using audioElement.currentTime
-  // Reads ALL values from refs (not closure-captured state) to avoid stale reads.
+  // Audio-synced text reveal: uses cumulative audio time to estimate
+  // how much text has been spoken, then shows that portion of the raw token stream.
+  // Simple and reliable — no sentence-to-position mapping needed.
+  const cumulativeAudioTimeRef = useRef(0);
+  const lastAudioTimeRef = useRef(0);
+
   useEffect(() => {
     if (!isStreaming) return;
 
@@ -465,35 +472,50 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, all
     }
 
     flushIntervalRef.current = setInterval(() => {
-      const sentence = currentSentenceRef.current;  // Read from ref, not state
-      const audio = audioElement;  // audioElement is stable (set once at mount)
+      const sentence = currentSentenceRef.current;
+      const audio = audioElement;
 
-      // When sentence changes, the previous one is now fully spoken
+      // When sentence changes, previous one is fully spoken
       if (sentence !== prevSentenceRef.current) {
         if (prevSentenceRef.current) {
-          completedSentencesRef.current += prevSentenceRef.current + ' ';
+          charsSpokenRef.current += prevSentenceRef.current.length + 1; // +1 for space
         }
         prevSentenceRef.current = sentence;
       }
 
-      if (!sentence || !audio) {
-        // No audio playing — just show completed sentences
-        if (completedSentencesRef.current) {
-          setStreamingText(completedSentencesRef.current);
-          scrollToBottom();
+      // Use streamEndFullText when available (correct text from backend)
+      const fullText = streamEndFullTextRef.current;
+      if (!fullText && !sentence) return;
+
+      if (fullText) {
+        // Full text available — reveal based on sentences spoken + audio progress
+        if (!sentence || !audio) {
+          // No audio playing — show up to what's been spoken
+          if (charsSpokenRef.current > 0) {
+            setStreamingText(cleanContentForDisplay(fullText.substring(0, charsSpokenRef.current)));
+          }
+        } else {
+          // Audio playing — reveal with progress through current sentence
+          const duration = audio.duration || 5;
+          const currentTime = audio.currentTime || 0;
+          const progress = Math.min(currentTime / duration, 1);
+          const partialChars = Math.ceil(sentence.length * progress);
+          const totalChars = charsSpokenRef.current + partialChars;
+          setStreamingText(cleanContentForDisplay(fullText.substring(0, Math.min(totalChars, fullText.length))));
         }
-        return;
+        scrollToBottom();
+      } else if (sentence && audio) {
+        // Before stream-end: show sentence-by-sentence (original approach that worked)
+        const duration = audio.duration || 5;
+        const currentTime = audio.currentTime || 0;
+        const progress = Math.min(currentTime / duration, 1);
+        const charsToShow = Math.ceil(sentence.length * progress);
+        // Build from completed + partial current
+        const completedText = streamingTextRef.current.substring(0, charsSpokenRef.current);
+        const partialSentence = sentence.substring(0, charsToShow);
+        setStreamingText(completedText + partialSentence);
+        scrollToBottom();
       }
-
-      // Reveal current sentence's text based on audio playback progress
-      const duration = audio.duration || 5;
-      const currentTime = audio.currentTime || 0;
-      const progress = Math.min(currentTime / duration, 1);
-      const charsToShow = Math.ceil(sentence.length * progress);
-      const partialSentence = sentence.substring(0, charsToShow);
-
-      setStreamingText(completedSentencesRef.current + partialSentence);
-      scrollToBottom();
     }, 50);
 
     return () => {
@@ -548,10 +570,11 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, all
           // Clean up streaming state
           stopStreamingText();
           setStreamingText('');
-          setIsStreaming(false);
+          isStreamingRef.current = false;
+        setIsStreaming(false);
           streamingMessageIdRef.current = null;
           streamEndFullTextRef.current = null;
-          completedSentencesRef.current = '';
+          charsSpokenRef.current = 0;
           prevSentenceRef.current = null;
 
           setTimeout(() => scrollToBottom(), 50);
@@ -577,10 +600,21 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, all
   const toggleStreamModeRef = useRef<(() => void) | null>(null);
   const handleStreamSendRef = useRef<((text: string) => Promise<void>) | null>(null);
 
+  // Auto-scroll when tool calls or indicators change during loading/streaming
+  useEffect(() => {
+    if (isLoading || isStreaming) {
+      scrollToBottom();
+    }
+  }, [activeToolCalls, completedActionBlocks, isLoading, isStreaming, scrollToBottom]);
+
   // --- Stream Mode (continuous voice conversation) ---
 
   const handleStreamSend = useCallback(async (text: string) => {
     if (!text.trim() || !userId || !password || selectedQubes.length === 0) return;
+    // Guard against double calls (recognition fires multiple onresult events,
+    // each restarting the silence timer — without this, second call clears streamingTextRef)
+    if (isSendingRef.current) return;
+    isSendingRef.current = true;
     const currentQube = selectedQubes[0];
 
     // Capitalize first letter of transcript
@@ -667,13 +701,16 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, all
       let finalTranscript = '';
       let interimText = '';
       for (let i = 0; i < event.results.length; i++) {
+        const text = event.results[i][0].transcript;
         if (event.results[i].isFinal) {
-          finalTranscript += event.results[i][0].transcript;
+          finalTranscript += (finalTranscript && !finalTranscript.endsWith(' ') ? ' ' : '') + text;
         } else {
-          interimText += event.results[i][0].transcript;
+          interimText += text;
         }
       }
-      const transcript = applySttAliases((finalTranscript + interimText).trim());
+      // Ensure space between final and interim segments
+      const combined = finalTranscript + (finalTranscript && interimText && !finalTranscript.endsWith(' ') ? ' ' : '') + interimText;
+      const transcript = applySttAliases(combined.trim());
 
       // Mic is muted during playback — discard any recognition results
       // (use spacebar to interrupt instead)
@@ -786,20 +823,26 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, all
 
         // Clear refs FIRST — prevents finalization useEffect from firing
         // during Zustand's synchronous re-render from addMessage below
-        const spokenText = (completedSentencesRef.current || '') + (currentSentenceRef.current || '');
+        // Calculate how much of the current sentence was actually heard (not full length)
+        const partialProgress = audioElement && audioElement.duration > 0
+          ? Math.min(audioElement.currentTime / audioElement.duration, 1) : 0;
+        const partialChars = Math.ceil((currentSentenceRef.current?.length || 0) * partialProgress);
+        const totalSpoken = charsSpokenRef.current + partialChars;
+        const spokenText = streamingTextRef.current.substring(0, totalSpoken);
         const messageId = streamingMessageIdRef.current;
         streamEndFullTextRef.current = null;
         streamingMessageIdRef.current = null;
-        completedSentencesRef.current = '';
+        charsSpokenRef.current = 0;
         prevSentenceRef.current = null;
         currentSentenceRef.current = null;
 
-        // Stop everything
+        // Stop everything — pass spokenChars so backend truncates the block correctly
         stopAudio();
-        invoke('cancel_stream', { userId, qubeId: selectedQubes[0]?.qube_id, password }).catch(() => {});
+        invoke('cancel_stream', { userId, qubeId: selectedQubes[0]?.qube_id, password, spokenChars: totalSpoken }).catch(() => {});
         resetStreamingState();
         stopStreamingText();
         setStreamingText('');
+        isStreamingRef.current = false;
         setIsStreaming(false);
         setIsLoading(false);
         isSendingRef.current = false;
@@ -1224,9 +1267,13 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, all
   const isWakeWordActiveRef = useRef(false);
   const pendingWakePhraseRef = useRef<{ qubeId: string; phrase: string } | null>(null);
   const wakeDebounceRef = useRef<{ qubeId: string; qubeName: string; timer: ReturnType<typeof setTimeout> } | null>(null);
+  const wakeToStreamTransitionRef = useRef(false);  // Prevents onend restart during wake→stream transition
   const [isWakeWordPending, setIsWakeWordPending] = useState(false);
 
   useEffect(() => {
+    // Reset transition flag on every useEffect run (prevents stale flag from blocking restart)
+    wakeToStreamTransitionRef.current = false;
+
     // Don't run if no qubes, already in Stream Mode, or recording
     if (allQubes.length === 0 || isStreamMode || isRecording) {
       // Stop wake word listener if it's running
@@ -1284,11 +1331,12 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, all
               wakeDebounceRef.current = null;
               setIsWakeWordPending(false);
 
-              // Stop wake word listener
-              try { recognition.stop(); } catch (_) {}
+              // Stop wake word listener — flag transition to prevent onend auto-restart
+              wakeToStreamTransitionRef.current = true;
               isWakeWordActiveRef.current = false;
+              try { recognition.stop(); } catch (_) {}
 
-              // Act directly — qube is already selected, just enter Stream Mode + send
+              // Enter Stream Mode + send phrase
               setTimeout(() => {
                 if (!isStreamModeRef.current && toggleStreamModeRef.current) {
                   toggleStreamModeRef.current();
@@ -1296,9 +1344,9 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, all
                 if (phrase && handleStreamSendRef.current) {
                   setTimeout(() => {
                     handleStreamSendRef.current?.(phrase);
-                  }, 200);
+                  }, 300);
                 }
-              }, 100);
+              }, 200);
             }, WAKE_PHRASE_DELAY),
           };
 
@@ -1315,8 +1363,13 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, all
     };
 
     recognition.onend = () => {
-      // Auto-restart if still in wake word mode
       isWakeWordActiveRef.current = false;
+      // Don't auto-restart if transitioning to Stream Mode
+      if (wakeToStreamTransitionRef.current) {
+        wakeToStreamTransitionRef.current = false;
+        return;
+      }
+      // Auto-restart if still in wake word mode
       if (!isStreamModeRef.current && !isRecording) {
         setTimeout(() => {
           if (!isStreamModeRef.current && !isRecording && wakeWordRecognitionRef.current === recognition) {
@@ -1347,8 +1400,11 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, all
         recognition.start();
         isWakeWordActiveRef.current = true;
         console.log('[WakeWord] Listening for wake phrases...');
-      } catch (e) {
-        console.warn('[WakeWord] Start failed, will retry on user interaction:', e);
+      } catch (e: any) {
+        // "Already started" means it IS running — just mark it as active
+        if (e?.name === 'InvalidStateError') {
+          isWakeWordActiveRef.current = true;
+        }
       }
     };
 
@@ -1360,8 +1416,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, all
         tryStart();
       }
     };
-    window.addEventListener('click', handleUserGesture, { once: false });
-    window.addEventListener('keydown', handleUserGesture, { once: false });
+    window.addEventListener('click', handleUserGesture);
+    window.addEventListener('keydown', handleUserGesture);
 
     return () => {
       window.removeEventListener('click', handleUserGesture);
@@ -1450,24 +1506,30 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, all
     };
   }, []);
 
-  // --- Streaming TTS event listeners ---
+  // --- Streaming TTS event listeners (permanent — never torn down) ---
+  // Uses refs to avoid stale closures and token loss during useEffect re-creation
+
+  const isStreamingRef = useRef(false);
+  useEffect(() => { isStreamingRef.current = isStreaming; }, [isStreaming]);
 
   useEffect(() => {
     let mounted = true;
 
     const unlistenToken = listen<{ qube_id: string; token: string }>('tts-text-token', (event) => {
-      if (!mounted || !isStreaming) return;
+      if (!mounted) return;
+      // Always accumulate — no gating. streamingTextRef is cleared by
+      // startStreamingText() before each new message.
       streamingTextRef.current += event.payload.token;
 
       // Clear loading indicator on first token
-      if (isLoading) {
+      if (isLoadingRef.current) {
         setIsLoading(false);
         setProcessingStage(null);
       }
     });
 
     const unlistenEnd = listen<{ qube_id: string; full_text: string; total_chunks: number; error?: string }>('tts-stream-end', (event) => {
-      if (!mounted || !isStreaming) return;
+      if (!mounted || !isStreamingRef.current) return;
 
       // DON'T finalize here — audio may still be playing.
       // Just save the full text. The finalization useEffect will
@@ -1480,7 +1542,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, all
       unlistenToken.then(u => u());
       unlistenEnd.then(u => u());
     };
-  }, [isStreaming, isLoading, selectedQubes, addMessage, stopStreamingText]);
+  }, []);  // Empty deps — set up once, never torn down
 
   // Construct avatar path from chain folder
   const getAvatarPath = (qube: Qube): string => {
@@ -1513,6 +1575,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, all
         resetStreamingState();
         stopStreamingText();
         setStreamingText('');
+        isStreamingRef.current = false;
         setIsStreaming(false);
         streamingMessageIdRef.current = null;
         setActiveTypewriterMessageId(null);
@@ -1542,7 +1605,10 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, all
           }
         }
         if (isStreaming) {
-          invoke('cancel_stream', { userId, qubeId: selectedQubes[0].qube_id, password }).catch(() => {});
+          const partialProgress = audioElement && audioElement.duration > 0
+            ? Math.min(audioElement.currentTime / audioElement.duration, 1) : 0;
+          const spokenChars = charsSpokenRef.current + Math.ceil((currentSentenceRef.current?.length || 0) * partialProgress);
+          invoke('cancel_stream', { userId, qubeId: selectedQubes[0].qube_id, password, spokenChars }).catch(() => {});
         }
       }
     };
@@ -1680,16 +1746,17 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, all
 
     // If streaming is active, interrupt and save partial response first
     if (isStreaming) {
-      const spokenText = (completedSentencesRef.current || '') + (currentSentenceRef.current || '');
+      const totalSpoken = charsSpokenRef.current + (currentSentenceRef.current?.length || 0);
+      const spokenText = streamingTextRef.current.substring(0, totalSpoken);
       const messageId = streamingMessageIdRef.current;
       streamEndFullTextRef.current = null;
       streamingMessageIdRef.current = null;
-      completedSentencesRef.current = '';
+      charsSpokenRef.current = 0;
       prevSentenceRef.current = null;
       currentSentenceRef.current = null;
 
       stopAudio();
-      invoke('cancel_stream', { userId, qubeId: selectedQubes[0]?.qube_id, password }).catch(() => {});
+      invoke('cancel_stream', { userId, qubeId: selectedQubes[0]?.qube_id, password, spokenChars: totalSpoken }).catch(() => {});
       resetStreamingState();
       stopStreamingText();
       setStreamingText('');

@@ -104,7 +104,7 @@ POSITIONAL_ARG_NAMES = {
     # Chat
     "send-message": ["user_id", "qube_id", "message"],
     "send-message-streaming": ["user_id", "qube_id", "message"],
-    "cancel-stream": ["user_id", "qube_id"],
+    "cancel-stream": ["user_id", "qube_id", "spoken_chars"],
     # Voice / TTS
     "generate-speech": ["user_id", "qube_id", "text"],
     "get-voice-settings": ["user_id", "qube_id"],
@@ -903,11 +903,14 @@ class SidecarServer:
     async def _handle_cancel_stream(self, bridge, params, secrets, request_id):
         """Cancel an in-progress streaming response."""
         qube_id = params["qube_id"]
+        spoken_chars = int(params.get("spoken_chars", 0))
         # 1. Set cancellation flag on the reasoner (stops token emission loop)
         qube = bridge.orchestrator.qubes.get(qube_id)
         if qube and qube.reasoner:
             qube.reasoner._cancel_streaming = True
-        # 2. Cancel in-flight TTS tasks (stops wasted API calls)
+        # 2. Store spoken chars so send_message_streaming can truncate the block
+        bridge._spoken_chars_on_cancel = {qube_id: spoken_chars}
+        # 3. Cancel in-flight TTS tasks (stops wasted API calls)
         active_tasks = bridge._active_tts_tasks.get(qube_id, [])
         for idx, task in active_tasks:
             if not task.done():

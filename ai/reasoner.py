@@ -237,6 +237,8 @@ class QubeReasoner:
         temperature: float = 0.7,
         token_callback: Optional[Callable] = None,
     ) -> str:
+        # Reset cancel flag at start — prevents stale flag from previous cancelled stream
+        self._cancel_streaming = False
         """
         Main reasoning loop
 
@@ -737,26 +739,42 @@ class QubeReasoner:
                     loop_detected = False
                     loop_reason = ""
 
+                    # Tools exempt from duplicate detection (read-only or legitimately repeated)
+                    DUPLICATE_EXEMPT_TOOLS = {
+                        "get_system_state",     # Read-only: naturally called before each update
+                        "search_memory",        # Read-only: may search multiple terms
+                    }
+
+                    # Tools with higher call count thresholds (legitimately need many calls)
+                    HIGH_THRESHOLD_TOOLS = {
+                        "update_system_state": 25,   # Many fields to update individually
+                        "get_system_state": 25,      # Read before each update
+                        "search_memory": 15,         # May search multiple topics
+                    }
+                    DEFAULT_TOOL_LIMIT = 8
+
                     # Strategy 1: Check for exact duplicate tool call (same tool + same params)
-                    # This catches immediate loops where the same call is made twice
+                    # Skip tools that are legitimately called repeatedly with same params
                     for sig in tool_signatures:
+                        tool_name = sig.split(":")[0]
+                        if tool_name in DUPLICATE_EXEMPT_TOOLS:
+                            continue
                         if sig in self._tool_call_signatures:
                             loop_detected = True
-                            tool_name = sig.split(":")[0]
                             loop_reason = f"exact duplicate call to {tool_name} with same parameters"
                             break
                         self._tool_call_signatures.add(sig)
 
-                    # Strategy 2: Check if any single tool has been called too many times (>8)
-                    # Allow more calls since tools like update_system_state may need multiple calls
+                    # Strategy 2: Check if any single tool has been called too many times
                     if not loop_detected:
                         from collections import Counter
                         all_tool_calls = [name for names in tool_call_history for name in names]
                         tool_counts = Counter(all_tool_calls)
                         for tool, count in tool_counts.items():
-                            if count > 8:
+                            limit = HIGH_THRESHOLD_TOOLS.get(tool, DEFAULT_TOOL_LIMIT)
+                            if count > limit:
                                 loop_detected = True
-                                loop_reason = f"tool '{tool}' called {count} times total"
+                                loop_reason = f"tool '{tool}' called {count} times (limit: {limit})"
                                 break
 
                     if loop_detected:
