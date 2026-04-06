@@ -22,6 +22,7 @@ import type { WaveformStyle, ColorTheme, GradientStyle, AnimationSmoothness } fr
 
 interface ChatInterfaceProps {
   selectedQubes: Qube[];
+  allQubes?: Qube[];
   onQubeModelChange?: (qubeId: string, newModel: string) => void;
 }
 
@@ -40,12 +41,13 @@ interface ChatResponse {
   total_chunks?: number;
 }
 
-export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQubeModelChange }) => {
+export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, allQubes = [], onQubeModelChange }) => {
   const { userId, password } = useAuth();
   const { playTTS, audioElement, stopAudio, startStreamingPlayback, resetStreamingState, isPlaying, currentSentence } = useAudio();
   const { invalidateCache, loadChainState, startWatching, stopWatching } = useChainState();
   const { getMessages, addMessage, clearMessages, getUploadedFiles, addUploadedFile, removeUploadedFile, clearUploadedFiles } = useChatMessages();
   const currentTab = useQubeSelection(state => state.currentTab);
+  const switchTabAndSelect = useQubeSelection(state => state.switchTabAndSelect);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const isSendingRef = useRef(false); // Ref guard for double-send (state closures are stale)
@@ -503,39 +505,64 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
   }, [isStreaming, audioElement, scrollToBottom]);
 
   // Finalize message when ALL audio has finished playing (not when stream-end fires)
+  // Uses a 1s delay to avoid premature finalization if audio is briefly interrupted
+  // (e.g., screenshot tools, window focus changes, brief gap between chunks)
+  const finalizationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   useEffect(() => {
-    if (!isStreaming) return;
-    // All audio done: isPlaying is false AND we have the full text from stream-end
-    if (!isPlaying && streamEndFullTextRef.current) {
-      const fullText = streamEndFullTextRef.current;
-      const messageId = streamingMessageIdRef.current;
-
-      // Add finalized message FIRST, then hide streaming bubble in same batch.
-      // Don't clear streamingText beforehand — avoids empty→full flash.
-      if (messageId && selectedQubes.length > 0) {
-        const currentQube = selectedQubes[0];
-        addMessage(currentQube.qube_id, {
-          id: messageId,
-          sender: 'qube' as const,
-          qubeName: currentQube.name,
-          content: cleanContentForDisplay(fullText),
-          timestamp: new Date(),
-          blockNumber: streamingBlockNumberRef.current,
-        });
-        streamingBlockNumberRef.current = undefined;
+    if (!isStreaming) {
+      if (finalizationTimerRef.current) {
+        clearTimeout(finalizationTimerRef.current);
+        finalizationTimerRef.current = null;
       }
+      return;
+    }
 
-      // NOW clean up streaming state (bubble hides in same render as message appears)
-      stopStreamingText();
-      setStreamingText('');
-      setIsStreaming(false);
-      streamingMessageIdRef.current = null;
-      streamEndFullTextRef.current = null;
-      completedSentencesRef.current = '';
-      prevSentenceRef.current = null;
+    if (!isPlaying && streamEndFullTextRef.current) {
+      // Audio stopped and we have full text — wait 1s before finalizing
+      // (in case next chunk is about to start or audio was briefly interrupted)
+      if (!finalizationTimerRef.current) {
+        finalizationTimerRef.current = setTimeout(() => {
+          finalizationTimerRef.current = null;
+          // Re-check: if audio resumed during the delay, don't finalize
+          if (isPlayingRef.current) return;
+          if (!streamEndFullTextRef.current) return;
 
-      // Stabilize scroll after DOM swap (streaming bubble → finalized message)
-      setTimeout(() => scrollToBottom(), 50);
+          const fullText = streamEndFullTextRef.current;
+          const messageId = streamingMessageIdRef.current;
+
+          // Add finalized message FIRST, then hide streaming bubble in same batch.
+          if (messageId && selectedQubes.length > 0) {
+            const currentQube = selectedQubes[0];
+            addMessage(currentQube.qube_id, {
+              id: messageId,
+              sender: 'qube' as const,
+              qubeName: currentQube.name,
+              content: cleanContentForDisplay(fullText),
+              timestamp: new Date(),
+              blockNumber: streamingBlockNumberRef.current,
+            });
+            streamingBlockNumberRef.current = undefined;
+          }
+
+          // Clean up streaming state
+          stopStreamingText();
+          setStreamingText('');
+          setIsStreaming(false);
+          streamingMessageIdRef.current = null;
+          streamEndFullTextRef.current = null;
+          completedSentencesRef.current = '';
+          prevSentenceRef.current = null;
+
+          setTimeout(() => scrollToBottom(), 50);
+        }, 1000);
+      }
+    } else {
+      // Audio is playing or no full text yet — cancel any pending finalization
+      if (finalizationTimerRef.current) {
+        clearTimeout(finalizationTimerRef.current);
+        finalizationTimerRef.current = null;
+      }
     }
   }, [isStreaming, isPlaying, selectedQubes, addMessage, stopStreamingText, scrollToBottom]);
 
@@ -547,6 +574,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
   useEffect(() => { currentSentenceRef.current = currentSentence; }, [currentSentence]);
   const silenceTimeoutRef = useRef(silenceTimeoutMs);
   useEffect(() => { silenceTimeoutRef.current = silenceTimeoutMs; }, [silenceTimeoutMs]);
+  const toggleStreamModeRef = useRef<(() => void) | null>(null);
+  const handleStreamSendRef = useRef<((text: string) => Promise<void>) | null>(null);
 
   // --- Stream Mode (continuous voice conversation) ---
 
@@ -554,11 +583,14 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
     if (!text.trim() || !userId || !password || selectedQubes.length === 0) return;
     const currentQube = selectedQubes[0];
 
+    // Capitalize first letter of transcript
+    const capitalizedText = text.charAt(0).toUpperCase() + text.slice(1);
+
     // Add user message to chat
     addMessage(currentQube.qube_id, {
       id: Date.now().toString(),
       sender: 'user' as const,
-      content: text,
+      content: capitalizedText,
       timestamp: new Date(),
     });
 
@@ -650,6 +682,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
       }
 
       setInterimTranscript(transcript);
+      scrollToBottom();
 
       // Reset silence timer
       if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
@@ -731,6 +764,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
       startListening();
     }
   }, [isStreamMode, isRecording, startListening]);
+  useEffect(() => { toggleStreamModeRef.current = toggleStreamMode; }, [toggleStreamMode]);
+  useEffect(() => { handleStreamSendRef.current = handleStreamSend; }, [handleStreamSend]);
 
   // Keyboard shortcuts for Stream Mode
   useEffect(() => {
@@ -1181,6 +1216,190 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
     }
     return result;
   };
+
+  // --- Wake Word Detection ---
+  // Listens for "Hey, [qube name]" when not in Stream Mode.
+  // On detection: switches to Chat tab, selects the qube, enters Stream Mode.
+  const wakeWordRecognitionRef = useRef<any>(null);
+  const isWakeWordActiveRef = useRef(false);
+  const pendingWakePhraseRef = useRef<{ qubeId: string; phrase: string } | null>(null);
+  const wakeDebounceRef = useRef<{ qubeId: string; qubeName: string; timer: ReturnType<typeof setTimeout> } | null>(null);
+  const [isWakeWordPending, setIsWakeWordPending] = useState(false);
+
+  useEffect(() => {
+    // Don't run if no qubes, already in Stream Mode, or recording
+    if (allQubes.length === 0 || isStreamMode || isRecording) {
+      // Stop wake word listener if it's running
+      if (wakeWordRecognitionRef.current && isWakeWordActiveRef.current) {
+        try { wakeWordRecognitionRef.current.stop(); } catch (_) {}
+        isWakeWordActiveRef.current = false;
+      }
+      return;
+    }
+
+    if (typeof window === 'undefined') return;
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) return;
+
+    const recognition = new SpeechRecognition();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = 'en-US';
+
+    recognition.onresult = (event: any) => {
+      // Build full transcript from all results
+      let transcript = '';
+      for (let i = 0; i < event.results.length; i++) {
+        transcript += event.results[i][0].transcript;
+      }
+      transcript = applySttAliases(transcript.trim());
+      const lower = transcript.toLowerCase();
+
+      // Match "hey [qube name]" at the start
+      for (const qube of allQubes) {
+        const name = qube.name.toLowerCase();
+        const wakePhrase = `hey ${name}`;
+
+        if (lower.startsWith(wakePhrase)) {
+          const phrase = transcript.slice(wakePhrase.length).replace(/^[,.\s]+/, '').trim();
+
+          // Debounce: switch tab immediately on first detection,
+          // then wait for the user to finish speaking before sending
+          if (wakeDebounceRef.current?.qubeId === qube.qube_id) {
+            // Same qube — just reset timer, transcript keeps growing
+            clearTimeout(wakeDebounceRef.current.timer);
+          } else {
+            // First detection — switch to Chat tab and select qube NOW
+            console.log('[WakeWord] Detected:', qube.name);
+            switchTabAndSelect('dashboard', qube.qube_id);
+            setIsWakeWordPending(true);
+          }
+
+          const WAKE_PHRASE_DELAY = silenceTimeoutRef.current;
+          wakeDebounceRef.current = {
+            qubeId: qube.qube_id,
+            qubeName: qube.name,
+            timer: setTimeout(() => {
+              console.log('[WakeWord] Activating:', qube.name, phrase ? `with: "${phrase}"` : '(no phrase)');
+              wakeDebounceRef.current = null;
+              setIsWakeWordPending(false);
+
+              // Stop wake word listener
+              try { recognition.stop(); } catch (_) {}
+              isWakeWordActiveRef.current = false;
+
+              // Act directly — qube is already selected, just enter Stream Mode + send
+              setTimeout(() => {
+                if (!isStreamModeRef.current && toggleStreamModeRef.current) {
+                  toggleStreamModeRef.current();
+                }
+                if (phrase && handleStreamSendRef.current) {
+                  setTimeout(() => {
+                    handleStreamSendRef.current?.(phrase);
+                  }, 200);
+                }
+              }, 100);
+            }, WAKE_PHRASE_DELAY),
+          };
+
+          return;
+        }
+      }
+
+      // If speech doesn't match any wake phrase, clear any pending debounce
+      if (wakeDebounceRef.current) {
+        clearTimeout(wakeDebounceRef.current.timer);
+        wakeDebounceRef.current = null;
+        setIsWakeWordPending(false);
+      }
+    };
+
+    recognition.onend = () => {
+      // Auto-restart if still in wake word mode
+      isWakeWordActiveRef.current = false;
+      if (!isStreamModeRef.current && !isRecording) {
+        setTimeout(() => {
+          if (!isStreamModeRef.current && !isRecording && wakeWordRecognitionRef.current === recognition) {
+            try {
+              recognition.start();
+              isWakeWordActiveRef.current = true;
+            } catch (_) {}
+          }
+        }, 500);
+      }
+    };
+
+    recognition.onerror = (event: any) => {
+      if (event.error !== 'no-speech' && event.error !== 'aborted') {
+        console.error('[WakeWord] Error:', event.error);
+      }
+    };
+
+    wakeWordRecognitionRef.current = recognition;
+
+    // Browser requires a user gesture before allowing mic access.
+    // Try starting immediately (works if user has already interacted).
+    // If it fails, wait for the first click anywhere, then start.
+    const tryStart = () => {
+      if (isWakeWordActiveRef.current) return;
+      if (isStreamModeRef.current || isRecording) return;
+      try {
+        recognition.start();
+        isWakeWordActiveRef.current = true;
+        console.log('[WakeWord] Listening for wake phrases...');
+      } catch (e) {
+        console.warn('[WakeWord] Start failed, will retry on user interaction:', e);
+      }
+    };
+
+    tryStart();
+
+    // Fallback: start on first user click if immediate start failed
+    const handleUserGesture = () => {
+      if (!isWakeWordActiveRef.current && wakeWordRecognitionRef.current === recognition) {
+        tryStart();
+      }
+    };
+    window.addEventListener('click', handleUserGesture, { once: false });
+    window.addEventListener('keydown', handleUserGesture, { once: false });
+
+    return () => {
+      window.removeEventListener('click', handleUserGesture);
+      window.removeEventListener('keydown', handleUserGesture);
+      if (wakeDebounceRef.current) {
+        clearTimeout(wakeDebounceRef.current.timer);
+        wakeDebounceRef.current = null;
+      }
+      try { recognition.stop(); } catch (_) {}
+      isWakeWordActiveRef.current = false;
+      if (wakeWordRecognitionRef.current === recognition) {
+        wakeWordRecognitionRef.current = null;
+      }
+    };
+  }, [allQubes, isStreamMode, isRecording, switchTabAndSelect]);
+
+  // Handle pending wake word action — fires when selectedQubes updates after wake word selection
+  useEffect(() => {
+    const pending = pendingWakePhraseRef.current;
+    if (!pending) return;
+    if (selectedQubes.length === 0 || selectedQubes[0].qube_id !== pending.qubeId) return;
+
+    // Selection matched — clear pending and act
+    const phrase = pending.phrase;
+    pendingWakePhraseRef.current = null;
+
+    // Enter Stream Mode, then send phrase if any
+    setTimeout(() => {
+      if (!isStreamModeRef.current) {
+        toggleStreamMode();
+      }
+      if (phrase) {
+        setTimeout(() => {
+          handleStreamSend(phrase);
+        }, 200);
+      }
+    }, 100);
+  }, [selectedQubes, toggleStreamMode, handleStreamSend]);
 
   // Listen for stream settings changes from Settings tab
   useEffect(() => {
@@ -2785,6 +3004,16 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
         </div>
       </GlassCard>
 
+      {/* Wake word pending indicator */}
+      {isWakeWordPending && !isStreamMode && selectedQubes.length > 0 && (
+        <div className="flex justify-center -mt-2 mb-1">
+          <div className="bg-accent-primary/10 border border-accent-primary/30 rounded-full px-4 py-1 text-xs text-accent-primary flex items-center gap-2 animate-pulse">
+            <span className="w-2 h-2 rounded-full bg-accent-primary animate-pulse" />
+            Wake word detected — listening... ({selectedQubes[0].name})
+          </div>
+        </div>
+      )}
+
       {/* Stream Mode indicator */}
       {isStreamMode && selectedQubes.length > 0 && (
         <div className="flex justify-center -mt-2 mb-1">
@@ -2871,9 +3100,11 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, onQ
               className={`w-10 h-10 flex-shrink-0 flex items-center justify-center rounded-lg border transition-all ${
                 isStreamMode
                   ? 'bg-accent-danger/20 border-accent-danger/50 text-accent-danger animate-pulse'
-                  : 'bg-bg-secondary border-accent-primary/30 text-text-secondary hover:text-accent-primary hover:border-accent-primary/50'
+                  : isWakeWordPending
+                    ? 'bg-accent-primary/20 border-accent-primary/50 text-accent-primary animate-pulse'
+                    : 'bg-bg-secondary border-accent-primary/30 text-text-secondary hover:text-accent-primary hover:border-accent-primary/50'
               }`}
-              title={isStreamMode ? 'Stop Stream Mode (Ctrl+M)' : 'Stream Mode — voice conversation (Ctrl+M)'}
+              title={isStreamMode ? 'Stop Stream Mode (Ctrl+M)' : isWakeWordPending ? 'Wake word detected — listening...' : 'Stream Mode — voice conversation (Ctrl+M)'}
               disabled={isLoading && !isStreamMode}
             >
               <span className="text-xl leading-none">{isStreamMode ? '⏹' : '🎙'}</span>

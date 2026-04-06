@@ -348,7 +348,7 @@ export const TabContent: React.FC<TabContentProps> = ({ qubes, setQubes, onQubes
                 <GroupChatInterface key="group-chat" selectedQubes={selectedQubesForDashboard} allQubes={qubes} />
               </div>
               <div className={`absolute inset-0 p-6 flex flex-col ${selectedQubesForDashboard.length >= 2 ? 'z-0 opacity-0 pointer-events-none' : 'z-10 opacity-100'}`}>
-                <ChatInterface key="single-qube-chat" selectedQubes={selectedQubesForDashboard} onQubeModelChange={handleQubeModelChange} />
+                <ChatInterface key="single-qube-chat" selectedQubes={selectedQubesForDashboard} allQubes={qubes} onQubeModelChange={handleQubeModelChange} />
               </div>
             </div>
           </div>
