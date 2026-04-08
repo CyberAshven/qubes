@@ -1603,7 +1603,7 @@ class UserOrchestrator:
 
             # Find the qube directory
             for d in qubes_dir.iterdir():
-                if d.is_dir() and qube_id in d.name:
+                if d.is_dir() and d.name.endswith(f"_{qube_id}"):
                     qube_dir = d
                     break
 

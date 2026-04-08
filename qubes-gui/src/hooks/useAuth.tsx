@@ -33,6 +33,79 @@ const saveAutoLockSettings = (enabled: boolean, timeout: number) => {
 
 const initialAutoLock = loadAutoLockSettings();
 
+// Load remember-login settings from localStorage (persists across restarts)
+const REMEMBER_LOGIN_KEY = 'qubes-remember-login';
+const SAVED_CREDENTIALS_KEY = 'qubes-saved-credentials';
+
+const loadRememberLoginSettings = () => {
+  try {
+    const saved = localStorage.getItem(REMEMBER_LOGIN_KEY);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      return {
+        rememberUsername: parsed.rememberUsername ?? false,
+        rememberPassword: parsed.rememberPassword ?? false,
+        autoLogin: parsed.autoLogin ?? false,
+      };
+    }
+  } catch (e) {
+    console.error('Failed to load remember-login settings:', e);
+  }
+  return { rememberUsername: false, rememberPassword: false, autoLogin: false };
+};
+
+const saveRememberLoginSettings = (rememberUsername: boolean, rememberPassword: boolean, autoLogin: boolean) => {
+  try {
+    localStorage.setItem(REMEMBER_LOGIN_KEY, JSON.stringify({ rememberUsername, rememberPassword, autoLogin }));
+    // If disabling remember, clear saved credentials
+    if (!rememberUsername && !rememberPassword) {
+      localStorage.removeItem(SAVED_CREDENTIALS_KEY);
+    } else if (!rememberUsername) {
+      // Keep password setting but clear username
+      const creds = JSON.parse(localStorage.getItem(SAVED_CREDENTIALS_KEY) || '{}');
+      delete creds.username;
+      localStorage.setItem(SAVED_CREDENTIALS_KEY, JSON.stringify(creds));
+    } else if (!rememberPassword) {
+      // Keep username but clear password
+      const creds = JSON.parse(localStorage.getItem(SAVED_CREDENTIALS_KEY) || '{}');
+      delete creds.password;
+      localStorage.setItem(SAVED_CREDENTIALS_KEY, JSON.stringify(creds));
+    }
+  } catch (e) {
+    console.error('Failed to save remember-login settings:', e);
+  }
+};
+
+const saveCredentials = (username: string, password: string, rememberUsername: boolean, rememberPassword: boolean) => {
+  try {
+    const creds: Record<string, string> = {};
+    if (rememberUsername) creds.username = username;
+    if (rememberPassword) creds.password = password;
+    if (Object.keys(creds).length > 0) {
+      localStorage.setItem(SAVED_CREDENTIALS_KEY, JSON.stringify(creds));
+    }
+  } catch (e) {
+    console.error('Failed to save credentials:', e);
+  }
+};
+
+export const getSavedCredentials = (): { username?: string; password?: string } => {
+  try {
+    const settings = loadRememberLoginSettings();
+    const saved = localStorage.getItem(SAVED_CREDENTIALS_KEY);
+    if (!saved) return {};
+    const creds = JSON.parse(saved);
+    return {
+      username: settings.rememberUsername ? creds.username : undefined,
+      password: settings.rememberPassword ? creds.password : undefined,
+    };
+  } catch (e) {
+    return {};
+  }
+};
+
+const initialRememberLogin = loadRememberLoginSettings();
+
 interface AuthState {
   isAuthenticated: boolean;
   isLocked: boolean;
@@ -42,6 +115,10 @@ interface AuthState {
   // Auto-lock settings
   autoLockEnabled: boolean;
   autoLockTimeout: number; // minutes
+  // Remember login settings
+  rememberUsername: boolean;
+  rememberPassword: boolean;
+  autoLogin: boolean;
   // NFT Authentication tokens per Qube
   nftTokens: Record<string, NftAuthToken>;
   login: (userId: string, dataDir: string, password: string) => void;
@@ -49,6 +126,7 @@ interface AuthState {
   lock: () => void;
   unlock: (password: string) => boolean;
   setAutoLockSettings: (enabled: boolean, timeout: number) => void;
+  setRememberLoginSettings: (rememberUsername: boolean, rememberPassword: boolean, autoLogin: boolean) => void;
   // NFT Auth methods
   setNftToken: (qubeId: string, token: string, expiresAt: number) => void;
   getNftToken: (qubeId: string) => NftAuthToken | null;
@@ -67,10 +145,16 @@ export const useAuth = create<AuthState>()(
       password: null,
       autoLockEnabled: initialAutoLock.autoLockEnabled,
       autoLockTimeout: initialAutoLock.autoLockTimeout,
+      rememberUsername: initialRememberLogin.rememberUsername,
+      rememberPassword: initialRememberLogin.rememberPassword,
+      autoLogin: initialRememberLogin.autoLogin,
       nftTokens: {},
 
-      login: (userId: string, dataDir: string, password: string) =>
-        set({ isAuthenticated: true, isLocked: false, userId, dataDir, password }),
+      login: (userId: string, dataDir: string, password: string) => {
+        const state = get();
+        saveCredentials(userId, password, state.rememberUsername, state.rememberPassword);
+        set({ isAuthenticated: true, isLocked: false, userId, dataDir, password });
+      },
 
       logout: () =>
         set({
@@ -96,6 +180,11 @@ export const useAuth = create<AuthState>()(
       setAutoLockSettings: (enabled: boolean, timeout: number) => {
         saveAutoLockSettings(enabled, timeout);
         set({ autoLockEnabled: enabled, autoLockTimeout: timeout });
+      },
+
+      setRememberLoginSettings: (rememberUsername: boolean, rememberPassword: boolean, autoLogin: boolean) => {
+        saveRememberLoginSettings(rememberUsername, rememberPassword, autoLogin);
+        set({ rememberUsername, rememberPassword, autoLogin });
       },
 
       setNftToken: (qubeId: string, token: string, expiresAt: number) =>

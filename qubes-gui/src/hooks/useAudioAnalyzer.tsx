@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { emit, emitTo } from '@tauri-apps/api/event';
+import { emitTo } from '@tauri-apps/api/event';
 import type { AnimationSmoothness } from '../types';
 import type { AudioPlaybackElement } from '../contexts/AudioContext';
 
@@ -34,9 +34,10 @@ export function useAudioAnalyzer(
 
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyzerRef = useRef<AnalyserNode | null>(null);
-  const sourceRef = useRef<MediaElementAudioSourceNode | null>(null);
+  const bufferSourceRef = useRef<AudioBufferSourceNode | null>(null);
   const animationFrameRef = useRef<number | null>(null);
   const startTimeRef = useRef<number>(0);
+  const currentAudioDataRef = useRef<string | null>(null); // Track which data URL we've decoded
 
   // Calculate target FPS based on smoothness setting
   const getTargetFps = useCallback(() => {
@@ -44,65 +45,70 @@ export function useAudioAnalyzer(
       case 'low': return 30;
       case 'medium': return 45;
       case 'high': return 60;
-      case 'ultra': return 60; // Will run uncapped
+      case 'ultra': return 60;
       default: return 45;
     }
   }, [animationSmoothness]);
 
-  // Calculate frame interval (ms between frames)
   const getFrameInterval = useCallback(() => {
-    if (animationSmoothness === 'ultra') return 0; // No throttling
+    if (animationSmoothness === 'ultra') return 0;
     return 1000 / getTargetFps();
   }, [animationSmoothness, getTargetFps]);
 
-  // Initialize Web Audio API
-  const initializeAudioContext = useCallback(() => {
-    if (!audioElement) return;
-
-    // Don't re-initialize if already set up
-    if (audioContextRef.current && sourceRef.current && analyzerRef.current) {
-      return;
+  // Ensure AudioContext and AnalyserNode exist
+  const ensureContext = useCallback(() => {
+    if (!audioContextRef.current || audioContextRef.current.state === 'closed') {
+      audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
     }
-
-    try {
-      // Create AudioContext
-      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-      audioContextRef.current = audioContext;
-
-      // Create AnalyserNode
-      const analyzer = audioContext.createAnalyser();
+    if (!analyzerRef.current) {
+      const analyzer = audioContextRef.current.createAnalyser();
       analyzer.fftSize = fftSize;
-      analyzer.smoothingTimeConstant = 0.6; // Lower = faster decay, less "memory"
-      analyzer.minDecibels = -80; // Raise floor to reduce noise sensitivity
+      analyzer.smoothingTimeConstant = 0.6;
+      analyzer.minDecibels = -80;
       analyzer.maxDecibels = -10;
       analyzerRef.current = analyzer;
-
-      // IMPORTANT: Only create MediaElementSource once
-      // Check if the audio element already has a source connected
-      if (!sourceRef.current) {
-        try {
-          const source = audioContext.createMediaElementSource(audioElement as unknown as HTMLMediaElement);
-          sourceRef.current = source;
-
-          // Connect: source -> analyzer -> destination
-          source.connect(analyzer);
-          analyzer.connect(audioContext.destination);
-        } catch (error: any) {
-          // If we get an error about the element already being used, that's OK
-          // It means the audio is already connected elsewhere
-          if (error.name === 'InvalidStateError') {
-            console.warn('Audio element already connected to a source. Visualizer will not work.');
-          } else {
-            throw error;
-          }
-        }
-      }
-    } catch (error) {
-      console.error('Failed to initialize audio analyzer:', error);
     }
-  }, [audioElement, fftSize, smoothingTimeConstant]);
+    return { audioContext: audioContextRef.current, analyzer: analyzerRef.current };
+  }, [fftSize]);
 
-  // Start analyzing
+  // Load audio data and create a silent BufferSource for analysis
+  const loadAudioData = useCallback(async (audioDataUrl: string) => {
+    if (!audioDataUrl || currentAudioDataRef.current === audioDataUrl) return;
+    currentAudioDataRef.current = audioDataUrl;
+
+    try {
+      const { audioContext, analyzer } = ensureContext();
+
+      // Stop any existing buffer source
+      if (bufferSourceRef.current) {
+        try { bufferSourceRef.current.stop(); } catch (_) {}
+        bufferSourceRef.current = null;
+      }
+
+      // Fetch and decode the audio data
+      const response = await fetch(audioDataUrl);
+      const arrayBuffer = await response.arrayBuffer();
+      const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+
+      // Create a BufferSource connected to the analyzer only (no speakers)
+      const source = audioContext.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(analyzer);
+      // NOT connected to audioContext.destination — silent analysis only
+
+      source.onended = () => {
+        bufferSourceRef.current = null;
+      };
+
+      bufferSourceRef.current = source;
+      source.start(0);
+    } catch (err) {
+      console.warn('[AudioAnalyzer] Failed to decode audio for visualization:', err);
+      currentAudioDataRef.current = null;
+    }
+  }, [ensureContext]);
+
+  // Start the animation frame loop to read analyzer data
   const startAnalyzing = useCallback(() => {
     if (!analyzerRef.current || isAnalyzing) return;
 
@@ -112,7 +118,6 @@ export function useAudioAnalyzer(
     const analyze = (timestamp: number) => {
       if (!analyzerRef.current) return;
 
-      // Throttle based on animation smoothness
       const frameInterval = getFrameInterval();
       if (frameInterval > 0) {
         const elapsed = timestamp - startTimeRef.current;
@@ -126,15 +131,13 @@ export function useAudioAnalyzer(
       const analyzer = analyzerRef.current;
       const bufferLength = analyzer.frequencyBinCount;
 
-      // Get frequency data (0-255 for each frequency bin)
       const frequencyData = new Uint8Array(bufferLength);
       analyzer.getByteFrequencyData(frequencyData);
 
-      // Get waveform data (time domain)
       const waveformData = new Uint8Array(bufferLength);
       analyzer.getByteTimeDomainData(waveformData);
 
-      // Calculate volume (RMS of waveform)
+      // Calculate volume (RMS)
       let sum = 0;
       for (let i = 0; i < waveformData.length; i++) {
         const normalized = (waveformData[i] - 128) / 128;
@@ -142,31 +145,20 @@ export function useAudioAnalyzer(
       }
       const rms = Math.sqrt(sum / waveformData.length);
 
-      // Apply sensitivity multiplier (0-100 -> 0.5-2.0)
       const sensitivityMultiplier = 0.5 + (sensitivity / 100) * 1.5;
       const volume = Math.min(1.0, rms * sensitivityMultiplier);
 
-      // Apply sensitivity to frequency data with aggressive noise floor filtering
+      // Apply sensitivity and noise filtering to frequency data
       const adjustedFrequencyData = new Uint8Array(bufferLength);
-      const noiseFloor = 25; // Values below this are considered noise
-      const spikeThreshold = 40; // Isolated spikes above neighbors by this much are zeroed
+      const noiseFloor = 25;
+      const spikeThreshold = 40;
 
       for (let i = 0; i < bufferLength; i++) {
-        // Zero out first 5 bins (DC offset and sub-bass rumble)
-        if (i < 5) {
-          adjustedFrequencyData[i] = 0;
-          continue;
-        }
+        if (i < 5) { adjustedFrequencyData[i] = 0; continue; }
 
         const raw = frequencyData[i];
+        if (raw < noiseFloor) { adjustedFrequencyData[i] = 0; continue; }
 
-        // Apply noise floor
-        if (raw < noiseFloor) {
-          adjustedFrequencyData[i] = 0;
-          continue;
-        }
-
-        // Spike detection: if this bin is way higher than both neighbors, it's noise
         const prev = i > 0 ? frequencyData[i - 1] : 0;
         const next = i < bufferLength - 1 ? frequencyData[i + 1] : 0;
         const neighborAvg = (prev + next) / 2;
@@ -178,20 +170,11 @@ export function useAudioAnalyzer(
         adjustedFrequencyData[i] = Math.min(255, raw * sensitivityMultiplier);
       }
 
-      setAnalyzerData({
-        frequencyData: adjustedFrequencyData,
-        waveformData,
-        volume
-      });
+      setAnalyzerData({ frequencyData: adjustedFrequencyData, waveformData, volume });
 
-      // Broadcast frequency data to visualizer window via Tauri events
-      // Convert Uint8Array to regular array for serialization
-      // Use emitTo to target the specific visualizer window
       emitTo('visualizer', 'visualizer-audio-data', {
         frequencyData: Array.from(adjustedFrequencyData)
-      }).catch(() => {
-        // If visualizer window doesn't exist, silently fail
-      });
+      }).catch(() => {});
 
       animationFrameRef.current = requestAnimationFrame(analyze);
     };
@@ -205,6 +188,12 @@ export function useAudioAnalyzer(
       cancelAnimationFrame(animationFrameRef.current);
       animationFrameRef.current = null;
     }
+    // Stop buffer source
+    if (bufferSourceRef.current) {
+      try { bufferSourceRef.current.stop(); } catch (_) {}
+      bufferSourceRef.current = null;
+    }
+    currentAudioDataRef.current = null;
     setIsAnalyzing(false);
     setAnalyzerData(null);
   }, []);
@@ -219,19 +208,11 @@ export function useAudioAnalyzer(
     };
   }, [stopAnalyzing]);
 
-  // Initialize when audio element is available
-  useEffect(() => {
-    if (audioElement && !audioContextRef.current) {
-      initializeAudioContext();
-    }
-  }, [audioElement, initializeAudioContext]);
-
-  // Handle audio playback state
+  // Handle audio playback state from the NativeAudioPlayer events
   useEffect(() => {
     if (!audioElement) return;
 
     const handlePlay = () => {
-      // Apply audio offset for Bluetooth sync
       if (audioOffsetMs !== 0 && audioElement) {
         const offsetSeconds = audioOffsetMs / 1000;
         const newTime = audioElement.currentTime + offsetSeconds;
@@ -240,7 +221,6 @@ export function useAudioAnalyzer(
         }
       }
 
-      // Resume AudioContext if suspended
       if (audioContextRef.current && audioContextRef.current.state === 'suspended') {
         audioContextRef.current.resume();
       }
@@ -248,20 +228,13 @@ export function useAudioAnalyzer(
       startAnalyzing();
     };
 
-    const handlePause = () => {
-      stopAnalyzing();
-    };
-
-    const handleEnded = () => {
-      stopAnalyzing();
-    };
+    const handlePause = () => stopAnalyzing();
+    const handleEnded = () => stopAnalyzing();
 
     audioElement.addEventListener('play', handlePlay);
     audioElement.addEventListener('pause', handlePause);
     audioElement.addEventListener('ended', handleEnded);
 
-    // If audio is already playing when this hook initializes, start analyzing immediately
-    // This handles the case where the visualizer is toggled on mid-playback
     if (!audioElement.paused && !audioElement.ended) {
       startAnalyzing();
     }
@@ -278,6 +251,7 @@ export function useAudioAnalyzer(
     analyzerData,
     audioContext: audioContextRef.current,
     startAnalyzing,
-    stopAnalyzing
+    stopAnalyzing,
+    loadAudioData,
   };
 }

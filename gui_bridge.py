@@ -1980,7 +1980,7 @@ class GUIBridge:
             qubes_dir = self.orchestrator.data_dir / "qubes"
             qube_dir = None
             for d in qubes_dir.iterdir():
-                if d.is_dir() and qube_id in d.name:
+                if d.is_dir() and d.name.endswith(f"_{qube_id}"):
                     qube_dir = d
                     break
 
@@ -3569,7 +3569,7 @@ class GUIBridge:
                 # Access snapshots directory directly
                 from pathlib import Path
                 qube_data_dir = get_user_qubes_dir(user_id_for_creator_check)
-                matching_dirs = [d for d in qube_data_dir.iterdir() if d.is_dir() and qube_id in d.name]
+                matching_dirs = [d for d in qube_data_dir.iterdir() if d.is_dir() and d.name.endswith(f"_{qube_id}")]
 
                 if not matching_dirs:
                     logger.error(f"[GET_TIMELINE] No matching qube directory found for {qube_id}")
@@ -3670,7 +3670,7 @@ class GUIBridge:
             qube_dir = None
 
             for dir_entry in qubes_dir.iterdir():
-                if dir_entry.is_dir() and qube_id in dir_entry.name:
+                if dir_entry.is_dir() and dir_entry.name.endswith(f"_{qube_id}"):
                     qube_dir = dir_entry
                     break
 
@@ -3746,7 +3746,7 @@ class GUIBridge:
             qube_name = None
 
             for dir_entry in qubes_dir.iterdir():
-                if dir_entry.is_dir() and qube_id in dir_entry.name:
+                if dir_entry.is_dir() and dir_entry.name.endswith(f"_{qube_id}"):
                     qube_dir = dir_entry
                     # Extract qube name from directory name (format: Name_QubeID)
                     qube_name = dir_entry.name.rsplit('_', 1)[0]
@@ -5056,7 +5056,7 @@ class GUIBridge:
             return None
 
         for dir_path in qubes_dir.iterdir():
-            if dir_path.is_dir() and qube_id in dir_path.name:
+            if dir_path.is_dir() and dir_path.name.endswith(f"_{qube_id}"):
                 return dir_path
         return None
 
@@ -6500,7 +6500,7 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
             qube_name = None
 
             for dir_entry in qubes_dir.iterdir():
-                if dir_entry.is_dir() and qube_id in dir_entry.name:
+                if dir_entry.is_dir() and dir_entry.name.endswith(f"_{qube_id}"):
                     qube_dir = dir_entry
                     # Extract qube name from directory name (format: {name}_{id})
                     qube_name = dir_entry.name.rsplit('_', 1)[0]
@@ -6676,7 +6676,7 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
             # Check if Qube already exists
             qubes_dir = self.orchestrator.data_dir / "qubes"
             for dir_entry in qubes_dir.iterdir():
-                if dir_entry.is_dir() and qube_id in dir_entry.name:
+                if dir_entry.is_dir() and dir_entry.name.endswith(f"_{qube_id}"):
                     return {"success": False, "error": f"This Qube already exists on this device (ID: {qube_id})"}
 
             # Derive decryption key from import password
@@ -7611,7 +7611,7 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
             qube_dir = None
             qube_name = None
             for dir_entry in qubes_dir.iterdir():
-                if dir_entry.is_dir() and qube_id in dir_entry.name:
+                if dir_entry.is_dir() and dir_entry.name.endswith(f"_{qube_id}"):
                     qube_dir = dir_entry
                     parts = dir_entry.name.rsplit('_', 1)
                     if len(parts) == 2:
@@ -8313,7 +8313,7 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
                 qube_dir = qubes_dir / qube_dir_name
 
                 # Skip if already exists
-                existing = [d for d in qubes_dir.iterdir() if d.is_dir() and qube_id in d.name]
+                existing = [d for d in qubes_dir.iterdir() if d.is_dir() and d.name.endswith(f"_{qube_id}")]
                 if existing:
                     logger.info(f"Skipping existing Qube: {qube_name} ({qube_id})")
                     skipped_count += 1
@@ -8476,7 +8476,7 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
             qube_name = None
 
             for dir_entry in qubes_dir.iterdir():
-                if dir_entry.is_dir() and qube_id in dir_entry.name:
+                if dir_entry.is_dir() and dir_entry.name.endswith(f"_{qube_id}"):
                     qube_dir = dir_entry
                     qube_name = dir_entry.name.rsplit('_', 1)[0]
                     break
@@ -8582,7 +8582,7 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
             qube_name = None
 
             for dir_entry in qubes_dir.iterdir():
-                if dir_entry.is_dir() and qube_id in dir_entry.name:
+                if dir_entry.is_dir() and dir_entry.name.endswith(f"_{qube_id}"):
                     qube_dir = dir_entry
                     qube_name = dir_entry.name.rsplit('_', 1)[0]
                     break
@@ -8790,7 +8790,7 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
             qube_name = None
 
             for dir_entry in qubes_dir.iterdir():
-                if dir_entry.is_dir() and qube_id in dir_entry.name:
+                if dir_entry.is_dir() and dir_entry.name.endswith(f"_{qube_id}"):
                     qube_dir = dir_entry
                     qube_name = dir_entry.name.rsplit('_', 1)[0]
                     break
@@ -13333,7 +13333,7 @@ async def main():
             qubes_dir = data_dir / "qubes"
             qube_dir = None
             for d in qubes_dir.iterdir():
-                if d.is_dir() and qube_id in d.name:
+                if d.is_dir() and d.name.endswith(f"_{qube_id}"):
                     qube_dir = d
                     break
 
@@ -14979,7 +14979,7 @@ async def main():
                 data_dir = get_user_qubes_dir(user_id)
                 qube_dir = None
                 for dir_path in data_dir.iterdir():
-                    if dir_path.is_dir() and qube_id in dir_path.name:
+                    if dir_path.is_dir() and dir_path.name.endswith(f"_{qube_id}"):
                         qube_dir = dir_path
                         break
 
@@ -15056,7 +15056,7 @@ async def main():
                 data_dir = get_user_qubes_dir(user_id)
                 qube_dir = None
                 for dir_path in data_dir.iterdir():
-                    if dir_path.is_dir() and qube_id in dir_path.name:
+                    if dir_path.is_dir() and dir_path.name.endswith(f"_{qube_id}"):
                         qube_dir = dir_path
                         break
 

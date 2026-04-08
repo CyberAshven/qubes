@@ -459,11 +459,6 @@ class SidecarServer:
         """Sync all eligible qubes to IPFS."""
         import time
 
-        # Check if master key is available (user must have authenticated)
-        password = os.environ.get("QUBES_PASSWORD")
-        if not password:
-            return
-
         now = time.time()
         synced_count = 0
 
@@ -472,8 +467,24 @@ class SidecarServer:
             if not bridge or not bridge.orchestrator:
                 continue
 
+            # Skip users without a cached master key (not yet authenticated)
+            cached = self.master_keys.get(user_id)
+            if not cached:
+                continue
+
+            # Ensure master key is set on the orchestrator (may have been cleared)
+            if not bridge.orchestrator.master_key:
+                bridge.orchestrator.master_key = cached[0]
+
             orchestrator = bridge.orchestrator
             if not orchestrator.qubes:
+                continue
+
+            # sync_to_chain() requires a password arg (calls set_master_key internally).
+            # Use env var if available; skip this user entirely if not, since passing
+            # an empty string would corrupt the cached master key.
+            password = os.environ.get("QUBES_PASSWORD")
+            if not password:
                 continue
 
             for qube_id, qube in list(orchestrator.qubes.items()):
@@ -515,7 +526,7 @@ class SidecarServer:
         if not qubes_dir.exists():
             return None
         for entry in qubes_dir.iterdir():
-            if entry.is_dir() and qube_id in entry.name:
+            if entry.is_dir() and entry.name.endswith(f"_{qube_id}"):
                 return entry
         return None
 
@@ -1380,7 +1391,7 @@ class SidecarServer:
         data_dir = get_user_qubes_dir(user_id)
         qube_dir = None
         for dir_path in data_dir.iterdir():
-            if dir_path.is_dir() and qube_id in dir_path.name:
+            if dir_path.is_dir() and dir_path.name.endswith(f"_{qube_id}"):
                 qube_dir = dir_path
                 break
         if not qube_dir:
@@ -1426,7 +1437,7 @@ class SidecarServer:
         data_dir = get_user_qubes_dir(user_id)
         qube_dir = None
         for dir_path in data_dir.iterdir():
-            if dir_path.is_dir() and qube_id in dir_path.name:
+            if dir_path.is_dir() and dir_path.name.endswith(f"_{qube_id}"):
                 qube_dir = dir_path
                 break
         if not qube_dir:

@@ -17,6 +17,7 @@ import { AvatarFace } from './waveforms/AvatarFace';
 
 interface WaveformOverlayProps {
   audioElement: AudioPlaybackElement | null;
+  audioDataUrl?: string | null;
   isPlaying: boolean;
   qubeFavoriteColor: string;
   waveformStyle: WaveformStyle;
@@ -35,6 +36,7 @@ interface WaveformOverlayProps {
 
 export const WaveformOverlay: React.FC<WaveformOverlayProps> = ({
   audioElement,
+  audioDataUrl,
   isPlaying,
   qubeFavoriteColor,
   waveformStyle,
@@ -55,7 +57,7 @@ export const WaveformOverlay: React.FC<WaveformOverlayProps> = ({
 
   // Initialize audio analyzer when audio is playing (always ready for V key toggle)
   // The 'enabled' flag just controls whether we display the visualization
-  const { isAnalyzing, analyzerData } = useAudioAnalyzer(
+  const { isAnalyzing, analyzerData, loadAudioData } = useAudioAnalyzer(
     isPlaying ? audioElement : null,
     {
       fftSize: 2048,
@@ -65,6 +67,13 @@ export const WaveformOverlay: React.FC<WaveformOverlayProps> = ({
       animationSmoothness
     }
   );
+
+  // Feed audio data to analyzer when available (enables visualization with native playback)
+  useEffect(() => {
+    if (audioDataUrl && isPlaying) {
+      loadAudioData(audioDataUrl);
+    }
+  }, [audioDataUrl, isPlaying, loadAudioData]);
 
   // Show/hide overlay based on playback state and enabled setting
   // Hide overlay when external monitor is selected (outputMonitor > 0)

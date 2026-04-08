@@ -550,6 +550,51 @@ fn validate_identifier(input: &str, field_name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Validate file paths used for export/import operations.
+/// Ensures paths are absolute, don't contain null bytes, and have expected extensions.
+fn validate_file_path(path: &str, field_name: &str, allowed_extensions: &[&str]) -> Result<(), String> {
+    if path.is_empty() {
+        return Err(format!("{} cannot be empty", field_name));
+    }
+
+    // Check for null bytes
+    if path.contains('\0') {
+        return Err(format!("{} contains null bytes", field_name));
+    }
+
+    // Check for control characters
+    if path.chars().any(|c| c.is_control() && c != '\\') {
+        return Err(format!("{} contains invalid control characters", field_name));
+    }
+
+    // Length limit
+    if path.len() > 1024 {
+        return Err(format!("{} is too long (max 1024 characters)", field_name));
+    }
+
+    // Must be an absolute path (from file dialog)
+    let p = std::path::Path::new(path);
+    if !p.is_absolute() {
+        return Err(format!("{} must be an absolute path", field_name));
+    }
+
+    // Check extension if specified
+    if !allowed_extensions.is_empty() {
+        let ext = p.extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+        if !allowed_extensions.iter().any(|a| a.eq_ignore_ascii_case(ext)) {
+            return Err(format!(
+                "{} must have one of these extensions: {}",
+                field_name,
+                allowed_extensions.join(", ")
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct AuthResponse {
     success: bool,
@@ -6224,6 +6269,7 @@ async fn export_qube(app_handle: AppHandle,
 ) -> Result<ExportQubeResponse, String> {
 
     validate_identifier(&qube_id, "qube_id")?;
+    validate_file_path(&export_path, "export_path", &["qube"])?;
 
     let args = vec![qube_id, export_path];
 
@@ -6245,6 +6291,8 @@ async fn import_qube(app_handle: AppHandle,
     import_password: String,
     master_password: String
 ) -> Result<ImportQubeResponse, String> {
+
+    validate_file_path(&import_path, "import_path", &["qube"])?;
 
     let args = vec![import_path];
 
@@ -6270,6 +6318,7 @@ async fn export_account_backup(app_handle: AppHandle,
 ) -> Result<ExportAccountBackupResponse, String> {
 
     validate_identifier(&user_id, "user_id")?;
+    validate_file_path(&export_path, "export_path", &["qube-backup"])?;
 
     let args = vec![user_id, export_path];
 
@@ -6300,6 +6349,7 @@ async fn import_account_backup(app_handle: AppHandle,
 ) -> Result<ImportAccountBackupResponse, String> {
 
     validate_identifier(&user_id, "user_id")?;
+    validate_file_path(&import_path, "import_path", &["qube-backup"])?;
 
     let args = vec![user_id, import_path];
 

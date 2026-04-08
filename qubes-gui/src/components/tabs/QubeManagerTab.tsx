@@ -2834,7 +2834,6 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
 
   // Reset selections when qube changes
   React.useEffect(() => {
-    console.log('[VOICE_DEBUG] qube changed, syncing state:', { qubeId: qube.qube_id, voice_model: qube.voice_model });
     setSelectedModel(qube.ai_model);
     setSelectedVoice(qube.voice_model || '');
     // Always infer provider from model name (don't trust ai_provider field)

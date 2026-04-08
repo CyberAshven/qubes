@@ -115,7 +115,7 @@ const SilenceTimeoutSlider: React.FC = () => {
 };
 
 export const SettingsTab: React.FC = () => {
-  const { userId, password, autoLockEnabled, autoLockTimeout, setAutoLockSettings } = useAuth();
+  const { userId, password, autoLockEnabled, autoLockTimeout, setAutoLockSettings, rememberUsername, rememberPassword, autoLogin, setRememberLoginSettings } = useAuth();
   const { invalidateCache, loadChainState } = useChainState();
   const { settings: celebrationSettings, updateSettings: updateCelebrationSettings } = useCelebration();
 
@@ -1355,7 +1355,7 @@ export const SettingsTab: React.FC = () => {
 
                   {/* BCH Anchor */}
                   <div className="border border-white/10 rounded-lg p-3 space-y-3">
-                    <h3 className="text-xs font-semibold text-text-primary uppercase tracking-wide">⚓ Auto-Anchor</h3>
+                    <h3 className="text-xs font-semibold text-accent-primary uppercase tracking-wide">⚓ Auto-Anchor</h3>
 
                     {/* Individual Chat */}
                     <div className="space-y-2">
@@ -1426,7 +1426,7 @@ export const SettingsTab: React.FC = () => {
 
                   {/* IPFS Backup */}
                   <div className="border border-white/10 rounded-lg p-3 space-y-3">
-                    <h3 className="text-xs font-semibold text-text-primary uppercase tracking-wide">☁️ IPFS Backup (Pinata)</h3>
+                    <h3 className="text-xs font-semibold text-accent-primary uppercase tracking-wide">☁️ IPFS Backup (Pinata)</h3>
 
                     {/* After anchor */}
                     <div className="space-y-1">
@@ -2542,7 +2542,7 @@ export const SettingsTab: React.FC = () => {
               <div className="space-y-4">
                 <div className="flex items-center justify-between">
                   <div>
-                    <h3 className="text-sm font-medium text-text-primary">Auto-Lock</h3>
+                    <h3 className="text-sm font-medium text-accent-primary">Auto-Lock</h3>
                     <p className="text-[10px] text-text-tertiary">
                       Lock the app after a period of inactivity
                     </p>
@@ -2585,9 +2585,56 @@ export const SettingsTab: React.FC = () => {
                   </div>
                 )}
 
+                {/* Remember Login */}
+                <div className="pt-4 border-t border-white/10">
+                  <h3 className="text-sm font-medium text-accent-primary mb-1">Remember Login</h3>
+                  <p className="text-[10px] text-text-tertiary mb-3">
+                    Pre-fill login credentials on app launch. Stored in local browser storage.
+                  </p>
+                  <div className="space-y-2">
+                    <label className="flex items-center gap-3 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={rememberUsername}
+                        onChange={(e) => setRememberLoginSettings(e.target.checked, rememberPassword, autoLogin && e.target.checked && rememberPassword)}
+                        className="w-4 h-4 rounded border-glass-border bg-glass-bg text-accent-primary focus:ring-accent-primary"
+                      />
+                      <div>
+                        <span className="text-sm text-text-primary">Remember username</span>
+                        <p className="text-[10px] text-text-tertiary">Pre-fill your username on the login screen</p>
+                      </div>
+                    </label>
+                    <label className="flex items-center gap-3 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={rememberPassword}
+                        onChange={(e) => setRememberLoginSettings(rememberUsername, e.target.checked, autoLogin && rememberUsername && e.target.checked)}
+                        className="w-4 h-4 rounded border-glass-border bg-glass-bg text-accent-primary focus:ring-accent-primary"
+                      />
+                      <div>
+                        <span className="text-sm text-text-primary">Remember password</span>
+                        <p className="text-[10px] text-text-tertiary">Pre-fill your password on the login screen</p>
+                      </div>
+                    </label>
+                    <label className={`flex items-center gap-3 ${rememberUsername && rememberPassword ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}>
+                      <input
+                        type="checkbox"
+                        checked={autoLogin}
+                        disabled={!rememberUsername || !rememberPassword}
+                        onChange={(e) => setRememberLoginSettings(rememberUsername, rememberPassword, e.target.checked)}
+                        className="w-4 h-4 rounded border-glass-border bg-glass-bg text-accent-primary focus:ring-accent-primary"
+                      />
+                      <div>
+                        <span className="text-sm text-text-primary">Auto-login</span>
+                        <p className="text-[10px] text-text-tertiary">Skip the login screen entirely on launch</p>
+                      </div>
+                    </label>
+                  </div>
+                </div>
+
                 {/* Change Master Password */}
                 <div className="pt-4 border-t border-white/10">
-                  <h3 className="text-sm font-medium text-text-primary mb-1">Change Master Password</h3>
+                  <h3 className="text-sm font-medium text-accent-primary mb-1">Change Master Password</h3>
                   <p className="text-[10px] text-text-tertiary mb-3">
                     Re-encrypts all account data and Qube keys with the new password.
                   </p>
@@ -2659,7 +2706,7 @@ export const SettingsTab: React.FC = () => {
                     {/* Master toggle */}
                     <div className="flex items-center justify-between">
                       <div>
-                        <h3 className="text-sm font-medium text-text-primary">Enable Celebrations</h3>
+                        <h3 className="text-sm font-medium text-accent-primary">Enable Celebrations</h3>
                         <p className="text-[10px] text-text-tertiary">
                           Show visual feedback for XP and level-ups
                         </p>

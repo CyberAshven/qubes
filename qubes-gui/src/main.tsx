@@ -1,4 +1,3 @@
-import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import { VisualizerWindow } from "./pages/VisualizerWindow";
@@ -13,17 +12,11 @@ const root = ReactDOM.createRoot(document.getElementById("root") as HTMLElement)
 if (isVisualizerWindow) {
   // Render visualizer-only window
   root.render(
-    <React.StrictMode>
-      <AudioProvider>
-        <VisualizerWindow />
-      </AudioProvider>
-    </React.StrictMode>,
+    <AudioProvider>
+      <VisualizerWindow />
+    </AudioProvider>,
   );
 } else {
   // Render main application
-  root.render(
-    <React.StrictMode>
-      <App />
-    </React.StrictMode>,
-  );
+  root.render(<App />);
 }

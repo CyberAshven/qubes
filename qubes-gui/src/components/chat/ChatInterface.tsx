@@ -43,7 +43,7 @@ interface ChatResponse {
 
 export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, allQubes = [], onQubeModelChange }) => {
   const { userId, password } = useAuth();
-  const { playTTS, audioElement, stopAudio, startStreamingPlayback, resetStreamingState, isPlaying, currentSentence } = useAudio();
+  const { playTTS, audioElement, audioDataUrl, stopAudio, startStreamingPlayback, resetStreamingState, isPlaying, currentSentence } = useAudio();
   const { invalidateCache, loadChainState, startWatching, stopWatching } = useChainState();
   const { getMessages, addMessage, clearMessages, getUploadedFiles, addUploadedFile, removeUploadedFile, clearUploadedFiles } = useChatMessages();
   const currentTab = useQubeSelection(state => state.currentTab);
@@ -1269,16 +1269,15 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, all
   const wakeDebounceRef = useRef<{ qubeId: string; qubeName: string; timer: ReturnType<typeof setTimeout> } | null>(null);
   const wakeToStreamTransitionRef = useRef(false);  // Prevents onend restart during wake→stream transition
   const [isWakeWordPending, setIsWakeWordPending] = useState(false);
+  const [wakeWordRestartKey, setWakeWordRestartKey] = useState(0);  // Increment to force wake word effect re-run
 
   useEffect(() => {
-    // Reset transition flag on every useEffect run (prevents stale flag from blocking restart)
     wakeToStreamTransitionRef.current = false;
 
-    // Don't run if no qubes, already in Stream Mode, or recording
     if (allQubes.length === 0 || isStreamMode || isRecording) {
-      // Stop wake word listener if it's running
-      if (wakeWordRecognitionRef.current && isWakeWordActiveRef.current) {
+      if (wakeWordRecognitionRef.current) {
         try { wakeWordRecognitionRef.current.stop(); } catch (_) {}
+        wakeWordRecognitionRef.current = null;
         isWakeWordActiveRef.current = false;
       }
       return;
@@ -1288,35 +1287,50 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, all
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SpeechRecognition) return;
 
+    let stopped = false;
+
+    // Single recognition instance — restarted, never recreated
     const recognition = new SpeechRecognition();
     recognition.continuous = true;
     recognition.interimResults = true;
     recognition.lang = 'en-US';
+    wakeWordRecognitionRef.current = recognition;
+
+    const tryStart = () => {
+      if (stopped || isStreamModeRef.current || isWakeWordActiveRef.current) return;
+      try {
+        recognition.start();
+        isWakeWordActiveRef.current = true;
+        console.log('[WakeWord] Listening for wake phrases...');
+      } catch (e: any) {
+        if (e?.name === 'InvalidStateError') {
+          // Already running — just mark active
+          isWakeWordActiveRef.current = true;
+        }
+      }
+    };
 
     recognition.onresult = (event: any) => {
-      // Build full transcript from all results
-      let transcript = '';
-      for (let i = 0; i < event.results.length; i++) {
-        transcript += event.results[i][0].transcript;
-      }
-      transcript = applySttAliases(transcript.trim());
+      // Only look at the latest result, not the accumulated history.
+      // Each result is a separate utterance/phrase the browser detected.
+      const latestResult = event.results[event.results.length - 1];
+      if (!latestResult) return;
+      let transcript = applySttAliases(latestResult[0].transcript.trim());
       const lower = transcript.toLowerCase();
+      console.log('[WakeWord] Heard:', JSON.stringify(lower));
 
-      // Match "hey [qube name]" at the start
       for (const qube of allQubes) {
         const name = qube.name.toLowerCase();
-        const wakePhrase = `hey ${name}`;
+        // Match "hey <name>" with optional punctuation/spaces between "hey" and name
+        const wakePattern = new RegExp(`^hey[,\\s]+${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+        const match = lower.match(wakePattern);
 
-        if (lower.startsWith(wakePhrase)) {
-          const phrase = transcript.slice(wakePhrase.length).replace(/^[,.\s]+/, '').trim();
+        if (match) {
+          const phrase = transcript.slice(match[0].length).replace(/^[,.\s]+/, '').trim();
 
-          // Debounce: switch tab immediately on first detection,
-          // then wait for the user to finish speaking before sending
           if (wakeDebounceRef.current?.qubeId === qube.qube_id) {
-            // Same qube — just reset timer, transcript keeps growing
             clearTimeout(wakeDebounceRef.current.timer);
           } else {
-            // First detection — switch to Chat tab and select qube NOW
             console.log('[WakeWord] Detected:', qube.name);
             switchTabAndSelect('dashboard', qube.qube_id);
             setIsWakeWordPending(true);
@@ -1331,110 +1345,88 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, all
               wakeDebounceRef.current = null;
               setIsWakeWordPending(false);
 
-              // Stop wake word listener — flag transition to prevent onend auto-restart
+              pendingWakePhraseRef.current = { qubeId: qube.qube_id, phrase };
+
+              // Stop wake word listener for Stream Mode transition
               wakeToStreamTransitionRef.current = true;
               isWakeWordActiveRef.current = false;
               try { recognition.stop(); } catch (_) {}
-              // Null the ref so cleanup doesn't interfere
-              wakeWordRecognitionRef.current = null;
 
-              // Enter Stream Mode after wake word fully stops
+              // Direct activation fallback (if selectedQubes effect doesn't fire)
               setTimeout(() => {
+                const pending = pendingWakePhraseRef.current;
+                if (!pending) return;
+                console.log('[WakeWord] Direct activation — isStreamMode:', isStreamModeRef.current, 'hasToggle:', !!toggleStreamModeRef.current, 'hasRecognition:', !!recognitionRef.current);
+                pendingWakePhraseRef.current = null;
+
                 if (!isStreamModeRef.current && toggleStreamModeRef.current) {
+                  console.log('[WakeWord] Calling toggleStreamMode...');
                   toggleStreamModeRef.current();
                 }
-                if (phrase && handleStreamSendRef.current) {
+                if (pending.phrase && handleStreamSendRef.current) {
                   setTimeout(() => {
-                    handleStreamSendRef.current?.(phrase);
-                  }, 300);
+                    console.log('[WakeWord] Sending phrase:', pending.phrase);
+                    handleStreamSendRef.current?.(pending.phrase);
+                  }, 500);
                 }
-              }, 500);
+              }, 800);
             }, WAKE_PHRASE_DELAY),
           };
-
           return;
         }
       }
 
-      // If speech doesn't match any wake phrase, clear any pending debounce
-      if (wakeDebounceRef.current) {
-        clearTimeout(wakeDebounceRef.current.timer);
-        wakeDebounceRef.current = null;
-        setIsWakeWordPending(false);
-      }
+      // Don't clear a pending wake word debounce just because a new utterance
+      // doesn't match. The user may have said "Hey Alph, do something" and
+      // the browser split it into two results. Only clear if we never detected
+      // a wake word at all (wakeDebounceRef would be null in that case).
     };
 
     recognition.onend = () => {
+      console.log('[WakeWord] onend fired, stopped:', stopped, 'transition:', wakeToStreamTransitionRef.current);
       isWakeWordActiveRef.current = false;
-      // Don't auto-restart if transitioning to Stream Mode
-      if (wakeToStreamTransitionRef.current) {
+      if (stopped || wakeToStreamTransitionRef.current) {
         wakeToStreamTransitionRef.current = false;
         return;
       }
-      // Auto-restart if still in wake word mode
-      if (!isStreamModeRef.current && !isRecording) {
-        setTimeout(() => {
-          if (!isStreamModeRef.current && !isRecording && wakeWordRecognitionRef.current === recognition) {
-            try {
-              recognition.start();
-              isWakeWordActiveRef.current = true;
-            } catch (_) {}
-          }
-        }, 500);
-      }
+      // Restart the same instance after a delay
+      setTimeout(() => {
+        if (!stopped && !isStreamModeRef.current) {
+          console.log('[WakeWord] Restarting after onend...');
+          tryStart();
+        }
+      }, 500);
     };
 
     recognition.onerror = (event: any) => {
-      if (event.error !== 'no-speech' && event.error !== 'aborted') {
-        console.error('[WakeWord] Error:', event.error);
-      }
-    };
-
-    wakeWordRecognitionRef.current = recognition;
-
-    // Browser requires a user gesture before allowing mic access.
-    // Try starting immediately (works if user has already interacted).
-    // If it fails, wait for the first click anywhere, then start.
-    const tryStart = () => {
-      if (isWakeWordActiveRef.current) return;
-      if (isStreamModeRef.current || isRecording) return;
-      try {
-        recognition.start();
-        isWakeWordActiveRef.current = true;
-        console.log('[WakeWord] Listening for wake phrases...');
-      } catch (e: any) {
-        // "Already started" means it IS running — just mark it as active
-        if (e?.name === 'InvalidStateError') {
-          isWakeWordActiveRef.current = true;
-        }
-      }
+      console.log('[WakeWord] onerror:', event.error);
+      // onend fires after onerror and handles restart
     };
 
     tryStart();
 
-    // Fallback: start on first user click if immediate start failed
+    // Fallback: start on first user gesture if mic permission wasn't granted yet
     const handleUserGesture = () => {
-      if (!isWakeWordActiveRef.current && wakeWordRecognitionRef.current === recognition) {
-        tryStart();
-      }
+      if (!isWakeWordActiveRef.current && !stopped && !isStreamModeRef.current) tryStart();
     };
     window.addEventListener('click', handleUserGesture);
     window.addEventListener('keydown', handleUserGesture);
 
     return () => {
+      stopped = true;
       window.removeEventListener('click', handleUserGesture);
       window.removeEventListener('keydown', handleUserGesture);
       if (wakeDebounceRef.current) {
         clearTimeout(wakeDebounceRef.current.timer);
         wakeDebounceRef.current = null;
       }
-      try { recognition.stop(); } catch (_) {}
       isWakeWordActiveRef.current = false;
+      try { recognition.stop(); } catch (_) {}
       if (wakeWordRecognitionRef.current === recognition) {
         wakeWordRecognitionRef.current = null;
       }
     };
-  }, [allQubes, isStreamMode, isRecording, switchTabAndSelect]);
+  }, [allQubes, isStreamMode, isRecording, switchTabAndSelect, wakeWordRestartKey]);
 
   // Handle pending wake word action — fires when selectedQubes updates after wake word selection
   useEffect(() => {
@@ -1442,21 +1434,23 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, all
     if (!pending) return;
     if (selectedQubes.length === 0 || selectedQubes[0].qube_id !== pending.qubeId) return;
 
-    // Selection matched — clear pending and act
     const phrase = pending.phrase;
     pendingWakePhraseRef.current = null;
+    console.log('[WakeWord] Selection matched, entering Stream Mode');
 
-    // Enter Stream Mode, then send phrase if any
+    // Wait for wake word mic to fully release before starting Stream Mode
     setTimeout(() => {
       if (!isStreamModeRef.current) {
+        console.log('[WakeWord] Effect activation — entering Stream Mode');
         toggleStreamMode();
       }
       if (phrase) {
         setTimeout(() => {
+          console.log('[WakeWord] Effect activation — sending phrase:', phrase);
           handleStreamSend(phrase);
-        }, 200);
+        }, 500);
       }
-    }, 100);
+    }, 800);
   }, [selectedQubes, toggleStreamMode, handleStreamSend]);
 
   // Listen for stream settings changes from Settings tab
@@ -3235,6 +3229,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, all
       {selectedQubes.length > 0 && (
         <WaveformOverlay
           audioElement={audioElement}
+          audioDataUrl={audioDataUrl}
           isPlaying={isPlayingAudio}
           qubeFavoriteColor={selectedQubes[0].favorite_color}
           avatarUrl={getAvatarPath(selectedQubes[0])}

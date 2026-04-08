@@ -2744,7 +2744,7 @@ The image won't display unless you include this markdown with the actual path!
                         for qube_dir in qubes_dir.iterdir():
                             if qube_dir.is_dir():
                                 # Skip self - directory name format is "Name_QubeID"
-                                if self.qube.qube_id in qube_dir.name:
+                                if qube_dir.name.endswith(f"_{self.qube.qube_id}"):
                                     continue
 
                                 # Try to read qube metadata

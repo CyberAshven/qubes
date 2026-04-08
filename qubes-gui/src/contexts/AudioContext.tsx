@@ -28,6 +28,7 @@ interface AudioContextType {
   resetStreamingState: () => void;
   isPlaying: boolean;
   audioElement: AudioPlaybackElement | null;
+  audioDataUrl: string | null;
   currentSentence: string | null;
   totalChunks: number;
   currentChunk: number;
@@ -140,6 +141,7 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const playerRef = useRef<NativeAudioPlayer | null>(null);
   const [isPlaying, setIsPlaying] = React.useState(false);
   const [audioElement, setAudioElement] = React.useState<AudioPlaybackElement | null>(null);
+  const [audioDataUrl, setAudioDataUrl] = React.useState<string | null>(null);
   const lastPlayedTextRef = useRef<string>('');
   const unlistenRef = useRef<UnlistenFn | null>(null);
 
@@ -237,6 +239,8 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       player.setDuration(result.duration);
       player.startPlayback();
       startPlaybackTimeout(result.duration);
+      // Load audio data for visualizer (fire-and-forget, doesn't block playback)
+      invoke<string>('get_audio_base64', { filePath: path }).then(setAudioDataUrl).catch(() => {});
     } catch (err) {
       console.error('[AudioContext] Streaming chunk playback failed:', err);
       isPlayingChunk.current = false;
@@ -269,6 +273,8 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     player.setDuration(result.duration);
     player.startPlayback();
     startPlaybackTimeout(result.duration);
+    // Load audio data for visualizer (fire-and-forget)
+    invoke<string>('get_audio_base64', { filePath }).then(setAudioDataUrl).catch(() => {});
     return result.duration;
   };
 
@@ -319,6 +325,8 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         invoke<NativePlayResult>('play_audio_native', { filePath: nextPath }).then(result => {
           player.setDuration(result.duration);
           player.startPlayback();
+          // Load audio data for visualizer (fire-and-forget)
+          invoke<string>('get_audio_base64', { filePath: nextPath }).then(setAudioDataUrl).catch(() => {});
         }).catch(err => {
           console.error('[AudioContext] Failed to play next chunk:', err);
           setIsPlaying(false);
@@ -517,6 +525,7 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     resetStreamingState,
     isPlaying,
     audioElement,
+    audioDataUrl,
     currentSentence,
     totalChunks,
     currentChunk,

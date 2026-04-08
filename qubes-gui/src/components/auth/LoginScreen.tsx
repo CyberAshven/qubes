@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { GlassCard } from '../glass/GlassCard';
@@ -6,6 +6,7 @@ import { GlassInput } from '../glass/GlassInput';
 import { GlassButton } from '../glass/GlassButton';
 import { connect as wcConnect, getSession as wcGetSession, signMessage as wcSignMessage } from '../../services/walletConnect';
 import { QRCodeCanvas } from 'qrcode.react';
+import { getSavedCredentials, useAuth } from '../../hooks/useAuth';
 
 interface LoginScreenProps {
   onLogin: (username: string, password: string) => Promise<void>;
@@ -15,9 +16,21 @@ interface LoginScreenProps {
 }
 
 export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onCreateAccount, onResetAccount, error }) => {
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
+  const savedCreds = getSavedCredentials();
+  const { autoLogin } = useAuth();
+  const [username, setUsername] = useState(savedCreds.username || '');
+  const [password, setPassword] = useState(savedCreds.password || '');
   const [isLoading, setIsLoading] = useState(false);
+  const autoLoginAttempted = useRef(false);
+
+  // Auto-login on mount if both credentials are saved and auto-login is enabled
+  useEffect(() => {
+    if (autoLogin && savedCreds.username && savedCreds.password && !autoLoginAttempted.current) {
+      autoLoginAttempted.current = true;
+      setIsLoading(true);
+      onLogin(savedCreds.username, savedCreds.password).catch(() => {}).finally(() => setIsLoading(false));
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Restore from backup (file) state
   const [showRestoreModal, setShowRestoreModal] = useState(false);
